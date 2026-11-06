@@ -1277,15 +1277,12 @@ describe("TaskChatComposer", () => {
     };
     const modeChip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
 
-    // Dvorak: the V key reports code "Period". It is a paste, not a mode change.
     expect(press({ key: "v", code: "Period" })).toBe(false);
     expect(modeChip()).toBeNull();
 
-    // Dvorak: the period key reports code "KeyE". It still cycles the mode.
     expect(press({ key: ".", code: "KeyE" })).toBe(true);
     expect(modeChip()?.getAttribute("data-pending-work-mode")).toBe("planning");
 
-    // iOS hardware keyboards can report an unidentified key. The code still counts.
     expect(press({ key: "Unidentified", code: "Period" })).toBe(true);
     expect(modeChip()?.getAttribute("data-pending-work-mode")).toBe("ask");
   });
