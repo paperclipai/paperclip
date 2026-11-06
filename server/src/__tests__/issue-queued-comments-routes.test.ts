@@ -2081,4 +2081,49 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       await new Promise(resolve => setTimeout(resolve, 250));
     },
   );
+
+  // N-06: the composer offers "Send" for a deferred queue with no running
+  // turn. The issue's own run can still be waiting to start (queued) or to
+  // retry (scheduled_retry); that Send must be accepted and delivered next.
+  it.each([
+    { runtime: "native", status: "queued" }, { runtime: "native", status: "scheduled_retry" },
+    { runtime: "legacy", status: "queued" }, { runtime: "legacy", status: "scheduled_retry" },
+  ] as const)("accepts Send while the previous $runtime run is $status and delivers it once that run stops", async ({ runtime, status }) => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: runtime === "native" ? "paperclip_runner" : "codex_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: runtime, status, startedAt: null })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    // This is the state in which the UI renders the "Send" button.
+    expect(queue.body).toMatchObject({ state: "deferred", targetRunId: null, queueId: seeded.wakeId });
+    const sent = await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
+    });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(sent.body).toMatchObject({ state: "deferred", queueId: seeded.wakeId });
+    expect(sent.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual(seeded.commentIds);
+    // The previous run is not cancelled: it has not started any work to stop.
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe(status);
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(saved.status).toBe("deferred_issue_execution");
+    expect(saved.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner" });
+
+    // The previous run then finishes. Occupy the agent on another task so the
+    // successor stays queued and the test never launches a provider.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+    expect(successor.status).toBe("queued");
+    expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
+  });
 });

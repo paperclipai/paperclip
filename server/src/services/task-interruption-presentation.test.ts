@@ -259,3 +259,24 @@ describe("saved-work recovery step", () => {
       paused: false, approval: false }, now)).not.toHaveProperty("recoveryStep");
   });
 });
+
+describe("scheduled resource wait presentation", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  const waiting = { ...run, status: "scheduled_retry", errorCode: null, resultJson: null,
+    scheduledRetryReason: "workspace_busy", scheduledRetryAt: new Date(now - 60_000) };
+
+  it("keeps an overdue workspace wait out of the failed-attempt UI", () => {
+    expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("keeps failure retries, user gates and failed Retry preparation authoritative", () => {
+    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure" },
+      agent, paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: waiting, agent, paused: true, approval: false }, now))
+      .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+    expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
+      retryWait: { id: "retry", sourceRunId: run.id, requestedAt: new Date(now), preparationStatus: "failed" } }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
