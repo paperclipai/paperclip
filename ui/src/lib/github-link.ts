@@ -6,10 +6,10 @@ export interface GitHubLink {
 
 const RESERVED_PATHS = new Set([
   "about", "account", "apps", "business", "codespaces", "collections", "contact",
-  "customer-stories", "enterprise", "events", "explore", "features",
+  "customer-stories", "education", "enterprise", "enterprises", "events", "explore", "features",
   "issues", "join", "login", "logout", "marketplace", "new", "notifications",
   "organizations", "orgs", "pricing", "pulls", "readme", "search", "security",
-  "sessions", "settings", "site", "sponsors", "team", "topics", "trending", "users",
+  "sessions", "settings", "site", "sponsors", "stars", "team", "topics", "trending", "users",
 ]);
 
 export function parseGitHubLink(href: string | null | undefined): GitHubLink | null {

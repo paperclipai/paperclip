@@ -673,6 +673,18 @@ describe("MarkdownBody", () => {
     expect(html).toContain("lucide-github");
   });
 
+  it.each([
+    "https://github.com/stars/torvalds",
+    "https://github.com/education/teachers",
+    "https://github.com/enterprises/acme",
+  ])("keeps GitHub site pages as branded full URL links: %s", (href) => {
+    const html = renderMarkdown(href);
+    expect(html).toContain('data-github-link="github"');
+    expect(html).not.toContain('data-github-link="repository"');
+    expect(html.replace(/<[^>]*>/g, "")).toContain(href);
+    expect(html).toContain(`href="${href}"`);
+  });
+
   it("keeps full URL labels on lookalike hosts", () => {
     const html = renderMarkdown("https://github.com.example.com/acme/web/pull/241");
     expect(html).not.toContain("data-github-link");

@@ -19,6 +19,8 @@ describe("GitHub inline link presentation", () => {
     "https://github.com/acme/web/tree/main", "https://github.com/acme/web/pull/nope",
     "https://github.com/acme/web/issues/0", "https://github.com/settings/profile",
     "https://github.com/features/actions", "https://github.com/orgs/acme",
+    "https://github.com/stars/torvalds", "https://github.com/education/teachers",
+    "https://github.com/enterprises/acme",
     "https://github.com/acme/web/pulls", "https://github.com/acme/web/issues",
   ])("keeps GitHub pages without a resource match as branded links: %s", (href) => {
     expect(parseGitHubLink(href)).toEqual({ kind: "github", label: null, description: "GitHub" });
