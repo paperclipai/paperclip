@@ -83,10 +83,10 @@ describe("public repository paid workflow security", () => {
   });
 
   // PR #18348 added the ninth pr-trusted bootstrap, in the Vitest selection job.
-  // #19533 added the tenth, for the sandbox provider tests.
+  // #19533 added the tenth (sandbox provider tests); the eleventh runs this suite.
   const trustedPnpmBootstraps = {
     "runner-full-stack-e2e.yml": 8,
-    "pr-trusted.yml": 10,
+    "pr-trusted.yml": 11,
   } as const;
 
   it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
@@ -751,7 +751,7 @@ describe("public repository paid workflow security", () => {
       "Materialize verified pinned OpenCode executable",
     );
     expect(testJob).toContain(
-      "matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth'",
+      "matrix.profileId == 'legacy-opencode' || startsWith(matrix.profileId, 'runner-opencode') || matrix.suiteId == 'openrouter-model-breadth'",
     );
     expect(testJob).toContain(
       "node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs",

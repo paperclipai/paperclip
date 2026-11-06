@@ -12,6 +12,7 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import {
   captureRemoteWorkspaceArchive,
   cleanupRemoteWorkspaceArchive,
+  hasRemoteRecoveryAttachment,
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
@@ -33,6 +34,30 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await fs.mkdir(workspace);
   });
   afterEach(async () => { await fs.rm(scratch, { recursive: true, force: true }); });
+
+  it.each(["missing", "present", "foreign", "proof_symlink", "proof_hardlink", "directory_symlink"])(
+    "checks existing recovery attachment provenance without changing files: %s", async state => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const directory = path.join(parent, operationId), provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    if (state !== "missing") {
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(path.join(directory, "user.txt"), "preserved user edit\n");
+      await fs.writeFile(path.join(directory, "provenance.json"), state === "foreign" ? "foreign proof" : provenance);
+    }
+    if (state === "proof_symlink" || state === "proof_hardlink") {
+      const proof = path.join(directory, "provenance.json"), outside = path.join(scratch, "outside-proof");
+      await fs.rename(proof, outside);
+      if (state === "proof_symlink") await fs.symlink(outside, proof); else await fs.link(outside, proof);
+    }
+    if (state === "directory_symlink") {
+      const outside = path.join(scratch, "outside-attachment");
+      await fs.rename(directory, outside); await fs.symlink(outside, directory);
+    }
+    const probe = hasRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance });
+    if (state === "missing" || state === "present") await expect(probe).resolves.toBe(state === "present");
+    else await expect(probe).rejects.toThrow("remote_workspace_operation_failed");
+    if (state !== "missing") expect(await fs.readFile(path.join(directory, "user.txt"), "utf8")).toBe("preserved user edit\n");
+  });
 
   async function git(cwd: string, ...args: string[]) {
     return exec("git", ["-C", cwd, "-c", "user.name=Synthetic fixture", "-c", "user.email=fixture@example.invalid",

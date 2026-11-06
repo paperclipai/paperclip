@@ -67,6 +67,20 @@ describe("replay", () => {
     expect(again.waveId).toBe(`${plan.waveId}-replay-t03-1700000000001`);
   });
 
+  it("keeps the source wave's masks on replay and lets --rc06-masked add the RC-06 mask", () => {
+    const masked = planWave("w-20261106T101112-s42", { ...plan.options, masks: ["rc06"] });
+    expect(replayWave(masked, { waveId: masked.waveId, taskId: "t01" }, 1).options.masks).toEqual(["rc06"]);
+    expect(replayWave(plan, { waveId: plan.waveId, taskId: "t01" }, 1).options.masks).toBeUndefined();
+    const command = parseCommand(["--replay", `${plan.waveId}/t01`, "--rc06-masked"]);
+    if (command.mode !== "replay") throw new Error("expected replay");
+    expect(command.overrides.masks).toEqual(["rc06"]);
+    expect(replayWave(plan, { waveId: plan.waveId, taskId: "t01" }, 1, command.overrides).options.masks).toEqual(["rc06"]);
+    expect(replayWave(masked, { waveId: masked.waveId, taskId: "t01" }, 1, command.overrides).options.masks).toEqual(["rc06"]);
+    const wave = parseCommand(["--rc06-masked", "--seed", "3"]);
+    if (wave.mode !== "wave") throw new Error("expected wave");
+    expect(wave.options.masks).toEqual(["rc06"]);
+  });
+
   it("replays the recorded fault sequence that crossed the task, other tasks' faults included", () => {
     const createdAt = 1_000_000;
     const faults = [
@@ -112,5 +126,19 @@ describe("CLI parsing", () => {
     expect(() => parseCommand(["--adapters", "gemini"])).toThrow(/Unknown adapters/);
     expect(() => parseCommand(["--concurrency", "0"])).toThrow(/between 1 and 20/);
     expect(() => parseCommand(["--poll-ms", "500"])).toThrow(/between 2000 and 5000/);
+  });
+});
+
+describe("Daytona options", () => {
+  const image = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"a".repeat(64)}`;
+  it("defaults to 4 vCPU sandboxes, excludes B5, and keeps the image in the plan", () => {
+    const parsed = parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "10"]);
+    expect(parsed).toMatchObject({ mode: "wave", options: { daytonaImage: image, daytonaCpu: 4, concurrency: 10 } });
+    if (parsed.mode === "wave") expect(parsed.options.workloads).not.toContain("B5");
+  });
+  it("refuses waves over the 40 vCPU chaos budget, mutable images, and Daytona flags without Daytona", () => {
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
+    expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
   });
 });

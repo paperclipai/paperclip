@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import {
-  ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, WORKLOAD_IDS,
-  type AdapterId, type EnvironmentKind, type FaultKind, type WaveOptions, type WorkloadId,
+  ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
+  type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
@@ -17,9 +17,20 @@ export const PROFILE_FOR_ADAPTER: Record<AdapterId, string> = {
   opencode: "runner-opencode",
 };
 
+/**
+ * Chaos sandboxes run in the company Daytona org next to the live Cloud fleet.
+ * They use the runner-e2e fixture's 4 vCPU by default, and task sandboxes may
+ * use at most 40 vCPU in total, a small fraction of the fleet's capacity. Set
+ * RESTART_CHAOS_DAYTONA_VCPU_BUDGET lower for a smaller org (a 10 vCPU org
+ * fails creates with HTTP 400 "Total CPU limit exceeded"; use 8 there so
+ * verification probes still fit).
+ */
+export const DAYTONA_DEFAULT_CPU = 4;
+export const DAYTONA_VCPU_BUDGET = 40;
+
 export type ParsedCommand =
   | { mode: "wave"; options: WaveOptions; keep: boolean }
-  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents">> };
+  | { mode: "replay"; ref: ReplayRef; keep: boolean; overrides: Partial<Pick<WaveOptions, "pollMs" | "budgetCents" | "masks">> };
 
 export interface ReplayRef { waveId: string; taskId: string }
 
@@ -63,38 +74,63 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       adapters: { type: "string" },
       workloads: { type: "string" },
       faults: { type: "string" },
+      triggers: { type: "string" },
       concurrency: { type: "string" },
       tasks: { type: "string" },
       seed: { type: "string" },
       "budget-cents": { type: "string" },
       "poll-ms": { type: "string" },
       replay: { type: "string" },
+      "daytona-image": { type: "string" },
+      "daytona-cpu": { type: "string" },
       keep: { type: "boolean" },
+      "rc06-masked": { type: "boolean" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "concurrency", "tasks", "seed"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
-      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}) } };
+      overrides: { ...(values["poll-ms"] ? { pollMs } : {}), ...(values["budget-cents"] ? { budgetCents } : {}),
+        // The saved plan already carries its masks; this adds the RC-06 mask to a replay of an unmasked wave.
+        ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}) } };
   }
   const env = (values.env ?? "local") as EnvironmentKind;
   if (!ENVIRONMENT_KINDS.includes(env)) throw new Error(`Unknown env "${env}"; allowed: ${ENVIRONMENT_KINDS.join(", ")}`);
+  const daytonaImage = values["daytona-image"] ?? (env === "daytona" ? process.env.PAPERCLIP_E2E_DAYTONA_IMAGE : undefined);
+  if (env === "daytona" && !/^.+@sha256:[0-9a-f]{64}$/.test(daytonaImage ?? "")) {
+    throw new Error("--env daytona needs an immutable runner image: --daytona-image <registry/repository@sha256:…> or PAPERCLIP_E2E_DAYTONA_IMAGE");
+  }
+  if (env !== "daytona" && values["daytona-image"] !== undefined) throw new Error("--daytona-image applies only to --env daytona");
+  // B5 grades bench.sh progress read from the live workspace while it runs. A
+  // Daytona run's live workspace is inside the sandbox, so B5 is local-only.
+  const workloadChoices = env === "daytona" ? WORKLOAD_IDS.filter(id => id !== "B5") : WORKLOAD_IDS;
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
-    workloads: list<WorkloadId>(values.workloads, WORKLOAD_IDS, "workloads", WORKLOAD_IDS),
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices),
     faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", ["K1", "K2", "K4"]),
+    triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", 8, 1, 200),
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,
+    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
+    ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
   };
+  if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
+  if (options.daytonaCpu !== undefined) {
+    const budget = integer(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET, "RESTART_CHAOS_DAYTONA_VCPU_BUDGET", DAYTONA_VCPU_BUDGET, 1, 1_000);
+    if (options.concurrency * options.daytonaCpu > budget) {
+      throw new Error(`--concurrency ${options.concurrency} × --daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget} `
+        + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
+    }
+  }
   return { mode: "wave", options, keep };
 }
 

@@ -9296,6 +9296,7 @@
       "resumeToCheck": "Resume this task to continue checking.",
       "resumes": "Resumes {{eta}}",
       "reviewOnGithub": "Review on GitHub, then check status to have the agent verify the result.",
+      "reviewOnGithubWhileSaving": "Review on GitHub while the current run finishes saving its work.",
       "usageRecheck": "Usage recheck {{eta}} · {{absolute}}",
       "usageRecheckYourTime": "Usage recheck {{eta}} · {{absolute}} (your time)",
       "waitingDueNow": "Waiting on monitor — due now",

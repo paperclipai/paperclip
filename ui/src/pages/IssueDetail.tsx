@@ -78,7 +78,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import {
@@ -262,6 +262,7 @@ import { waitForStoppedRuns } from "../lib/wait-for-stopped-runs";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
+import { isOutdatedPlanConfirmation } from "../components/task-chat/interaction-thread-order";
 import { useTaskArtifactArrival } from "../hooks/useTaskArtifactArrival";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -4022,9 +4023,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const shouldDeferPanelUntilPlan =
     taskChatShellEnabled &&
     (isOnboardingFirstTask || issue?.workMode === "planning");
+  const hasPendingPlanConfirmation = interactions.some(interaction =>
+    interaction.status === "pending" && interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan");
   const { data: deferredPanelPlanDoc } = useIssuePlanDocument(
-    shouldDeferPanelUntilPlan ? issue?.id : null,
+    shouldDeferPanelUntilPlan || hasPendingPlanConfirmation ? issue?.id : null,
   );
+  const hasPendingInteraction = interactions.some(interaction =>
+    interaction.status === "pending" && !isDeferredConversationInteraction(interaction)
+    && !isOutdatedPlanConfirmation(interaction, deferredPanelPlanDoc));
   const [panelBeforePlanOverrideIssueId, setPanelBeforePlanOverrideIssueId] =
     useState<string | null>(null);
   const panelBeforePlanOverride =
@@ -5277,6 +5284,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: t("issues.issueDetail.toasts.acceptFailed"),
         body: interactionResolutionErrorMessage(err),
@@ -5306,6 +5314,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: t("issues.issueDetail.toasts.rejectFailed"),
         body: interactionResolutionErrorMessage(err),
@@ -8057,6 +8066,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       <IssueMonitorBanner
         key={issue.id}
+        hasActiveRun={hasLiveRuns}
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
@@ -8486,11 +8496,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     : treeControlStateError ? t("issues.issueDetail.recovery.pauseCheckFailed")
                     : activePauseHold ? t("issues.issueDetail.recovery.resumeTaskFirst")
                     : issue.project?.pausedAt ? t("issues.issueDetail.recovery.resumeProjectFirst")
-                    : interactions.some(i => i.status === "pending" && !isDeferredConversationInteraction(i)) ? t("issues.issueDetail.recovery.respondPendingFirst") : null}>
+                    : hasPendingInteraction ? t("issues.issueDetail.recovery.respondPendingFirst") : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
-                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending" && !isDeferredConversationInteraction(interaction)),
+                  hasPendingInteraction,
                   unavailableReason: boardAccess && !canResolveBoardRecoveryAction
                     ? t("issues.issueDetail.recovery.noPermissionRetryAction")
                     : treeControlStateError
@@ -8638,6 +8648,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
+                        hasActiveRun={hasLiveRuns}
                         workProducts={workProducts}
                         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: t("errorActions.checkTheMonitor") }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}

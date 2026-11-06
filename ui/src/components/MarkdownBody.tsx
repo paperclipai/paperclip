@@ -1,7 +1,7 @@
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, MessageCircle, WrapText } from "lucide-react";
+import { Check, Copy, MessageCircle, WrapText } from "lucide-react";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
 import { SidebarDocumentLink } from "./SidebarDocumentLink";
@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { useTranslation } from "@/i18n";
+import { MarkdownUrlLink } from "./MarkdownUrlLink";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -577,78 +578,6 @@ function createRemarkWikiLinks(options: {
   };
 }
 
-function isGitHubUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "www.github.com");
-  } catch {
-    return false;
-  }
-}
-
-function isExternalHttpUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    if (typeof window === "undefined") return true;
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function renderLinkBody(
-  children: ReactNode,
-  leadingIcon: ReactNode,
-  trailingIcon: ReactNode,
-): ReactNode {
-  if (!leadingIcon && !trailingIcon) return children;
-
-  // React-markdown can pass arrays/elements for styled link text; the nowrap
-  // splitting below is intentionally limited to plain text links.
-  if (typeof children === "string" && children.length > 0) {
-    if (children.length === 1) {
-      return (
-        <span style={{ whiteSpace: "nowrap" }}>
-          {leadingIcon}
-          {children}
-          {trailingIcon}
-        </span>
-      );
-    }
-    const first = children[0];
-    const last = children[children.length - 1];
-    const middle = children.slice(1, -1);
-    return (
-      <>
-        {leadingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {leadingIcon}
-            {first}
-          </span>
-        ) : first}
-        {middle}
-        {trailingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {last}
-            {trailingIcon}
-          </span>
-        ) : last}
-      </>
-    );
-  }
-
-  return (
-    <>
-      {leadingIcon}
-      {children}
-      {trailingIcon}
-    </>
-  );
-}
-
 function CodeBlock({
   children,
   preProps,
@@ -1019,24 +948,10 @@ function MarkdownBodyImpl({
           </Link>
         ) : <>{linkChildren}</>;
       }
-      const isGitHubLink = isGitHubUrl(href);
-      const isExternal = isExternalHttpUrl(href);
-      const leadingIcon = isGitHubLink ? (
-        <GithubIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
-      ) : null;
-      const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
-      ) : null;
       return (
-        <a
-          href={href}
-          {...(isExternal
-            ? { target: "_blank", rel: "noopener noreferrer" }
-            : { rel: "noreferrer" })}
-          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
-        >
-          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
-        </a>
+        <MarkdownUrlLink href={href} title={anchorProps.title} style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+          {linkChildren}
+        </MarkdownUrlLink>
       );
     },
     };

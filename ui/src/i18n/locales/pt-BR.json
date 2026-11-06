@@ -9296,6 +9296,7 @@
       "resumeToCheck": "Retome esta tarefa para continuar verificando.",
       "resumes": "Retoma {{eta}}",
       "reviewOnGithub": "Revise no GitHub e depois verifique o status para o agente conferir o resultado.",
+      "reviewOnGithubWhileSaving": "Revise no GitHub enquanto a execução atual termina de salvar o trabalho.",
       "usageRecheck": "Nova checagem de uso {{eta}} · {{absolute}}",
       "usageRecheckYourTime": "Nova checagem de uso {{eta}} · {{absolute}} (seu horário)",
       "waitingDueNow": "Aguardando monitor — vence agora",

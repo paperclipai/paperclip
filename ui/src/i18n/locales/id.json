@@ -6457,6 +6457,7 @@
       "keepMonitor": "Keep monitor",
       "cancelling": "Cancelling…",
       "reviewOnGithub": "Review on GitHub, then check status to have the agent verify the result.",
+      "reviewOnGithubWhileSaving": "Review on GitHub while the current run finishes saving its work.",
       "keepInstructing": "You can keep sending instructions while the agent waits.",
       "replyWakes": "Sending a reply wakes the agent now — before the scheduled check."
     },

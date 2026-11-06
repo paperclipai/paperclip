@@ -48,6 +48,7 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { isObjectJournalBusyError } from "./object-byte-journal.js";
 import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
@@ -333,7 +334,10 @@ async function readFullRunLog(db: Db, run: {
     const result = await store.read({ store: run.logStore, logRef: run.logRef }, {
       offset,
       limitBytes: 512_000,
-    }).catch(() => null);
+    }).catch((error) => {
+      if (isObjectJournalBusyError(error)) throw error;
+      return null;
+    });
     if (!result) return combined || null;
     combined += result.content;
     if (result.nextOffset == null) break;
