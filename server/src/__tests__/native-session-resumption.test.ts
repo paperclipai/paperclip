@@ -342,6 +342,7 @@ describe("P6-25 pre-result native session recovery", () => {
         {
           runId: eligibleRunId,
           leaseOwner: expect.stringContaining("bounded-reaper:resume:"),
+          attempt: expect.any(Number),
         },
       ]);
       const held = await db
@@ -388,14 +389,14 @@ describe("P6-25 pre-result native session recovery", () => {
       leaseExpiresAt: null,
       nextAttemptAt: new Date(0),
     }).where(eq(nativeRunFinalizations.runId, runId));
-    const dispatched: Array<{ runId: string; leaseOwner: string }> = [];
+    const dispatched: Array<{ runId: string; leaseOwner: string; attempt: number }> = [];
     await expect(dispatchNativeSessionResumptions({
       db,
       runnerInstanceId: "heartbeat-reaper",
       runIds: [runId],
       dispatch: (claim) => dispatched.push(claim),
     })).resolves.toHaveLength(1);
-    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:") }]);
+    expect(dispatched).toEqual([{ runId, leaseOwner: expect.stringContaining("heartbeat-reaper:resume:"), attempt: 1 }]);
     await expect(db.select().from(heartbeatRuns)).resolves.toHaveLength(8);
     await expect(db.select().from(nativeRunFinalizations)).resolves.toHaveLength(8);
   });
@@ -406,7 +407,7 @@ describe("P6-25 pre-result native session recovery", () => {
       runnerInstanceId: "reaper",
       runIds: [bootstrapRetryRunId],
     })).resolves.toEqual([
-      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:") },
+      { runId: bootstrapRetryRunId, leaseOwner: expect.stringContaining("reaper:resume:"), attempt: 1 },
     ]);
   });
 

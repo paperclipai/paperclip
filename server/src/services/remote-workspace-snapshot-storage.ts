@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -124,15 +125,27 @@ export async function recoverWorkspaceSnapshotArchive(input: {
 export async function uploadWorkspaceSnapshot(input: {
   db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
   archivePath: string; manifestDigest: string; signal?: AbortSignal;
+  // Only an owner with an immutable logical source may replace an unavailable,
+  // unpublished capture. A recoverable or concurrently published attempt wins,
+  // and its returned manifest may differ from the new physical capture.
+  unpublishedRecapture?: { sourceOperationId: string };
 }): Promise<WorkspaceSnapshotRef> {
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
+  if (input.unpublishedRecapture && row!.sourceOperationId !== input.unpublishedRecapture.sourceOperationId) failure("operation_binding_changed");
   if (["uploaded", "committed", "superseded"].includes(row!.status)) {
     const saved = reference(row!);
     if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
     await verifyObject(input.storage, saved, input.signal); return saved;
   }
   if (row!.status !== "pending" || !/^[a-f0-9]{64}$/.test(input.manifestDigest)) failure("not_writable");
+  const recapture = Boolean(input.unpublishedRecapture);
+  const requireUnpublished = (current: SnapshotRow) => {
+    if (current.sourceOperationId !== input.unpublishedRecapture!.sourceOperationId
+      || current.objectKey !== null || current.sha256 !== null || current.byteSize !== null
+      || current.key !== null || current.manifestDigest !== null) failure("not_unpublished");
+  };
+  if (recapture) requireUnpublished(row!);
   const identity = { id: row!.id, companyId: row!.companyId, workspaceId: row!.executionWorkspaceId, generation: row!.generation };
   const publish = async (attempt: UploadAttempt) => {
     const updated = await input.db.transaction(async tx => {
@@ -143,20 +156,27 @@ export async function uploadWorkspaceSnapshot(input: {
     const winning = updated ?? (await input.db.select().from(executionWorkspaceSnapshots).where(scope(input)))[0];
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
-    if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+    if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+    if (saved.objectKey !== attempt.objectKey) await verifyObject(input.storage, saved, input.signal);
     return saved;
   };
   // Recover a completed upload even when the previous process lost its reply
   // and its scratch directory. Failed attempts remain referenced for cleanup.
-  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
-  for (const attempt of attempts) {
-    if (attempt.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
-    validateReference(ref);
-    if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
-      await verifyObject(input.storage, ref, input.signal); return publish(attempt);
+  const availableAttempt = async (attempts: UploadAttempt[]) => {
+    for (const attempt of attempts) {
+      input.signal?.throwIfAborted();
+      if (!recapture && attempt.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+      const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
+      validateReference(ref);
+      if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
+        await verifyObject(input.storage, ref, input.signal); return attempt;
+      }
     }
-  }
+    return null;
+  };
+  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
+  const available = await availableAttempt(attempts);
+  if (available) return publish(available);
   const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-encrypt-"));
   try {
     const encrypted = path.join(scratch, "archive.encrypted"), dataKey = randomBytes(32), iv = randomBytes(12);
@@ -175,17 +195,28 @@ export async function uploadWorkspaceSnapshot(input: {
     const content = await digestFile(encrypted, input.signal);
     const attempt: UploadAttempt = { objectKey: `${identity.companyId}/workspace-snapshots/${identity.workspaceId}/${identity.id}/${randomUUID()}.pcws`,
       ...content, key: material, manifestDigest: input.manifestDigest };
+    // Recheck after encryption, then bind admission to the unchanged ledger.
+    // Remote I/O stays outside the row lock. An older upload completing after
+    // this check can still win the pending-to-uploaded publication below.
+    if (recapture) {
+      const recovered = await availableAttempt(attempts);
+      if (recovered) return publish(recovered);
+    }
     const recorded = await input.db.transaction(async tx => {
       const [current] = await tx.select().from(executionWorkspaceSnapshots).where(scope(input)).for("update");
-      if (!current || current.status !== "pending") return false;
-      const previous = Array.isArray(current.metadata?.uploads) ? current.metadata.uploads : [];
+      if (!current || current.status !== "pending") return null;
+      const previous = Array.isArray(current.metadata?.uploads) ? current.metadata.uploads as UploadAttempt[] : [];
+      if (recapture) {
+        requireUnpublished(current);
+        if (!isDeepStrictEqual(previous, attempts)) failure("upload_attempts_changed");
+      } else if (previous.some(saved => saved.manifestDigest !== input.manifestDigest)) failure("operation_content_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${input.workspaceId}`);
       await tx.update(executionWorkspaceSnapshots).set({ metadata: { ...current.metadata, uploads: [...previous, attempt] }, updatedAt: new Date() }).where(scope(input));
       return true;
     });
     if (!recorded) {
       const saved = await getWorkspaceSnapshot(input.db, input);
-      if (!saved || saved.manifestDigest !== input.manifestDigest) failure("publication_changed");
+      if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) failure("publication_changed");
       await verifyObject(input.storage, saved, input.signal); return saved;
     }
     // The object key is unique per attempt, so a late losing uploader cannot
@@ -194,6 +225,10 @@ export async function uploadWorkspaceSnapshot(input: {
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
       byteSize: attempt.byteSize, sha256: attempt.sha256, signal: input.signal });
     await verifyObject(input.storage, { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef, input.signal);
+    if (recapture) {
+      const recovered = await availableAttempt(attempts);
+      if (recovered) return publish(recovered);
+    }
     return await publish(attempt);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }

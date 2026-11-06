@@ -43,9 +43,17 @@
  * sandbox provider falls back to its documented process environment variable
  * (e.g. `DAYTONA_API_KEY`) when `config` omits the key, so the deployment
  * delivers secrets as env vars and the managed document stays secret-free.
+ *
+ * `driver: "plugin"` entries take the same readiness path after the sandbox
+ * entry: await `pluginsReady`, require the plugin `ready`, declaring the
+ * entry's driver, and running a worker; else archive the entry's row and
+ * re-ensure it on the worker's `ready`. Each entry owns one row (see
+ * `managed-plugin-environments.ts`). Plugin entries never touch the instance
+ * default.
  */
 
 import type { Db } from "@paperclipai/db";
+import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";
@@ -54,7 +62,10 @@ import type { ManagedInstanceConfig } from "./managed-config.js";
 import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
+import { pluginRegistryService } from "./plugin-registry.js";
+import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { ManagedPluginEnvironmentReconcileAction } from "./managed-plugin-environments.js";
 
 export interface ApplyManagedEnvironmentsOptions {
   env?: Record<string, string | undefined>;
@@ -75,8 +86,11 @@ export interface ApplyManagedEnvironmentsOptions {
    * subscription used for post-archive recovery: a worker in crash-restart
    * backoff re-emits `ready` when the manager respawns it, and the listener
    * re-ensures the archived environment (see `applyManagedEnvironments`).
+   *
+   * Plugin entries also need `call`, to run the plugin's own config
+   * validation; without it every plugin entry is treated as unavailable.
    */
-  workerManager?: Pick<PluginWorkerManager, "isRunning"> & {
+  workerManager?: Pick<PluginWorkerManager, "isRunning"> & Partial<Pick<PluginWorkerManager, "call">> & {
     getWorker(pluginId: string):
       | {
           on(event: "ready", listener: (payload: { pluginId: string }) => void): void;
@@ -92,6 +106,8 @@ export interface ApplyManagedEnvironmentsOptions {
     | "getById"
     | "update"
     | "findManagedSandboxEnvironment"
+    | "ensureManagedPluginEnvironment"
+    | "archiveManagedPluginEnvironment"
   >;
   /** Test seam: overrides the instance-settings service built from `db`. */
   instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
@@ -100,6 +116,32 @@ export interface ApplyManagedEnvironmentsOptions {
     db: Db;
     driverKey: string;
   }) => Promise<{ plugin: { id: string; pluginKey: string; status: string } } | null>;
+  /**
+   * Test seam: overrides the lookup of a plugin entry's plugin. Returns null
+   * when the plugin is not installed; `declaresDriver` is false when its
+   * manifest does not declare the entry's environment driver.
+   */
+  resolveEnvironmentPlugin?: (input: {
+    db: Db;
+    pluginKey: string;
+    driverKey: string;
+  }) => Promise<{ plugin: { id: string; pluginKey: string; status: string }; declaresDriver: boolean } | null>;
+  /**
+   * Manifest ids (`pluginKey`) that the `plugins.autoInstall` catalog keys
+   * resolve to: `app.locals.managedBundledPluginKeys`, from
+   * `resolveBundledPluginInstalls` over the bundled and distribution
+   * catalogs. A plugin entry whose `pluginKey` is not in this list refuses
+   * startup. When omitted, the list is resolved here the same way.
+   */
+  autoInstalledPluginKeys?: readonly string[];
+}
+
+export interface ManagedPluginEnvironmentReconciliationOutcome {
+  environmentId: string;
+  name: string;
+  pluginKey: string;
+  driverKey: string;
+  action: ManagedPluginEnvironmentReconcileAction;
 }
 
 export interface ManagedEnvironmentReconciliationOutcome {
@@ -123,6 +165,28 @@ export interface ApplyManagedEnvironmentsResult {
   /** Preserve-only reconciliation never creates replacement backups. */
   backedUp: number;
   outcomes: ManagedEnvironmentReconciliationOutcome[];
+  pluginOutcomes: ManagedPluginEnvironmentReconciliationOutcome[];
+}
+
+/**
+ * The plugin refused the entry's config (`HttpError` 422 from
+ * `normalizeEnvironmentConfig` or `validatePluginEnvironmentDriverConfig`).
+ * Retrying cannot help until the config changes. Every other failure, such
+ * as a worker that crashed mid-call, is treated as transient.
+ */
+function isPermanentConfigRejection(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 422;
+}
+
+async function resolveEnvironmentPluginByKey(input: { db: Db; pluginKey: string; driverKey: string }) {
+  const plugin = await pluginRegistryService(input.db).getByKey(input.pluginKey);
+  if (!plugin) return null;
+  return {
+    plugin: { id: plugin.id, pluginKey: plugin.pluginKey, status: plugin.status },
+    declaresDriver: plugin.manifestJson.environmentDrivers?.some(
+      (driver) => driver.driverKey === input.driverKey && driver.kind !== "sandbox_provider",
+    ) ?? false,
+  };
 }
 
 /**
@@ -176,17 +240,36 @@ export async function applyManagedEnvironments(
     }
   }
 
-  if (managedConfig.environments.length === 0) return null;
+  const pluginSpecs = managedConfig.pluginEnvironments;
+  if (managedConfig.environments.length === 0 && pluginSpecs.length === 0) return null;
 
   // The forced-execution-mode bootstrap (`PAPERCLIP_EXECUTION_MODE=kubernetes`)
   // and this one both own the single Paperclip-managed sandbox row
   // (`environments_managed_sandbox_idx`). Configuring both is contradictory;
-  // refuse startup rather than let bootstrap ordering pick a winner.
+  // refuse startup rather than let bootstrap ordering pick a winner. Plugin
+  // entries do not touch that slot.
   const env = opts.env ?? process.env;
-  if (parseExecutionPolicyBootstrapEnv(env)) {
+  if (managedConfig.environments.length > 0 && parseExecutionPolicyBootstrapEnv(env)) {
     throw new Error(
       `PAPERCLIP_EXECUTION_MODE and the PAPERCLIP_MANAGED_CONFIG "environments" section are mutually exclusive: both manage the single instance sandbox environment`,
     );
+  }
+
+  // Coherence, fail closed like the parser: a plugin entry names its plugin by
+  // manifest id, and only `plugins.autoInstall` provisions plugins on a
+  // managed instance, so some auto-installed catalog entry must install it.
+  if (pluginSpecs.length > 0) {
+    const autoInstalledPluginKeys = opts.autoInstalledPluginKeys ?? resolveBundledPluginInstalls(
+      managedConfig.plugins.autoInstall,
+      { catalogRoot: resolveBundledCatalogRoot(env), env, enforceCatalogRoot: true },
+    ).map((install) => install.pluginKey);
+    for (const spec of pluginSpecs) {
+      if (!autoInstalledPluginKeys.includes(spec.pluginKey)) {
+        throw new Error(
+          `PAPERCLIP_MANAGED_CONFIG "environments" entry "${spec.name}" uses plugin "${spec.pluginKey}", which no "plugins.autoInstall" catalog entry installs; a managed plugin environment requires its plugin to be provisioned`,
+        );
+      }
+    }
   }
 
   // The heartbeat resumes queued runs right after this bootstrap step, and
@@ -266,10 +349,7 @@ export async function applyManagedEnvironments(
   // worker recovered between the gate check and the subscription. No handle
   // means no respawn is coming (activation never started a worker), so the
   // degraded-until-next-boot posture stands.
-  const scheduleRecoveryReactivation = (
-    spec: ManagedInstanceConfig["environments"][number],
-    pluginId: string,
-  ): void => {
+  const scheduleRecoveryReactivation = (pluginId: string, reactivateEntry: () => Promise<void>): void => {
     const manager = opts.workerManager;
     const handle = manager?.getWorker(pluginId);
     if (!handle) return;
@@ -278,37 +358,39 @@ export async function applyManagedEnvironments(
       if (reactivated) return;
       reactivated = true;
       handle.off("ready", reactivate);
-      void environments
-        .ensureManagedSandboxEnvironment({
-          name: spec.name,
-          description: spec.description,
-          provider: spec.provider,
-          config: { ...spec.config },
-          stockVersion: managedConfig.catalogVersion,
-          platformFullyManaged: true,
-        })
-        .then((result) => {
-          logger.info(
-            {
-              environmentId: result.environment.id,
-              name: spec.name,
-              provider: spec.provider,
-              action: result.action,
-              stockStatus: result.stockStatus,
-              updateAvailable: result.updateAvailable,
-            },
-            "managed sandbox environment reactivated after provider worker recovery",
-          );
-        })
-        .catch((err: unknown) => {
-          logger.error(
-            { err, name: spec.name, provider: spec.provider },
-            "failed to reactivate managed sandbox environment after provider worker recovery (degraded: environment unavailable until next boot)",
-          );
-        });
+      void reactivateEntry();
     };
     handle.on("ready", reactivate);
     if (manager?.isRunning(pluginId)) reactivate();
+  };
+
+  const reactivateSandboxEntry = async (spec: ManagedInstanceConfig["environments"][number]): Promise<void> => {
+    try {
+      const result = await environments.ensureManagedSandboxEnvironment({
+        name: spec.name,
+        description: spec.description,
+        provider: spec.provider,
+        config: { ...spec.config },
+        stockVersion: managedConfig.catalogVersion,
+        platformFullyManaged: true,
+      });
+      logger.info(
+        {
+          environmentId: result.environment.id,
+          name: spec.name,
+          provider: spec.provider,
+          action: result.action,
+          stockStatus: result.stockStatus,
+          updateAvailable: result.updateAvailable,
+        },
+        "managed sandbox environment reactivated after provider worker recovery",
+      );
+    } catch (err) {
+      logger.error(
+        { err, name: spec.name, provider: spec.provider },
+        "failed to reactivate managed sandbox environment after provider worker recovery (degraded: environment unavailable until next boot)",
+      );
+    }
   };
 
   let ensured = 0;
@@ -355,7 +437,7 @@ export async function applyManagedEnvironments(
         // manager restarts crashed workers, but nothing (re)installs a missing
         // or non-ready plugin at runtime.
         if (resolved && resolved.plugin.status === "ready") {
-          scheduleRecoveryReactivation(spec, resolved.plugin.id);
+          scheduleRecoveryReactivation(resolved.plugin.id, () => reactivateSandboxEntry(spec));
         }
         continue;
       }
@@ -407,6 +489,179 @@ export async function applyManagedEnvironments(
       );
     }
   }
+  const resolvePlugin = opts.resolveEnvironmentPlugin ?? resolveEnvironmentPluginByKey;
+  const pluginOutcomes: ManagedPluginEnvironmentReconciliationOutcome[] = [];
+
+  const ensurePluginEntry = (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+    workerManager: Pick<PluginWorkerManager, "isRunning" | "call">,
+  ) =>
+    environments.ensureManagedPluginEnvironment({
+      name: spec.name,
+      description: spec.description,
+      pluginKey: spec.pluginKey,
+      driverKey: spec.driverKey,
+      driverConfig: { ...spec.driverConfig },
+      workerManager,
+    });
+
+  type PluginSpec = ManagedInstanceConfig["pluginEnvironments"][number];
+  type PluginWorkerAccess = Pick<PluginWorkerManager, "isRunning" | "call">;
+
+  const archivePluginEntry = (spec: PluginSpec) =>
+    environments
+      .archiveManagedPluginEnvironment({ pluginKey: spec.pluginKey, driverKey: spec.driverKey })
+      .catch((archiveErr: unknown) => {
+        logger.error(
+          { err: archiveErr, name: spec.name, pluginKey: spec.pluginKey, driverKey: spec.driverKey },
+          "failed to archive the managed plugin environment of an unavailable plugin",
+        );
+        return null;
+      });
+
+  /**
+   * Re-ensure a plugin entry each time its worker reports `ready`, until one
+   * ensure succeeds or the plugin permanently rejects the entry's config. A
+   * worker that crashes during an attempt (for example inside
+   * `environmentValidateConfig`) leaves the listener armed, so its next
+   * respawn retries. A `ready` that arrives during an attempt queues one more
+   * attempt. No handle means no respawn is coming (activation never started a
+   * worker), so the degraded-until-next-boot posture stands.
+   */
+  const schedulePluginRecovery = (spec: PluginSpec, pluginId: string, workerAccess: PluginWorkerAccess): void => {
+    const manager = opts.workerManager;
+    const handle = manager?.getWorker(pluginId);
+    if (!handle) return;
+    const logBase = { name: spec.name, pluginKey: spec.pluginKey, driverKey: spec.driverKey };
+    let settled = false;
+    let inFlight = false;
+    let queued = false;
+    const settle = (): void => {
+      settled = true;
+      handle.off("ready", attempt);
+    };
+    function attempt(): void {
+      if (settled) return;
+      if (inFlight) {
+        queued = true;
+        return;
+      }
+      inFlight = true;
+      void ensurePluginEntry(spec, workerAccess)
+        .then((result) => {
+          settle();
+          logger.info(
+            { ...logBase, environmentId: result.environment.id, action: result.action },
+            "managed plugin environment reactivated after plugin worker recovery",
+          );
+        })
+        .catch((err: unknown) => {
+          if (isPermanentConfigRejection(err)) {
+            settle();
+            logger.error(
+              { err, ...logBase },
+              "the plugin rejected the managed plugin environment's config; not retrying (degraded: environment unavailable until the config changes)",
+            );
+          } else {
+            logger.warn(
+              { err, ...logBase },
+              "failed to reactivate managed plugin environment; retrying when the plugin worker is ready again",
+            );
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+          if (queued && !settled) {
+            queued = false;
+            attempt();
+          }
+        });
+    }
+    handle.on("ready", attempt);
+    if (manager?.isRunning(pluginId)) attempt();
+  };
+
+  for (const spec of pluginSpecs) {
+    const logBase = { name: spec.name, pluginKey: spec.pluginKey, driverKey: spec.driverKey };
+    let recoverable: { pluginId: string; workerAccess: PluginWorkerAccess } | null = null;
+    try {
+      const resolved = await resolvePlugin({ db, pluginKey: spec.pluginKey, driverKey: spec.driverKey });
+      const manager = opts.workerManager;
+      const call = manager?.call;
+      // Only a `ready` record that declares the driver can recover without
+      // another boot: the worker manager restarts crashed workers, but nothing
+      // (re)installs a missing or non-ready plugin at runtime.
+      if (resolved && resolved.plugin.status === "ready" && resolved.declaresDriver && manager && call) {
+        recoverable = {
+          pluginId: resolved.plugin.id,
+          workerAccess: { isRunning: manager.isRunning.bind(manager), call: call.bind(manager) },
+        };
+      }
+      const workerRunning = resolved != null && (manager?.isRunning(resolved.plugin.id) ?? false);
+      if (!recoverable || !workerRunning) {
+        failed += 1;
+        const archived = await archivePluginEntry(spec);
+        logger.error(
+          {
+            ...logBase,
+            pluginStatus: resolved?.plugin.status ?? null,
+            declaresDriver: resolved?.declaresDriver ?? null,
+            workerRunning,
+            archivedEnvironmentId: archived?.id ?? null,
+          },
+          "managed plugin environment's plugin is not installed, ready, declaring its driver, and running; skipping ensure and archiving any previously provisioned row (degraded: environment unavailable)",
+        );
+        if (recoverable) schedulePluginRecovery(spec, recoverable.pluginId, recoverable.workerAccess);
+        continue;
+      }
+      const result = await ensurePluginEntry(spec, recoverable.workerAccess);
+      ensured += 1;
+      if (result.action === "added") added += 1;
+      else if (result.action === "unchanged") unchanged += 1;
+      else updated += 1;
+      pluginOutcomes.push({
+        environmentId: result.environment.id,
+        name: result.environment.name,
+        pluginKey: spec.pluginKey,
+        driverKey: spec.driverKey,
+        action: result.action,
+      });
+      logger.info(
+        { ...logBase, environmentId: result.environment.id, action: result.action },
+        "managed plugin environment reconciled",
+      );
+    } catch (err) {
+      failed += 1;
+      if (recoverable && !isPermanentConfigRejection(err)) {
+        if (!recoverable.workerAccess.isRunning(recoverable.pluginId)) {
+          // The worker died after the readiness check (for example inside
+          // `environmentValidateConfig`): treat it like a plugin that is
+          // down, so the row is not left active, and retry on its `ready`.
+          const archived = await archivePluginEntry(spec);
+          logger.error(
+            { err, ...logBase, archivedEnvironmentId: archived?.id ?? null },
+            "managed plugin environment's worker stopped during ensure; archived any previously provisioned row and retrying when the plugin worker is ready again (degraded: environment unavailable)",
+          );
+        } else {
+          // The worker is still running (for example the call timed out).
+          // Keep any previously provisioned row as it is, so agents keep a
+          // working environment; retry once now and on the worker's next
+          // `ready`, and otherwise at the next boot.
+          logger.error(
+            { err, ...logBase },
+            "failed to ensure managed plugin environment while its worker is running; keeping any previously provisioned row and retrying (degraded: declaration not applied)",
+          );
+        }
+        schedulePluginRecovery(spec, recoverable.pluginId, recoverable.workerAccess);
+      } else {
+        logger.error(
+          { err, ...logBase },
+          "failed to ensure managed plugin environment; continuing boot (degraded: environment unavailable)",
+        );
+      }
+    }
+  }
+
   return {
     ensured,
     failed,
@@ -417,5 +672,6 @@ export async function applyManagedEnvironments(
     removed: 0,
     backedUp: 0,
     outcomes,
+    pluginOutcomes,
   };
 }

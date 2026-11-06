@@ -22,7 +22,7 @@ function response(message: ReturnType<typeof request>, changes: Record<string, u
     sessionId: "native-session", models: { currentModelId: model }, modes: { currentModeId: "default" },
     _meta: { paperclipAntigravityAdmission: {
       ...meta.antigravity.paperclipAdmission, sessionId: "native-session", connectionId: "native-connection", ...changes,
-    } },
+    } as Record<string, unknown> },
   } };
 }
 const prompt = () => ({ id: "turn", method: "session/prompt", params: { sessionId: "native-session", prompt: [{ type: "text", text: "Do the task" }] } });

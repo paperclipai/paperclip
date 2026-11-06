@@ -45,6 +45,8 @@ See [the schemas](../../packages/plugins/sdk/src/environment-tasks.ts) for all f
 | `credentials` | `credentials` | Return the selected account after process termination. |
 | `stop` | `accepted` | Stop the task and its descendants. Fence a delayed submission. |
 | `complete` | `accepted` | Release task resources after Core saves required results. |
+| `release` | `released` | End active use of an exact, settled Runner session. Requires `releaseResumeVersion: 1`. |
+| `resume` | `resume` | Request the same logical session with a fresh bootstrap ticket. Requires `releaseResumeVersion: 1`. |
 
 For a refused `submit` with `resumeFrom`, a driver can throw an error with
 `status: 409`, `code: "SESSION_STATE_UNAVAILABLE"`, and `reason` set to
@@ -66,6 +68,54 @@ query, or fragment. Return authentication in the secret headers.
 authorized project IDs, and optional launch limits. It can also contain a saved
 task ID for session reuse and a typed Codex or Claude credential. Core does not
 supply an executable command or a guest path.
+
+## Release and resume
+
+`release` ends Core's active use of an exact, settled Runner session. Core calls
+it only after the turn, required events, journal writes, tool results and turn
+cleanup have settled. The provider verifies the six-field `identity` and refuses
+stale, busy or unsettled requests. `released` does not cancel work or replace
+`stop`, `complete`, `archive_state` or the allocation's `environmentReleaseLease`.
+Hosts should retain reusable resources when capacity allows, but can reclaim
+them under retention and capacity policy. Release guarantees neither retention
+nor physical termination. The same contract applies to Codex and ACPX, with no
+same-process-ID guarantee.
+
+`resume` requests that same logical session using the source `identity` and a
+fresh `bootstrapTicket`. Both operations retain the outer request's authorized
+company, environment, task, lease and run scope. Resume requires an authenticated
+current claimant run and lease; reject a null `runId`. Verify the source, account,
+workspace and current authority before installing the ticket or reserving reuse.
+The ticket is bounded transient authentication input, as on submission. Never
+copy its bytes into status, metadata, logs, results or durable replay records.
+
+The `resume` result has a closed `outcome`:
+
+- `resumed`: the same logical session is exclusively reserved for this claimant,
+  atomically against eviction and competing claims. Core obtains `connection`,
+  authenticates with the fresh ticket and performs ordinary `run.attach` with its
+  new identity. No new turn is permitted before attachment succeeds.
+- `unavailable`: the host knows reuse is impossible, for example after eviction.
+  Core may select ordinary recovery, preserving its authorization, credential,
+  workspace and stop checks. This is not proof of physical termination.
+
+Source mismatches, authentication failures, conflicting claimants, transport
+failures and ambiguous claims remain errors. They must not become `unavailable`,
+authorize replacement, or silently create a new logical session.
+
+One release episode is allowed per exact source identity; ordinary `run.attach`
+rotates authority before a later release. Release retries replay the original
+result without releasing a resumed owner again. Resume retries with the same
+source, claimant and ticket reconcile the same claim and original outcome.
+Changed claimants or tickets conflict. A lost reply requires reconciliation,
+not a replacement ticket or an assumption of eviction. Preserve replay fencing
+after reclamation so delayed requests cannot change a newer owner.
+
+Advertise `releaseResumeVersion: 1` from `describe` only when both operations are
+implemented. Core must check it before use. Absence keeps the existing lifecycle;
+warm or source recovery capabilities do not imply support. Older strict Core
+schemas reject this description field, so coordinate advertisement with a
+compatible Core version.
 
 ## Error codes
 
