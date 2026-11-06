@@ -6917,8 +6917,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const snapshot = await this.#commandResult(
           "session.snapshot", {}, deadline,
         ).catch(() => null);
-        // Ingest any runner-reported provider launch committed before it.
+        // Ingest any runner-reported provider launch committed before it. A
+        // pump that rejected a stale start has failed the transport; never
+        // report a successful start on it.
         this.#pumpEventsSafely();
+        this.#throwIfFailed();
         if (!providerTurnStarted() && this.#acceptedTurnProvablyLive({
           snapshot, expectedProviderTurnId, acceptingProviderPid,
           acceptingProviderStartedAt, acceptingCommandSeq,
