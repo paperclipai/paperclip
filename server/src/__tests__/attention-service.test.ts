@@ -1649,16 +1649,19 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual([reAskId]);
   });
 
-  it("does not let a settled secret proposal hide an older ordinary confirmation", async () => {
-    const { companyId, workerId, reviewerId } = await seedCompany("ATS");
-    const issueId = await insertIssue({ companyId, identifier: "ATS-1", title: "Secret then sign-off", status: "in_review", assigneeAgentId: workerId });
+  it.each([
+    ["secret proposal", "ATS", { secretProposal: { proposalId: "11111111-1111-4111-8111-111111111111" } }],
+    ["app connection", "ATK", { connectionAuthorization: { connectionId: "22222222-2222-4222-8222-222222222222" } }],
+  ] as const)("does not let a settled %s hide an older ordinary confirmation", async (_label, prefix, governed) => {
+    const { companyId, workerId, reviewerId } = await seedCompany(prefix);
+    const issueId = await insertIssue({ companyId, identifier: `${prefix}-1`, title: "Governed card then sign-off", status: "in_review", assigneeAgentId: workerId });
     const ordinaryId = randomUUID();
     const base = { companyId, issueId, kind: "request_confirmation", continuationPolicy: "none" };
     await db.insert(issueThreadInteractions).values([
       { ...base, id: ordinaryId, status: "pending", createdByAgentId: workerId, title: "Approve the plan", payload: { version: 1, prompt: "Approve the plan?" },
         createdAt: new Date("2026-11-05T12:00:00.000Z"), updatedAt: new Date("2026-11-05T12:00:00.000Z") },
-      { ...base, id: randomUUID(), status: "accepted", createdByAgentId: reviewerId, title: "Store API key",
-        payload: { version: 1, prompt: "Store this key?", secretProposal: { proposalId: randomUUID() } },
+      { ...base, id: randomUUID(), status: "accepted", createdByAgentId: reviewerId, title: "Governed action",
+        payload: { version: 1, prompt: "Allow this?", ...governed },
         createdAt: new Date("2026-11-05T12:05:00.000Z"), updatedAt: new Date("2026-11-05T12:06:00.000Z"), resolvedAt: new Date("2026-11-05T12:06:00.000Z") },
     ] as typeof issueThreadInteractions.$inferInsert[]);
     const service = attentionService(db);

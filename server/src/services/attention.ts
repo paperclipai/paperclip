@@ -1179,7 +1179,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
-          payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview', 'toolAction', ${issueThreadInteractions.payload}->'toolAction', 'secretProposal', ${issueThreadInteractions.payload}->'secretProposal')` : issueThreadInteractions.payload,
+          payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview', 'toolAction', ${issueThreadInteractions.payload}->'toolAction', 'secretProposal', ${issueThreadInteractions.payload}->'secretProposal', 'connectionAuthorization', ${issueThreadInteractions.payload}->'connectionAuthorization')` : issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,

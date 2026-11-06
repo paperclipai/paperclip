@@ -19,9 +19,13 @@ function payloadFlag(payload: unknown, key: string) {
   return Boolean(payload && typeof payload === "object" && key in payload && (payload as Record<string, unknown>)[key]);
 }
 
-/** Tool actions and secret proposals gate one specific action; creation never supersedes siblings for them either. */
+/** Payload keys that bind a confirmation to one specific action (tool call, secret, app connection). */
+const GOVERNED_CONFIRMATION_PAYLOAD_KEYS = ["toolAction", "secretProposal", "connectionAuthorization"] as const;
+
+/** Governed confirmations gate one action; answering one never answers an ordinary ask, and vice versa. */
 function governedAction(payload: unknown) {
-  return payloadFlag(payload, "toolAction") || payloadFlag(payload, "secretProposal");
+  // Truthy, not key presence: the summary read projects absent keys as JSON null.
+  return GOVERNED_CONFIRMATION_PAYLOAD_KEYS.some((key) => payloadFlag(payload, key));
 }
 
 /**
@@ -29,8 +33,9 @@ function governedAction(payload: unknown) {
  * ordinary confirmation — pending, or already answered/expired. Without the
  * settled case, answering the newest card (from chat or anywhere else)
  * resurfaces the older ask it replaced. Quality approvals stay
- * independent; tool-action and secret-proposal approvals gate one specific
- * action, so they neither hide nor are hidden by a settled confirmation.
+ * independent; tool-action, secret-proposal and app-connection approvals gate
+ * one specific action, so they neither hide nor are hidden by a settled
+ * confirmation.
  * Only an ask to the same recipient settles it, so one person's answer never
  * hides a request addressed to someone else.
  */
@@ -84,8 +89,7 @@ export async function loadNewestSettledConfirmationAt(db: Db, companyId: string,
     eq(issueThreadInteractions.kind, "request_confirmation"),
     inArray(issueThreadInteractions.status, [...SETTLED_CONFIRMATION_STATUSES]),
     sql`jsonb_typeof(${issueThreadInteractions.payload}->'qualityReview') is distinct from 'object'`,
-    sql`jsonb_typeof(${issueThreadInteractions.payload}->'toolAction') is distinct from 'object'`,
-    sql`jsonb_typeof(${issueThreadInteractions.payload}->'secretProposal') is distinct from 'object'`,
+    sql`not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])`,
   )).groupBy(issueThreadInteractions.issueId, issueThreadInteractions.addresseeUserId, issueThreadInteractions.addresseeAgentId);
   return new Map(rows.map((row) => [confirmationAudienceKey(row), new Date(row.createdAt)]));
 }
