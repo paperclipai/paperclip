@@ -3007,19 +3007,23 @@ impl CodexCommandExecutor {
     }
 
     // Only the authenticated controller can rebind these run-scoped launch
-    // settings. Executable, model, instructions, approval mode, and all other
-    // flags remain part of the immutable durable provider profile.
+    // settings: per-run filesystem and shell-environment entries, and Codex
+    // feature toggles (`--enable`/`--disable`). The controller recomputes the
+    // toggles from Paperclip policy for every launch, so a saved thread must
+    // follow a release that turns a feature on or off rather than become
+    // impossible to resume. Executable, model, instructions, approval mode,
+    // sandbox, permission profile, subcommand, and all other flags remain part
+    // of the immutable durable provider profile.
     fn stable_launch_args(args: &[String]) -> Vec<String> {
         let mut stable = Vec::new();
         let mut index = 0;
         while index < args.len() {
-            // Codex feature toggles are Paperclip launch policy. The controller
-            // recomputes them for every launch, and a saved thread must follow
-            // a release that turns a feature on or off rather than become
-            // impossible to resume. Sandbox, permission profile, and command
-            // arguments remain protected.
             if (args[index] == "--enable" || args[index] == "--disable") && index + 1 < args.len() {
                 index += 2;
+                continue;
+            }
+            if args[index].starts_with("--enable=") || args[index].starts_with("--disable=") {
+                index += 1;
                 continue;
             }
             if args[index] == "-c" && index + 1 < args.len() {
@@ -6555,6 +6559,32 @@ done
             .unwrap();
         assert_eq!(executor.state.as_ref().unwrap().config.args, disabled);
         fs::remove_dir_all(directory).unwrap();
+
+        // A release that turns a feature on is adopted too, in either flag form.
+        for enabled_form in [
+            vec!["--enable".to_owned(), "goals".to_owned()],
+            vec!["--enable=goals".to_owned()],
+        ] {
+            let mut enabled = current_args.clone();
+            enabled.splice(4..4, enabled_form);
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-provider-feature-enable-{}",
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir_all(&directory).unwrap();
+            let mut executor = CodexCommandExecutor::new(&directory);
+            executor.state = Some(tightened.clone());
+            executor
+                .attach_run(&json!({
+                    "provider": tightened.config.clone(),
+                    "runtimeLaunchArgs": enabled.clone(),
+                }))
+                .unwrap();
+            let rebound = executor.state.as_ref().unwrap();
+            assert_eq!(rebound.config.args, enabled);
+            assert_eq!(rebound.thread_id.as_deref(), Some("thread-1"));
+            fs::remove_dir_all(directory).unwrap();
+        }
 
         let mut sandbox_bypass = current_args.clone();
         sandbox_bypass.insert(4, "--dangerously-bypass-approvals-and-sandbox".to_owned());
