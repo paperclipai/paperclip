@@ -19,19 +19,22 @@ export async function withExecutionWorkspaceLifecycleLock<T>(
   workspaceId: string,
   work: (tx: Transaction) => Promise<T>,
 ): Promise<T> {
-  const [source] = await db.select({ companyId: executionWorkspaces.companyId, cwd: executionWorkspaces.cwd,
-    providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+  const [source] = await db.select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId,
+    providerType: executionWorkspaces.providerType, cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
   const projectId = source && (source.cwd ?? source.providerRef)
     ? await managedProjectSourceIdentity(source.companyId, (source.cwd ?? source.providerRef)!) : null;
   const issueId = source && (source.cwd ?? source.providerRef)
     ? await isolatedTaskSourceIdentity(source.companyId, (source.cwd ?? source.providerRef)!) : null;
+  const projectIds = [...new Set([projectId, source && ["local_fs", "git_worktree"].includes(source.providerType)
+    ? source.projectId : null].filter((id): id is string => Boolean(id)))];
   const workWithLifecycle = () => withDedicatedDbConnection(db, (connection) =>
     connection.transaction(async (tx) => {
       await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
-      if ((projectId || issueId) && source) {
-        const [fresh] = await tx.select({ companyId: executionWorkspaces.companyId, cwd: executionWorkspaces.cwd,
-          providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
-        if (!fresh || fresh.companyId !== source.companyId || !(fresh.cwd ?? fresh.providerRef)
+      if ((projectIds.length || issueId) && source) {
+        const [fresh] = await tx.select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId,
+          providerType: executionWorkspaces.providerType, cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+        if (!fresh || fresh.companyId !== source.companyId || fresh.projectId !== source.projectId
+          || fresh.providerType !== source.providerType || !(fresh.cwd ?? fresh.providerRef)
           || await managedProjectSourceIdentity(fresh.companyId, (fresh.cwd ?? fresh.providerRef)!) !== projectId
           || await isolatedTaskSourceIdentity(fresh.companyId, (fresh.cwd ?? fresh.providerRef)!) !== issueId) {
           throw new Error("workspace_source_scope_changed");
@@ -47,8 +50,8 @@ export async function withExecutionWorkspaceLifecycleLock<T>(
       );
     }),
   );
-  return (projectId || issueId) && source
-    ? withWorkspaceSourceLocks(db, { companyId: source.companyId, projectIds: projectId ? [projectId] : [], issueIds: issueId ? [issueId] : [] }, workWithLifecycle)
+  return (projectIds.length || issueId) && source
+    ? withWorkspaceSourceLocks(db, { companyId: source.companyId, projectIds, issueIds: issueId ? [issueId] : [] }, workWithLifecycle)
     : workWithLifecycle();
 }
 

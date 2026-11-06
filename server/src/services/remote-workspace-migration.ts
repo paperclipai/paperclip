@@ -22,7 +22,7 @@ import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, rea
 import { inspectArchivedGitMigrationSource, lockArchivedGitMigrationSources, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
-import { inspectOnlineOrdinarySource, onlineOrdinarySourceBlockers, type OnlineOrdinarySource, offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
+import { inspectOnlineOrdinarySource, requiresOnlineOrdinarySource, onlineOrdinarySourceBlockers, type OnlineOrdinarySource, offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 import { withWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, lockOnlineLegacyWorkspaceRecoverySources, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
@@ -84,7 +84,7 @@ async function isUnmaterializedRepositoryRequest(workspace: Workspace,
   });
 }
 
-async function inspect(db: ReadDb, input: { companyId: string; workspaceId: string; operationId?: string; writersStopped?: boolean; onlineSource?: OnlineOrdinarySource }) {
+async function inspect(db: ReadDb, input: { companyId: string; workspaceId: string; operationId?: string; writersStopped?: boolean; onlineSource?: OnlineOrdinarySource; onlineSourceUnproven?: boolean }) {
   const [workspace] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId)));
   if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
   const authority = readRemoteWorkspaceAuthority(workspace.metadata);
@@ -93,6 +93,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   const reasons: string[] = [];
   if (authority) return { workspace, reasons, authority, marker, source: authority.source, issueBinding: null, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[], finalizedRecoveryHolds: [] as FinalizedWorkspaceRecoveryHold[], onlineRecoveryHolds: [] as OnlineRecoveryHold[] };
   if (input.writersStopped) reasons.push(...await offlineWorkspaceMigrationBlockers(db));
+  if (input.onlineSourceUnproven) reasons.push("online_workspace_source_scope_unproven");
   if (input.onlineSource) {
     const currentScope = await inspectOnlineOrdinarySource(db, workspace);
     if (canonical(currentScope) !== canonical(input.onlineSource)) reasons.push("online_workspace_source_scope_changed");
@@ -311,7 +312,8 @@ export async function inventoryRemoteWorkspaceMigration(db: Db, input: { company
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))) : [];
   const onlineSource = workspace && !readRemoteWorkspaceAuthority(workspace.metadata)
     ? await inspectOnlineOrdinarySource(db, workspace) ?? undefined : undefined;
-  const result = await inspect(db, { ...input, onlineSource });
+  const result = await inspect(db, { ...input, onlineSource, onlineSourceUnproven: Boolean(workspace && !onlineSource
+    && !readRemoteWorkspaceAuthority(workspace.metadata) && requiresOnlineOrdinarySource(workspace)) });
   return { companyId: input.companyId, workspaceId: input.workspaceId, eligible: result.reasons.length === 0,
     alreadyMigrated: Boolean(result.authority), reasons: result.reasons, localPath: result.workspace.cwd ?? result.workspace.providerRef,
     source: result.source, operationId: typeof result.marker.operationId === "string" ? result.marker.operationId : null,
@@ -328,6 +330,10 @@ export async function migrateRemoteWorkspace(input: {
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))) : [];
   const onlineSource = sourceWorkspace && !readRemoteWorkspaceAuthority(sourceWorkspace.metadata)
     ? await inspectOnlineOrdinarySource(input.db, sourceWorkspace) ?? undefined : undefined;
+  if (sourceWorkspace && !onlineSource && !readRemoteWorkspaceAuthority(sourceWorkspace.metadata)
+    && requiresOnlineOrdinarySource(sourceWorkspace)) {
+    throw new Error("remote_workspace_migration_blocked:online_workspace_source_scope_unproven");
+  }
   let committedPublication: Parameters<typeof publishActivity>[0] | undefined;
   const migrate = async (lock: Parameters<Parameters<typeof withExecutionWorkspaceLifecycleLock>[2]>[0]) => {
     const reserved = await input.db.transaction(async tx => {

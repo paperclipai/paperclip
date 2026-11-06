@@ -254,6 +254,37 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
+  it("does not count unrelated tenants against the company alias bound", async () => {
+    const f = await fixture(), companyId = randomUUID(), cwd = path.join(home, "other-tenant");
+    await fs.mkdir(cwd);
+    await db.insert(companies).values({ id: companyId, name: "Unrelated tenant", issuePrefix: "OTHER" });
+    await db.insert(executionWorkspaces).values(Array.from({ length: 1001 }, () => ({
+      companyId, name: "Unrelated workspace", mode: "shared_workspace", strategyType: "project_primary",
+      providerType: "local_fs", cwd,
+    })));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true, reasons: [] });
+  });
+  it.each(["symlink", "unreadable"] as const)("blocks an unproven foreign %s path even for a single local alias", async kind => {
+    const f = await fixture(), companyId = randomUUID(), cwd = path.join(home, "foreign-alias");
+    for (const alias of f.aliases.slice(1)) await db.update(executionWorkspaces).set({ providerType: "plugin" })
+      .where(eq(executionWorkspaces.id, alias.workspace.id));
+    await db.insert(companies).values({ id: companyId, name: "Foreign alias", issuePrefix: "FOREIGN" });
+    if (kind === "symlink") await fs.symlink(f.cwd, cwd);
+    else {
+      const realpath = fs.realpath.bind(fs);
+      vi.spyOn(fs, "realpath").mockImplementation(async value => {
+        if (value === cwd) throw Object.assign(new Error("fixture path inaccessible"), { code: "EACCES" });
+        return realpath(value);
+      });
+    }
+    await db.insert(executionWorkspaces).values({ companyId, name: "Foreign path", mode: "shared_workspace",
+      strategyType: "project_primary", providerType: "local_fs", cwd });
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
+    expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
+  });
   it("rechecks closure membership before publication and preserves the uploaded journal on change", async () => {
     const f = await fixture(), put = storage.putFile.bind(storage);
     vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {

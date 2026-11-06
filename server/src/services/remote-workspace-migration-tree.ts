@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -53,6 +53,15 @@ export type OnlineOrdinarySource = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
 };
 
+export function requiresOnlineOrdinarySource(workspace: Workspace): boolean {
+  if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return false;
+  const parts = path.relative(resolvePaperclipInstanceRoot(), workspace.cwd).split(path.sep);
+  return parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
+    parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2])
+    || parts[2] === workspace.sourceIssueId && (parts[0] === "isolated-workspaces" && parts.length === 3
+      || parts[0] === "isolated-workspace-attempts" && parts.length === 4));
+}
+
 export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OnlineOrdinarySource | null> {
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
   const root = await physicalPath(workspace.cwd);
@@ -69,7 +78,7 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
     if (error.code === "ENOENT") return null; throw error;
   });
   if (!entry?.isDirectory() || entry.isSymbolicLink()) return null;
-  const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
+  const columns = { id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
     cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef, providerType: executionWorkspaces.providerType,
     repoUrl: executionWorkspaces.repoUrl, branchName: executionWorkspaces.branchName, sourceIssueId: executionWorkspaces.sourceIssueId,
     strategyType: executionWorkspaces.strategyType, mode: executionWorkspaces.mode, status: executionWorkspaces.status,
@@ -77,19 +86,40 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
       'gitCacheRestoration', ${executionWorkspaces.metadata}->'gitCacheRestoration',
       'nestedCloneMigrationPending', ${executionWorkspaces.metadata}->'nestedCloneMigrationPending',
       'remoteWorkspace', ${executionWorkspaces.metadata}->'remoteWorkspace')`,
-  }).from(executionWorkspaces).where(inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"])).limit(1001);
+  };
+  const rows = await db.select(columns).from(executionWorkspaces).where(and(
+    eq(executionWorkspaces.companyId, workspace.companyId),
+    inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]))).limit(1001);
   if (rows.length > 1000) return null;
   const aliases: typeof rows = [];
   for (const row of rows) {
     const cwd = rootOf(row);
-    if (!cwd || !overlaps(root, await physicalPath(cwd))) continue;
-    if (row.companyId !== workspace.companyId || row.cwd !== root || row.providerRef && row.providerRef !== root
+    let physical: string;
+    try { physical = cwd ? await physicalPath(cwd) : ""; } catch { return null; }
+    if (!physical || !overlaps(root, physical)) continue;
+    if (row.cwd !== root || row.providerRef && row.providerRef !== root
       || row.providerType !== "local_fs" || row.repoUrl || row.branchName || !row.sourceIssueId
       || isolated && row.sourceIssueId !== workspace.sourceIssueId
       || row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)
       || !["active", "idle", "in_review", "archived"].includes(row.status) || row.metadata?.remoteWorkspace
       || row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return null;
     aliases.push(row);
+  }
+  let after: string | undefined;
+  for (let page = 0; ; page++) {
+    const foreign = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd,
+      providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(and(
+      ne(executionWorkspaces.companyId, workspace.companyId),
+      inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
+      ...(after ? [gt(executionWorkspaces.id, after)] : []),
+    )).orderBy(executionWorkspaces.id).limit(256);
+    for (const row of foreign) {
+      const cwd = rootOf(row);
+      try { if (cwd && overlaps(root, await physicalPath(cwd))) return null; } catch { return null; }
+    }
+    if (foreign.length < 256) break;
+    if (page === 39) return null;
+    after = foreign.at(-1)!.id;
   }
   if (!aliases.some(row => row.id === workspace.id) || aliases.length > 64) return null;
   return { root, projectId, device: entry.dev, inode: entry.ino,

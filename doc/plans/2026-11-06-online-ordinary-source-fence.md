@@ -113,3 +113,22 @@ physical closure and make actual preparation, reopen and cleanup owners retain
 its keys before admitting those sources. Exact immutable nested-child coverage
 can then use the existing archive owner under that closure. Git stores are not
 assumed immutable, and completed or unreferenced history is not discarded.
+
+The runtime-control route reacquires the same source/lifecycle fence for the
+filesystem restore after it publishes admission. Its visible running operation
+continues to block migration between admission and restore. The later service
+start retains its existing independent lifecycle fence.
+
+`reconcileOnlineWorkspaceOperations(db, { companyId, signal })` is an explicit
+operator apply entry. The source qualification console can call this owner
+with one exact company before online imports. Inventory never invokes it and
+never settles operation rows as a side effect. The existing offline maintenance
+entry retains its independent all-writers-stopped prerequisites.
+
+Alias inspection bounds the company cohort to 1,000 records. A separate
+minimal-path scan checks foreign physical aliases in pages of 256, up to
+10,240 records. This safety bound remains conservative because lexical-prefix
+filtering could hide a foreign symlink alias. Foreign rows do not consume the
+company cohort bound. An inaccessible path or scan limit leaves the managed
+source explicitly unproven. It cannot fall back to a weaker singleton import.
+No foreign metadata is returned.
