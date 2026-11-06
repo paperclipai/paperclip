@@ -138,8 +138,7 @@ import {
   feedbackService,
   applyManagedEnvironments,
   createManagedEnvironmentRecovery,
-  managedPluginInstanceDefaultPending,
-  retryManagedPluginInstanceDefault,
+  registerManagedPluginInstanceDefaultRetry,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
@@ -1220,13 +1219,13 @@ async function startServerWithDatabaseTeardown(
     if (managedEnvironmentsResult) {
       logger.warn(managedEnvironmentsResult, "managed environments ensured from managed config");
     }
-    if (managedConfig?.pluginEnvironments.some((spec) => spec.instanceDefault)) {
-      managedEnvironmentDefaultWorker = deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
-        retryMs: 60_000,
-        run: () => retryManagedPluginInstanceDefault(db as any, managedConfig, pluginWorkerManager),
-        hasPending: () => managedPluginInstanceDefaultPending(db as any, managedConfig, pluginWorkerManager),
-      });
-    }
+    managedEnvironmentDefaultWorker = registerManagedPluginInstanceDefaultRetry({
+      db: db as any,
+      managedConfig,
+      deliveryWork,
+      workerManager: pluginWorkerManager,
+      recovery: managedEnvironmentRecovery,
+    });
   } catch (err) {
     logger.error({ err }, "failed to apply managed environments from managed config");
     throw err;

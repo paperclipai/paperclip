@@ -68,6 +68,7 @@ import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.j
 import { resolvePluginSandboxProviderDriverByKey } from "./plugin-environment-driver.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { trackIdleWork } from "./task-admission.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { resolveBundledCatalogRoot, resolveBundledPluginInstalls } from "./bundled-plugins.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
@@ -914,4 +915,37 @@ export async function retryManagedPluginInstanceDefault(
       "managed plugin environment instance default evaluated by the retry worker",
     );
   }
+}
+
+/**
+ * Register the retry worker for the one-time `instanceDefault` decision, once
+ * `applyManagedEnvironments` has finished (returns null when the document
+ * declares no `instanceDefault` entry). The queue's pending state comes from
+ * the decision row and plugin readiness, so it goes idle while the plugin is
+ * down; a worker `ready` wakes it again, so a decision left pending by a
+ * failed attempt is retried as soon as the plugin is back. `recovery.stop()`
+ * removes that subscription on shutdown.
+ */
+export function registerManagedPluginInstanceDefaultRetry(input: {
+  db: Db;
+  managedConfig: ManagedInstanceConfig | null;
+  deliveryWork: {
+    register(
+      queue: typeof DELIVERY_QUEUES.managedEnvironmentDefault,
+      task: { retryMs: number; run: () => Promise<unknown>; hasPending: () => Promise<boolean> },
+    ): { wake(): void };
+  };
+  workerManager?: Pick<PluginWorkerManager, "isRunning" | "onWorkerReady">;
+  recovery: ManagedEnvironmentRecovery;
+  retryMs?: number;
+}): { wake(): void } | null {
+  if (!instanceDefaultSpec(input.managedConfig)) return null;
+  const worker = input.deliveryWork.register(DELIVERY_QUEUES.managedEnvironmentDefault, {
+    retryMs: input.retryMs ?? 60_000,
+    run: () => retryManagedPluginInstanceDefault(input.db, input.managedConfig, input.workerManager),
+    hasPending: () => managedPluginInstanceDefaultPending(input.db, input.managedConfig, input.workerManager),
+  });
+  const unsubscribe = input.workerManager?.onWorkerReady?.(() => worker.wake());
+  if (unsubscribe) input.recovery.onStop(unsubscribe);
+  return worker;
 }

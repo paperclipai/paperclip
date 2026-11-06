@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { unprocessable } from "../errors.js";
-import { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
+import {
+  applyManagedEnvironments,
+  createManagedEnvironmentRecovery,
+  registerManagedPluginInstanceDefaultRetry,
+} from "./managed-environments.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import {
   environmentRow,
@@ -557,6 +561,43 @@ describe("applyManagedEnvironments plugin entries", () => {
         applyPluginInstanceDefault: decided("already_decided"),
       });
       expect(settings.update).not.toHaveBeenCalled();
+    });
+
+    it("registers the retry worker only for an instanceDefault entry, and wakes it on every worker ready until shutdown", async () => {
+      const readyListeners = new Set<(pluginId: string) => void>();
+      const manager = {
+        isRunning: vi.fn(() => true),
+        onWorkerReady: vi.fn((listener: (pluginId: string) => void) => {
+          readyListeners.add(listener);
+          return () => { readyListeners.delete(listener); };
+        }),
+      };
+      const wake = vi.fn();
+      const deliveryWork = { register: vi.fn(() => ({ wake })) };
+      const recovery = createManagedEnvironmentRecovery();
+
+      expect(registerManagedPluginInstanceDefaultRetry({
+        db: noDb, managedConfig: configWith([pluginEntry()]), deliveryWork, workerManager: manager, recovery,
+      })).toBeNull();
+      expect(deliveryWork.register).not.toHaveBeenCalled();
+
+      const worker = registerManagedPluginInstanceDefaultRetry({
+        db: noDb,
+        managedConfig: configWith([pluginEntry({ instanceDefault: true })]),
+        deliveryWork,
+        workerManager: manager,
+        recovery,
+      });
+      expect(worker).not.toBeNull();
+      expect(deliveryWork.register).toHaveBeenCalledWith("managed-environment-default", expect.objectContaining({ retryMs: 60_000 }));
+
+      // A plugin worker that comes back wakes the queue, which then sees the
+      // pending decision as actionable again.
+      for (const listener of [...readyListeners]) listener("remote-host-plugin");
+      expect(wake).toHaveBeenCalledTimes(1);
+
+      await recovery.stop();
+      expect(readyListeners.size).toBe(0);
     });
 
     it("keeps an ensure counted and asks the retry worker for a failed default decision", async () => {
