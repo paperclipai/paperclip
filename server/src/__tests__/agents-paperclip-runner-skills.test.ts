@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils";
+import { PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils/paperclip-runner-permissions";
 import {
   normalizePaperclipOperationalSkillPreference,
   normalizePaperclipRunnerAdapterConfig,

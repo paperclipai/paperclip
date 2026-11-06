@@ -3968,19 +3968,168 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("resumes the same claude_local session after Back, rather than starting a second", async () => {
-      // This is the behaviour that makes the card's Cancel removable. Back only
-      // hides the card — it deliberately does not release the session — so
-      // coming back has to adopt the one already running. If it started a
-      // fresh one instead, the removed Cancel would have been the only way out
-      // of a login the customer could no longer reach, and the per-owner cap
-      // would reject the second start.
+    it.each(([
+      ["claude_local", "resume"], ["codex_local", "resume"],
+      ["claude_local", "start"], ["codex_local", "start"],
+      ["claude_local", "prompt"], ["codex_local", "prompt"],
+    ] as const).flatMap(([adapterType, stage]) => [false, true].map(afterExit => [adapterType, stage, afterExit] as const)))("keeps %s cancelled when its pending %s response arrives after Back (exit finished: %s)", async (adapterType, stage, afterExit) => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+      const promptApi = claude ? mockAgentsApi.getClaudeSetupTokenLoginPrompt : mockAgentsApi.getAdapterAuthLoginStatus;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      const session = {
+        sessionId: claude ? "claude-session-1" : "codex-session-1", environmentId: "env-sandbox-1",
+        status: "waiting_for_user", expiresAt: null, failure: null,
+        aiConnection: { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [], allAgents: true },
+        panelMode: claude ? "submitted_browser_code" : "displayed_code",
+        prompt: claude ? { authorizationUrl: "https://claude.ai/oauth/authorize?cancelled=true" }
+          : { url: "https://auth.openai.com/codex/device", code: "CANCELLED-CODE" },
+      };
+      let finish!: (value: unknown) => void;
+      const pending = new Promise(resolve => { finish = resolve; });
+      const pendingApi = stage === "resume" ? activeApi : stage === "start" ? startApi : promptApi;
+      pendingApi.mockReturnValue(pending as never);
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      try {
+        await pickSource(claude ? /Claude/ : /OpenAI/);
+        expect(pendingApi).toHaveBeenCalled();
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        if (afterExit) for (let i = 0; i < 12; i++) await flushReact();
+        if (stage !== "start") {
+          const signals = (pendingApi.mock.calls as unknown[][]).map(call => (call.at(-1) as { signal?: AbortSignal })?.signal).filter(signal => signal !== undefined);
+          expect(signals.length).toBeGreaterThan(0);
+          expect(signals.every(signal => signal.aborted)).toBe(true);
+        }
+        await act(async () => finish(stage === "prompt" && claude ? session.prompt : session));
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+        expect(document.body.textContent).not.toContain("CANCELLED-CODE");
+        expect(document.querySelector('input[aria-label="Authorization code"]')).toBeNull();
+        expect(document.body.textContent).not.toContain("Let's get started...");
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        if (claude) expect(cancelApi).toHaveBeenCalledWith("company-new", session.sessionId);
+        else expect(cancelApi).toHaveBeenCalledWith("company-new", "codex_local", session.sessionId);
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each([
+      ["claude_local", false], ["codex_local", false], ["claude_local", true], ["codex_local", true],
+    ] as const)("discovers and releases %s after its resume read rejects on abort (panel mounted: %s)", async (adapterType, panelMounted) => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+      const session = { sessionId: "abandoned-session", environmentId: "env-sandbox-1", status: "waiting_for_user", expiresAt: null,
+        panelMode: claude ? "submitted_browser_code" : "displayed_code",
+        aiConnection: { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [], allAgents: true } };
+      let serverActive = true;
+      let aborts = 0;
+      let finishDiscovery!: () => void;
+      let finishCancellation = () => {};
+      const discovery = new Promise<void>(resolve => { finishDiscovery = resolve; });
+      activeApi.mockImplementation((...args: unknown[]) => {
+        const options = args.at(-1) as { signal?: AbortSignal; fresh?: boolean };
+        if (options?.fresh) return discovery.then(() => serverActive ? session : null);
+        if (!serverActive) return Promise.resolve(null);
+        return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => {
+          aborts++;
+          reject(new DOMException("The request was aborted", "AbortError"));
+        }, { once: true }));
+      });
+      cancelApi.mockImplementation(() => new Promise(resolve => { finishCancellation = () => { serverActive = false; resolve({}); }; }));
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      const matchMedia = window.matchMedia;
+      const restoreMotion = () => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: matchMedia });
+      try {
+        if (panelMounted) await pickSource(claude ? /Claude/ : /OpenAI/);
+        else {
+          Object.defineProperty(window, "matchMedia", { configurable: true, writable: true,
+            value: (media: string) => ({ matches: false, media, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false }) });
+          const tile = [...document.body.querySelectorAll('[role="radio"]')].find(tile => (claude ? /Claude/ : /OpenAI/).test(tile.textContent ?? ""))!;
+          await act(async () => (tile as HTMLElement).click());
+          expect(activeApi).toHaveBeenCalledTimes(1);
+          restoreMotion();
+        }
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(aborts).toBeGreaterThan(0);
+        await vi.waitFor(() => expect((activeApi.mock.calls as unknown[][]).some(call => (call.at(-1) as { fresh?: boolean })?.fresh)).toBe(true));
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+        await pickSource(claude ? /Claude/ : /OpenAI/);
+        expect(startApi).not.toHaveBeenCalled();
+        await act(async () => finishDiscovery());
+        await vi.waitFor(() => expect(cancelApi).toHaveBeenCalled());
+        expect(startApi).not.toHaveBeenCalled();
+        await act(async () => finishCancellation());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(serverActive).toBe(false);
+        expect(startApi).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        restoreMotion();
+        finishDiscovery();
+        finishCancellation();
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each((["claude_local", "codex_local"] as const).flatMap(adapterType =>
+      (["environment", "legacy", "connection", "ownership", "agents", "allAgents"] as const).map(difference => [adapterType, difference] as const)))("preserves another %s sign-in after Back when %s differs", async (adapterType, difference) => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      const startApi = claude ? mockAgentsApi.startClaudeSetupTokenLogin : mockAgentsApi.startAdapterAuthLogin;
+      const intent = { provider: claude ? "anthropic" : "openai", method: "subscription", ownership: "personal", agentIds: [] as string[], allAgents: true };
+      const session = { sessionId: "settings-sign-in", environmentId: difference === "environment" ? "other-environment" : "env-sandbox-1",
+        status: "waiting_for_user", expiresAt: null, aiConnection: difference === "legacy" ? undefined : { ...intent,
+          ...(difference === "connection" ? { connectionId: "other-connection" } : {}),
+          ...(difference === "ownership" ? { ownership: "organization" } : {}),
+          ...(difference === "agents" ? { agentIds: ["other-agent"] } : {}),
+          ...(difference === "allAgents" ? { allAgents: false } : {}) } };
+      activeApi.mockResolvedValue(session);
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      try {
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(document.body.textContent).toContain("Sign-in didn’t finish");
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(cancelApi).not.toHaveBeenCalled();
+        expect(startApi).not.toHaveBeenCalled();
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it.each(["claude_local", "codex_local"] as const)("preserves a conflicting %s resume response received after Back", async adapterType => {
+      const claude = adapterType === "claude_local";
+      const activeApi = claude ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession : mockAgentsApi.getActiveAdapterAuthLoginSession;
+      const cancelApi = claude ? mockAgentsApi.cancelClaudeSetupTokenLogin : mockAgentsApi.cancelAdapterAuthLogin;
+      let finish!: (session: unknown) => void;
+      activeApi.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType });
+      try {
+        await pickSource(claude ? /Claude/ : /OpenAI/);
+        await act(async () => [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!.click());
+        await act(async () => finish({ sessionId: "settings-sign-in", environmentId: "another-environment", status: "waiting_for_user" }));
+        for (let i = 0; i < 12; i++) await flushReact();
+        expect(cancelApi).not.toHaveBeenCalled();
+        expect(document.querySelectorAll('[role="radio"][aria-checked="true"]')).toHaveLength(0);
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("cancels claude_local on Back and starts a fresh sign-in when selected again", async () => {
       const session = {
         sessionId: "claude-session-1",
         status: "pending",
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
       };
       let started = false;
+      let finishCancellation!: () => void;
+      mockAgentsApi.cancelClaudeSetupTokenLogin.mockImplementation(() => new Promise(resolve => { finishCancellation = () => { started = false; resolve({}); }; }));
       mockAgentsApi.startClaudeSetupTokenLogin.mockImplementation(async () => {
         started = true;
         return session;
@@ -3993,8 +4142,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "claude_local" });
 
       await pickSource(/Claude/);
-      // The login is genuinely running: without this the assertion below holds
-      // for the wrong reason.
       expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
 
       const back = [...document.body.querySelectorAll("button")].find((b) =>
@@ -4005,18 +4152,23 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       for (let i = 0; i < 12; i++) await flushReact();
 
+      expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalled();
       await pickSource(/Claude/);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+      await act(async () => finishCancellation());
       for (let i = 0; i < 8; i++) await flushReact();
 
-      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(2);
       expect(mockAgentsApi.getActiveClaudeSetupTokenLoginSession).toHaveBeenCalled();
 
       await act(async () => root.unmount());
     });
 
-    it("resumes the same codex_local session after Back, rather than starting a second", async () => {
+    it("cancels codex_local on Back and starts a fresh sign-in when selected again", async () => {
       const session = { sessionId: "codex-session-1", status: "pending" };
       let started = false;
+      let finishCancellation!: () => void;
+      mockAgentsApi.cancelAdapterAuthLogin.mockImplementation(() => new Promise(resolve => { finishCancellation = () => { started = false; resolve({}); }; }));
       mockAgentsApi.startAdapterAuthLogin.mockImplementation(async () => {
         started = true;
         return session;
@@ -4039,10 +4191,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       for (let i = 0; i < 12; i++) await flushReact();
 
+      expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalled();
       await pickSource(/OpenAI/);
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      await act(async () => finishCancellation());
       for (let i = 0; i < 8; i++) await flushReact();
 
-      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(2);
       expect(mockAgentsApi.getActiveAdapterAuthLoginSession).toHaveBeenCalled();
 
       await act(async () => root.unmount());
