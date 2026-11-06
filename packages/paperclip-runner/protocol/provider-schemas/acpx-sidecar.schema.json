@@ -76,7 +76,7 @@
         {
           "if": { "properties": { "command": { "const": "session.commit" } } },
           "then": { "properties": { "params": { "type": "object", "required": ["preparationId"], "properties": {
-            "preparationId": { "type": "string", "format": "uuid" }
+            "preparationId": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" }
           }, "additionalProperties": false } } }
         }
       ]
@@ -86,7 +86,7 @@
       "required": ["schema", "preparationId", "normalizedSessionId", "sidecarPid", "providerLifetimeFenceCandidates"],
       "properties": {
         "schema": { "const": "paperclip.acpx-provider-preparation.v1" },
-        "preparationId": { "type": "string", "format": "uuid" },
+        "preparationId": { "type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" },
         "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
         "sidecarPid": { "type": "integer", "minimum": 2 },
         "providerLifetimeFenceCandidates": { "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": { "type": "integer", "minimum": 49152, "maximum": 65535 } }
