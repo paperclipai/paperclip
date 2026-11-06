@@ -403,6 +403,53 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
 
+  /** Learn the scope key from a held attempt and restore its root as the
+   * live session root, as it stands after the prior turn finished. */
+  async function restoreHeldRoot(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
+    followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
+    const [copy] = await quarantined();
+    const root = join(stateDirectory, copy!.split(".")[0]!);
+    await rename(join(stateDirectory, "quarantine", copy!), root);
+    await rm(join(stateDirectory, "quarantine"), { recursive: true, force: true });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    return root;
+  }
+
+  // A continued turn's transport leaves these in the controller root: the
+  // runtime context it wrote before launch, and the settled epoch it archived
+  // when it rotated authority from the turn before it (S49: the third turn of
+  // an ephemeral-lease task could never retire the second turn's owner).
+  it("retires a finished owner whose continued turn left runtime context and an archived authority epoch", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await writeFile(join(root, "runtime-context.json"), "{}\n", { mode: 0o600 });
+    const epoch = join(root, "authority-epochs", "epoch-0123456789abcdef01234567");
+    await mkdir(join(epoch, "control-plane"), { recursive: true, mode: 0o700 });
+    await cp(join(root, "control-plane", "control-plane-state.json"), join(epoch, "control-plane", "control-plane-state.json"));
+    await writeFile(join(epoch, "runner-state.json"), "{}\n", { mode: 0o600 });
+    await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+    expect(await followUp.start()).toBe(ADMITTED);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+    // Archived epochs belong to the retired lineage; launch inputs stay.
+    const [archive] = await readdir(join(root, "continuity-breaks"));
+    expect(existsSync(join(root, "continuity-breaks", archive!, "authority-epochs", "epoch-0123456789abcdef01234567"))).toBe(true);
+    expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    expect(existsSync(join(root, "runtime-context.json"))).toBe(true);
+    expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
+  }, 60_000);
+
+  it("keeps a finished owner held by an unclassified root entry and names it", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await writeFile(join(root, "unrecognized-state"), "{}\n");
+    expect(await followUp.start()).toBe(stranded("unexpected_root_entry(unrecognized-state)"));
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
   it.each(["uncommitted result", "committed without result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",
     "unanswered tool input", "foreign quarantine"] as const)("keeps the prior owner held with %s", async scenario => {
     const prior = await seedRecoveredPriorRun(scenario === "pending command" ? "pending-command"
