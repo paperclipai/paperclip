@@ -133,8 +133,8 @@ jobs:
 
       # Only trusted environments write lock content: the lockfile refresh
       # workflow, and Dependabot when the lockfile bytes come from a verified
-      # Dependabot commit. Run the policy from the base commit so a pull request
-      # cannot rewrite the check that judges it.
+      # Dependabot commit. Run the policy from the current base-branch tip so a
+      # pull request cannot rewrite the check that judges it.
       - name: Block untrusted lockfile edits
         id: lockfile_writer
         env:
@@ -146,9 +146,22 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
+          # GitHub does not move pull_request.base.sha forward on every push, so
+          # it can name an old base-branch commit. The checkout is GitHub's merge
+          # commit: its first parent is the current base-branch tip, and its
+          # second parent is the PR head. Load the policy from that tip.
+          trusted_base="$BASE_SHA"
+          if [ "$(git rev-parse --verify --quiet "$GITHUB_SHA^2")" = "$HEAD_SHA" ]; then
+            trusted_base="$(git rev-parse "$GITHUB_SHA^1")"
+          fi
           policy="$RUNNER_TEMP/lockfile-trust.mjs"
-          if git show "$BASE_SHA:.github/scripts/lockfile-trust.mjs" > "$policy" 2>/dev/null; then
-            node "$policy" pr
+          if git show "$trusted_base:.github/scripts/lockfile-trust.mjs" > "$policy" 2>/dev/null; then
+            BASE_SHA="$trusted_base" node "$policy" pr
+            # Fail closed if the policy did not run.
+            if ! grep -q '^writer=' "$GITHUB_OUTPUT"; then
+              echo "::error title=Lockfile policy::lockfile-trust.mjs did not report a lockfile writer."
+              exit 1
+            fi
             exit 0
           fi
           # The base predates lockfile-trust.mjs: keep the earlier rule.
@@ -156,7 +169,7 @@ jobs:
           if [ "$HEAD_REF" = 'chore/refresh-lockfile' ] || [ "$PR_AUTHOR" = 'dependabot[bot]' ]; then
             exit 0
           fi
-          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
+          changed="$(git diff --name-only "$trusted_base...$HEAD_SHA")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
