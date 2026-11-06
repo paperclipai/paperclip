@@ -1,6 +1,7 @@
 import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
+import { maxStringLength } from "./text.js";
 import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
 
 import {
@@ -1365,18 +1366,18 @@ export const askUserQuestionsQuestionSchema = z.object({
 });
 
 const paperclipQuestionOptionSchema = z.object({
-  id: z.string().min(1).max(160),
-  label: z.string().min(1).max(1000),
-  description: z.string().max(4000).optional(),
+  id: maxStringLength(z.string().min(1), 160),
+  label: maxStringLength(z.string().min(1), 1000),
+  description: maxStringLength(z.string(), 4000).optional(),
   recommended: z.boolean().optional(),
 });
 
 const paperclipQuestionSchema = z
   .object({
-    id: z.string().min(1).max(160),
-    header: z.string().max(1000).optional(),
-    prompt: z.string().min(1).max(4000),
-    helpText: z.string().max(4000).optional(),
+    id: maxStringLength(z.string().min(1), 160),
+    header: maxStringLength(z.string(), 1000).optional(),
+    prompt: maxStringLength(z.string().min(1), 4000),
+    helpText: maxStringLength(z.string(), 4000).optional(),
     required: z.boolean(),
     answerMode: z.enum(["single_select", "multi_select", "text"]),
     initialText: z.string().refine(value => value.length <= 200000 && Array.from(value).length <= 100000, "initial text exceeds 100000 Unicode code points").optional(),
@@ -1384,15 +1385,15 @@ const paperclipQuestionSchema = z
     customAnswer: z
       .object({
         enabled: z.literal(true),
-        label: z.string().max(1000).optional(),
-        placeholder: z.string().max(1000).optional(),
+        label: maxStringLength(z.string(), 1000).optional(),
+        placeholder: maxStringLength(z.string(), 1000).optional(),
       })
       .optional(),
     textValidation: z
       .object({
         minLength: z.number().int().min(0).max(100000).optional(),
         maxLength: z.number().int().min(0).max(100000).optional(),
-        pattern: z.string().max(1000).optional(),
+        pattern: maxStringLength(z.string(), 1000).optional(),
         inputType: z.enum(["text", "number", "integer"]).optional(),
         minimum: z.number().finite().optional(),
         maximum: z.number().finite().optional(),
@@ -1477,9 +1478,9 @@ const paperclipQuestionSchema = z
 export const paperclipQuestionSetPayloadSchema = z
   .object({
     schema: z.literal("paperclip.question_set.v1"),
-    title: z.string().max(1000).optional(),
-    description: z.string().max(100_000).optional(),
-    submitLabel: z.string().max(200).optional(),
+    title: maxStringLength(z.string(), 1000).optional(),
+    description: maxStringLength(z.string(), 100_000).optional(),
+    submitLabel: maxStringLength(z.string(), 200).optional(),
     questions: z.array(paperclipQuestionSchema).min(1).max(64),
   })
   .superRefine((value, ctx) => {
