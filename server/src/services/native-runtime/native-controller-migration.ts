@@ -272,9 +272,6 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
   return null;
 }
 
-/** Adopt settled legacy controllers one source at a time. The task row excludes
- * new admission for that task while reading its local state. No global admission
- * hold, process stop, expired-owner takeover, or failed-source archival occurs. */
 export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal }) {
   const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
   const defer = (reason: string) => { counts.deferred[reason] = (counts.deferred[reason] ?? 0) + 1; };

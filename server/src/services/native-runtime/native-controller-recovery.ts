@@ -226,7 +226,6 @@ export async function importNativeControllerRecovery(db: Db, input: {
   expectedConfigDigest: string;
   supervisor?: unknown;
   offline?: { writersStopped: true; legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
-  /** Uses normal settled-owner checks; never releases an expired owner. */
   legacyCheckpoint?: { legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
 }): Promise<{ kind: "imported" | "unchanged" } | Exclude<NativeControllerRecoveryOutcome, { kind: "recoverable" } | { kind: "no_prior_execution" }>> {
   if (input.offline && input.legacyCheckpoint) throw new Error("Conflicting native controller migration authority");
