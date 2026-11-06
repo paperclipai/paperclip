@@ -552,7 +552,7 @@ describe("run failure diagnostics", () => {
     expect(collectRunFailureSecretValues({
       CUSTOM_BINDING: "bound-opaque-value", ACCESS_TOKEN: "plain-opaque-value", REGION: "us-east-1", EMPTY_KEY: "",
     }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value"]);
-    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" })).toEqual([]);
+    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" })).toEqual(["opaque"]);
     expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"])).toEqual(["secret-override"]);
   });
 
@@ -587,8 +587,8 @@ describe("run failure diagnostics", () => {
     const env = { PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "1" };
     expect(collectRunFailureSecretValues(env)).toEqual([]);
     expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"])).toEqual(["false"]);
-    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" })).toEqual([]);
-    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" })).toEqual([]);
+    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" })).toEqual(["opaque"]);
   });
   it("preserves generic exceptions, numeric codes and nested network causes", () => {
     const root = Object.assign(new Error("network failed"), { code: "ECONNRESET", statusCode: 502, request_id: "req-123" });

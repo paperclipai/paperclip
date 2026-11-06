@@ -87,12 +87,25 @@ describe("terminal session failure diagnostics", () => {
     );
   });
 
-  it("preserves ordinary inherited launch settings and diagnostic text", () => {
+  it("keeps opaque inherited values private while preserving public process settings", () => {
     const diagnostic = sanitizeTerminalSessionFailure({
       category: "service",
       details: "request_id=req_123 inherited-canary A /workspace",
     }, { UNEXPECTED_VARIABLE: "inherited-canary", ANOTHER_VARIABLE: "A", HOME: "/workspace" });
-    expect(diagnostic.details).toBe("request_id=req_123 inherited-canary A /workspace");
+    expect(diagnostic.details).toBe("request_id=req_123 ***REDACTED*** ***REDACTED*** /workspace");
+  });
+
+  it("masks an inherited Bedrock token without a credential label", () => {
+    const token = "opaque-bedrock-credential";
+    const diagnostic = sanitizeTerminalSessionFailure({ category: "access", details: `upstream rejected ${token}` }, { AWS_BEARER_TOKEN_BEDROCK: token });
+    expect(diagnostic.details).toBe("upstream rejected ***REDACTED***");
+  });
+
+  it("preserves ordinary key selectors and short launch flags", () => {
+    const details = "column created_at does not exist; model gpt-6.1-sol; safely retry";
+    expect(sanitizeTerminalSessionFailure({ category: "service", details }, {
+      SORT_KEY: "created_at", FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe",
+    }).details).toBe(details);
   });
 
   it("preserves known boolean settings, HTTP codes and request IDs", () => {

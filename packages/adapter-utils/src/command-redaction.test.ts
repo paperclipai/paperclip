@@ -193,11 +193,13 @@ describe("diagnostic environment secret selection", () => {
       FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1",
       NODE_ENV: "production", HOME: "/home/operator", PORT: "3100", MAX_TOKENS: "4096",
       PUBLIC_KEY_PATH: "/workspace/key.pem", KEYBOARD_LAYOUT: "us",
+      SORT_KEY: "created_at", CACHE_KEY: "cache-v1", ROUTING_KEY: "jobs",
+      PARTITION_KEY: "tenant_id", IDEMPOTENCY_KEY: "operation-123", PUBLIC_KEY: "public-material",
     })).toEqual([]);
   });
 
   it.each(["API_KEY", "KEY", "ACCESS_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID",
-    "CLIENT_SECRET", "PASSWORD", "AUTHORIZATION", "PRIVATE_KEY", "API_KEY_PRODUCTION"])(
+    "CLIENT_SECRET", "PASSWORD", "AUTHORIZATION", "PRIVATE_KEY", "API_KEY_PRODUCTION", "AWS_BEARER_TOKEN_BEDROCK"])(
     "keeps short credentials private under %s", key => {
       expect(collectDiagnosticEnvironmentSecrets({ [key]: "1" })).toEqual(["1"]);
     },
@@ -207,8 +209,17 @@ describe("diagnostic environment secret selection", () => {
     const jwt = `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.e30.c2ln`;
     const pem = "-----BEGIN PRIVATE KEY-----\nprivate-canary\n-----END PRIVATE KEY-----";
     const key = "sk-fixturecredential12345";
-    const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", E: "false" }, ["D"]);
+    const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", FEATURE_FLAG: "false" }, ["D"]);
     expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
+  });
+
+  it("keeps unknown opaque values private without declarations", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "opaque-host-secret" })).toEqual(["opaque-host-secret"]);
+  });
+
+  it("does not exempt credentials on ordinary-setting names", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ SORT_KEY: "opaque-secret", FEATURE_FLAG: "1" }, ["SORT_KEY", "FEATURE_FLAG"]))
+      .toEqual(["opaque-secret", "1"]);
   });
 
   it("extracts encoded URL passwords and deduplicates selected values", () => {

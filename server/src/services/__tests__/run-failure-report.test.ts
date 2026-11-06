@@ -1100,7 +1100,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     await seedCompanyAndAgent();
     const runtimeSecret = "opaque-runtime-value";
     const hostSecret = "opaque-host-value";
-    vi.stubEnv("FIXTURE_ACCESS_TOKEN", hostSecret);
+    vi.stubEnv("FIXTURE_CUSTOM_VALUE", hostSecret);
     const text = `connection failed: ${runtimeSecret} ${hostSecret}`;
     const run = buildRun({ error: text, contextSnapshot: null,
       resultJson: { terminalSessionFailure: { details: text } },
@@ -1118,12 +1118,28 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(captured).not.toHaveProperty("secretValues");
   });
 
+  it("masks an inherited Bedrock credential from every failure projection", async () => {
+    await seedCompanyAndAgent();
+    const token = "opaque-bedrock-credential";
+    vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", token);
+    const text = `upstream rejected ${token}`;
+    await reportRunFailure(db, buildRun({ error: text, resultJson: { terminalSessionFailure: { details: text } } }), {
+      error: new Error(text), adapterErrorMeta: { causeMessage: text },
+    });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.errorMessage).toBe("upstream rejected ***REDACTED***");
+    expect(captured.diagnostics.provider.details).toBe("upstream rejected ***REDACTED***");
+    expect(JSON.stringify(captured)).not.toContain(token);
+  });
+
   it("keeps run metadata and prose readable with short non-secret host settings", async () => {
     await seedCompanyAndAgent();
     vi.stubEnv("FIXTURE_FLAG", "1");
     vi.stubEnv("FIXTURE_WORKERS", "2");
     vi.stubEnv("FIXTURE_MODE", "safe");
-    const error = "Reconcile any uncertain external action before safely continuing this task.";
+    vi.stubEnv("SORT_KEY", "created_at");
+    const error = "Column created_at is missing. Reconcile any uncertain external action before safely continuing this task.";
     const run = buildRun({ error, runtimeMode: "native", driverKind: "codex_app_server", driverVersion: "phase6-v2",
       startedAt: new Date("2026-10-19T19:18:20.617Z"), finishedAt: new Date("2026-10-19T19:21:20.385Z"),
       runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "gpt-6.1-sol" } } },
