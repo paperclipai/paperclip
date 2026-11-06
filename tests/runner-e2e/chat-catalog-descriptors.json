@@ -4225,7 +4225,11 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-questions-and-approvals.ts",
       "chat-scenarios/questions-and-approvals.yaml",
-      "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts"
+      "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
+      "chat-catalog-flow.ts",
+      "chat-flow.ts",
+      "cleanup-verification.ts",
+      "runner.spec.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.required-question.v4",
     "expectedRunCount": 2,
