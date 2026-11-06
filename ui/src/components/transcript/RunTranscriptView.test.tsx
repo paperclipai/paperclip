@@ -184,6 +184,34 @@ describe("RunTranscriptView", () => {
     });
   });
 
+  it("hides the adapter execution timeout notice from nice mode normalization", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: "[paperclip] Adapter execution timeout: none (no adapter wall-clock timeout for this target; set adapterConfig.timeoutSec to add one).",
+      },
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:01.000Z",
+        text: "[paperclip] Adapter execution timeout: timeoutSec=900 (configured via adapterConfig.timeoutSec; set adapterConfig.timeoutSec to override).",
+      },
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:02.000Z",
+        text: "Error: connection refused",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "stderr_group",
+      lines: [{ text: "Error: connection refused" }],
+    });
+  });
+
   it("renders successful result summaries as markdown in nice mode", () => {
     const html = renderToStaticMarkup(
       <ThemeProvider>
