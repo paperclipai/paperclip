@@ -457,3 +457,20 @@ cases. Personal retains native3/human2/660000ms. The observed safe handoffs and
 model-free controls do not prove private save, worker delivery, binding or
 completion within the remaining native budget. All current YAML queries,
 model, clocks, controller-helper bytes and protected evidence wire are retained.
+
+
+### Existing multipart-form walkthrough context
+
+The multipart fixture records its already pending form in the source task's normal
+editable description before the original chat query. This context contains the
+actual form ID, title, questions, options and validation. It contains no future
+answers or tool-use instructions. The first native turn bound to that human query
+must not create a replacement question form before the person answers the supplied
+one. A different follow-up question after the bound answer remains allowed.
+
+This is a disclosed fixture-context and walkthrough-fidelity change (required-question
+v5), with the original query, two native runs, one human chat query plus its bound
+UI answer, model and 300000ms attempt unchanged. Result 5172 remains its original
+PASSED result for the earlier persistence/continuation scope, with the recorded
+confusing duplicate-form and inaccurate walkthrough metadata limitations. It is
+not retroactively regraded, and no new native result is claimed.

@@ -4231,7 +4231,7 @@
       "cleanup-verification.ts",
       "runner.spec.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.required-question.v4",
+    "oracleVersion": "paperclip.chat-catalog.required-question.v5",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,

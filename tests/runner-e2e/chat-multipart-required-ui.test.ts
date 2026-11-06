@@ -18,7 +18,7 @@ function fixture(options: { advancesMissing?: boolean; missingValidation?: boole
       isChecked: () => answers.audience === "Researchers",
       click: async () => { const label = String(name); clicks.push(label);
         if (label === "Next") { if (!answered) { attemptedMissing = true; if (options.advancesMissing) page++; return; } page++; answered = !!answers[original.payload.questionSet.questions[page]?.id ?? ""]; }
-        else if (label === "Back") { page--; answered = !!answers[original.payload.questionSet.questions[page]!.id]; }
+        else if (label === "Previous question") { page--; answered = !!answers[original.payload.questionSet.questions[page]!.id]; }
         else if (label === "Researchers" || label === "Clear") { answers[original.payload.questionSet.questions[page]!.id] = label; answered = true; }
         else { if (page !== 2 || !answers.headline) throw new Error("Cannot submit incomplete questions"); submitted = true; }
       },
@@ -39,7 +39,7 @@ it("actual multipart act clicks enabled Next to observe required blocking, retai
   const f = fixture(), c = questionIdentityCases.find(row => row.scenarioId === "questions-and-approvals.multi-part-question")!;
   await c.act!(f.ctx, f.state);
   expect(f.state.validationObserved).toBe(true); expect(f.state.retainedAudience).toBe(true); expect(f.state.unsubmittedPending).toBe(true);
-  expect(f.clicks).toEqual(["Next", "Researchers", "Next", "Back", "Next", "Clear", "Next", "/^(Submit|Send) answers$/"]);
+  expect(f.clicks).toEqual(["Next", "Researchers", "Next", "Previous question", "Next", "Clear", "Next", "/^(Submit|Send) answers$/"]);
   expect(f.answers).toEqual({ audience: "Researchers", tone: "Clear", headline: "Acorn unchanged human answer" }); expect(f.submitted()).toBe(true);
 });
 it.each([{ advancesMissing: true }, { missingValidation: true }, { createsWork: true }, { resumesWork: true }, { wrongPrompt: true }, { changedPayload: true }, { prematurelyResolved: true }])("rejects invalid current required-question proof %j before any answer", async options => {

@@ -11,6 +11,13 @@ const audiencePeople = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof
 async function cards(ctx: ChatCatalogContext) {
   await ctx.refreshIssue(); return ctx.issue() ? ctx.input.api.get<Interaction[]>(`/api/issues/${ctx.issue()!.id}/interactions`) : [];
 }
+/** Factual current form metadata, as an ordinary editable task description; no answers or tool instructions. */
+export function multipartExistingFormDescription(original: Interaction) {
+  if (original.kind !== "ask_user_questions" || original.status !== "pending" || !original.id || !original.title) throw new Error("Existing multipart context requires its current pending form");
+  const parsed = createIssueThreadInteractionSchema.parse({ kind: original.kind, title: original.title, payload: original.payload });
+  if (parsed.kind !== "ask_user_questions") throw new Error("Existing form must remain a question");
+  return `# Existing launch-page form\n\n${JSON.stringify({ id: original.id, title: original.title, status: original.status, questionSet: parsed.payload.questionSet }, null, 2)}`;
+}
 async function questionFixture(ctx: ChatCatalogContext, multipart: boolean) {
   const source = await openStandingChat(ctx);
   const payload = createIssueThreadInteractionSchema.parse({ kind: "ask_user_questions", title: "Launch page details", continuationPolicy: "wake_assignee",
@@ -22,6 +29,11 @@ async function questionFixture(ctx: ChatCatalogContext, multipart: boolean) {
       ] : [{ id: "product", prompt: "What is the product name?", answerMode: "text", required: true }],
     } } });
   const original = await ctx.input.api.post<Interaction>(`/api/issues/${source.id}/interactions`, payload);
+  if (multipart) {
+    const description = multipartExistingFormDescription(original);
+    const saved = await ctx.input.api.patch<{ id: string; description: string }>(`/api/issues/${source.id}`, { description });
+    if (saved.id !== source.id || saved.description !== description) throw new Error("Existing multipart form context was not saved on its source");
+  }
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
   return { original, answer: `Acorn ${ctx.input.nonce}`, sourceId: source.id };
 }
@@ -46,8 +58,9 @@ async function beforeAnswer(ctx: ChatCatalogContext, state: Record<string, unkno
 async function observeQuestion(ctx: ChatCatalogContext, state: Record<string, unknown>) {
   const observed = await observeIdentity(ctx, state);
   const seen = new Set(state.beforeAnswerCommentIds as string[] | undefined);
-  state.afterAnswerReply = (await ctx.input.api.get<Array<{ id: string; body: string; authorAgentId?: string }>>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`))
-    .filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && !seen.has(row.id)).map(row => row.body).join("\n");
+  const comments = await ctx.input.api.get<Array<{ id: string; body: string; authorAgentId?: string; authorUserId?: string; createdByRunId?: string }>>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`);
+  state.afterAnswerReply = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && !seen.has(row.id)).map(row => row.body).join("\n");
+  if (ctx.scenario.id === "questions-and-approvals.multi-part-question") observed.comments = comments;
   if (ctx.scenario.id === "questions-and-approvals.multi-part-question") {
     state.visibleContinuationDescriptions = [];
     for (const card of multipartContinuationCards(observed)) {
@@ -124,6 +137,19 @@ export function gradeQuestions(value: unknown) {
     c.add("exact-submitted-set", answers.length === 3 && answers.some(row => row.questionId === "audience" && row.optionIds?.join() === "researchers")
       && answers.some(row => row.questionId === "tone" && row.optionIds?.join() === "clear")
       && answers.some(row => row.questionId === "headline" && row.otherText === o.state.answer), "The submitted choice/choice/custom-text set preserves earlier pages.");
+    const queryComments = o.comments.filter(comment => comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId
+      && comment.body?.trim() === o.humanQueries[0]?.trim());
+    const initialRuns = queryComments.length === 1 ? o.runs.filter(run => {
+      const finishedAt = (run as typeof run & { finishedAt?: string | null }).finishedAt;
+      return run.companyId === o.companyId && run.agentId === o.leadId
+        && run.contextSnapshot?.issueId === original?.issueId && run.contextSnapshot?.commentId === queryComments[0]!.id
+        && run.status === "succeeded" && Number.isFinite(Date.parse(finishedAt ?? ""))
+        && Date.parse(finishedAt!) <= Date.parse(String(current?.resolvedAt));
+    }) : [];
+    c.add("existing-form-not-replaced-before-answer", initialRuns.length === 1 && !o.interactions.some(card => card.id !== original?.id
+      && card.companyId === o.companyId && card.issueId === original?.issueId && card.createdByAgentId === o.leadId
+      && card.sourceRunId === initialRuns[0]!.id && card.kind === "ask_user_questions"),
+      "The completed native turn bound to the actual human query walks through the supplied form instead of creating another before its answer; later bound follow-up questions remain allowed.");
     c.add("no-default-consent", o.state.unsubmittedPending === true && o.state.validationObserved === true && o.state.retainedAudience === true,
       "Missing required input cannot submit, unfinished pages stay pending, and back navigation retains the first selection.");
     const summary = [String(o.state.afterAnswerReply), ...multipartVisibleSummaries(o).map(row => row.visibleText)].join("\n");
@@ -232,7 +258,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v4",
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v5",
     sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-questions-and-approvals.ts", "chat-scenarios/questions-and-approvals.yaml", "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts", "chat-catalog-flow.ts", "chat-flow.ts", "cleanup-verification.ts", "runner.spec.ts"],
     async verifyResult(ctx, _state, value) {
       if (await ctx.input.page.getByTestId("task-chat-composer-input").isVisible()) return;

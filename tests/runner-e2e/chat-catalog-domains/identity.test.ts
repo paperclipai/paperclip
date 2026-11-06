@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -67,6 +67,12 @@ function valid(id: string) {
     o.interactions.push({ id: "stale", kind: "request_confirmation", status: "expired", payload: { prompt: "Old Welcome note?" }, result: { outcome: "stale_target" } });
   } else if (id.startsWith("questions-and-approvals.")) {
     const multipart = id.endsWith("multi-part-question"); const original = question(multipart); o.state.original = original; o.state.answer = "Acorn 42";
+    if (multipart) {
+      Object.assign(original, { companyId: "company", issueId: "source" });
+      o.humanQueries = ["Walk me through the existing form."];
+      o.comments = [{ id: "human-query", authorUserId: "person", body: o.humanQueries[0] }];
+      Object.assign(o.runs[0]!, { finishedAt: "2026-10-26T11:59:59.000Z", contextSnapshot: { issueId: "source", commentId: "human-query" } });
+    }
     o.interactions = [{ ...original, status: "answered", resolvedAt: "2026-10-26T12:00:00.000Z", resolvedByUserId: "person", result: { answers: multipart ? [
       { questionId: "audience", optionIds: ["researchers"] }, { questionId: "tone", optionIds: ["clear"] }, { questionId: "headline", otherText: "Acorn 42" },
     ] : [{ questionId: "product", otherText: "Acorn 42" }] } }];
@@ -194,5 +200,47 @@ describe("multipart continuation on the visible question surface", () => {
     }
     expect(gradeQuestions(o).passed).toBe(false);
     if (mode !== "missing-answer") expect(multipartVisibleSummaries(o)).toHaveLength(0);
+  });
+});
+
+
+describe("existing multipart form fidelity", () => {
+  it("saves the exact current form on the ordinary source description before any human query", async () => {
+    const writes: Array<{ path: string; description: string }> = [];
+    const ctx = { issue: () => ({ id: "source" }), refreshIssue: async () => {}, input: {
+      nonce: "FUTURE-HEADLINE", fixtures: { company: { id: "company" }, agent: { id: "ceo" } },
+      page: { reload: async () => {} }, api: {
+        post: async (url: string, body: object) => url.endsWith("/interactions") ? { ...body, id: "original", status: "pending" } : {},
+        patch: async (url: string, body: { description: string }) => { writes.push({ path: url, description: body.description }); return { id: "source", ...body }; },
+      },
+    } } as unknown as Parameters<(typeof questionIdentityCases)[number]["setup"]>[0];
+    const definition = questionIdentityCases.find(row => row.scenarioId === "questions-and-approvals.multi-part-question")!;
+    const state = await definition.setup(ctx);
+    expect(writes).toEqual([{ path: "/api/issues/source", description: multipartExistingFormDescription(state.original as Interaction) }]);
+    expect(writes[0]!.description).not.toContain(String(state.answer));
+    expect(writes[0]!.description).not.toContain("optionIds");
+  });
+  it("projects actual pending fields and validation without future answers or selected defaults", () => {
+    const form = { id: "existing", title: "Launch page details", kind: "ask_user_questions", status: "pending", result: { answers: [{ questionId: "headline", otherText: "PRIVATE FUTURE ANSWER" }] },
+      payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", title: "Launch page details", questions: [
+        { id: "audience", prompt: "Who?", answerMode: "single_select", required: true, options: [{ id: "teams", label: "Teams" }, { id: "researchers", label: "Researchers" }] },
+        { id: "headline", prompt: "Headline?", answerMode: "text", required: true, textValidation: { minLength: 1, maxLength: 140 } },
+      ] } } };
+    const description = multipartExistingFormDescription(form);
+    const context = JSON.parse(description.slice(description.indexOf("{")));
+    expect(context).toEqual({ id: form.id, title: form.title, status: "pending", questionSet: form.payload.questionSet });
+    expect(description).not.toContain("PRIVATE FUTURE ANSWER");
+    expect(() => multipartExistingFormDescription({ ...form, status: "answered" })).toThrow("current pending");
+  });
+  it("rejects a first-query-bound duplicate but permits an independently bound later question", () => {
+    const o = valid("questions-and-approvals.multi-part-question");
+    expect(gradeQuestions(o).passed).toBe(true);
+    const duplicate = { id: "duplicate", companyId: "company", issueId: "source", createdByAgentId: "ceo", sourceRunId: "run", kind: "ask_user_questions", status: "pending", payload: {} };
+    o.interactions.push(duplicate);
+    expect(gradeQuestions(o).checks.find(c => c.id === "existing-form-not-replaced-before-answer")?.passed).toBe(false);
+    duplicate.sourceRunId = "continue";
+    expect(gradeQuestions(o).passed).toBe(true);
+    o.runs[0]!.contextSnapshot = { issueId: "source", commentId: "foreign-human" };
+    expect(gradeQuestions(o).checks.find(c => c.id === "existing-form-not-replaced-before-answer")?.passed).toBe(false);
   });
 });
