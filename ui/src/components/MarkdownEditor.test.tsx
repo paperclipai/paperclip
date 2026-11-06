@@ -1025,6 +1025,26 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("keeps a code span after an escaped HTML-like tag byte-identical", async () => {
+    const stored = "<div>\n`a\\_b` and snake_case";
+    // The exporter escapes the `<` (reversed on storage) and the prose underscore.
+    mdxEditorMockState.emitMountChange = "\\<div>\n`a\\_b` and snake\\_case";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not notify the parent when a prop sync echoes escaped markdown back", async () => {
     const handleChange = vi.fn();
     const root = createRoot(container);

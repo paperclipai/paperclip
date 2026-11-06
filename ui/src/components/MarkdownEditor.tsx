@@ -189,7 +189,9 @@ function prepareMarkdownForEditor(value: string): string {
  * feed agent prompts and must stay in the clean, human-authored form.
  */
 function toStoredMarkdown(markdown: string): string {
-  return unescapeIntrawordUnderscores(unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown)));
+  // Unescape underscores first, on the exporter's exact text: removing `\<` or
+  // `\>` can turn following lines into HTML or blockquotes and move code ranges.
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeIntrawordUnderscores(markdown)));
 }
 
 function escapeRegExp(value: string): string {

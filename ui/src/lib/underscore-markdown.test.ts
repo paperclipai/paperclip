@@ -39,6 +39,8 @@ describe("unescapeIntrawordUnderscores", () => {
       // A top-level fence whose content has a quoted fence-like line.
       "```\n> ```\nkeep\\_this\n```",
       "\\\\`snake\\_case`",
+      // Raw HTML does not process backslash escapes.
+      "<div>\nraw\\_html\n</div>",
     ]) unchanged(value);
   });
 
