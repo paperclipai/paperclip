@@ -2362,6 +2362,22 @@ All of these must be true:
 - Each quarantined root for the scope passes the same journal and local
   Runner evidence checks for the same owner.
 
+A local per-turn Runner can end the same way: the result was accepted, but its
+`runner.suspend` command did not finish, so its own receipt is still
+unsuspended. The next local run retires that owner with the same checks and
+these differences:
+
+- The Runner's own receipt may be unsuspended. It may not be unreadable or
+  name another owner.
+- Only the Runner's own lifecycle commands (`runner.suspend`, `runner.drain`,
+  `runner.shutdown`) may be unfinished. All other commands must be complete.
+- The prior run's recorded Runner process is proven stopped by exact PID and
+  start time, as in restart recovery. A PID that now belongs to another
+  process counts as stopped. A live recorded process, a live process group, a
+  live recorded provider process, a missing identity, or a start time that
+  cannot be compared keeps the rejection, for example
+  `retirement_refused=runner_process_alive`. A later Retry checks again.
+
 The provider session then follows the normal resume-or-replace policy. A
 resumed sandbox, a warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`

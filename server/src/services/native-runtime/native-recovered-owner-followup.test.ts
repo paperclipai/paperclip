@@ -185,7 +185,11 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         runner: { execute: vi.fn(async () => { throw new Error("admission must not reach the sandbox"); }) },
         sandboxLeaseAcquisition: { outcome, providerLeaseId: `sandbox-${runId}` } } as never,
     }).then(() => "constructed", (error: Error) => error.message);
-    return { runId, logs, start, selectedRunId: selected?.id ?? null };
+    // A local Runner keeps its controller root on this host between turns.
+    const startLocal = () => createRunnerdBackend({
+      db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+    }).then(() => "constructed", (error: Error) => error.message);
+    return { runId, logs, start, startLocal, selectedRunId: selected?.id ?? null };
   }
 
   async function quarantined() {
@@ -463,6 +467,78 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await writeFile(join(root, "unrecognized-state"), "{}\n");
     expect(await followUp.start()).toBe(stranded("held_root_entry(cursor-cloud)"));
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  /** A spawned process that stands in for the prior local Runner. */
+  async function runnerProcess() {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+    await new Promise(resolve => child.once("spawn", resolve));
+    const startedAt = await readProcessStartedAt(child.pid!);
+    expect(startedAt).toBeTruthy();
+    return { child, pid: child.pid!, processStartedAt: new Date(startedAt!) };
+  }
+
+  async function stoppedRunnerProcess() {
+    const runner = await runnerProcess();
+    const exited = new Promise(resolve => runner.child.once("exit", resolve));
+    runner.child.kill("SIGKILL");
+    await exited;
+    return runner;
+  }
+
+  /** The state a local per-turn Runner leaves when its result was accepted but
+   * its suspend command never finished: the controller journal holds a pending
+   * runner.suspend and the Runner's own receipt is still `ready`. */
+  async function seedUnsuspendedLocalOwner(runner: { pid: number; processStartedAt: Date }) {
+    const prior = await seedRecoveredPriorRun("pending-command");
+    await db.update(heartbeatRuns).set({ processPid: runner.pid, processGroupId: null, processStartedAt: runner.processStartedAt })
+      .where(eq(heartbeatRuns.id, prior.runId));
+    const followUp = await admitFollowUp(prior);
+    // Learn the scope key from a held attempt, then keep its root in place.
+    expect(await followUp.start()).toMatch(/^runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate/);
+    const [copy] = await quarantined();
+    const root = join(stateDirectory, copy!.split(".")[0]!);
+    await rename(join(stateDirectory, "quarantine", copy!), root);
+    await rm(join(stateDirectory, "quarantine"), { recursive: true, force: true });
+    await mkdir(join(root, "runner"), { recursive: true });
+    await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
+    return { prior, followUp, root };
+  }
+
+  it("retires a finished local owner whose Runner stopped before it proved suspension", async () => {
+    const { prior, followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    expect(await followUp.startLocal()).toBe(ADMITTED);
+    expect(await quarantined()).toEqual([]);
+    expect(existsSync(join(root, "runner"))).toBe(false);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+    expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
+  }, 60_000);
+
+  it("keeps a finished local owner held while its recorded Runner process is alive", async () => {
+    const runner = await runnerProcess();
+    try {
+      const { followUp } = await seedUnsuspendedLocalOwner(runner);
+      expect(await followUp.startLocal()).toBe(stranded("runner_process_alive"));
+      expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+    } finally {
+      runner.child.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("keeps a finished local owner held without a recorded Runner process identity", async () => {
+    const { prior, followUp } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    await db.update(heartbeatRuns).set({ processPid: null, processStartedAt: null }).where(eq(heartbeatRuns.id, prior.runId));
+    expect(await followUp.startLocal()).toBe(stranded("runner_process_identity_missing"));
+  }, 60_000);
+
+  it("keeps a stopped local owner held by an unfinished non-lifecycle command", async () => {
+    const { followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    const path = join(root, "control-plane", "control-plane-state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    state.commands.find((command: { type: string }) => command.type === "turn.start").status = "pending";
+    await writeFile(path, JSON.stringify(state));
+    expect(await followUp.startLocal()).toBe(stranded("journal_commands_unsettled(turn.start.pending)"));
   }, 60_000);
 
   it.each(["uncommitted result", "committed without result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",

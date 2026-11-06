@@ -290,6 +290,7 @@ import {
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  proveNativeLocalRunnerStopped,
   isCurrentNativeControllerProcess,
   nextNativeProviderAttempt,
   type NativeControllerIdentity,
@@ -5288,15 +5289,25 @@ function moveNativeContinuityState(root: string, archiveRoot: string): void {
  * Runner outbox can hold only post-terminal telemetry. Local lifecycle
  * evidence, even an unsuspended receipt, and unknown entries are owner
  * claims that this proof never overrides.
+ *
+ * `localRunner` names a local Runner that wrote its own lifecycle receipt in
+ * this root. Its unsuspended receipt and its own unfinished lifecycle commands
+ * (suspend, drain, shutdown) are claims of that one process. The caller must
+ * separately prove that process stopped before it relies on this projection.
  */
 type SettledRunnerdProjection = { bytes: string; refused?: never } | { bytes?: never; refused: string };
 
-function readSettledRunnerdProjection(root: string, identity: Record<string, string>): SettledRunnerdProjection {
+const LOCAL_RUNNER_LIFECYCLE_COMMANDS = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+
+function readSettledRunnerdProjection(root: string, identity: Record<string, string>,
+  options: { localRunner?: boolean } = {}): SettledRunnerdProjection {
   const refuse = (refused: string): SettledRunnerdProjection => ({ refused });
   try {
     if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
     const lifecycle = runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity);
-    if (lifecycle !== "absent") return refuse(`runner_lifecycle_${lifecycle}`);
+    if (lifecycle !== "absent" && !(options.localRunner && lifecycle === "not_suspended")) {
+      return refuse(`runner_lifecycle_${lifecycle}`);
+    }
     // Every legitimate writer's entry is classified in native-session-root-entries.ts.
     // Held entries are known evidence that needs its own settlement; anything
     // else is writer drift. Name each kind separately.
@@ -5308,6 +5319,11 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
     const control = record(JSON.parse(bytes));
     const commands = (Array.isArray(control.commands) ? control.commands : []).map(record);
+    // A stopped local Runner can no longer act on its own lifecycle commands.
+    const settledCommands = options.localRunner && lifecycle === "not_suspended" && Array.isArray(control.commands)
+      ? commands.filter(command => !LOCAL_RUNNER_LIFECYCLE_COMMANDS.has(String(command.type)) || command.status === "completed")
+      : commands;
+    const settledControl = settledCommands === commands ? control : { ...control, commands: settledCommands };
     const answered = new Set(commands
       .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
       .map(command => record(command.payload).sourceEventId));
@@ -5317,11 +5333,11 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     if (Object.entries(identity).some(([key, value]) => record(control.identity)[key] !== value)) {
       return refuse("journal_identity_mismatch");
     }
-    if (!isSettledRemoteWarmControlState(control, identity)) {
+    if (!isSettledRemoteWarmControlState(settledControl, identity)) {
       // Closed vocabulary only: known command types and statuses, never payloads.
-      const pending = commands.filter(command => command.status !== "completed")
+      const unsettled = settledCommands.filter(command => command.status !== "completed")
         .map(command => `${retirementReasonName("commandType", command.type)}.${retirementReasonName("commandStatus", command.status)}`);
-      return refuse(pending.length > 0 ? `journal_commands_unsettled(${[...new Set(pending)].slice(0, 4).join(",")})`
+      return refuse(unsettled.length > 0 ? `journal_commands_unsettled(${[...new Set(unsettled)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");
     }
     if ((control.committedEvents as unknown[]).map(record).some(event =>
@@ -5365,6 +5381,12 @@ function retirementReasonName(kind: keyof typeof RETIREMENT_REASON_NAMES, value:
  * that authority as a continuity break instead. This run then bootstraps its
  * own authority, and the provider session follows the ordinary
  * resume-or-replace policy. Any missing proof keeps the original rejection.
+ *
+ * A local per-turn Runner can end the same way: the result is accepted but its
+ * suspend command does not finish, so its own receipt stays unsuspended. That
+ * receipt is a claim of one recorded Runner process. Once that process and its
+ * recorded provider processes are proven stopped by exact PID and start time,
+ * the claim has no owner left and the same retirement applies.
  */
 async function retireFinishedPerTurnRunnerdOwner(input: {
   db: Db;
@@ -5379,11 +5401,14 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
   const refuse = (refused: string) => ({ retired: false as const, refused });
   if (input.execution.session.lifecyclePolicy.mode !== "per_turn") return refuse("lifecycle_not_per_turn");
-  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
-    return refuse("target_not_sandbox_runner");
-  }
-  if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
-    return refuse(`sandbox_${retirementReasonName("sandboxOutcome", target.sandboxLeaseAcquisition?.outcome)}`);
+  const localRunner = !target || target.kind === "local";
+  if (!localRunner) {
+    if (target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+      return refuse("target_not_sandbox_runner");
+    }
+    if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+      return refuse(`sandbox_${retirementReasonName("sandboxOutcome", target.sandboxLeaseAcquisition?.outcome)}`);
+    }
   }
   const identity: Record<string, string> = {};
   for (const key of ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"]) {
@@ -5391,7 +5416,7 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     if (typeof value !== "string" || !value) return refuse("durable_identity_incomplete");
     identity[key] = value;
   }
-  const projection = readSettledRunnerdProjection(input.root, identity);
+  const projection = readSettledRunnerdProjection(input.root, identity, { localRunner });
   if (projection.refused !== undefined) return refuse(projection.refused);
   const controlBytes = projection.bytes;
   const { binding } = input.execution;
@@ -5423,6 +5448,22 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
   const provenFinishedHere = finishedHere();
+  const proveLocalRunnerStopped = async () => {
+    const checkpointProcess = record(record(profile.sessionCheckpoint).process);
+    const providerProcesses = [["providerPid", "providerProcessStartedAt"], ["codexPid", "codexProcessStartedAt"],
+      ["sidecarPid", "sidecarProcessStartedAt"], ["agentPid", "agentProcessStartedAt"]].flatMap(([pidField, startedField]) => {
+      const pid = checkpointProcess[pidField!];
+      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return [];
+      const startedAt = typeof checkpointProcess[startedField!] === "string" ? new Date(String(checkpointProcess[startedField!])) : null;
+      return [{ pid, processStartedAt: startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null }];
+    });
+    return proveNativeLocalRunnerStopped({ processPid: prior!.run.processPid, processGroupId: prior!.run.processGroupId,
+      processStartedAt: prior!.run.processStartedAt, providerProcesses });
+  };
+  if (localRunner) {
+    const runnerStopped = await proveLocalRunnerStopped();
+    if (!runnerStopped.stopped) return refuse(runnerStopped.reason);
+  }
   // Earlier rejected admissions can quarantine the same projection. Each copy
   // must pass the same proof: a rebuilt root never carries the local Runner
   // evidence that held an earlier attempt, so that evidence stays decisive.
@@ -5431,13 +5472,14 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     if (!isSafeNativeStateDirectory(quarantine)) return refuse("quarantine_unsafe");
     for (const name of readdirSync(quarantine)) {
       if (!name.startsWith(`${basename(input.root)}.`)) continue;
-      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity);
+      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner });
       if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
   }
   // Database reads can await. Retire only the exact evidence proven above.
-  if (readSettledRunnerdProjection(input.root, identity).bytes !== controlBytes) return refuse("journal_changed");
+  if (readSettledRunnerdProjection(input.root, identity, { localRunner }).bytes !== controlBytes) return refuse("journal_changed");
   if (provenFinishedHere && !finishedHere()) return refuse("controller_restarted_here");
+  if (localRunner && !(await proveLocalRunnerStopped()).stopped) return refuse("runner_process_restarted");
   const archivedAt = Date.now();
   const archiveRoot = resolve(input.root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
   mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });

@@ -335,6 +335,59 @@ export async function evaluateNativeProviderProcesses(input: {
   };
 }
 
+export type NativeLocalRunnerStopProof =
+  | { stopped: true }
+  | {
+      stopped: false;
+      reason:
+        | "runner_process_identity_missing"
+        | "runner_process_alive"
+        | "runner_process_identity_unverifiable"
+        | "runner_process_group_alive"
+        | "provider_process_alive"
+        | "provider_process_identity_unverifiable";
+    };
+
+/**
+ * Proves that a finished local runner and its recorded provider processes
+ * stopped, with the same exact PID and start-time checks as restart recovery.
+ * A PID that now belongs to a different process counts as stopped. A live
+ * process with the recorded identity, a live process group, or a live PID
+ * whose start time cannot be compared is not proof.
+ */
+export async function proveNativeLocalRunnerStopped(input: {
+  processPid: number | null;
+  processGroupId: number | null;
+  processStartedAt: Date | null;
+  providerProcesses?: readonly NativeProviderProcessIdentity[];
+  isProcessAlive?: (pid: number) => boolean;
+  isProcessGroupAlive?: (processGroupId: number) => boolean;
+  readProcessStartedAt?: (pid: number) => Promise<Date | null>;
+}): Promise<NativeLocalRunnerStopProof> {
+  const refuse = (reason: Extract<NativeLocalRunnerStopProof, { stopped: false }>["reason"]) =>
+    ({ stopped: false as const, reason });
+  if (!input.processPid || !Number.isInteger(input.processPid) || input.processPid <= 0 || !input.processStartedAt) {
+    return refuse("runner_process_identity_missing");
+  }
+  const runner = await evaluateNativeProviderProcesses({
+    identities: [{ pid: input.processPid, processStartedAt: input.processStartedAt }],
+    isProcessAlive: input.isProcessAlive,
+    readProcessStartedAt: input.readProcessStartedAt,
+  });
+  if (runner.livePids.length > 0) return refuse("runner_process_alive");
+  if (runner.ambiguousLivePids.length > 0) return refuse("runner_process_identity_unverifiable");
+  const groupAlive = input.isProcessGroupAlive ?? processGroupIsAlive;
+  if (input.processGroupId && groupAlive(input.processGroupId)) return refuse("runner_process_group_alive");
+  const providers = await evaluateNativeProviderProcesses({
+    identities: (input.providerProcesses ?? []).filter(identity => identity.pid !== input.processPid),
+    isProcessAlive: input.isProcessAlive,
+    readProcessStartedAt: input.readProcessStartedAt,
+  });
+  if (providers.livePids.length > 0) return refuse("provider_process_alive");
+  if (providers.ambiguousLivePids.length > 0) return refuse("provider_process_identity_unverifiable");
+  return { stopped: true };
+}
+
 export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
