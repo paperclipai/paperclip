@@ -980,6 +980,30 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it.each([
+    ["Steer the current turn&#x20;", "Steer the current turn "],
+    ["Steer the current turn &#x20;\n", "Steer the current turn  \n"],
+    ["Use `&#x20;`&#x20;", "Use `&#x20;` "],
+    ["Use \\&#x20;", "Use \\&#x20;"],
+    ["```text\n&#x20;", "```text\n&#x20;"],
+    ["    &#x20;", "    &#x20;"],
+  ])("stores trailing editor spaces without changing literal entities: %s", async (exported, stored) => {
+    mdxEditorMockState.emitMountChange = exported;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value="Draft" onChange={handleChange} />);
+    });
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("stores intraword underscores as typed instead of the exporter's escaped form", async () => {
     const value = "Your final answer must be exactly E2E_ASK_12_journey_1793913565974_507b01b8.";
     // The real exporter escapes every literal underscore, including inside words.
