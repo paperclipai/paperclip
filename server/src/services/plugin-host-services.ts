@@ -114,6 +114,32 @@ const DNS_LOOKUP_TIMEOUT_MS = 5_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
+/** True when `ip` (lower-case IPv6) lies in 64:ff9b::/96: hextets 0-1 are 64:ff9b and 2-5 are zero. */
+function isNat64WellKnown(ip: string): boolean {
+  const hextets = expandIPv6(ip);
+  if (!hextets) return false;
+  return hextets[0] === 0x64 && hextets[1] === 0xff9b && hextets.slice(2, 6).every((hextet) => hextet === 0);
+}
+
+/** Expands an IPv6 address (with an optional dotted IPv4 tail) to eight numbers, or null. */
+function expandIPv6(ip: string): number[] | null {
+  let address = ip;
+  const v4Tail = address.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Tail) {
+    const [a, b, c, d] = v4Tail.slice(1).map((part) => parseInt(part, 10)) as [number, number, number, number];
+    address = `${address.slice(0, v4Tail.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = address.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string) => (part === "" ? [] : part.split(":").map((hextet) => parseInt(hextet, 16)));
+  const head = parse(halves[0]!);
+  const tail = halves.length === 2 ? parse(halves[1]!) : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const hextets = [...head, ...Array<number>(Math.max(missing, 0)).fill(0), ...tail];
+  return hextets.every((hextet) => Number.isInteger(hextet) && hextet >= 0 && hextet <= 0xffff) ? hextets : null;
+}
+
 /**
  * Check if an IP address is in a private/reserved range (RFC 1918, loopback,
  * link-local, etc.) that plugins should never be able to reach.
@@ -121,12 +147,19 @@ const TELEMETRY_EVENT_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
  * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) which Node's
  * dns.lookup may return depending on OS configuration.
  */
-function isPrivateIP(ip: string): boolean {
+export function isPrivateIP(ip: string): boolean {
   const lower = ip.toLowerCase();
 
   // Unwrap IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) and re-check as IPv4
   const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
   if (v4MappedMatch && v4MappedMatch[1]) return isPrivateIP(v4MappedMatch[1]);
+  // The URL parser writes [::ffff:100.64.0.1] as ::ffff:6440:1, and dns.lookup
+  // returns an IP literal unchanged, so unwrap the hex form of ::ffff:0:0/96 too.
+  const hextets = lower.includes(":") ? expandIPv6(lower) : null;
+  if (hextets && hextets.slice(0, 5).every((hextet) => hextet === 0) && hextets[5] === 0xffff) {
+    const [high, low] = [hextets[6]!, hextets[7]!];
+    return isPrivateIP(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
+  }
 
   // IPv4 patterns
   if (ip.startsWith("10.")) return true;
@@ -137,6 +170,10 @@ function isPrivateIP(ip: string): boolean {
   if (ip.startsWith("192.168.")) return true;
   if (ip.startsWith("127.")) return true;                   // loopback
   if (ip.startsWith("169.254.")) return true;               // link-local
+  if (ip.startsWith("100.")) {                               // shared address space / CGNAT (100.64.0.0/10), also used by overlay networks
+    const second = parseInt(ip.split(".")[1]!, 10);
+    if (second >= 64 && second <= 127) return true;
+  }
   if (ip === "0.0.0.0") return true;
 
   // IPv6 patterns
@@ -144,6 +181,9 @@ function isPrivateIP(ip: string): boolean {
   if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
   if (lower.startsWith("fe80")) return true;                 // link-local
   if (lower === "::") return true;
+  // NAT64 well-known prefix (64:ff9b::/96): a DNS64 resolver maps any IPv4
+  // address, private ones included, into it.
+  if (isNat64WellKnown(lower)) return true;
 
   return false;
 }
