@@ -1313,6 +1313,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     await settleAgent();
+    if (run.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {

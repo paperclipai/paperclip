@@ -104,7 +104,7 @@ import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
-import { setNativeExecutionActive } from "./native-active-runs.js";
+import { NATIVE_PREPARATION_FENCING_VERSION, setNativeExecutionActive } from "./native-active-runs.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import {
   boundedExecutionCleanup,
@@ -134,7 +134,7 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -172,6 +172,8 @@ import {
   executeNativeSession,
   applyNativeSessionGoalControl,
   inspectStagedRunAttachment,
+  inspectDurablePrpCheckpointHeader,
+  inspectStagedRunAttachmentHeader,
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
   parseNativeExecutionInput,
@@ -7570,9 +7572,26 @@ export async function nativeProviderRecoveryEvidence(input: {
     && run.runnerInstanceId === input.bootstrap.identity.runnerInstanceId
     ? await loadNativeUnclaimedBootstrapCheckpoint(input.db, input.bootstrap.binding, input.bootstrap.identity)
     : null;
+  let controllerCheckpointMatches = true;
+  if (checkpointRecord.backendKind === "runner" && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
+    controllerCheckpointMatches = false;
+    if (run?.nativeIssueId && run.nativeSessionId && run.runnerInstanceId) {
+      const header = await loadNativeRunnerCheckpointHeader(input.db, {
+        companyId: run.companyId, issueId: run.nativeIssueId, runId: input.runId,
+      });
+      if (header && Buffer.byteLength(header) <= NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES) {
+        const identity = inspectDurablePrpCheckpointHeader(header);
+        const staged = inspectStagedRunAttachmentHeader(header);
+        const expected = { runId: input.runId, normalizedSessionId: run.nativeSessionId, runnerInstanceId: run.runnerInstanceId };
+        const matches = (candidate: unknown) => Object.entries(expected).every(([key, value]) => record(candidate)[key] === value);
+        controllerCheckpointMatches = matches(identity) || Boolean(staged && matches(staged.attachment.targetIdentity));
+      }
+    }
+  }
   if (
     checkpointExists &&
     providerSessionEstablished &&
+    controllerCheckpointMatches &&
     record(checkpointRecord.terminal).runTerminalState !== "failed"
   ) {
     return {

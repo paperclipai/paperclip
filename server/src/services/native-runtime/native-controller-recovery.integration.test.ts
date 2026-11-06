@@ -1,10 +1,14 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, verifyRemoteRunnerReattachment } from "./native-session-executor.js";
+import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { DurablePrpControlPlane, parseNativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres.js";
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
@@ -90,6 +94,92 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await db.update(nativeRunFinalizations).set({ leaseOwner: "other-controller", leaseExpiresAt: deadline }).where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
     expect(await importNativeControllerRecovery(db, input)).toEqual({ kind: "waiting_for_owner", deadline });
     expect(await resolveNativeControllerRecovery(db, { ...fixture.scope, currentRunId })).toEqual({ kind: "waiting_for_owner", deadline });
+  });
+
+  it("does not assign current-run resume authority to a warm source that fails before attachment", async () => {
+    const fixture = await seed(), runId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID();
+    const remoteCwd = join(root, runId, "remote"), providerLeaseId = randomUUID();
+    const previous = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId: fixture.scope.runId,
+        executionWorkspaceId: randomUUID() },
+      task: { identifier: "NCD-1", title: "Continue retained work", description: null,
+        prompt: "Continue the saved work.", workMode: "standard" },
+      workspace: { cwd: remoteCwd, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue the saved work", criteria: [{ id: "objective", requirement: "Save the result" }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    const current = { ...previous, binding: { ...previous.binding, runId } };
+    const checkpoint: PersistedNativeSession = { ...fixture.snapshot, backendKind: "runner", driverKind: "codex_app_server",
+      providerSessionId: "historical-provider-thread", sessionId: "historical-provider-thread", cursor: "prior-cursor",
+      activeTurnId: null, terminal: null, terminalTurns: [], pendingRuntimeRequests: [] };
+    const sourceProfile = { ...fixture.profile, nativeExecutionInput: previous, sessionCheckpoint: checkpoint,
+      nativeToolContractFingerprint: nativeToolContractFingerprintForTarget("remote", "codex") };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: sourceProfile }).where(eq(heartbeatRuns.id, fixture.scope.runId));
+    const rebound = rebindNativeSessionCheckpoint({ previousRun: { id: fixture.scope.runId, companyId, agentId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerProfileJson: sourceProfile }, currentExecution: current, executionTargetKind: "remote" });
+    expect(rebound).toMatchObject({ providerSessionId: "historical-provider-thread", cursor: null, identity: { runId } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerInstanceId: randomUUID(), status: "running", runtimeMode: "native",
+      runnerProfileJson: { nativeExecutionInput: current, sessionCheckpoint: rebound, nativePreparationFencingVersion: 1 } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, fixture.scope.issueId));
+    await db.insert(environments).values({ id: environmentId, name: runId, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "released", metadata: { remoteCwd } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const runnerRoot = join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(fixture.scope.normalizedSessionId).digest("hex"), "runner");
+    await mkdir(runnerRoot, { recursive: true });
+    await writeFile(join(runnerRoot, "runner-state.json"), JSON.stringify({ ...identity, lifecycle: "ready", outbox: [], pendingTerminalDelivery: null }));
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+    await writeFile(join(runnerRoot, "runner-process.identity"), `fixture-nonce\n${child.pid}\n${new Date().toISOString()}\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n`);
+    const execute = (request: { command: string; args?: string[] }) => new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolve => {
+      execFile(request.command, request.args ?? [], { cwd: remoteCwd }, (error, stdout, stderr) => resolve({ stdout, stderr,
+        exitCode: error ? typeof error.code === "number" ? error.code : 1 : 0, timedOut: false }));
+    });
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+      remoteCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId }, runner: { execute } } as const;
+    await assertNativeRetainedSandboxBinding(db, { ...fixture.scope, target: target as never });
+    const sourceClaim = { runId: fixture.scope.runId, remote: { providerLeaseId, remoteCwd } };
+    const failure = await verifyRemoteRunnerReattachment({ claim: sourceClaim, target: target as never, identity,
+      runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId }).catch(error => error);
+    expect(readRemoteRunnerRecoveryError(failure)).toEqual({ stage: "process_verification", reason: "process_not_running" });
+    expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+    await expect(verifyRemoteRunnerReattachment({ claim: { ...sourceClaim, runId }, target: target as never,
+      identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    const recovery = await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) });
+    expect(recovery).toMatchObject({ providerSessionEstablished: true, providerEventsExist: false, checkpointExists: true });
+    expect(recovery.recoveryMode).toBe("ambiguous_state");
+    const currentOwner = { companyId, issueId: fixture.scope.issueId, runId, authorityRunId: runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.update(nativeRunFinalizations).set({ controllerBootId: currentOwner.bootId, controllerGeneration: 1,
+      leaseOwner: currentOwner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, runId));
+    const [currentRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const core = new DurablePrpControlPlane({ stateDirectory: join(root, runId, "current-controller"),
+      identity: { ...identity, runId, runnerInstanceId: currentRun.runnerInstanceId! },
+      expectedRunnerVersion: "discovery-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    core.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, currentOwner));
+    try {
+      await core.flushCheckpoint();
+      expect(await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) }))
+        .toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true, providerEventsExist: false });
+      for (const field of ["nativeSessionId", "runnerInstanceId"] as const) {
+        await db.update(heartbeatRuns).set({ [field]: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+        expect((await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
+          .toBe("ambiguous_state");
+        await db.update(heartbeatRuns).set({ [field]: currentRun[field] }).where(eq(heartbeatRuns.id, runId));
+      }
+    } finally { await core.stop(); }
+    await db.update(nativeRunnerCheckpoints).set({ material: { invalid: true } }).where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await nativeProviderRecoveryEvidence({ db, runId, sourceFailureCode: nativeSessionFailureSourceCode(failure) })).recoveryMode)
+      .toBe("ambiguous_state");
   });
 
   it("uses the database clock when an import finds an expired owner", async () => {
