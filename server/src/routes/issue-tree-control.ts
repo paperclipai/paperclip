@@ -104,10 +104,14 @@ export function issueTreeControlRoutes(
     // once, under current admission gates; never replay uncertain actions.
     const hold = await treeControlSvc.getHold(root.companyId, holdId);
     if (!hold || hold.mode !== "pause") return [];
+    // Tasks under the tree now include ones added after the snapshot, whose
+    // work an overlapping hold that was released earlier may have refused.
+    const currentTree = await treeControlSvc.listTreeIssues(root.companyId, hold.rootIssueId);
     return resumeInterruptedWork(db, {
       companyId: root.companyId,
-      issueIds: options.skipMembers ? [] : (hold.members ?? []).map((member) => member.issueId),
-      // Gates also refused work on tasks outside the snapshot for this hold.
+      issueIds: [...(options.skipMembers ? [] : (hold.members ?? []).map((member) => member.issueId)),
+        ...currentTree.map((issue) => issue.id)],
+      // Gates also refused work for this hold on tasks moved out of the tree since.
       suppressedByHoldId: hold.id,
       excludeIssueIds: options.skipMembers ? (hold.members ?? []).map((member) => member.issueId) : [],
       rootIssueId: root.id,

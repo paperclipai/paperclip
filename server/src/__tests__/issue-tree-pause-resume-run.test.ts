@@ -651,6 +651,38 @@ describeEmbeddedPostgres("subtree pause and release of an in-flight child run", 
     await expectResumedOnce(fixture.childId, holdId, retryRunId);
   });
 
+  it("resumes a task added after overlapping snapshots once the last covering pause is released", async () => {
+    const fixture = await seedTree();
+    const midId = randomUUID();
+    await db.insert(issues).values({ id: midId, companyId: fixture.companyId, parentId: fixture.parentId, title: "Mid",
+      status: "in_progress", priority: "medium", responsibleUserId: "responsible-user", assigneeUserId: "responsible-user",
+      issueNumber: 3, identifier: `${fixture.prefix}-3` });
+    await db.update(issues).set({ parentId: null }).where(eq(issues.id, fixture.childId));
+    const outer = await request(app).post(`/api/issues/${fixture.parentId}/tree-holds`).send({ mode: "pause" });
+    const inner = await request(app).post(`/api/issues/${midId}/tree-holds`).send({ mode: "pause" });
+    expect([outer.status, inner.status]).toEqual([201, 201]);
+    // The task joins under both pauses after their snapshots; the nearer pause refuses its retry.
+    await db.update(issues).set({ parentId: midId }).where(eq(issues.id, fixture.childId));
+    const { retryRunId } = await seedParkedWorkspaceBusyRetry(fixture);
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() - 1_000) })
+      .where(eq(heartbeatRuns.id, retryRunId));
+    await heartbeat.promoteDueScheduledRetries(new Date());
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const [suppressed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+    expect(suppressed!.resultJson).toMatchObject({ treeHoldSuppression: { holdId: inner.body.hold.id } });
+
+    const innerRelease = await request(app).post(`/api/issues/${midId}/tree-holds/${inner.body.hold.id}/release`).send({});
+    expect(innerRelease.status).toBe(200);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(executedRunIds).toEqual([]);
+
+    const outerRelease = await request(app)
+      .post(`/api/issues/${fixture.parentId}/tree-holds/${outer.body.hold.id}/release`).send({});
+    expect(outerRelease.status).toBe(200);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await expectResumedOnce(fixture.childId, inner.body.hold.id, retryRunId);
+  });
+
   it("leaves a due retry parked when the pause is released while the gate refuses it", async () => {
     const fixture = await seedTree();
     const { retryRunId } = await seedParkedWorkspaceBusyRetry(fixture);
