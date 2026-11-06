@@ -11,7 +11,10 @@ const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_USAGE_LIMIT_DATED_RE =
   /you(?:'|’)ve hit your usage limit\b[^\n]*?\btry again at\s+([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\b/i;
-const MONTH_PREFIXES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_NAMES = [
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+];
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
@@ -317,15 +320,19 @@ export function extractCodexRetryNotBefore(input: {
   errorMessage?: string | null;
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
-  const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
-  if (usageLimitMatch) return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
   const datedMatch = haystack.match(CODEX_USAGE_LIMIT_DATED_RE);
-  if (!datedMatch) return null;
-  return parseLocalDateTime(datedMatch);
+  if (datedMatch) return parseLocalDateTime(datedMatch);
+
+  const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
+  if (!usageLimitMatch) return null;
+  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
 }
 
 function parseLocalDateTime(match: RegExpMatchArray): Date | null {
-  const month = MONTH_PREFIXES.indexOf((match[1] ?? "").slice(0, 3).toLowerCase());
+  const monthText = (match[1] ?? "").toLowerCase();
+  const month = MONTH_NAMES.findIndex((name) =>
+    monthText === name || monthText === name.slice(0, 3) || (name === "september" && monthText === "sept"),
+  );
   const day = Number.parseInt(match[2] ?? "", 10);
   const year = Number.parseInt(match[3] ?? "", 10);
   const hour12 = Number.parseInt(match[4] ?? "", 10);
@@ -333,7 +340,13 @@ function parseLocalDateTime(match: RegExpMatchArray): Date | null {
   if (month < 0 || day < 1 || day > 31 || hour12 < 1 || hour12 > 12 || minute > 59) return null;
   const hour24 = (hour12 % 12) + ((match[6] ?? "").toLowerCase() === "p" ? 12 : 0);
   const retryAt = new Date(year, month, day, hour24, minute, 0, 0);
-  if (retryAt.getMonth() !== month || retryAt.getDate() !== day) return null;
+  if (
+    retryAt.getFullYear() !== year ||
+    retryAt.getMonth() !== month ||
+    retryAt.getDate() !== day ||
+    retryAt.getHours() !== hour24 ||
+    retryAt.getMinutes() !== minute
+  ) return null;
   return retryAt;
 }
 

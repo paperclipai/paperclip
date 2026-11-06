@@ -230,12 +230,76 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
-  it("extracts dated usage-limit reset times", () => {
-    const errorMessage = "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 5th, 2026 2:04 AM.";
-
+  it.each([
+    {
+      description: "generic usage-limit message",
+      errorMessage: "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 5th, 2026 2:04 AM.",
+      expected: new Date(2026, 10, 5, 2, 4).getTime(),
+    },
+    {
+      description: "model-specific Codex-Spark message",
+      errorMessage: "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at Nov 5th, 2026 2:04 AM.",
+      expected: new Date(2026, 10, 5, 2, 4).getTime(),
+    },
+    {
+      description: "midnight (12 AM)",
+      errorMessage: "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at Nov 5th, 2026 12:04 AM.",
+      expected: new Date(2026, 10, 5, 0, 4).getTime(),
+    },
+    {
+      description: "noon (12 PM)",
+      errorMessage: "You've hit your usage limit. Try again at Nov 5th, 2026 12:04 PM.",
+      expected: new Date(2026, 10, 5, 12, 4).getTime(),
+    },
+    {
+      description: "valid leap day and full month name",
+      errorMessage: "You've hit your usage limit. Try again at February 29th, 2028 11:59 PM.",
+      expected: new Date(2028, 1, 29, 23, 59).getTime(),
+    },
+    {
+      description: "abbreviated month with period and omitted minutes",
+      errorMessage: "You've hit your usage limit. Try again at Sept. 5th, 2026 2 PM.",
+      expected: new Date(2026, 8, 5, 14, 0).getTime(),
+    },
+  ])("extracts dated usage-limit reset times from $description", ({ errorMessage, expected }) => {
     expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
-    expect(extractCodexRetryNotBefore({ errorMessage })?.getTime()).toBe(
-      new Date(2026, 10, 5, 2, 4, 0, 0).getTime(),
+    expect(extractCodexRetryNotBefore({ errorMessage })?.getTime()).toBe(expected);
+  });
+
+  it.each([
+    "Feb 29th, 2027 2:04 AM",
+    "Apr 31st, 2026 2:04 AM",
+    "Nov 0th, 2026 2:04 AM",
+    "Nov 32nd, 2026 2:04 AM",
+    "Nov 5th, 2026 0:04 AM",
+    "Nov 5th, 2026 13:04 AM",
+    "Nov 5th, 2026 2:60 AM",
+    "Nov 5th, 2026 2:4 AM",
+    "Nov 5th, 2026 2:04 XM",
+    "Nov 5th, 2026 2:04",
+    "Novembork 5th, 2026 2:04 AM",
+    "Nov 5th, 0099 2:04 AM",
+  ])("rejects invalid dated usage-limit reset %s", (dateTime) => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at " + dateTime + ".";
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
+  });
+
+  it.each([
+    { clockTime: "12:04 AM", hour: 0, minute: 4 },
+    { clockTime: "12:04 PM", hour: 12, minute: 4 },
+    { clockTime: "11:31 PM", hour: 23, minute: 31 },
+  ])("preserves clock-only usage-limit reset $clockTime", ({ clockTime, hour, minute }) => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at " + clockTime + ".";
+    expect(extractCodexRetryNotBefore({ errorMessage }, new Date(2026, 10, 5, 0, 0))?.getTime()).toBe(
+      new Date(2026, 10, 5, hour, minute).getTime(),
+    );
+  });
+
+  it("preserves clock-only next-day rollover", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
+    expect(extractCodexRetryNotBefore({ errorMessage }, new Date(2026, 10, 5, 23, 59))?.getTime()).toBe(
+      new Date(2026, 10, 6, 23, 31).getTime(),
     );
   });
 
