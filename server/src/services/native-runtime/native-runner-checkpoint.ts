@@ -1,6 +1,3 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
@@ -277,17 +274,23 @@ export async function nativeRunnerCheckpointProvesIncompleteBootstrap(
     if (!checkpoint || checkpoint.predecessor !== null
       || checkpoint.recoveryEvidence.runnerInstanceId !== expected.runnerInstanceId
       || checkpoint.recoveryEvidence.normalizedSessionId !== expected.normalizedSessionId) return false;
-    const root = await mkdtemp(join(tmpdir(), "paperclip-bootstrap-proof-"));
-    try {
-      checkpoint.restoreSessionDirectory(root);
-      const state: unknown = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
-      if (!state || typeof state !== "object" || Array.isArray(state)) return false;
-      const identity = (state as { identity?: { runId?: unknown } }).identity;
-      return identity?.runId === binding.runId
-        && runnerdStateIsIncompleteBootstrap(state as Record<string, unknown>);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    // The decoder above validated these canonical v2 records. Rebuild the
+    // controller state in memory; the part check admits no event records.
+    const read = (part: string) => {
+      const value = checkpoint.records.get(part);
+      return value === undefined ? undefined : JSON.parse(value) as Record<string, unknown>;
+    };
+    const header = read("header");
+    const cursor = read("cursor");
+    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor) return false;
+    const state: Record<string, unknown> = {
+      ...(header.state as Record<string, unknown>),
+      ackedSourceSeq: cursor.ackedSourceSeq,
+      commands: ["command:1", "command:2"].map(read).filter(command => command !== undefined),
+      committedEvents: [],
+    };
+    return (state.identity as { runId?: unknown } | undefined)?.runId === binding.runId
+      && runnerdStateIsIncompleteBootstrap(state);
   } catch {
     return false;
   }
