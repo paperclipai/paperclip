@@ -8,14 +8,11 @@ const boundary = vi.hoisted(() => ({
   child: null as ChildProcess | null,
   hold: "registry" as "registry" | "log-close",
   spawnErrors: [] as Error[],
+  settled: Promise.resolve(),
 }));
 
 async function afterChildSettled() {
-  const child = boundary.child!;
-  await new Promise<void>((resolve) => {
-    child.once("error", () => resolve());
-    child.once("close", () => resolve());
-  });
+  await boundary.settled;
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
@@ -26,7 +23,10 @@ vi.mock("node:child_process", async (importOriginal) => {
     spawn: (...args: Parameters<typeof actual.spawn>) => {
       const child = actual.spawn(...args);
       boundary.child = child;
-      child.on("error", (error) => { boundary.spawnErrors.push(error); });
+      boundary.settled = new Promise<void>((resolve) => {
+        child.once("error", (error) => { boundary.spawnErrors.push(error); resolve(); });
+        child.once("close", () => resolve());
+      });
       return child;
     },
   };
