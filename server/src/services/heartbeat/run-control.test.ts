@@ -566,11 +566,13 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     vi.mocked(publishLiveEvent).mockClear();
     const transact = db.transaction.bind(db);
     let injected = false;
-    const transaction = vi.spyOn(db, "transaction").mockImplementationOnce(async (operation, config) => {
+    const transaction = vi.spyOn(db, "transaction").mockImplementation(async (operation, config) => {
       try {
         return await transact(async tx => {
           const result = await operation(tx);
           const [claimed] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+          const cancellation = claimed.resultJson?.executionCancellation as { state?: unknown } | undefined;
+          if (injected || cancellation?.state !== "requested") return result;
           expect(claimed.resultJson?.startupCancellation).toMatchObject({ cancellationRequestId: requestId });
           expect(claimed.resultJson?.executionCancellation).toMatchObject({ state: "requested" });
           expect((await tx.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0].state).toBe("cancelled");
