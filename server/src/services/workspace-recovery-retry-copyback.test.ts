@@ -117,6 +117,7 @@ describe("automatic retained workspace recovery", () => {
 
   it.each([
     { title: "the first attachment found the previous runner gone", turn: "none" as const, error: "runner_remote_process_identity_unavailable", initial: true },
+    { title: "the first replacement could not archive remote state", turn: "none" as const, error: "runner_continuity_break_archive_failed", initial: true },
     { title: "a restart lost its sandbox before the turn started", turn: "none" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
     { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable", initial: false },
     { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch", initial: false },

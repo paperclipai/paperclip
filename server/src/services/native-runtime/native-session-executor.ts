@@ -15222,8 +15222,6 @@ async function createRunnerdBackendWithinSessionClaim(
     const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
     mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
     await cursorCloudRuntime?.archiveCheckpoint(archiveRoot, previous);
-    noteNativeRunnerEvidence(archivedAt);
-    moveNativeContinuityState(root, archiveRoot);
     if (remoteCommandRunner && remoteSessionRoot) {
       const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
       const archivedRemote = `${remoteSessionRoot}.continuity-break-${archiveToken}`;
@@ -15241,6 +15239,8 @@ async function createRunnerdBackendWithinSessionClaim(
         throw new Error("runner_continuity_break_archive_failed");
       }
     }
+    noteNativeRunnerEvidence(archivedAt);
+    moveNativeContinuityState(root, archiveRoot);
     remotePrepared = false;
     retainProviderPack = false;
     legacyProviderContinuity = false;
