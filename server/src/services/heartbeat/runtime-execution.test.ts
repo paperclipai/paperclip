@@ -288,7 +288,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     },
   );
 
-  it.each(["settled", "workspace-check-failed"] as const)("settles an accepted local result when runner close cannot prove suspension (%s)", async scenario => {
+  it.each(["settled", "workspace-check-failed", "terminal-unreadable"] as const)("settles an accepted local result when runner close cannot prove suspension (%s)", async scenario => {
     const { input } = await fixture(true);
     const issue = input.task.issueRef!;
     const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, contextSnapshot: { issueId: issue.id }, costAccountingPending: true }).where(eq(heartbeatRuns.id, input.run.id)).returning();
@@ -310,6 +310,9 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       await options.controlPlane.openRun({ identity: { companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId, sessionId: prepared.normalizedSessionId }, backendKind: "mock", sourceInstanceId: prepared.runnerInstanceId });
       await options.controlPlane.completeRun({ result: { ...CONTROL_PLANE_CONFORMANCE_RESULT, completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: completion.revision } },
         terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: prepared.turnId });
+      if (scenario === "terminal-unreadable") {
+        await db.update(nativeRunResults).set({ resultJson: sql`${nativeRunResults.resultJson} - 'terminal'` }).where(eq(nativeRunResults.runId, run.id));
+      }
       // The runner retired after the accepted result, but its suspend command
       // did not complete before the close deadline (for example, under load).
       throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: true }, true);
@@ -318,6 +321,13 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async options => actual.executePaperclipNativeSession({ ...options, useRunnerd: false,
       backend: { descriptor: async () => { throw new Error("Unexpected provider call"); }, openSession: async () => { throw new Error("Unexpected provider call"); } } }));
 
+    if (scenario === "terminal-unreadable") {
+      // Without a rebuildable accepted result, no succeeded finalize row is written.
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ message: "native_session_lease_lost" });
+      const operations = await finalizations();
+      expect(operations.map(operation => operation.status)).toEqual(["failed"]);
+      return;
+    }
     if (scenario === "workspace-check-failed") {
       // A failed workspace finalization check keeps the existing failure path.
       const recorder = input.workspace.workspaceOperationRecorder;

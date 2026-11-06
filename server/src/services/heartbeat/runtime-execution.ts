@@ -1164,9 +1164,26 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     // A runner that could not prove suspension after an accepted result left a
     // local workspace untouched: there is nothing to copy back. Settle the
     // accepted result instead of failing the run over runner bookkeeping.
-    let settleAcceptedResult = nativeRuntimeResolution.kind === "native"
+    // Rebuild the accepted result before writing any finalize status: only a
+    // proven, complete accepted result may record workspace finalization as
+    // succeeded.
+    let acceptedResult = nativeRuntimeResolution.kind === "native"
       && postResultFailure?.category === "runner_settlement_incomplete"
-      && !nativeWorkspaceSync && !remoteWorkspaceAuthority;
+      && !nativeWorkspaceSync && !remoteWorkspaceAuthority
+      ? await (async () => {
+          const resultId = await db.select({ resultId: nativeRunFinalizations.resultId }).from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, run.id)).limit(1).then(rows => rows[0]?.resultId ?? null);
+          return resultId ? acceptedNativeAdapterResult(db, {
+            runId: run.id, companyId: run.companyId, resultId,
+            model: nativeExecution?.provider.model ?? null, driverKind: nativeExecution?.session.driverKind ?? "unknown",
+            postResultFailure: postResultFailure!,
+          }) : null;
+        })().catch((readErr: unknown) => {
+          logger.warn({ err: readErr, runId: run.id }, "accepted native result could not be read; keeping the failure path");
+          return null;
+        })
+      : null;
+    let settleAcceptedResult = acceptedResult !== null;
     try {
       await recordWorkspaceFinalize(settleAcceptedResult ? "succeeded" : "failed", settleAcceptedResult
         ? { runnerSettlementDiagnostic: postResultFailure }
@@ -1189,7 +1206,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     }
     // Settle only when the workspace finalization record itself succeeded. A
     // failed branch or plugin workspace check keeps the failure path.
-    if (adapterFinalizeOutcome !== "succeeded") settleAcceptedResult = false;
+    if (adapterFinalizeOutcome !== "succeeded") { settleAcceptedResult = false; acceptedResult = null; }
     if (nativeRuntimeResolution.kind === "native") {
       const proposedResult = await db
         .select({ resultId: nativeRunFinalizations.resultId })
@@ -1228,30 +1245,23 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             : "workspace_sync_out_failed",
         );
       }
-      if (settleAcceptedResult && proposedResult) {
+      if (settleAcceptedResult && acceptedResult) {
         // Finalize exactly as a returned result would, then let the ordinary
         // completion path settle the run, session, accounting and agent.
-        const accepted = await acceptedNativeAdapterResult(db, {
-          runId: run.id, companyId: run.companyId, resultId: proposedResult,
-          model: nativeExecution?.provider.model ?? null, driverKind: nativeExecution?.session.driverKind ?? "unknown",
-          postResultFailure: postResultFailure!,
-        });
-        if (accepted) {
-          await onLog("stderr", "[paperclip] runner settlement was incomplete after the result was accepted; finalizing the accepted result\n")
-            .catch(() => undefined);
-          try {
-            await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
-              db, runId: run.id, workspaceFinalizeStatus: "succeeded",
-            }));
-            await dispatchPendingNativeStatusWakeups({ companyId: run.companyId });
-          } catch (finalizeErr) {
-            logger.warn(
-              { err: finalizeErr, runId: run.id },
-              "native result persisted but finalization did not apply; the reconciliation loop will retry",
-            );
-          }
-          return { dispatched: true, adapterResult: accepted };
+        await onLog("stderr", "[paperclip] runner settlement was incomplete after the result was accepted; finalizing the accepted result\n")
+          .catch(() => undefined);
+        try {
+          await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+            db, runId: run.id, workspaceFinalizeStatus: "succeeded",
+          }));
+          await dispatchPendingNativeStatusWakeups({ companyId: run.companyId });
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: run.id },
+            "native result persisted but finalization did not apply; the reconciliation loop will retry",
+          );
         }
+        return { dispatched: true, adapterResult: acceptedResult };
       }
       try {
         await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
