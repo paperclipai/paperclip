@@ -654,12 +654,7 @@ retrieval or telephone playback is established by the UI fixtures.
 Slack's **Require at-mention** policy applies to channel messages and channel
 thread replies, including queued work. DMs are exempt from mention checks;
 endpoint availability, **Allow direct messages**, and sender authorization still
-apply. Top-level DM replies retain their linear conversation destination. Native
-DM threads retain their task across completion while keeping the `direct_message`
-resource type and the DM reach gate. Duplicate delivery does not add another
-comment or wake. These cases have PostgreSQL fixture coverage in the
-[chat integration suite](../../server/src/__tests__/chat-channels.integration.test.ts).
-Source:
+apply. Top-level DM replies retain their linear conversation destination. Source:
 [admission](../../server/src/services/chat-channels.ts) and
 [queued run policy](../../server/src/services/durable-chat-wakeup.ts). Live Slack
 verification of this exemption remains separate from provider-fixture coverage.

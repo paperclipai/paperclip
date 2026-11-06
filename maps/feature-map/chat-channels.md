@@ -101,15 +101,9 @@ cover the database and prompt contracts; they do not prove live provider deliver
 
 For Slack, enable **Require at-mention** and **Allow direct messages**. Send a
 plain DM and follow up without a mention: both should reach the agent, with
-top-level replies to top-level DMs. Channel messages and channel thread replies
-still require a mention when that setting is enabled. Finish a task inside a DM
-thread, then reply in that same thread. The reply must reopen the same task and
-retain its earlier comments. A different thread root must use a different task.
-Disable direct messages and confirm both plain and threaded DMs are rejected.
-The [completion regression](../../server/src/__tests__/chat-channels.integration.test.ts)
-covers Done, Cancelled, completed bindings, duplicate delivery, and bare-DM and
-channel-thread controls with PostgreSQL and provider fixtures. This is not live
-Slack verification.
+top-level replies to top-level DMs. Channel messages and channel thread replies still
+require a mention when that setting is enabled. Disable direct messages and
+confirm a plain DM is rejected. Threads also work in DMs.
 
 For Slack acknowledgement latency, mention the bot with and without an attachment.
 Eyes should appear after authorized task/comment persistence, independently of

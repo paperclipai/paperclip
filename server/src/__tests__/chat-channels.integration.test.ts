@@ -58500,7 +58500,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("binds Slack DM slash controls to the native root returned for the latest task", async () => {
+  it.each(["new", "close"] as const)("binds Slack DM slash controls to the native root returned for the latest task (%s)", async (control) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -58564,7 +58564,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       threadId: starterThreadId,
       text: expect.stringMatching(/— todo$/),
     });
-    await invoke("close");
+    await invoke(control);
     await expect(service.listConversations(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
         externalThreadId: starterThreadId,
@@ -58578,9 +58578,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "completed",
       }),
     ]);
-    expect(
-      await readIssuesByCompanyId(fixture.companyId),
-    ).toHaveLength(1);
+    expect(await readIssuesByCompanyId(fixture.companyId)).toHaveLength(1);
+    const providerTime = Date.now();
+    const providerTimestamp = `${Math.floor(providerTime / 1_000)}.${String((providerTime % 1_000) * 1_000).padStart(6, "0")}`;
+    await deliverMessage({
+      callbacks, endpointId: endpoint.id,
+      thread: makeThread({ channelId: "D09SLASHTASK", id: starterThreadId, isDM: true }).thread,
+      message: makeMessage({ id: providerTimestamp, raw: { ts: providerTimestamp }, text: "An explicitly requested new task", userId: "U-DM-SLASH-TASK" }),
+      trigger: "direct_message",
+    });
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toHaveLength(2);
+    expect(conversations.find(row => row.state === "active")).toMatchObject({
+      externalThreadId: starterThreadId, sessionGeneration: 2,
+    });
+    expect(await readIssuesByCompanyId(fixture.companyId)).toHaveLength(2);
   });
 
   it("acknowledges a Slack retry while one durable worker owns the unrecorded command root", async () => {
