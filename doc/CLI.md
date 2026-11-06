@@ -575,12 +575,17 @@ npx paperclipai agent inbox-mine --user-id <board-user-id>
 npx paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."] [--payload '{"issueId":"..."}']
 npx paperclipai agent pause <agent-id>
 npx paperclipai agent resume <agent-id>
+npx paperclipai agent clear-error <agent-id>
 npx paperclipai agent approve <agent-id>
 npx paperclipai agent terminate <agent-id>
 npx paperclipai agent heartbeat:invoke <agent-id>
 npx paperclipai agent claude-login <agent-id>
 npx paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
+
+`agent clear-error` uses the server's existing clear-error action. The server
+checks permissions and the agent state. Use it to clear an error after addressing
+its cause; use `agent resume` to resume a paused agent.
 
 Agent configuration and runtime endpoints:
 
