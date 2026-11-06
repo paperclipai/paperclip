@@ -1,11 +1,21 @@
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { eq, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, issueRecoveryActions, issues, completionContracts, nativeRunResults, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { beforeAll, expect, it, vi } from "vitest";
-import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { DurablePrpControlPlane, createNativeSessionBackend, createRunnerdCodexTransport, defaultCapabilityRunnerdBinary, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
+import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { reconcileNativeFinalizations, claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { prepareNativeWorkspaceSync } from "./native-workspace-sync.js";
+import { workspaceOperationService } from "../workspace-operations.js";
+import type { EnvironmentLease } from "@paperclipai/shared";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { materializeAsset } from "./runtime-context.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { registerNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -20,6 +30,147 @@ describeEmbeddedPostgres("native runner restart recovery: preparation", () => {
   let agentId: typeof environment.current.agentId;
   let successor: typeof environment.current.successor;
   beforeAll(() => { ({ runtimeRoot, companyId, agentId, successor } = environment.current); });
+
+  it.each(["recover", "provider event", "cancelled task"] as const)("reconciles the drained remote backend with %s", async mode => {
+    const fixture = await seedRun(`DRAINED-BACKEND-${mode.replaceAll(" ", "-")}`);
+    const environmentId = randomUUID(), leaseId = randomUUID();
+    await fixture.db.insert(environments).values({ id: environmentId, name: `Drained backend ${environmentId}`, driver: "sandbox" });
+    const [lease] = await fixture.db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId,
+      heartbeatRunId: fixture.runId, issueId: fixture.issueId, status: "active",
+      provider: "fixture", providerLeaseId: `drained-backend-${leaseId}` }).returning();
+    const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    const [contract] = await fixture.db.select().from(completionContracts).where(eq(completionContracts.issueId, fixture.issueId));
+    const runtimeContext = nativeRuntimeContextFixture();
+    runtimeContext.instructions.bundle = await materializeAsset([{ path: "AGENTS.md", mode: 0o444,
+      content: Buffer.from("Complete the controlled restart fixture task.\n") }]);
+    runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+    const sandbox = join(runtimeRoot, `workspace-${fixture.runId}`);
+    await mkdir(sandbox, { recursive: true });
+    const savedFile = join(sandbox, "saved-before-drain.txt");
+    await writeFile(savedFile, "Preserve admitted work.\n");
+    const execution = buildNativeExecutionInput({ companyId, agentId, runId: fixture.runId,
+      issue: { id: fixture.issueId, identifier: "NRR-DRAINED", title: "Continue after drain", description: null, workMode: "standard" },
+      taskPrompt: "Continue the admitted work once.", provider: "codex",
+      workspace: { id: fixture.runId, cwd: sandbox, repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: fixture.native.normalizedSessionId, runtimeContext,
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
+        contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
+    });
+    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...fixture.preparedProfile, nativeExecutionInput: execution,
+    } }).where(eq(heartbeatRuns.id, fixture.runId));
+    const remoteSandbox = join(runtimeRoot, `remote-${fixture.runId}`);
+    const shell: CommandManagedRuntimeRunner = { execute: async input => {
+      const child = spawn(input.command, input.args ?? [], { cwd: input.cwd,
+        env: { ...process.env, ...input.env }, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "", stderr = "", timedOut = false;
+      child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+      child.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(input.stdin);
+      const timeout = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? 30_000);
+      try { return await new Promise((resolveResult, reject) => {
+        child.once("error", reject);
+        child.once("close", (exitCode, signal) => resolveResult({ stdout, stderr, exitCode, signal, timedOut }));
+      }); } finally { clearTimeout(timeout); }
+    } };
+    const workspaceSync = await prepareNativeWorkspaceSync({ db: fixture.db, runId: fixture.runId, companyId,
+      workspaceId: fixture.runId, workspaceLocalDir: sandbox, lease: lease as unknown as EnvironmentLease,
+      target: { kind: "remote", transport: "sandbox", environmentId, leaseId, remoteCwd: remoteSandbox, runner: shell } });
+    expect(workspaceSync).not.toBeNull();
+    const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"),
+      resolve(import.meta.dirname, "../../__tests__/helpers/native-drain-controller.test-worker.ts")],
+      { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
+    const logs: string[] = [];
+    child.stdout?.on("data", data => logs.push(String(data)));
+    child.stderr?.on("data", data => logs.push(String(data)));
+    const exited = new Promise<number | null>(resolveExit => child.once("exit", resolveExit));
+    try {
+      const result = await new Promise<{ commands: number; errorName: string; errorMessage: string }>((resolveResult, reject) => {
+        const deadline = setTimeout(() => reject(new Error(`Controller handoff timed out: ${logs.join("").slice(-2000)}`)), 60_000);
+        child.once("error", error => { clearTimeout(deadline); reject(error); });
+        child.once("exit", code => { clearTimeout(deadline); reject(new Error(`Controller exited before handoff (${code}): ${logs.join("").slice(-2000)}`)); });
+        child.on("message", (message: { ready?: boolean; done?: boolean; commands: number; errorName: string; errorMessage: string; error?: string }) => {
+          if (message.ready) child.send({ connectionString: environment.current.temporary.connectionString, providerEvidence: mode === "provider event",
+            options: { execution, runnerInstanceId: fixture.native.runnerInstanceId, useRunnerd: true,
+              runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, leaseId, remoteCwd: remoteSandbox } } });
+          if (message.done) { clearTimeout(deadline); resolveResult(message); }
+          if (message.error) { clearTimeout(deadline); reject(new Error(message.error)); }
+        });
+      });
+      expect(result).toMatchObject({ commands: 0, errorMessage: "local_runtime_api_listener_unavailable" });
+      expect(await exited).toBe(0);
+      const [handoff] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (mode === "provider event") {
+        expect(handoff).toMatchObject({ phase: "terminal_failure", nextAttemptAt: null,
+          failureDetail: { recoveryMode: "ambiguous_state", providerSessionEstablished: true } });
+        expect(await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "no-provider-replay",
+          runIds: [fixture.runId], deferIneligible: false })).toHaveLength(0);
+        return;
+      }
+      expect(handoff).toMatchObject({ phase: "retryable_failure", attempt: 1,
+        failureDetail: { originalFailureCode: "local_runtime_api_listener_unavailable", recoveryMode: "bootstrap_retry",
+          providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false } });
+      if (mode === "cancelled task") {
+        await fixture.db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, fixture.issueId));
+      }
+      const claims = (await Promise.all(["successor-a", "successor-b"].map(runnerInstanceId =>
+        claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId, runIds: [fixture.runId],
+          now: new Date(handoff.nextAttemptAt!.getTime() + 1), deferIneligible: false }),
+      ))).flat();
+      if (mode === "cancelled task") { expect(claims).toHaveLength(0); return; }
+      expect(claims).toHaveLength(1);
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run).toMatchObject({ status: "running", nativeSessionId: fixture.native.normalizedSessionId });
+      const [action] = await fixture.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+      expect(action).toMatchObject({ ownerType: "agent", ownerAgentId: agentId });
+      // The focused restart regression needs no Rust artifacts. This opt-in
+      // acceptance also runs the real Runner and controlled Codex provider.
+      if (process.env.PAPERCLIP_TEST_DRAIN_CONTINUATION === "1") {
+        const claim = claims[0];
+        const root = join(runtimeRoot, `continued-${fixture.runId}`);
+        const home = join(root, "codex-home");
+        await mkdir(home, { recursive: true });
+        const report = join(root, "result.json");
+        const calls = join(root, "calls.log");
+        await writeFile(report, JSON.stringify({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
+          summary: "Admitted work completed after controller restart.", completionClaim: {
+            contractRevision: execution.completionContract.contract.revision, objectiveSatisfied: true,
+            criteria: execution.completionContract.contract.criteria.map(criterion => ({ criterionId: criterion.id,
+              status: "satisfied", evidenceRefs: [] })), remainingWork: [] },
+          evidence: [], verification: [], artifacts: [], attentionRequests: [] }));
+        const bundle = createRunnerdCodexTransport({ ...transportOptions(fixture, root),
+          runnerBinary: defaultCapabilityRunnerdBinary(),
+          codexArgs: ["--state-file", join(root, "provider.json"), "--terminal-result-file", report,
+            "--call-log", calls, "--record-process-start"],
+          runtimeContext: execution.runtimeContext, runnerRuntimeContext: execution.runtimeContext,
+          sourceCodexHome: home, environment: { CODEX_HOME: home, PATH: process.env.PATH },
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+        });
+        const backend = createNativeSessionBackend(execution, { runnerInstanceId: fixture.native.runnerInstanceId,
+          environment: { CODEX_HOME: home, PATH: process.env.PATH }, codexTransportFactory: () => bundle.transport });
+        try {
+          expect(await executePaperclipNativeSession({ db: fixture.db, execution, backend, useRunnerd: true,
+            runnerInstanceId: fixture.native.runnerInstanceId, leaseOwner: claim.leaseOwner,
+            runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, leaseId, remoteCwd: remoteSandbox,
+              runner: { execute: async () => { throw new Error("Unexpected remote preparation after the controlled backend owns execution"); } } as never },
+            turnTimeoutMs: 15_000 })).toMatchObject({ exitCode: 0, timedOut: false });
+          const recorder = workspaceOperationService(fixture.db).createRecorder({ companyId,
+            issueId: fixture.issueId, heartbeatRunId: fixture.runId });
+          const saved = await recorder.recordOperation({ phase: "workspace_finalize", cwd: sandbox,
+            run: async () => { await workspaceSync!.restoreWorkspace(); return { status: "succeeded", exitCode: 0 }; } });
+          expect(saved.status).toBe("succeeded");
+          await reconcileNativeFinalizations(fixture.db, [fixture.runId]);
+          expect(await fixture.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId)))
+            .toMatchObject([{ schemaStatus: "accepted" }]);
+          const [finished] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+          expect(finished, JSON.stringify(finished.failureDetail)).toMatchObject({ phase: "committed", attempt: 2 });
+          expect(await readFile(savedFile, "utf8")).toBe("Preserve admitted work.\n");
+          expect((await readFile(calls, "utf8")).split("\n").filter(line => line === "process-start")).toHaveLength(1);
+        } finally { await bundle.transport.close(); }
+      }
+    } finally { child.kill("SIGKILL"); await exited; await workspaceSync?.cleanup(); }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each(["preparation", "claim lock"])("gives a fresh remote claim its full lease through blocked %s", async (blockedPhase) => {
     const fixture = await seedRun(`FRESH-SLOW-${blockedPhase === "claim lock" ? "CLAIM-LOCK" : "PREPARATION"}`);
