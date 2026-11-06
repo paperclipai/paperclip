@@ -56,8 +56,6 @@ describe("AgentChatPicker", () => {
 
   it("uses indexed counts and memoized chat membership for a large team", async () => {
     const roster = Array.from({ length: 500 }, (_, index) => ({ ...agents[index % 2], id: `agent-${index}`, name: `Agent ${index}` }));
-    // Count element visits during index construction. A per-row scan fails
-    // immediately, without relying on machine-dependent timing thresholds.
     let visits = 0;
     const ids = roster.map(agent => agent.id);
     const boundedIds = new Proxy(ids, { get(target, key, receiver) {

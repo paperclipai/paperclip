@@ -14,8 +14,6 @@ export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
   const [open, setOpen] = useState(false);
   const { agents, chats } = useAgentChatNavigation();
   const navigate = useNavigate();
-  // The shared, account-scoped chat list already includes read state. Opening
-  // the picker needs no requests per agent and never waits for chat history.
   const chatAgentIds = useMemo(() => {
     const existing: string[] = [];
     const unread = new Map<string, number>();
