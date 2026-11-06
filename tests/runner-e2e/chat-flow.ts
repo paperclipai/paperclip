@@ -341,12 +341,7 @@ export function assertChatHandoff(
 export async function sendChatMessage(page: Page, message: string, remainingBudget?: () => number) {
   const options = () => remainingBudget ? { timeout: remainingBudget() } : {};
   const composer = page.getByTestId("task-chat-composer-input").last();
-  const takeover = page.getByTestId("task-chat-composer-takeover").last();
-  await expect(composer.or(takeover).first()).toBeVisible(options());
-  if (await takeover.isVisible()) {
-    // Close the card's composer view without answering, skipping, or approving it.
-    await takeover.getByRole("button", { name: /^Dismiss / }).click(options());
-  }
+  await expect(composer).toBeVisible(options());
   await composer
     .locator('[contenteditable="true"], textarea')
     .first()
