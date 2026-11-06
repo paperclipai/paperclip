@@ -1184,6 +1184,13 @@ unavailable/terminated test process produce a `launcher/environment failure`
 diagnostic and exit 2. Assertion failures retain the test runner's exit status
 and output; assess installed-product failures from those assertions separately.
 
+PR CI runs `pnpm test:e2e:runner:unit` as the required "Runner support suite"
+job in `pr-trusted.yml`. It runs when server, CLI, package or UI source
+changes, and on every full CI run. The suite pins workflow security policy,
+evidence oracles, profile versions, suite hashes and dated fixtures. When a
+change to one of those is deliberate, update the pin in the same pull request
+and name the reason. Do not weaken a security check to make it pass.
+
 The OpenRouter ranking snapshot is tracked in `openrouter-models.json`; nightly
 runs never mutate it. Refresh it deliberately, review the source/capture/hash
 diff, and rerun credential-free checks:

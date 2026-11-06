@@ -284,5 +284,10 @@
       "shard_label": "8/8",
       "task": "ci:e2e"
     }
+  ],
+  "verify_runner_e2e_support": [
+    {
+      "task": "ci:runner-e2e-support"
+    }
   ]
 }
