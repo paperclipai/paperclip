@@ -135,14 +135,23 @@ describe("runner E2E Daytona image contract", () => {
     const shapeCheck = normalizedDockerfile.indexOf(`grep -Eqx '[0-9a-f]{64}'`);
     expect(shapeCheck).toBeGreaterThan(-1);
     expect(shapeCheck).toBeLessThan(normalizedDockerfile.indexOf("sha256sum -c /tmp/provider-lock.sha256"));
+    expect(normalizedDockerfile.slice(shapeCheck)).toMatch(
+      /^grep -Eqx '\[0-9a-f\]\{64\}';\s+then\s+echo 'PAPERCLIP_RUNNER_LOCK_SHA256 build arg must be the SHA-256 of pnpm-lock\.yaml[^']*' >&2;\s+exit 1;\s+fi/,
+    );
     for (const readme of [e2eReadme, imageReadme]) {
       const recipes = [...readme.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)]
         .map(match => match[1]!)
         .filter(block => block.includes("--file docker/daytona-runner/Dockerfile"));
       expect(recipes.length).toBeGreaterThan(0);
       for (const recipe of recipes) {
-        expect(recipe).toMatch(/--build-arg "?PAPERCLIP_RUNNER_LOCK_SHA256=/);
-        expect(recipe).toContain("shasum -a 256 pnpm-lock.yaml");
+        // The computed digest itself must be the value passed to the build.
+        const passed = recipe.match(
+          /--build-arg "?PAPERCLIP_RUNNER_LOCK_SHA256="?(\$\{lock_sha\}|\$\(shasum -a 256 pnpm-lock\.yaml \| cut -d ' ' -f 1\))"/,
+        );
+        expect(passed, recipe).not.toBeNull();
+        if (passed![1] === "${lock_sha}") {
+          expect(recipe).toContain(`lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"`);
+        }
       }
     }
   });
