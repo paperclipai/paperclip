@@ -30,12 +30,18 @@ function fixture(t) {
   for (const name of ["vitest", "oxc-parser", ".bin"]) {
     symlinkSync(path.join(repository, "node_modules", name), path.join(root, "node_modules", name), "dir");
   }
+  const store = realpathSync(path.join(repository, "node_modules/.pnpm"));
+  for (const name of ["vitest", "oxc-parser"]) {
+    const entry = path.relative(store, realpathSync(path.join(repository, "node_modules", name))).split(path.sep)[0];
+    symlinkSync(path.join(store, entry), path.join(root, "node_modules/.pnpm", entry), "dir");
+  }
   for (const file of ["node_modules/.modules.yaml", "node_modules/.pnpm/lock.yaml"]) {
     write(file, readFileSync(path.join(repository, file), "utf8"));
   }
   write(".gitignore", "node_modules\nnode_modules/\n.turbo/\n.env\n");
-  write("package.json", JSON.stringify({ name: "local-verification-fixture", private: true, type: "module", packageManager: "pnpm@9.15.4",
+  write("package.json", JSON.stringify({ name: "local-verification-fixture", private: true, type: "module", packageManager: JSON.parse(readFileSync(path.join(repository, "package.json"), "utf8")).packageManager,
     scripts: { verify: "node scripts/local-verify.mjs", "test:run": "vitest run" } }));
+  write("pnpm-workspace.yaml", "verifyDepsBeforeRun: false\n");
   write("vitest.config.mjs", 'export default {test:{projects:["ui","cli"]}};');
   for (const [directory, name] of [["ui", "@paperclipai/ui"], ["cli", "paperclipai"]]) {
     write(`${directory}/vitest.config.mjs`, `export default {test:{name:${JSON.stringify(name)},include:["src/**/*.test.ts"]}};`);
