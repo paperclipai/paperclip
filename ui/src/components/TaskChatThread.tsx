@@ -2778,7 +2778,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
     .reduce<(typeof comments)[number] | null>((latest, comment) =>
       !latest || toMs(comment.createdAt) >= toMs(latest.createdAt) ? comment : latest, null), [comments]);
-  const latestUserCommentId = latestUserComment?.id ?? null;
   const currentPendingInputs = useMemo(() => pendingComposerInputs.filter(input =>
     !isInputDismissed(input) && !(input.kind === "durable"
       && latestUserComment && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))),
@@ -2792,8 +2791,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     null,
   );
   const explicitlyOpenedInputRef = useRef<string | null>(null);
+  const inputSelectionVersionRef = useRef(0);
   const knownPendingKeysRef = useRef<Set<string>>(new Set());
-  const lastInputUserCommentRef = useRef(latestUserCommentId);
+  const lastInputUserCommentRef = useRef(latestUserComment);
   useEffect(() => {
     const currentKeys = new Set(
       pendingComposerInputs.map((input) => input.key),
@@ -2801,8 +2801,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     const hasNewInput = pendingComposerInputs.some(
       (input) => currentPendingKeys.has(input.key) && !knownPendingKeysRef.current.has(input.key),
     );
-    const movedOn = lastInputUserCommentRef.current !== latestUserCommentId;
-    lastInputUserCommentRef.current = latestUserCommentId;
+    const previousUserComment = lastInputUserCommentRef.current;
+    const movedOn = latestUserComment && previousUserComment?.id !== latestUserComment.id
+      && (!previousUserComment || toMs(latestUserComment.createdAt) >= toMs(previousUserComment.createdAt));
+    lastInputUserCommentRef.current = latestUserComment;
     knownPendingKeysRef.current = currentKeys;
     setSelectedPendingKey((current) => {
       if (hasNewInput) return currentPendingInputs[0]?.key ?? null;
@@ -2815,8 +2817,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ? current
         : (currentPendingInputs[0]?.key ?? null);
     });
-    if (hasNewInput) setTakeoverMode("open");
-  }, [pendingComposerInputs, latestUserCommentId, currentPendingInputs, currentPendingKeys, isInputDismissed]);
+    if (hasNewInput) {
+      inputSelectionVersionRef.current += 1;
+      setTakeoverMode("open");
+    }
+  }, [pendingComposerInputs, latestUserComment, currentPendingInputs, currentPendingKeys, isInputDismissed]);
   const selectedPendingInput =
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
     currentPendingInputs[0] ??
@@ -2829,6 +2834,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
+    inputSelectionVersionRef.current += 1;
     if (!pendingReminderInputs.some(input => input.key === selectedPendingInput?.key)) {
       setSelectedPendingKey(pendingReminderInputs[0]?.key ?? null);
     }
@@ -2836,6 +2842,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [pendingReminderInputs, selectedPendingInput]);
   const showNextPendingInput = useCallback(() => {
     if (pendingReminderInputs.length < 2) return;
+    inputSelectionVersionRef.current += 1;
     const currentIndex = pendingReminderInputs.findIndex(
       (input) => input.key === selectedPendingInput?.key,
     );
@@ -2846,6 +2853,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [pendingReminderInputs, selectedPendingInput?.key]);
   const skipPendingInput = useCallback(
     async (input: PendingComposerInput) => {
+      inputSelectionVersionRef.current += 1;
       if (input.kind === "runtime") {
         await handleRuntimeRequestDecision(input.item, { action: "cancel" });
       } else {
@@ -2866,15 +2874,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
       } : undefined);
-      const previouslyOpenedInput = explicitlyOpenedInputRef.current;
+      const selectionVersion = ++inputSelectionVersionRef.current;
       explicitlyOpenedInputRef.current = null;
       setTakeoverMode("normal");
       try {
         await onAdd(...args);
         dismissInput(pendingComposerInputs.map(input => input.kind === "durable" ? input.interaction.id : input.key));
       } catch (error) {
-        if (selectedPendingInputKeyRef.current === selectedPendingInput?.key) {
-          explicitlyOpenedInputRef.current = previouslyOpenedInput;
+        if (inputSelectionVersionRef.current === selectionVersion) {
+          explicitlyOpenedInputRef.current = selectedPendingInput?.key ?? null;
+          setSelectedPendingKey(selectedPendingInput?.key ?? null);
           setTakeoverMode(takeoverMode);
         }
         rejectSubmission(attempt, error);
@@ -2961,6 +2970,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
+    inputSelectionVersionRef.current += 1;
     const key = pendingComposerInputs.find(input => input.kind === "durable" && input.interaction.id === interactionId)?.key ?? `interaction:${interactionId}`;
     explicitlyOpenedInputRef.current = key;
     setSelectedPendingKey(key);
@@ -3079,6 +3089,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           pendingCount: Math.max(1, pendingReminderInputs.length),
           content: takeoverContent,
           onDismiss: () => {
+            inputSelectionVersionRef.current += 1;
             void (async () => {
               setDismissError(null);
               try {
