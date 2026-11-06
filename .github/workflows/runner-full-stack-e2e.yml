@@ -1094,7 +1094,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1123,7 +1124,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1449,7 +1451,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1550,7 +1553,8 @@ jobs:
         if: needs.authorize.outputs.evidence_retention == 'private'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1588,7 +1592,8 @@ jobs:
         if: steps.manual_read_credentials_0.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1619,7 +1624,8 @@ jobs:
         if: steps.manual_read_credentials_1.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1650,7 +1656,8 @@ jobs:
         if: steps.manual_read_credentials_2.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1681,7 +1688,8 @@ jobs:
         if: steps.manual_read_credentials_3.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1712,7 +1720,8 @@ jobs:
         if: steps.manual_read_credentials_4.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1743,7 +1752,8 @@ jobs:
         if: steps.manual_read_credentials_5.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1774,7 +1784,8 @@ jobs:
         if: steps.manual_read_credentials_6.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1805,7 +1816,8 @@ jobs:
         if: steps.manual_read_credentials_7.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1824,7 +1836,8 @@ jobs:
         if: steps.manual_report.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           PRIVATE_REPORT_ROOT: ${{ github.workspace }}
           NODE_OPTIONS: ''
@@ -2018,7 +2031,8 @@ jobs:
         if: always() && steps.manual_report_credentials.outcome == 'success' && steps.manual_cells_downloaded.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
