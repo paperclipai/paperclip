@@ -303,7 +303,9 @@ describe("paperclip skill utils", () => {
     expect(humanInput).toContain("ask them together in one card");
     expect(humanInput).toContain("Do not post one card per question");
     expect(humanInput).toContain("only when it depends on an earlier answer");
+    expect(humanInput).toContain("If the user asks for one question at a time, ask only the next unanswered question");
     expect(referenceBody).toContain("ask them together in one card");
+    expect(referenceBody).toContain("If the user asks for one question at a time, ask only the next unanswered question");
   });
 
   it("honors only the current scoped runtime claim without removing legacy disposition", async () => {
