@@ -24,6 +24,7 @@ export const PROJECTS = [
   "server/src/__tests__/helpers/maintenance",
   "tests/e2e",
   "tests/lifecycle-baseline",
+  "tests/restart-chaos",
   "tests/runner-e2e",
   "tests/speko-native",
 ];

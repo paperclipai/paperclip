@@ -306,6 +306,10 @@ async function workspaceArchive(input: {
   };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
+  for (const relative of input.exclude ?? []) {
+    if (!safeRelative(relative)) fail("unsupported_filename");
+    excludedPaths.add(relative);
+  }
   const excluded = (next: string) => input.exclude?.some(item => next === item || next.startsWith(`${item}/`))
     || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/");
   const walk = async (root: string, skipGit = false) => {
