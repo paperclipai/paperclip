@@ -7,7 +7,7 @@ import { resolveAggregatorApp, type AppCatalogAggregator } from "@paperclipai/sh
 import { AggregatorDiscoveryUnavailableError, discoverArcadeApps, discoverExecutorApps, type DiscoveredApp } from "../../aggregator-app-discovery.js";
 import { COMPOSIO_APP_TOOLKITS, findComposioCatalogApp } from "@paperclipai/shared/aggregator-app-catalog";
 import type { ComposioAppAccount, ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
-import { composioAppAccounts, composioAppSetupResult } from "../../composio-app-setup.js";
+import { composioAddAccountLink, composioAppAccounts, composioAppSetupResult } from "../../composio-app-setup.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -487,8 +487,12 @@ export function createAggregatorAccounts(db: Db, { options, secrets, audit, cred
           outcome: "failure", reasonCode: "provider_unconfirmed", details });
         throw error;
       }
-      const result = composioAppSetupResult(payload, toolkit); // Reject provider errors before reporting success.
-      if (input.action === "add" && !result.authorizationUrl) throw unprocessable("Composio did not return a sign-in link. Check the app in Composio.");
+      let result = composioAppSetupResult(payload, toolkit); // Reject provider errors before reporting success.
+      if (input.action === "add") {
+        const authorizationUrl = composioAddAccountLink(payload);
+        if (!authorizationUrl) throw unprocessable("Composio did not return a sign-in link. Check the app in Composio.");
+        result = { status: "authorization_required", authorizationUrl };
+      }
       if (input.action !== "add") {
         const after = composioAppAccounts(await manage([{ name: toolkit, action: "list" }]), toolkit);
         if (!after || (input.action === "remove" ? after.some(account => account.id === input.accountId)
