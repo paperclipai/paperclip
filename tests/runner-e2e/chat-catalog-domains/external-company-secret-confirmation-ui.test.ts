@@ -1,5 +1,6 @@
 import {expect,it} from "vitest";
 import {chromium} from "@playwright/test";
+import {createRequire} from "node:module";
 import {readFile} from "node:fs/promises";
 import {acceptCompanySecretConfirmation,companySecretConfirmationHandoff,visibleCompanySecretConfirmationURL} from "./external-company-secret-confirmation.js";
 import {deploymentSecretGuidance} from "./external-company-secret.js";
@@ -19,3 +20,14 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("uses the a
   await page.close();
  }}finally{await browser.close();}
 },15000);
+
+it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY!=="1")("matches whitespace rendered by the actual production confirmation prompt",async()=>{
+ const source=await readFile(new URL("../../../ui/src/components/IssueThreadInteractionCard.tsx",import.meta.url),"utf8");
+ const jsx=source.match(/<div data-decision-prompt=\{compact \? true : undefined\}[^>]*>\s*\{interaction.payload.prompt\}\s*<\/div>/)?.[0];expect(jsx).toBeDefined();
+ const require=createRequire(new URL("../../../ui/package.json",import.meta.url)),React=require("react"),{renderToStaticMarkup}=require("react-dom/server"),{transformSync}=require("esbuild");
+ const render=new Function("React","interaction","compact",transformSync(`const rendered = (${jsx});`,{loader:"tsx",jsxFactory:"React.createElement"}).code+";return rendered;");
+ const prompt="In Settings > Secrets (`/RUN/company/settings/secrets`),\n  choose New secret and save the value, then accept this card. Do not paste it in chat.";
+ const markup=renderToStaticMarkup(render(React,{payload:{prompt}},true));
+ const browser=await chromium.launch({headless:true,...(process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?{executablePath:process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE}:{})});
+ try{const page=await browser.newPage();await page.setContent(`<section data-testid="task-chat-composer-takeover">${markup}</section>`);expect(await visibleCompanySecretConfirmationURL(page,{prompt},"http://127.0.0.1:3300","RUN",()=>700)).toBe("http://127.0.0.1:3300/RUN/company/settings/secrets");await page.locator("[data-decision-prompt]").evaluate(node=>node.textContent="Different secure-save request");await expect(visibleCompanySecretConfirmationURL(page,{prompt},"http://127.0.0.1:3300","RUN",()=>700)).rejects.toThrow();}finally{await browser.close();}
+},10000);

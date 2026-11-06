@@ -31,7 +31,7 @@ export async function visibleCompanySecretConfirmationURL(page:Page,handoff:{pro
   for(let p=node.parentElement;p;p=p.parentElement){const style=getComputedStyle(p),box=p.getBoundingClientRect();if(/hidden|clip/.test(style.overflowX)&&(rect.right<=box.left||rect.left>=box.right)||/hidden|clip/.test(style.overflowY)&&(rect.bottom<=box.top||rect.top>=box.bottom))throw new Error("Company confirmation is clipped");}
   return (node as HTMLElement).innerText;
  });
- if(text!==handoff.prompt)throw new Error("Company confirmation visible text changed");
+ if(text.replace(/\s+/g," ").trim()!==handoff.prompt.replace(/\s+/g," ").trim())throw new Error("Company confirmation visible text changed");
  const supported=(token:string)=>{try{const url=new URL(token,origin);return url.origin===origin&&url.pathname===`/${prefix}/company/settings/secrets`&&!url.username&&!url.password&&!url.search&&!url.hash?url.href:undefined;}catch{return;}};
  const tokens=text.match(/https?:\/\/[^\s`<>"')]+|(?<![\w/:])\/[^\s`<>"')]+/g)??[],urls=tokens.map(supported);
  if(!tokens.length||urls.some(url=>!url)||new Set(urls).size!==1)throw new Error("Company confirmation lacks its actual current-company route");
