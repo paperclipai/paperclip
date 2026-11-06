@@ -1025,9 +1025,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     const revisions = agentInstructionRevisionService(db);
     const target = { companyId, agentId: created.agent!.id, entryFile: "AGENTS.md" };
     const history = await revisions.history(target, instructionOperator);
-    expect(history.revisions).toHaveLength(0);
     const current = await revisions.readCurrent(target, instructionOperator);
     expect(current?.content).toBe(resetFile.content);
+    expect(history.revisions[0]).toMatchObject({ contentHash: current!.revision.contentHash, createdAt: current!.revision.createdAt });
   });
 
   it("blocks deleting a built-in agent", async () => {
