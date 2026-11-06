@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { activityLog, agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, completionContracts, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
-  executionWorkspaceRuntimeLeases, executionWorkspaces, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
+  executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaces, issueRecoveryActions, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
@@ -29,6 +29,7 @@ import { resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-syn
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { claimNativeRestartRecoveries } from "./native-runtime/native-restart-recovery.js";
 import { attemptNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalizer.js";
+import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
 import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
@@ -72,6 +73,72 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     return { companyId, workspaceId, issueId: issue!.id, cwd };
   }
   async function workspace(id: string) { return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!; }
+  async function pendingRepository(f: Awaited<ReturnType<typeof seed>>) {
+    const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: f.companyId,
+      executionWorkspaceId: f.workspaceId, requestedByIssueId: f.issueId, repositoryIdentity: "https://example.invalid/pending.git",
+      repoUrl: "https://example.invalid/pending.git", relativePath: ".paperclip-repositories/pending", requestedRef: "HEAD",
+      requestKey: "preserve-pending", requestKeys: ["preserve-pending"] }).returning();
+    return repository!;
+  }
+  it("preserves an unmaterialized pending repository request during offline migration", async () => {
+    const f = await seed(), repository = await pendingRepository(f);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    expect(authority.source).toEqual({ kind: "empty" });
+    expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
+      .toEqual([repository]);
+    await fs.rm(f.cwd, { recursive: true });
+    const reference = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "pending.pcws"), targetDir = path.join(root, "restored-pending");
+    await loadWorkspaceSnapshotArchive({ storage, reference: reference!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: reference!.manifestDigest });
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+    expect(await fs.lstat(path.join(targetDir, repository.relativePath)).catch(() => null)).toBeNull();
+  });
+  it("rejects publication if a pending repository becomes ready during capture", async () => {
+    const f = await seed(), repository = await pendingRepository(f);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const putFile = storage.putFile.bind(storage);
+    vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {
+      const result = await putFile(input);
+      await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: "b".repeat(40) })
+        .where(eq(executionWorkspaceRepositories.id, repository.id));
+      return result;
+    });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it.each(["online", "preparing", "needs_repair", "pinned", "branched", "failure", "directory", "symlink", "parent_symlink", "parent_file", "escaping_path"] as const)(
+    "keeps an unresolved repository request blocked when %s", async state => {
+      const f = await seed(), repository = await pendingRepository(f);
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+      if (state === "preparing" || state === "needs_repair") await db.update(executionWorkspaceRepositories)
+        .set({ state }).where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "pinned") await db.update(executionWorkspaceRepositories).set({ pinnedCommit: "a".repeat(40) })
+        .where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "branched") await db.update(executionWorkspaceRepositories).set({ branchName: "saved" })
+        .where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "failure") await db.update(executionWorkspaceRepositories).set({ failureCode: "repository_preparation_failed" })
+        .where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "escaping_path") await db.update(executionWorkspaceRepositories).set({ relativePath: "../absent" })
+        .where(eq(executionWorkspaceRepositories.id, repository.id));
+      if (state === "parent_symlink") await fs.symlink("missing-parent", path.dirname(path.join(f.cwd, repository.relativePath)));
+      if (state === "parent_file") await fs.writeFile(path.dirname(path.join(f.cwd, repository.relativePath)), "preserve parent file\n");
+      if (state === "directory" || state === "symlink") {
+        const target = path.join(f.cwd, repository.relativePath); await fs.mkdir(path.dirname(target), { recursive: true });
+        if (state === "directory") { await fs.mkdir(target); await fs.writeFile(path.join(target, "partial.txt"), "keep partial work\n"); }
+        else await fs.symlink("missing-target", target);
+      }
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: state !== "online" }))
+        .rejects.toThrow("repository_preparation_unresolved");
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+      if (state === "directory") expect(await fs.readFile(path.join(f.cwd, repository.relativePath, "partial.txt"), "utf8"))
+        .toBe("keep partial work\n");
+    });
   async function nestedFixture() {
     const parent = await seed(), workspaceId = randomUUID();
     const cwd = path.join(parent.cwd, ".paperclip", "worktrees", "child");
@@ -660,10 +727,16 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "root-history", "pruned", "retry", "source-excludes", "source-excludes-symlink", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-linked", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
+    let rootHistory: string | undefined;
+    if (state === "root-history") {
+      await fs.writeFile(path.join(f.cwd, "history-only.txt"), "saved root history\n");
+      await git(f.cwd, "add", "history-only.txt"); await git(f.cwd, "commit", "-qm", "root history");
+      rootHistory = await git(f.cwd, "rev-parse", "HEAD"); await git(f.cwd, "reset", "--hard", f.commit);
+    }
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
     if (state.startsWith("source-excludes")) {
@@ -675,6 +748,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     const sourceExcludes = state.startsWith("source-excludes") ? await fs.readFile(path.join(f.base, ".git", "info", "exclude")) : null;
     const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
+    if (rootHistory) expect(captured.manifest.preserved).toContain(rootHistory);
     const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
       { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
     const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/${id}.pcrp`;
@@ -691,11 +765,28 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await git(sourceCwd, "add", "."); await git(sourceCwd, "commit", "-qm", "nested source");
       const source = { id: randomUUID(), repoUrl: pathToFileURL(sourceCwd).href, repoRef: "main", cwd: sourceCwd };
       const name = managedProjectCheckoutName(source), nestedCwd = path.join(f.cwd, ".paperclip-repositories", name);
-      await git(f.cwd, "clone", source.repoUrl, nestedCwd); await git(nestedCwd, "checkout", "--detach");
+      let nestedPoint;
+      if (state === "nested-linked") {
+        const [base] = nestedRepositoryBaseCandidates({ companyId: f.companyId, projectId: f.projectId, repoUrl: source.repoUrl });
+        await fs.mkdir(path.dirname(base!), { recursive: true }); await git(root, "clone", source.repoUrl, base!);
+        await fs.mkdir(path.dirname(nestedCwd), { recursive: true });
+        await addNestedRepositoryWorktree({ base: base!, cwd: nestedCwd, repoUrl: source.repoUrl, repoRef: "main" });
+        await fs.writeFile(path.join(nestedCwd, "nested.txt"), "nested staged edit\n"); await git(nestedCwd, "add", "nested.txt");
+        await fs.writeFile(path.join(nestedCwd, "nested.txt"), "nested unstaged edit\n");
+        const captured = (await captureRestorePoint({ cwd: nestedCwd, upstreamCommits: [await git(sourceCwd, "rev-parse", "HEAD")] }))!;
+        const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
+          { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
+        const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/checkouts/${name}/${id}.pcrp`;
+        await storage.putFile({ companyId: f.companyId, namespace: "git-restore-points", objectKey,
+          originalFilename: null, contentType: "application/octet-stream", body: sealed.ciphertext });
+        nestedPoint = { schema: "paperclip.git-restore-point.v1" as const, id, generation, objectKey, byteSize: sealed.ciphertext.length,
+          sha256: sealed.sha256, key: sealed.key, head: captured.manifest.head, index: captured.manifest.index,
+          worktree: captured.manifest.worktree, ignored: captured.manifest.ignored, modes: captured.manifest.modes, headOnRemote: true };
+      } else { await git(f.cwd, "clone", source.repoUrl, nestedCwd); await git(nestedCwd, "checkout", "--detach"); }
       await fs.mkdir(path.join(nestedCwd, ".claude"));
       await fs.writeFile(path.join(nestedCwd, ".claude", "settings.local.json"), '{"permissions":{"allow":["Read"]}}');
       contents = await captureGitWorkspaceContents(f.cwd, { companyId: f.companyId, workspaceId: f.workspaceId },
-        [await readManagedCheckoutContents(nestedCwd, name, source)]);
+        [{ ...await readManagedCheckoutContents(nestedCwd, name, source), ...(nestedPoint ? { restorePoint: nestedPoint } : {}) }]);
       if (state !== "unapproved-nested") await db.insert(projectWorkspaces).values({ ...source, companyId: f.companyId, projectId: f.projectId, name: "Nested source" });
     }
     await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), metadata: {
@@ -808,8 +899,19 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    if (rootHistory) {
+      await git(targetDir, "reflog", "expire", "--expire=now", "--all"); await git(targetDir, "gc", "--prune=now");
+      expect(await git(targetDir, "show", `${rootHistory}:history-only.txt`)).toBe("saved root history");
+    }
+    if (state === "nested-linked") {
+      await fs.rm(contents!.checkouts[0]!.worktree!.base, { recursive: true });
+      const nested = path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name);
+      expect((await fs.lstat(path.join(nested, ".git"))).isDirectory()).toBe(true);
+      expect(await fs.readFile(path.join(nested, "nested.txt"), "utf8")).toBe("nested unstaged edit\n");
+      expect(await git(nested, "show", ":nested.txt")).toBe("nested staged edit");
+    }
     if (state.startsWith("nested")) {
-      expect(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, "nested.txt"), "utf8")).toBe("nested source work\n");
+      if (state !== "nested-linked") expect(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, "nested.txt"), "utf8")).toBe("nested source work\n");
       expect(JSON.parse(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, ".claude/settings.local.json"), "utf8")))
         .toEqual({ permissions: { allow: ["Read"] } });
     }
@@ -852,6 +954,26 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it("migrates an exactly authenticated empty retained payload without rewriting its missing source", async () => {
+    const f = await seed(); await fs.rm(path.join(f.cwd, "saved.txt"));
+    const retained = await retainDirectory(f); await storage.deleteObject(f.companyId, retained.objectKey);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    const before = await workspace(f.workspaceId);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });
+    const saved = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(saved.metadata)!;
+    expect(saved).toMatchObject({ status: "archived", closedAt: before.closedAt });
+    expect(saved.metadata?.isolatedTaskDirectoryRetention).toEqual(before.metadata?.isolatedTaskDirectoryRetention);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done", executionWorkspaceId: f.workspaceId });
+    expect(await fs.stat(f.cwd).catch(() => null)).toBeNull();
+    expect(await storage.headObject(f.companyId, retained.objectKey)).toMatchObject({ exists: false });
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "recovered-empty.pcws"), targetDir = path.join(root, "recovered-empty");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    expect(await fs.readdir(targetDir)).toEqual([]);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true, replayed: true });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBe(authority.snapshotId);
   });
   it.each(["missing", "expired", "corrupt"])("does not replace an unavailable retained directory with an empty workspace (%s)", async failure => {
     const f = await seed(), retained = await retainDirectory(f);

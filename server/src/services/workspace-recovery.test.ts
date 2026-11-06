@@ -43,6 +43,7 @@ import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
+import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
 import { activityLog } from "@paperclipai/db";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
@@ -377,6 +378,146 @@ describe("automatic retained workspace recovery", () => {
     expect(successors).toHaveLength(1);
     expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
   }, 30_000);
+
+  // S54: the automatic Retry's own run then lost its runner too. Saved-work
+  // recovery recovered its files and the hold offered Retry, but a click was
+  // admitted and never started a run; a second click joined the stuck intent.
+  async function failRetrySuccessorWithLostRunner(f: Awaited<ReturnType<typeof restartAllocationLostSource>>) {
+    const [successor] = await queuedSuccessors(f.companyId);
+    const runId = successor.id;
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: f.issueId, issueId: f.issueId,
+      errorCode: "setup_failed", error: "native_remote_recovery_lease_mismatch", startedAt: new Date(Date.now() - 30_000),
+      finishedAt: new Date(), responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "failed", runId, finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, successor.wakeupRequestId!));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issueId, runId, phase: "terminal_failure" });
+    for (const eventType of ["turn.started", "turn.completed"])
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId, agentId: f.agentId, eventType,
+        stream: "system", level: "info", message: eventType });
+    const [environment] = await db.insert(environments).values({ name: runId, driver: "sandbox" }).returning();
+    const providerLeaseId = randomUUID(), remote = path.join(root, runId, "remote");
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: runId,
+      environmentId: environment.id, provider: "daytona", providerLeaseId, leasePolicy: "retain_on_failure", status: "released",
+      cleanupStatus: "success", releasedAt: new Date(),
+      metadata: { remoteCwd: remote, driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true } }).returning();
+    const target: AdapterSandboxExecutionTarget = { ...targets.get(f.lease.id)!, leaseId: lease.id, remoteCwd: remote,
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId } };
+    targets.set(lease.id, target);
+    expect(await prepareNativeWorkspaceSync({ db, companyId: f.companyId, workspaceId: f.issueId, workspaceLocalDir: f.host,
+      runId, lease: lease as EnvironmentLease, target, resourceDisposition: "destroy" })).not.toBeNull();
+    await writeFile(path.join(remote, "retry-work.txt"), "retry turn work\n");
+    const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [lease.id] };
+    await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery,
+      conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(environmentLeases).set({ metadata: { ...lease.metadata,
+      remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, lease.id));
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      ownerType: "board", cause: "native_continuation_requires_reconciliation", fingerprint: runId, nextAction: "Manual repair required",
+      evidence: { runId, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery } }).returning();
+    const environmentRuntime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
+      acquireRunLease: vi.fn(), releaseRunLease: vi.fn(),
+      resumeRunLease: vi.fn(async (input: { lease: EnvironmentLease }) => ({ providerLeaseId: input.lease.providerLeaseId,
+        metadata: { remoteCwd: (input.lease.metadata as { remoteCwd?: string }).remoteCwd } })),
+      retryPendingSandboxTeardown: vi.fn(async (input: { lease: EnvironmentLease }) => ({ providerLeaseId: input.lease.providerLeaseId, state: "stopped" })),
+      resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [], declared: null, narrowing: null }),
+    }] });
+    return { runId, hold, environmentRuntime, claim: { ...f.claim, runId, remote: { providerLeaseId, remoteCwd: remote } } };
+  }
+
+  async function recoverRetryLostRunner() {
+    const f = await restartAllocationLostSource("settled", "runner_remote_process_identity_unavailable");
+    const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: true });
+    await vi.waitFor(async () => {
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, current => service.resumeRemoteStopComments(current)) ?? []);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    }, { timeout: 10_000, interval: 10 });
+    await vi.waitFor(async () => expect(await queuedSuccessors(f.companyId)).toHaveLength(1), { timeout: 10_000, interval: 50 });
+    const second = await failRetrySuccessorWithLostRunner(f);
+    const secondService = heartbeatService(db, { environmentRuntime: second.environmentRuntime });
+    // That automatic Retry's own loss is left to the user's visible Retry.
+    expect(await requestRestartInterruptedTurnRetry(db, second.claim)).toEqual({ requested: false, reason: "automatic_retry_used" });
+    await vi.waitFor(async () => {
+      await Promise.all(await reconcileRetainedWorkspaces(db, second.environmentRuntime, current => secondService.resumeRemoteStopComments(current)) ?? []);
+      expect(readSystemRecovery((await action(second.hold.id)).evidence)?.state).toBe("complete");
+    }, { timeout: 10_000, interval: 10 });
+    expect(await queuedSuccessors(f.companyId)).toHaveLength(0);
+    const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(blocker).toMatchObject({ runId: second.runId, cause: "native_continuation_requires_reconciliation", canRetry: true,
+      nextAction: "Saved work recovered. Retry or send a message to continue." });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: second.runId });
+    return { ...f, ...second, service: secondService, issue };
+  }
+
+  it("starts exactly one run when Retry is pressed after the automatic Retry's own run lost its runner", async () => {
+    const f = await recoverRetryLostRunner();
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(receipt).toMatchObject({ accepted: true });
+    await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+    const successors = await queuedSuccessors(f.companyId);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
+    // A replayed dispatch and a second click do not start another run.
+    await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+    await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(await queuedSuccessors(f.companyId)).toHaveLength(1);
+  }, 60_000);
+
+  it("does not let a Retry that could not start swallow a later Retry", async () => {
+    const f = await recoverRetryLostRunner();
+    // The first click's intent is declined at dispatch: its requester no longer
+    // has access. It must name that gate instead of waiting silently.
+    const first = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "departed-user",
+      actorSource: "session", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(first).toMatchObject({ accepted: true });
+    await f.service.resumeTaskRetry(f.companyId, first.requestId!);
+    expect(await queuedSuccessors(f.companyId)).toHaveLength(0);
+    const [declined] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!));
+    expect(declined).toMatchObject({ status: "deferred_issue_execution", runId: null,
+      payload: { executionWait: { reason: "retry_authority_denied" } } });
+    expect(await taskInterruptionPresentation(db, f.issue)).toMatchObject({ state: "failed", canRetry: true,
+      retryWait: { reason: "retry_authority_denied" } });
+    // A later click is a fresh attempt under the clicker's authority, not the stuck intent.
+    const second = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(second).toMatchObject({ accepted: true });
+    expect(second.requestId).not.toBe(first.requestId);
+    await f.service.resumeTaskRetry(f.companyId, second.requestId!);
+    // A late dispatch of the replaced intent cannot start a second run.
+    await f.service.resumeTaskRetry(f.companyId, first.requestId!);
+    const successors = await queuedSuccessors(f.companyId);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: second.requestId });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!)))[0])
+      .toMatchObject({ status: "skipped", error: "task_retry_replaced", runId: null });
+    const activity = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "issue.retry_requested"), eq(activityLog.actorId, "local-board")));
+    expect(activity.at(-1)?.details).toMatchObject({ requestId: second.requestId, replacedRequestId: first.requestId });
+  }, 60_000);
+
+  it("dispatches a Retry accepted during the pre-deploy drain once the restarted server resumes", async () => {
+    const f = await recoverRetryLostRunner();
+    startTaskDrain({ ttlMs: null });
+    let receipt: Awaited<ReturnType<typeof requestTaskRetry>>;
+    try {
+      receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
+        actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+      expect(receipt).toMatchObject({ accepted: true });
+      await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
+      expect(await queuedSuccessors(f.companyId)).toHaveLength(0);
+    } finally { stopTaskDrain(); }
+    // The drain is process-local; a restarted server redelivers the saved intent.
+    const restarted = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
+    await restarted.resumeExecutionWaitComments({ companyId: f.companyId });
+    await restarted.resumeExecutionWaitComments({ companyId: f.companyId });
+    const successors = await queuedSuccessors(f.companyId);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt!.requestId });
+  }, 60_000);
 
   async function failedWarmSource(exportOnly = false, hops = 0) {
     const f = hops ? await warmHandoffSource(hops) : await seed("native", true, "keep_running");
@@ -4935,7 +5076,11 @@ describe("automatic retained workspace recovery", () => {
   it.each([
     { retried: false, title: "continues a message written during Stop settlement once, without a second message, after recovery already resolved" },
     { retried: true, title: "continues a message carried by a workspace-busy retry once, without a second message, after recovery already resolved" },
-  ])("$title", async ({ retried }) => {
+    // S52: the user stopped a hung native run whose runner was unreachable.
+    // Its transport later failed closed, so the stopped run settled as failed
+    // (native_provider_terminal_failed) instead of cancelled.
+    { retried: false, failedClosed: true, title: "continues a message sent after Stop when the stopped run later failed closed" },
+  ])("$title", async ({ retried, failedClosed }) => {
     // S47: the user stops (or interrupts) a native run and sends a message.
     // The native source finishes only after its stop and workspace save
     // settle, so its finishedAt is later than the message. Recovery resolves
@@ -4947,8 +5092,13 @@ describe("automatic retained workspace recovery", () => {
     const { f, original, reset: message, wake, queued, deps, control, execution, queueDeps, queue } = t;
     queueDeps.resumeExecutionWaitComments.mockImplementation(control.resumeExecutionWaitComments);
     queueDeps.releaseIssueExecutionAndPromote.mockImplementation(control.releaseIssueExecutionAndPromote);
-    await db.update(issueComments).set({ body: "Actually, give me a 5-bullet summary instead." }).where(eq(issueComments.id, message.id));
-    // The Stop was requested before the message (fixture); settlement finished after it.
+    // The Stop was requested before the message; settlement finished after it.
+    // Pin the message after the recorded Stop: the fixture writes both within
+    // the same millisecond on a fast machine, which made this ordering flaky.
+    const stopRecordedAt = new Date(String(((await run(f.runId)).resultJson?.cancellation as { recordedAt?: string })?.recordedAt));
+    message.createdAt = new Date(stopRecordedAt.getTime() + 100);
+    await db.update(issueComments).set({ body: "Actually, give me a 5-bullet summary instead.", createdAt: message.createdAt })
+      .where(eq(issueComments.id, message.id));
     await db.update(heartbeatRuns).set({ finishedAt: new Date(message.createdAt.getTime() + 1_000) })
       .where(eq(heartbeatRuns.id, f.runId));
     let pending = queued;
@@ -5009,6 +5159,11 @@ describe("automatic retained workspace recovery", () => {
         }) ?? []);
         expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
       }, { timeout: 10_000, interval: 10 });
+      if (failedClosed) {
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_terminal_failed",
+          error: "Notification transport failed closed: runner_process_termination_unconfirmed" })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
       expect(await queue.claimQueuedRun(await run(pending.id))).toBeNull();
       expect(await run(pending.id)).toMatchObject({ status: "cancelled", errorCode: "execution_reconciliation_required", startedAt: null });
       const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));

@@ -58,6 +58,7 @@ import {
   unescapeAngleBracketEscapes,
 } from "../lib/angle-bracket-markdown";
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
+import { unescapeIntrawordUnderscores } from "../lib/underscore-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -188,7 +189,9 @@ function prepareMarkdownForEditor(value: string): string {
  * feed agent prompts and must stay in the clean, human-authored form.
  */
 function toStoredMarkdown(markdown: string): string {
-  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown));
+  // Unescape underscores first, on the exporter's exact text: removing `\<` or
+  // `\>` can turn following lines into HTML or blockquotes and move code ranges.
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeIntrawordUnderscores(markdown)));
 }
 
 function escapeRegExp(value: string): string {

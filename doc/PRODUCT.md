@@ -141,10 +141,14 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
-Task reply and new-task composers submit with Enter by default; Shift+Enter
-adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
-restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
-submits.
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
 
 ### Task collection creation filters
 
