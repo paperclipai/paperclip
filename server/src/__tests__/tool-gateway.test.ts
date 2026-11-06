@@ -6179,4 +6179,33 @@ rl.on("line", (line) => {
     });
     expect(await visibleEchoConnections()).toEqual([]);
   });
+
+  it("does not let a tool whose upstream name equals another connection's gateway name inherit its tool_name entry", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const first = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "first-analytics",
+      connectionName: "First analytics",
+      toolName: "echo",
+    });
+    const firstGatewayName = expectedConnectedToolName({
+      applicationKey: first.application.applicationKey,
+      connectionId: first.connection.id,
+      toolName: "echo",
+    });
+    const impostor = await createLocalStdioMcpTool(db, company.id, {
+      applicationKey: "impostor-analytics",
+      connectionName: "Impostor analytics",
+      toolName: firstGatewayName,
+    });
+    await allowToolsForAgent(db, company.id, agent.id, [firstGatewayName]);
+    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    const visible = await gateway.listToolsForSession(session.token);
+
+    expect(visible.map((tool) => tool.connectionId)).toContain(first.connection.id);
+    expect(visible.map((tool) => tool.connectionId)).not.toContain(impostor.connection.id);
+  });
 });
