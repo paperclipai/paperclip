@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { credentialHomeWithAvailableLeasePorts, credentialLeasePorts } from "../../../test/credential-lease-fixture.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -10,16 +12,80 @@ import { decideAcpxPermission } from "./permission-policy.js";
 
 const roots: string[] = [];
 const credential = JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "test-token", refresh_token: "test-refresh" } });
-async function home() { const path = await mkdtemp(join(tmpdir(), "grok-credential-test-")); roots.push(path); return path; }
+async function home() {
+  return await credentialHomeWithAvailableLeasePorts(async () => {
+    const path = await mkdtemp(join(tmpdir(), "grok-credential-test-"));
+    roots.push(path);
+    return path;
+  });
+}
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 describe("Grok isolated credentials", () => {
+  it("selects a fresh home before staging when unrelated listeners occupy two candidates", async () => {
+    const collision = await home();
+    const ports = credentialLeasePorts(collision);
+    const first = await occupyPort(ports[0]!);
+    let second: Awaited<ReturnType<typeof occupyPort>> | undefined;
+    let lease: Awaited<ReturnType<typeof stageManagedGrokCredential>> | undefined;
+    try {
+      second = await occupyPort(ports[1]!);
+      await writeFile(join(collision, "auth.json"), "unchanged", { mode: 0o600 });
+      const nextHome = vi.fn().mockResolvedValueOnce(collision).mockImplementation(home);
+      const selected = await credentialHomeWithAvailableLeasePorts(nextHome);
+      expect(selected).not.toBe(collision);
+      expect(nextHome).toHaveBeenCalledTimes(2);
+      expect(await readFile(join(collision, "auth.json"), "utf8")).toBe("unchanged");
+      await expect(occupyPort(ports[0]!)).rejects.toMatchObject({ code: "EADDRINUSE" });
+      await expect(occupyPort(ports[1]!)).rejects.toMatchObject({ code: "EADDRINUSE" });
+      lease = await stageManagedGrokCredential({ agentHomeDirectory: selected,
+        environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential } });
+      expect(lease.lifetimeFenceCandidates).toEqual(credentialLeasePorts(selected));
+      await expect(stageManagedGrokCredential({ agentHomeDirectory: selected,
+        environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential } })).rejects.toThrow(/active lease|owned/);
+    } finally {
+      await Promise.all([lease?.close(), second?.close(), first.close()]);
+    }
+  });
+  it("bounds fixture collisions and releases partial reservations without closing a foreign listener", async () => {
+    const collision = await home();
+    const ports = credentialLeasePorts(collision);
+    const foreign = await occupyPort(ports[1]!);
+    let released: Awaited<ReturnType<typeof occupyPort>> | undefined;
+    try {
+      const nextHome = vi.fn(async () => collision);
+      await expect(credentialHomeWithAvailableLeasePorts(nextHome)).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(nextHome).toHaveBeenCalledTimes(8);
+      released = await occupyPort(ports[0]!);
+      await expect(occupyPort(ports[1]!)).rejects.toMatchObject({ code: "EADDRINUSE" });
+      await expect(readFile(join(collision, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await Promise.all([released?.close(), foreign.close()]);
+    }
+  });
+  it("releases all successful fixture reservations before returning the home", async () => {
+    const directory = await home();
+    const reservations: Awaited<ReturnType<typeof occupyPort>>[] = [];
+    try {
+      for (const port of credentialLeasePorts(directory)) reservations.push(await occupyPort(port));
+      expect(reservations).toHaveLength(3);
+    } finally {
+      await Promise.all(reservations.map(reservation => reservation.close()));
+    }
+  });
+  it("propagates non-collision fixture failures without retrying", async () => {
+    const error = Object.assign(new Error("private home unavailable"), { code: "EACCES" });
+    const nextHome = vi.fn().mockRejectedValue(error);
+    await expect(credentialHomeWithAvailableLeasePorts(nextHome)).rejects.toBe(error);
+    expect(nextHome).toHaveBeenCalledTimes(1);
+  });
   it.each([{}, { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: "{}" }, { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: "not-json" }, { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential, XAI_API_KEY: "test-key" }])("rejects missing, malformed and ambiguous sources", async environment => {
     await expect(stageManagedGrokCredential({ agentHomeDirectory: await home(), environment })).rejects.toThrow(/required|malformed|ambiguous/);
   });
   it("stages only subscription auth privately and retains refreshed auth until controller copyback", async () => {
     const directory = await home();
     const lease = await stageManagedGrokCredential({ agentHomeDirectory: directory, environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential } });
+    expect(lease.lifetimeFenceCandidates).toEqual(credentialLeasePorts(directory));
     expect((await stat(join(directory, "auth.json"))).mode & 0o777).toBe(0o600);
     expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(credential);
     const refreshed = credential.replace("test-token", "refreshed-token");
@@ -93,3 +159,16 @@ describe("Grok isolated credentials", () => {
     expect(decideAcpxPermission("grok", "approve-all", request)).toBe("allow_once");
   });
 });
+
+async function occupyPort(port: number): Promise<{ close(): Promise<void> }> {
+  const server = createServer(socket => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, resolve);
+  });
+  return {
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    }),
+  };
+}
