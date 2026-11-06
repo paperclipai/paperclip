@@ -24,6 +24,9 @@ describe("unescapeEqualsSigns", () => {
       "Title\n\\=",
       "> Title\n> \\=\\=",
       "- item\n  \\=",
+      // The exporter escapes a leading `>` too; it still starts the line.
+      "\\> Title\n\\> \\=\\=\\=",
+      "\\> Title\n\\> \\=\\=  ",
       "say \\=\\=this",
       "that\\=\\= now",
       "a\\\\=b",

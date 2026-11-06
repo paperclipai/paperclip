@@ -24,6 +24,8 @@ function unescapeProse(text: string): string {
     for (; scanned < offset; scanned += 1) {
       const char = whole[scanned]!;
       if (char === "\n") lineStartOnly = true;
+      // The exporter writes a leading `>` as `\>`; it is still a quote marker.
+      else if (lineStartOnly && char === "\\" && whole[scanned + 1] === ">") scanned += 1;
       else if (char !== ">" && !/\s/u.test(char)) lineStartOnly = false;
     }
     const atLineStart = lineStartOnly;
