@@ -2266,8 +2266,15 @@ existing bounded disposition-only recovery policy.
 
 A bootstrap retry requires durable evidence that no provider session, provider
 event, or checkpoint exists. A runner report that `session.open` failed or was
-rejected qualifies, because that command runs before any prompt. An
-indeterminate `session.open` outcome does not qualify. Bootstrap retries back
+rejected qualifies, because that command runs before any prompt. A
+`session.open` that the controller stopped waiting for during runner startup
+(`<startup failure code>: PRP command session.open timed out`) also qualifies
+as `provider_session_open_timeout`: the controller sends a prompt only after
+`session.open` completes, and closing the failed transport stops that runner
+before the retry starts a new one. A provider session or provider event that
+became durable before the failure settled still makes the state ambiguous. A
+runner-reported indeterminate `session.open` outcome, and a timeout after
+startup completed, do not qualify. Bootstrap retries back
 off: about 30 seconds after the first attempt and about 60 seconds after the
 second, with jitter that is persisted with the failure. Before it schedules a
 bootstrap retry, the executor looks for a known provider limit for the agent.

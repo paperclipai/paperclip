@@ -7455,6 +7455,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_UNREAD
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
+  | "provider_session_open_timeout"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
   | "local_runtime_api_listener_unavailable"
@@ -7561,6 +7562,14 @@ export function nativeSessionFailureSourceCode(
       return "native_provider_model_rejected";
     }
     return "provider_session_open_rejected";
+  }
+  // The controller stopped waiting for session.open while runner startup was
+  // still incomplete: the transport reports its startup failure code only
+  // before startup completes, and session.open precedes every prompt. The
+  // outcome is unknown, so durable evidence (no provider event, no checkpoint)
+  // still decides whether a same-run bootstrap retry is safe.
+  if (/^(?:runner_local_connect_failed|runner_direct_wss_failed|runner_ingress_unavailable): PRP command session\.open timed out$/.test(message)) {
+    return "provider_session_open_timeout";
   }
   // This process has no HTTP listener (graceful shutdown closes it first), so
   // the control plane cannot hand a runner its callback origin. The lookup runs
@@ -7684,6 +7693,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_protocol_error",
     "native_runner_process_exited",
     "provider_session_open_rejected",
+    "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession

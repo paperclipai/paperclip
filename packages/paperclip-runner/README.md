@@ -403,7 +403,9 @@ and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
 
-Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+Pi and Claude cold provider admission have an absolute 60-second budget, and
+the runner's ACPX sidecar bounds their `session.open` at 60 seconds too. A cold
+Claude `session.open` timed out at the earlier 30-second bound on a loaded host. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
 while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;

@@ -480,6 +480,99 @@ describe("native provider startup retry", () => {
     expect(state.issue.status).toBe("in_progress");
   });
 
+  it.each(["runner_local_connect_failed", "runner_direct_wss_failed", "runner_ingress_unavailable"])(
+    "retries a %s session.open startup timeout on the same run within the bounded budget",
+    async (startupFailureCode) => {
+      const seeded = await seedRun(await createAgent());
+      // The controller stopped waiting for session.open during startup, before
+      // any provider identity, event, checkpoint, or prompt existed.
+      const timeout = () => new Error(`${startupFailureCode}: PRP command session.open timed out`);
+
+      const firstFailedAt = await failStartup(seeded, timeout());
+      let state = await read(seeded);
+      expect(state.coordinator).toMatchObject({
+        phase: "retryable_failure",
+        recoveryState: "resuming_session",
+        attempt: 1,
+        failureDetail: expect.objectContaining({
+          originalFailureCode: "provider_session_open_timeout",
+          recoveryMode: "bootstrap_retry",
+          providerSessionEstablished: false,
+          providerEventsExist: false,
+          checkpointExists: false,
+        }),
+      });
+      const [low, high] = backoffWindow(firstFailedAt, 1);
+      expect(state.coordinator.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(low);
+      expect(state.coordinator.nextAttemptAt!.getTime()).toBeLessThanOrEqual(high + 5_000);
+      expect(state.issue.status).toBe("in_progress");
+      expect(state.issue.executionRunId).toBe(seeded.runId);
+      expect(state.action).toMatchObject({
+        ownerType: "agent",
+        wakePolicy: { kind: "resume_native_run", runId: seeded.runId },
+      });
+
+      await failStartup(seeded, timeout(), { leaseOwner: await claimRetry(seeded) });
+      state = await read(seeded);
+      expect(state.coordinator).toMatchObject({ phase: "retryable_failure", attempt: 2 });
+      expect(state.issue.status).toBe("in_progress");
+
+      // At most two automatic attempts follow the first; then a person decides.
+      await failStartup(seeded, timeout(), { leaseOwner: await claimRetry(seeded) });
+      state = await read(seeded);
+      expect(state.coordinator).toMatchObject({
+        phase: "terminal_failure",
+        failureCode: "native_session_retry_exhausted",
+        attempt: 3,
+        nextAttemptAt: null,
+        failureDetail: expect.objectContaining({ originalFailureCode: "provider_session_open_timeout", recoveryMode: "bootstrap_retry" }),
+      });
+      expect(state.issue.status).toBe("blocked");
+      expect(state.action).toMatchObject({ ownerType: "board", cause: "native_session_retry_exhausted", wakePolicy: null });
+    },
+  );
+
+  it.each([
+    { name: "the provider session started before the timeout settled", eventType: "session.started", message: "runner_local_connect_failed: PRP command session.open timed out" },
+    { name: "a provider turn started", eventType: "turn.started", message: "runner_local_connect_failed: PRP command session.open timed out" },
+    { name: "the timeout came after startup completed", eventType: null, message: "provider_transport_failed: PRP command session.open timed out" },
+    { name: "a different startup command timed out", eventType: null, message: "runner_local_connect_failed: PRP command turn.start timed out" },
+  ])("never retries a timeout automatically when $name", async ({ eventType, message }) => {
+    const seeded = await seedRun(await createAgent());
+    provider.execute.mockReset().mockImplementation(async () => {
+      if (eventType) {
+        await db.insert(heartbeatRunEvents).values({
+          companyId, runId: seeded.runId, agentId: seeded.agentId, seq: 900, eventType, stream: "system",
+        });
+      }
+      throw new Error(message);
+    });
+    await expect(executePaperclipNativeSession({
+      db,
+      execution: seeded.execution,
+      runnerInstanceId: seeded.runnerInstanceId,
+      backend: {
+        descriptor: async () => { throw new Error("Unexpected provider descriptor call"); },
+        openSession: async () => { throw new Error("Unexpected provider session call"); },
+      },
+    })).rejects.toThrow("timed out");
+
+    const state = await read(seeded);
+    expect(state.coordinator).toMatchObject({
+      phase: "terminal_failure",
+      nextAttemptAt: null,
+      failureDetail: expect.objectContaining({ recoveryMode: "ambiguous_state" }),
+    });
+    expect(state.issue.status).toBe("blocked");
+    expect(await claimNativeSessionResumptions({
+      db,
+      runnerInstanceId: "startup-retry-test",
+      runIds: [seeded.runId],
+      now: new Date(Date.now() + 60 * 60_000),
+      deferIneligible: false,
+    })).toEqual([]);
+  });
+
   it("retries startup that a draining server interrupted before any provider session", async () => {
     const seeded = await seedRun(await createAgent());
     // A graceful shutdown closes the HTTP listener first; startup that reaches
