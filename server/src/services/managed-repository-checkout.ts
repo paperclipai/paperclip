@@ -1,3 +1,4 @@
+import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -67,6 +68,9 @@ export async function materializeManagedProjectWorkspace(
     objectCacheCompanyDirectory?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
+  await retainCurrentWorkspaceSource(cwd);
+  if (input.localSource) await retainCurrentWorkspaceSource(input.localSource);
+  if (input.gitObjectSource) await retainCurrentWorkspaceSource(input.gitObjectSource.cwd);
   if (input.localSource && input.gitObjectSource) throw new Error("Conflicting managed checkout sources");
   await fs.mkdir(path.dirname(cwd), { recursive: true });
   const stats = await fs.stat(cwd).catch(() => null);

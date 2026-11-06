@@ -3,6 +3,9 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { adapterExecutionControls } from "./adapter-execution-control.js";
+import { managedProjectSourceIdentity } from "./workspace-source-lock.js";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -46,9 +49,103 @@ export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
   return active ? ["active_execution_requires_drain"] : [];
 }
 
+export type OnlineOrdinarySource = {
+  root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
+};
+
+export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<OnlineOrdinarySource | null> {
+  if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
+  const root = await physicalPath(workspace.cwd);
+  const instance = await physicalPath(resolvePaperclipInstanceRoot());
+  const parts = path.relative(instance, root).split(path.sep);
+  const isolated = workspace.sourceIssueId && workspace.mode === "isolated_workspace"
+    && parts[1] === workspace.companyId && parts[2] === workspace.sourceIssueId
+    && (parts[0] === "isolated-workspaces" && parts.length === 3
+      || parts[0] === "isolated-workspace-attempts" && parts.length === 4 && /^[a-zA-Z0-9_-]+$/.test(parts[3]));
+  const projectId = await managedProjectSourceIdentity(workspace.companyId, root);
+  if (root !== workspace.cwd || !(isolated || projectId && path.dirname(root) === path.join(
+    instance, "projects", workspace.companyId, projectId))) return null;
+  const entry = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  if (!entry?.isDirectory() || entry.isSymbolicLink()) return null;
+  const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
+    cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef, providerType: executionWorkspaces.providerType,
+    repoUrl: executionWorkspaces.repoUrl, branchName: executionWorkspaces.branchName, sourceIssueId: executionWorkspaces.sourceIssueId,
+    strategyType: executionWorkspaces.strategyType, mode: executionWorkspaces.mode, status: executionWorkspaces.status,
+    metadata: sql<Record<string, unknown>>`jsonb_build_object(
+      'gitCacheRestoration', ${executionWorkspaces.metadata}->'gitCacheRestoration',
+      'nestedCloneMigrationPending', ${executionWorkspaces.metadata}->'nestedCloneMigrationPending',
+      'remoteWorkspace', ${executionWorkspaces.metadata}->'remoteWorkspace')`,
+  }).from(executionWorkspaces).where(inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"])).limit(1001);
+  if (rows.length > 1000) return null;
+  const aliases: typeof rows = [];
+  for (const row of rows) {
+    const cwd = rootOf(row);
+    if (!cwd || !overlaps(root, await physicalPath(cwd))) continue;
+    if (row.companyId !== workspace.companyId || row.cwd !== root || row.providerRef && row.providerRef !== root
+      || row.providerType !== "local_fs" || row.repoUrl || row.branchName || !row.sourceIssueId
+      || isolated && row.sourceIssueId !== workspace.sourceIssueId
+      || row.strategyType !== "project_primary" || !["isolated_workspace", "shared_workspace"].includes(row.mode)
+      || !["active", "idle", "in_review", "archived"].includes(row.status) || row.metadata?.remoteWorkspace
+      || row.metadata?.gitCacheRestoration || row.metadata?.nestedCloneMigrationPending) return null;
+    aliases.push(row);
+  }
+  if (!aliases.some(row => row.id === workspace.id) || aliases.length > 64) return null;
+  return { root, projectId, device: entry.dev, inode: entry.ino,
+    issueIds: [...new Set(aliases.map(row => row.sourceIssueId!))].sort(), workspaceIds: aliases.map(row => row.id).sort() };
+}
+
+export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, companyId: string,
+  source: OnlineOrdinarySource, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string): Promise<string[]> {
+  const workspaceIds = sql.join(source.workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
+  const issueIds = sql.join(source.issueIds.map(id => sql`${id}::uuid`), sql`, `);
+  const rows = await db.execute<{ reason: string }>(sql`
+    select 'active_execution' reason where exists (select 1 from heartbeat_runs r where r.company_id=${companyId}::uuid
+      and r.status in ('queued','running') and (r.issue_id in (${issueIds}) or r.native_issue_id in (${issueIds})
+        or r.context_snapshot->>'executionWorkspaceId' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
+        or r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})))
+    union all select 'task_writer_bound' where exists (select 1 from issues i where i.company_id=${companyId}::uuid
+      and i.id in (${issueIds}) and (i.execution_run_id is not null or i.checkout_run_id is not null))
+    union all select 'workspace_operation_unresolved' where exists (select 1 from workspace_operations o where o.company_id=${companyId}::uuid
+      and o.execution_workspace_id in (${workspaceIds}) and (${operationId ?? null}::uuid is null or o.id<>${operationId ?? null}::uuid)
+      and (o.status in ('running','pending') or o.metadata->>'uncertain'='true'))
+    union all select 'workspace_runtime_owned' where exists (select 1 from execution_workspace_runtime_leases l where l.company_id=${companyId}::uuid
+      and l.execution_workspace_id in (${workspaceIds}) and l.expires_at>clock_timestamp())
+    union all select 'workspace_runtime_service_unsettled' where exists (select 1 from workspace_runtime_services s where s.company_id=${companyId}::uuid
+      and s.status<>'stopped' and (s.execution_workspace_id in (${workspaceIds}) or s.project_workspace_id in
+        (select w.project_workspace_id from execution_workspaces w where w.company_id=${companyId}::uuid and w.id in (${workspaceIds}))))
+    union all select 'remote_copyback_unresolved' where exists (select 1 from heartbeat_runs r where r.company_id=${companyId}::uuid
+      and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
+      and (r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id}
+        and r.runner_profile_json#>>'{nativeWorkspaceSync,state}'='prepared'
+        or r.runner_profile_json->'nativeWorkspaceFinalizationOwner' is not null
+        or r.controller_lease_expires_at>clock_timestamp()))
+    union all select 'execution_finalization_unresolved' where exists (select 1 from native_run_finalizations f where f.company_id=${companyId}::uuid
+      and (f.issue_id in (${issueIds}) and f.issue_id<>${workspace.sourceIssueId}::uuid or f.run_id in
+        (select r.id from heartbeat_runs r where r.company_id=${companyId}::uuid
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and (f.phase not in ('committed','terminal_failure') or f.lease_owner is not null))
+    union all select 'workspace_recovery_unresolved' where exists (select 1 from issue_recovery_actions a where a.company_id=${companyId}::uuid
+      and (a.source_issue_id in (${issueIds}) and a.source_issue_id<>${workspace.sourceIssueId}::uuid or a.source_issue_id in
+        (select r.native_issue_id from heartbeat_runs r where r.company_id=${companyId}::uuid
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
+          and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.status in ('active','escalated'))
+    union all select 'repository_preparation_unresolved' where exists (select 1 from execution_workspace_repositories r where r.company_id=${companyId}::uuid
+      and r.execution_workspace_id in (${workspaceIds}) and r.state<>'ready')`);
+  const controlled = [...adapterExecutionControls.keys()];
+  if (controlled.length) {
+    const active = await db.execute(sql`select id from heartbeat_runs where company_id=${companyId}::uuid
+      and id in (${sql.join(controlled.map(id => sql`${id}::uuid`), sql`, `)})
+      and runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)}) limit 1`);
+    if (active.length) return [...rows.map(row => row.reason), "active_execution"];
+  }
+  return rows.map(row => row.reason);
+}
+
 /** Only the maintenance entry point can acknowledge that every old deployment
  * has stopped. A task-level migration hold cannot fence other path aliases. */
-export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false) {
+export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Workspace, writersStopped = false, onlineSource?: OnlineOrdinarySource) {
   if (writersStopped) return offlineWorkspaceMigrationBlockers(db);
   const cwd = rootOf(workspace);
   if (!cwd) return [];
@@ -58,7 +155,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
   ));
   const root = await physicalPath(cwd);
-  for (const row of local) if (rootOf(row) && overlaps(root, await physicalPath(rootOf(row)!)))
+  for (const row of local) if (!onlineSource?.workspaceIds.includes(row.id) && rootOf(row) && overlaps(root, await physicalPath(rootOf(row)!)))
     return ["overlapping_workspace_requires_maintenance"];
   const migrated = await db.select({ cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.phase, "remote_workspace_migration"),

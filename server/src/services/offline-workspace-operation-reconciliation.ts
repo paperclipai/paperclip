@@ -102,7 +102,6 @@ async function reconcileAttempt(db: Db, candidate: Candidate, input: Reconciliat
         metadata: { ...current.metadata, [input.mode === "offline" ? "offlineReconciliation" : "onlineReconciliation"]: provenance } }).where(and(
         eq(workspaceOperations.id, current.id), eq(workspaceOperations.companyId, current.companyId), unresolved(),
       ));
-      // Audit and attempt commit together. Online publication follows commit.
       const activity = await persistActivity(database, { companyId: current.companyId, actorType: "system",
         actorId: input.mode === "offline" ? "ephemeral-migration" : "legacy-workspace-preservation",
         action: "workspace_operation.reconciled", entityType: "workspace_operation", entityId: current.id,
@@ -150,10 +149,6 @@ export async function reconcileOfflineWorkspaceOperations(db: Db, input: {
   return reconcileWorkspaceOperations(db, { ...input, mode: "offline" });
 }
 
-/** Retire only a superseded attempt whose exact native finalization has already
- * committed. This changes no file, provider, task, result, or recovery intent.
- * Per-run physical ownership and publication row locks replace global idle;
- * expired owners, independent obligations, and incomplete receipts stay held. */
 export async function reconcileOnlineWorkspaceOperations(db: Db, input: {
   companyId: string; signal: AbortSignal;
 }) {

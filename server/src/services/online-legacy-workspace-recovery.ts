@@ -36,15 +36,10 @@ async function settledRun(db: ReadDb, workspace: Workspace, runId: string) {
   const [owner] = await db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, workspace.companyId), eq(nativeRunFinalizations.runId, run.id),
     eq(nativeRunFinalizations.issueId, run.nativeIssueId)));
-  // Expiry cannot retire a surviving controller or physical copyback process.
   if (!owner || owner.leaseOwner !== null) return null;
   return { run, owner };
 }
 
-/** Preserve the exact old source while changing its file authority, without
- * settling its provider, result, recovery, or task intent. The migration owner
- * must hold the locks below across capture and re-evaluate this proof under its
- * publication row locks. No global idle or expired-owner takeover is implied. */
 export async function inspectOnlineLegacyWorkspaceRecoverySource(db: ReadDb, input: {
   workspace: Workspace; runId: string;
 }): Promise<LegacyWorkspaceRecoverySource | null> {
@@ -87,9 +82,6 @@ export async function inspectOnlineLegacyWorkspaceRecoverySource(db: ReadDb, inp
       sourceIssueId: input.workspace.sourceIssueId }, source, allocation, retainedAllocations, owner, run }) } };
 }
 
-/** Use the already-held lifecycle-lock transaction, never an autocommit DB.
- * These are the physical finalizer's own advisory keys. A false result keeps
- * the source local; partial locks are released with the caller's transaction. */
 export async function lockOnlineLegacyWorkspaceRecoverySources(lock: Db, input: {
   companyId: string; sources: readonly LegacyWorkspaceRecoverySource[];
   holds?: readonly OnlineLegacyWorkspaceRecoveryHold[];
@@ -114,8 +106,6 @@ export type OnlineLegacyWorkspaceRecoveryHold = {
   fingerprint: string; finalizedHold: FinalizedWorkspaceRecoveryHold | null;
 };
 
-/** Task warnings remain active. A file-bearing hold is admitted only by the
- * existing exact finalized-source proof, with online physical-owner checks. */
 export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input: {
   workspace: Workspace; recovery: Recovery;
 }): Promise<OnlineLegacyWorkspaceRecoveryHold | null> {

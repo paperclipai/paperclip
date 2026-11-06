@@ -68,7 +68,6 @@ describe.skipIf(!support.supported)("online legacy source preservation", () => {
     await db.transaction(async tx => {
       expect(await lockOnlineLegacyWorkspaceRecoverySources(tx as unknown as Db, { companyId: f.companyId, sources: [source!] })).toBe(true);
       expect(await inspectOnlineLegacyWorkspaceRecoverySource(tx, f)).toEqual(source);
-      // Another owner cannot start a physical copyback during the handoff.
       await db.transaction(async otherTx => {
         expect(await tryLockNativeWorkspaceFinalization(otherTx as unknown as Db, f)).toBe(false);
       });

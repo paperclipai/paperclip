@@ -10,6 +10,7 @@ async function workspaceArchive(input: {
   targetDir?: string;
   expectedManifestDigest?: string;
   exclude?: string[];
+  requireNoGit?: boolean;
   signal?: AbortSignal;
   maxEntries?: number;
   maxManifestBytes?: number;
@@ -326,6 +327,7 @@ async function workspaceArchive(input: {
       const names = (await fs.readdir(directory)).sort();
       const inRepository = parentIsRepository || names.includes(".git");
       if (skipGit && names.includes(".git") && !excluded(relative ? `${relative}/.git` : ".git")) {
+        if (input.requireNoGit) fail("online_source_git_requires_shared_fence");
         // Validate the repository before any Git read below, including the
         // tracked check for node_modules, can use a damaged entry.
         if ((await fs.lstat(path.join(directory, ".git"))).isSymbolicLink()) fail("unsafe_git_link");
@@ -579,7 +581,7 @@ async function workspaceArchive(input: {
   }
 }
 
-export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; signal?: AbortSignal }) {
+export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; signal?: AbortSignal }) {
   return workspaceArchive({ ...input, kind: "capture" });
 }
 
@@ -617,6 +619,7 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
   const validation = [
     "remote_workspace_archive_changed", "remote_workspace_archive_unsupported_filename",
+    "remote_workspace_archive_online_source_git_requires_shared_fence",
     "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_invalid_git_repository",
     "remote_workspace_archive_unsafe_symlink",
     "remote_workspace_archive_unsupported_entry", "remote_workspace_archive_source_missing",

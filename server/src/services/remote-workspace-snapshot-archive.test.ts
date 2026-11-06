@@ -68,6 +68,19 @@ describe("portable remote workspace archives", () => {
     const promise = new Promise<void>(done => { resolve = done; });
     return { promise, resolve };
   }
+  it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
+    const cwd = await source(), repository = path.join(cwd, location);
+    await fs.mkdir(repository, { recursive: true });
+    await git(repository, "init", "--quiet");
+    await fs.writeFile(path.join(repository, "saved.txt"), "preserve original work\n");
+    await git(repository, "add", ".");
+    await git(repository, "commit", "-qm", "Saved work");
+    const before = await sourceBytes(cwd);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "fenced.pcws"), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+    await expect(capture(cwd)).resolves.toMatchObject({ manifestDigest: expect.any(String) });
+  });
   async function parallelSource() {
     const cwd = await source();
     for (const name of ["a", "b", "c", "d", "e", "f"]) {
