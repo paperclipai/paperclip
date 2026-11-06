@@ -660,7 +660,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("test server not bound");
     return { bare, repoUrl: `http://127.0.0.1:${address.port}/repository.git` };
   }
-  it.each(["present", "pruned", "retry", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "pruned", "retry", "missing-base", "missing-base-retry", "missing-base-uploaded-retry", "missing-base-changed-retry", "nested", "nested-retry", "nested-source-changed-retry", "unapproved-nested", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const remote = state.startsWith("missing-base") ? await serveRepository() : null;
     const f = await gitArchiveFixture(remote?.repoUrl);
     if (remote) { await git(remote.bare, "fetch", f.base, "main:refs/heads/main"); await git(remote.bare, "update-server-info"); }
@@ -676,7 +676,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       sha256: sealed.sha256, key: sealed.key, head: captured.manifest.head, index: captured.manifest.index,
       worktree: captured.manifest.worktree, ignored: captured.manifest.ignored, modes: captured.manifest.modes, headOnRemote: false };
     let contents;
-    if (state === "nested" || state === "unapproved-nested") {
+    if (state.startsWith("nested") || state === "unapproved-nested") {
       const sourceCwd = path.join(root, "nested-source");
       await fs.mkdir(sourceCwd); await git(sourceCwd, "init", "-q", "-b", "main");
       await fs.writeFile(path.join(sourceCwd, "nested.txt"), "nested source work\n");
@@ -688,7 +688,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await fs.writeFile(path.join(nestedCwd, ".claude", "settings.local.json"), '{"permissions":{"allow":["Read"]}}');
       contents = await captureGitWorkspaceContents(f.cwd, { companyId: f.companyId, workspaceId: f.workspaceId },
         [await readManagedCheckoutContents(nestedCwd, name, source)]);
-      if (state === "nested") await db.insert(projectWorkspaces).values({ ...source, companyId: f.companyId, projectId: f.projectId, name: "Nested source" });
+      if (state !== "unapproved-nested") await db.insert(projectWorkspaces).values({ ...source, companyId: f.companyId, projectId: f.projectId, name: "Nested source" });
     }
     await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), metadata: {
       createdByRuntime: true, gitBranchOwnershipVersion: 1, gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2", companyId: f.companyId,
@@ -725,7 +725,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(await fs.stat(f.cwd).catch(() => null)).toBeNull();
       return;
     }
-    if (state === "retry" || state === "missing-base-retry" || state === "missing-base-changed-retry") {
+    if (["retry", "missing-base-retry", "missing-base-changed-retry", "nested-retry", "nested-source-changed-retry"].includes(state)) {
       const put = storage.putFile.bind(storage); let fail = true;
       storage.putFile = async input => { const result = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return result; };
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
@@ -739,14 +739,23 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("restore reply lost");
       expect((await db.select().from(executionWorkspaceSnapshots))[0]?.status).toBe("uploaded");
     }
-    const interrupted = state.startsWith("missing-base-")
+    const interrupted = state.startsWith("missing-base-") || state.startsWith("nested-")
       ? (await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration")))[0] : null;
-    if (interrupted) {
+    if (interrupted && remote) {
       const tree = await git(remote!.bare, "rev-parse", "main^{tree}");
       const next = await git(remote!.bare, "commit-tree", tree, "-p", f.upstream, "-m", "unrelated remote release");
       await git(remote!.bare, "update-ref", "refs/heads/main", next);
       await git(remote!.bare, "update-ref", "refs/heads/new-unrelated-branch", next);
       await git(remote!.bare, "update-server-info");
+    }
+    if (state === "nested-source-changed-retry") {
+      await db.update(projectWorkspaces).set({ repoUrl: "https://example.invalid/replaced-repository.git" })
+        .where(eq(projectWorkspaces.id, contents!.checkouts[0]!.source.id));
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true }))
+        .rejects.toThrow("remote_workspace_migration_archived_git_source_unavailable");
+      expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+      expect((await workspace(f.workspaceId)).status).toBe("archived");
+      return;
     }
     if (state === "missing-base-changed-retry") {
       const get = storage.getObject.bind(storage); let expire = true;
@@ -781,7 +790,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
     await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
     expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
-    if (state === "nested") {
+    if (state.startsWith("nested")) {
       expect(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, "nested.txt"), "utf8")).toBe("nested source work\n");
       expect(JSON.parse(await fs.readFile(path.join(targetDir, ".paperclip-repositories", contents!.checkouts[0]!.name, ".claude/settings.local.json"), "utf8")))
         .toEqual({ permissions: { allow: ["Read"] } });

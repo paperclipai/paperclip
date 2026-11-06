@@ -1934,7 +1934,9 @@ An interrupted archived Git import reuses its original uploaded archive after
 authentication, including when the upload reply was lost. It does not rebuild
 that archive from today's remote branch pointers. The original import journal,
 restoration recipe, task binding, and execution fences must still match before
-publication. Imports from mutable local folders still recapture and compare the
+publication. Saved nested sources must still belong to the same company and
+project with the same repository URL; publication locks and rechecks those source
+rows. Imports from mutable local folders still recapture and compare the
 current files; a saved upload does not permit later local edits to be discarded.
 
 Shared physical folders require Cloud's offline enrollment maintenance process.
