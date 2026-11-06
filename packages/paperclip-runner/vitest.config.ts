@@ -4,8 +4,16 @@ import { fileURLToPath } from "node:url";
 
 import { configDefaults, defineConfig } from "vitest/config";
 import { RunnerSequencer } from "./scripts/vitest-sequencer.mjs";
+import { retryReporterEnabled, vitestRetryCount } from "../../scripts/ci/vitest-retry.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+const ciReporters = [
+  ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? [resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] : []),
+  ...(retryReporterEnabled() ? [resolve(packageRoot, "../../scripts/ci/retry-reporter.mjs")] : []),
+];
+// One retry in PR CI only (run-pr-vitest-lane.mjs runs `vitest run` here
+// without the root wrapper); see scripts/ci/vitest-retry.mjs.
+const retry = vitestRetryCount();
 
 export default defineConfig({
   resolve: {
@@ -15,9 +23,8 @@ export default defineConfig({
     ],
   },
   test: {
-    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
-      ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
-      : {}),
+    ...(ciReporters.length > 0 ? { reporters: [...configDefaults.reporters, ...ciReporters] } : {}),
+    ...(retry > 0 ? { retry } : {}),
     environment: "node",
     // Hermetic files also launch Runner and sidecar processes. Reserve CPU
     // capacity for their startup within the original readiness deadlines.

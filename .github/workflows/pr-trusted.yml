@@ -15,6 +15,9 @@ permissions:
 # the Honeycomb credential, so fork PRs cannot execute with it.
 env:
   PAPERCLIP_CI_PROFILE_DIR: ${{ github.workspace }}/.ci-profile
+  # Empty keeps the PR default of one Vitest retry (scripts/ci/vitest-retry.mjs).
+  # Set the CI_VITEST_RETRY repository variable to 0 to switch retries off.
+  PAPERCLIP_VITEST_RETRY: ${{ vars.CI_VITEST_RETRY }}
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
