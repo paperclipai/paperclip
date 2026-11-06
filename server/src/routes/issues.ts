@@ -16896,16 +16896,15 @@ export function issueRoutes(
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
         const freshResponse = locked.queue.entries.some(entry => entry.source?.requiresFreshSession);
-        const stoppedNativeQueue = locked.queue.protocol === "paperclip_runner_v1" &&
-          (!locked.activeRun || ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status));
+        // The UI offers Send whenever no turn is running. The issue's run may
+        // still be waiting to start or to retry: it has no turn to interrupt,
+        // so save the click and deliver the queue as soon as that run stops.
+        const previousRunNotRunning = !locked.activeRun || locked.activeRun.status !== "running";
+        const stoppedNativeQueue = locked.queue.protocol === "paperclip_runner_v1" && previousRunNotRunning;
         if ((locked.queue.protocol !== "legacy" && !freshResponse && !stoppedNativeQueue) || locked.state !== "deferred" ||
             !locked.queue.entries.length ||
             (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
           throw conflict("This queue does not support interruption");
-        }
-        if (locked.activeRun && locked.activeRun.status !== "running" &&
-            !["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status)) {
-          throw conflict("The previous run has not stopped");
         }
         if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
           throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
