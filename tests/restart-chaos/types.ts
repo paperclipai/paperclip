@@ -181,6 +181,8 @@ export interface TaskRecord {
   /** Workspace files present just before the first fault that hit this task (R2). */
   preFaultFiles: string[] | null;
   preFaultWorkspacePath?: string;
+  lastFaultAt?: number;
+  priorRetries?: RetryAttempt[];
   workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
   preFaultSnapshotError?: string | null;

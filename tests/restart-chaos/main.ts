@@ -129,7 +129,7 @@ async function main(): Promise<number> {
         faultsQueued += 1;
         faultWork.push(supervisor.fault(due.kind, due.holdMs, observer.plan.taskId, trigger).finally(() => { faultsQueued -= 1; }).then(receipt => {
           faults.push(receipt);
-          for (const candidate of exposed) { candidate.noteFault(receipt.faultId); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+          for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
         }, (error: Error & { receipt?: FaultReceipt }) => {
           if (error.receipt) faults.push(error.receipt);
           faultFailures += 1;

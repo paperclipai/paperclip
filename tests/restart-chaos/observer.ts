@@ -213,7 +213,10 @@ export class TaskObserver {
     }
   }
 
-  noteFault(faultId: string) { if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId); }
+  noteFault(faultId: string, startedAt?: number) {
+    if (!this.record.faultIds.includes(faultId)) this.record.faultIds.push(faultId);
+    if (startedAt !== undefined) this.record.lastFaultAt = Math.max(this.record.lastFaultAt ?? 0, startedAt);
+  }
 
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
@@ -292,7 +295,9 @@ export class TaskObserver {
     const status = sample.issueStatus ?? null;
     // C1: a follow-up posted after rest must be served before the task counts as resting.
     if (this.definition.followUp && !this.record.followUp) return;
-    if (status !== "done" && !this.record.retry && sample.interruption?.canRetry) {
+    const faultSinceRetry = this.record.retry !== null && (this.record.lastFaultAt ?? 0) > this.record.retry.at;
+    if (status !== "done" && (!this.record.retry || faultSinceRetry) && sample.interruption?.canRetry) {
+      if (this.record.retry) (this.record.priorRetries ??= []).push(this.record.retry);
       this.record.retry = await this.retry(sample, now);
       this.restCandidateSince = null;
       if (this.record.retry.accepted && this.record.deadlineAt !== null) this.record.deadlineAt = Math.max(this.record.deadlineAt, now + RETRY_BUDGET_MS);

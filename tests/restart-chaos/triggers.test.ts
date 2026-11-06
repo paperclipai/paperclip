@@ -156,6 +156,35 @@ describe("trigger firing", () => {
     expect(unclicked.record.triggerMissed).toEqual(["retry"]);
   });
 
+  it("clicks Retry once per fault: again only after a fault that started after the last click", async () => {
+    const state = { runs: [{ runId: "r1", status: "failed", finishedAt: new Date().toISOString() }] as Json[],
+      issue: { id: "i1", status: "blocked", interruption: { state: "failed", canRetry: true, observedRunId: "r1" } } };
+    const observer = new TaskObserver({ ...base }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    await observer.poll(start + 1_000 + 12_001);
+    const first = observer.record.retry!;
+    expect(first.accepted).toBe(true);
+    await observer.poll(start + 20_000);
+    await observer.poll(start + 20_000 + 12_001);
+    expect(observer.done).toBe(true);
+    expect(observer.record.retry).toBe(first);
+
+    const again = new TaskObserver({ ...base }, scriptedApi(state), lab, new Timeline(null), ready);
+    await again.launch();
+    const begin = again.record.createdAt!;
+    await again.poll(begin + 1_000);
+    await again.poll(begin + 1_000 + 12_001);
+    const clicked = again.record.retry!;
+    again.noteFault("f01", clicked.at + 1);
+    await again.poll(begin + 20_000);
+    await again.poll(begin + 20_000 + 12_001);
+    expect(again.done).toBe(false);
+    expect(again.record.priorRetries).toEqual([clicked]);
+    expect(again.record.retry).not.toBe(clicked);
+  });
+
   it("tool: fires its delay after bench.sh progress is first seen", async () => {
     const observer = new TaskObserver({ ...base, workload: "B5", trigger: "tool", triggerDelayMs: 20_000 },
       scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
