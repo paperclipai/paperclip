@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownWordStreaming } from "./MarkdownWordStreaming";
 import { queryKeys } from "../lib/queryKeys";
 import type { WorkspaceFileAvailabilityTarget } from "../lib/workspace-file-availability";
 
@@ -66,6 +67,7 @@ function renderMarkdown(
   children: string,
   seededIssues: Array<{ identifier: string; status: string; title?: string; cacheKey?: string }> = [],
   props: Partial<ComponentProps<typeof MarkdownBody>> = {},
+  streaming = false,
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -87,7 +89,9 @@ function renderMarkdown(
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MarkdownBody {...props}>{children}</MarkdownBody>
+        <MarkdownWordStreaming.Provider value={streaming}>
+          <MarkdownBody {...props}>{children}</MarkdownBody>
+        </MarkdownWordStreaming.Provider>
       </ThemeProvider>
     </QueryClientProvider>,
   );
@@ -628,6 +632,28 @@ describe("MarkdownBody", () => {
     expect(html).toContain("lucide-circle-dot");
     expect(html).toContain("GitHub issue:");
     expect(html.replace(/<[^>]*>/g, "")).toContain("paperclipai/paperclip#1778");
+  });
+
+  it.each([
+    ["https://github.com/acme/web/pull/241", "acme/web#241"],
+    ["https://github.com/acme/web/issues/42", "acme/web#42"],
+    ["https://github.com/acme/web", "acme/web"],
+  ])("compacts streaming URL text while preserving its word wrapper: %s", (href, label) => {
+    const html = renderMarkdown(href, [], {}, true);
+    expect(html).toContain(`class="conversation-stream-word">${label}</span>`);
+    expect(html).toContain(`href="${href}"`);
+    expect(html.replace(/<[^>]*>/g, "")).not.toContain(href);
+  });
+
+  it("preserves custom streaming labels and formatted URL labels", () => {
+    const href = "https://github.com/acme/web/pull/241";
+    const html = renderMarkdown(`[Review **the PR**](${href}) and [**${href}**](${href})`, [], {}, true);
+    expect(html).toContain("<strong>");
+    expect(html).toContain('class="conversation-stream-word"');
+    const text = html.replace(/<[^>]*>/g, "");
+    expect(text).toContain("Review the PR");
+    expect(text).toContain(href);
+    expect(text).not.toContain("acme/web#241");
   });
 
   it("keeps custom labels, formatted text, and authored titles", () => {

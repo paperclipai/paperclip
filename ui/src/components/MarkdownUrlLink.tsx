@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { cloneElement, isValidElement, type CSSProperties, type ReactNode } from "react";
 import { CircleDot, ExternalLink, GitPullRequest } from "lucide-react";
 import { GithubIcon } from "./icons/github-icon";
 import { parseGitHubLink } from "@/lib/github-link";
@@ -27,6 +27,20 @@ function renderLinkBody(children: ReactNode, leadingIcon: ReactNode, trailingIco
   </>;
 }
 
+function compactUrlLabel(children: ReactNode, href: string | undefined, label: string): ReactNode {
+  if (children === href) return label;
+  const child = Array.isArray(children) && children.length === 1 ? children[0] : children;
+  if (
+    isValidElement<{ className?: string; children?: ReactNode }>(child)
+    && child.type === "span"
+    && child.props.className?.split(/\s+/).includes("conversation-stream-word")
+    && child.props.children === href
+  ) {
+    return cloneElement(child, undefined, label);
+  }
+  return children;
+}
+
 export function MarkdownUrlLink({ href, children, title, style }: {
   href?: string;
   children: ReactNode;
@@ -36,7 +50,7 @@ export function MarkdownUrlLink({ href, children, title, style }: {
   const github = parseGitHubLink(href);
   const external = isExternalHttpUrl(href);
   const Icon = github?.kind === "pull_request" ? GitPullRequest : github?.kind === "issue" ? CircleDot : GithubIcon;
-  const label = github?.label && typeof children === "string" && children === href ? github.label : children;
+  const label = github?.label ? compactUrlLabel(children, href, github.label) : children;
   const leadingIcon = github ? <Icon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" /> : null;
   const trailingIcon = external && !github ? <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" /> : null;
   return <a

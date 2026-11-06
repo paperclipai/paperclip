@@ -509,7 +509,7 @@ These run the `@paperclipai/ui` Storybook on port `6006` and build the static ou
 
 **Inline links** mounts the shared Markdown renderer with GitHub repository,
 pull request, and issue references, custom labels, connected status metadata,
-and generic URL fallbacks. Pasted GitHub resource URLs use compact labels;
+generic URL fallbacks, and streaming playback. Pasted GitHub resource URLs use compact labels;
 the exact destination, query, and fragment stay intact. The presentation makes
 no remote metadata requests. Run its light/dark desktop/mobile checks with:
 

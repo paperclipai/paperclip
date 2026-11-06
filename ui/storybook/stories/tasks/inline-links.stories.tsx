@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
+import { MarkdownWordStreaming } from "@/components/MarkdownWordStreaming";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "@/components/MarkdownBody";
 
 const references: MarkdownExternalReferenceMap = {
@@ -55,7 +56,7 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Mounts MarkdownBody with synthetic text and one host-resolved metadata fixture. Covers URL-derived GitHub repository, pull request and issue icons, authored labels, exact anchors, generic links, code, wrapping, and existing connected status. No remote metadata requests, provider actions, or production persistence.",
+      notes: "Mounts MarkdownBody with synthetic text and one host-resolved metadata fixture. Covers URL-derived GitHub repository, pull request and issue icons, authored labels, exact anchors, generic links, code, wrapping, streaming playback labels, and existing connected status. No remote metadata requests, provider actions, or production persistence.",
     },
   },
 } satisfies Meta<typeof InlineLinksGallery>;
@@ -82,4 +83,9 @@ export const Narrow: Story = {
   ...Playground,
   parameters: { waitForViewport: true },
   globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+
+export const Streaming: Story = {
+  ...Playground,
+  decorators: [(Story) => <MarkdownWordStreaming.Provider value><Story /></MarkdownWordStreaming.Provider>],
 };
