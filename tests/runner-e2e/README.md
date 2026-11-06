@@ -1650,6 +1650,16 @@ case. All 20 imported case IDs and full names remain stable. The lane uses the
 existing native Codex/local cells and the existing native OpenCode/local
 task-workspaces cell. It does not qualify the historical 355-result snapshot.
 
+The sibling **Reliability — staging soak** plan runs the seven staging-soak
+reliability cases through this same lane: six on native OpenCode with DeepSeek
+1017, and `queue-steer` on steering-capable native Codex.
+Bootstrap it with `-f testops_plan=reliability -f testops_case=all` (or one case);
+a TestOps launch names its plan through its case IDs. A launch never mixes the
+two plans, and each keeps its own full-plan denominator. Its TestOps identities
+come from the trusted `runner-e2e-testops-registration.yml` workflow; until they
+are committed, selection fails closed. See
+[the Reliability plan](EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
 Only default-branch selection and reporting code receives this token. The
 ordinary paid provider jobs, their authorization and their evidence paths stay

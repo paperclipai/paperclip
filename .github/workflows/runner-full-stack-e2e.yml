@@ -49,9 +49,14 @@ on:
         type: string
         required: false
       testops_case:
-        description: "Product regression TestOps bootstrap: all, case name or case ID; leave empty for normal campaigns"
+        description: "TestOps plan bootstrap: all, case name or case ID; leave empty for normal campaigns"
         type: string
         required: false
+      testops_plan:
+        description: "TestOps plan for a testops_case bootstrap; a TestOps launch names its own plan"
+        type: choice
+        options: [product-regression, reliability]
+        default: product-regression
       ALLURE_JOB_RUN_ID:
         description: "Allure TestOps service input; its requested selection takes precedence"
         type: string
@@ -307,7 +312,7 @@ jobs:
           if-no-files-found: error
 
   testops_selection:
-    name: Bind Product regression TestOps selection
+    name: Bind TestOps plan selection
     needs: authorize
     if: github.event_name == 'workflow_dispatch' && (inputs.ALLURE_JOB_RUN_ID != '' || inputs.testops_case != '')
     runs-on: ubuntu-latest
@@ -348,10 +353,12 @@ jobs:
           SELECT_ENVIRONMENT: ${{ inputs.environment }}
           SELECT_CASE: ${{ inputs.case }}
           TESTOPS_CASE: ${{ inputs.testops_case }}
+          TESTOPS_PLAN: ${{ inputs.testops_plan || 'product-regression' }}
           ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
           ALLURE_USERNAME: ${{ inputs.ALLURE_USERNAME }}
-          ALLURE_LAUNCH_NAME: Product regression · ${{ github.run_number }}
-          ALLURE_LAUNCH_TAGS: product-regression,github-actions
+          # Names only a bootstrap launch; a TestOps launch already has its plan's name.
+          ALLURE_LAUNCH_NAME: ${{ inputs.testops_plan == 'reliability' && 'Reliability' || 'Product regression' }} · ${{ github.run_number }}
+          ALLURE_LAUNCH_TAGS: ${{ inputs.testops_plan == 'reliability' && 'reliability' || 'product-regression' }},github-actions
         run: node tests/runner-e2e/product-regression-testops-cli.mjs select product-testops/selection.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -526,9 +533,9 @@ jobs:
           {
             echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")"
             echo "needs_daytona=$(jq -r '.needsDaytona' <<< "$catalog_json")"
-            echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
+            echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId | startswith("runner-opencode")) or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
             echo "needs_native_binaries=$(jq -r '[.include[] | select((.profileId | startswith("runner-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
-            echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
+            echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId | startswith("runner-opencode")) or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
             echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
           } >> "$GITHUB_OUTPUT"
           if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
@@ -1173,7 +1180,7 @@ jobs:
           test -e "$daytona_root/node_modules/@daytonaio/sdk"
 
       - name: Materialize verified pinned OpenCode executable
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || startsWith(matrix.profileId, 'runner-opencode') || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
       - name: Install checksum-verified Grok executable
@@ -1188,7 +1195,7 @@ jobs:
           path: runner-e2e-build
 
       - name: Download immutable remote provider pack
-        if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        if: matrix.environmentId == 'daytona' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-'))
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_remote_provider_pack.outputs.provider_pack_artifact_name }}
@@ -1197,7 +1204,7 @@ jobs:
       - name: Verify and restore campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         env:
-          NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
+          NEEDS_RUNNER_TYPESCRIPT: ${{ startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
           NEEDS_NATIVE_BINARY: ${{ startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth' }}
         run: |
           set -euo pipefail
@@ -1217,7 +1224,7 @@ jobs:
           fi
 
       - name: Verify and restore remote provider pack
-        if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        if: matrix.environmentId == 'daytona' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-'))
         env:
           IMAGE_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
         run: |
@@ -1237,7 +1244,7 @@ jobs:
             packages/paperclip-runner/provider-pack/provider-pack.json >/dev/null
 
       - name: Qualify local provider Node interpreter
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth')
+        if: matrix.environmentId == 'local' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth')
         run: |
           node <<'NODE'
           const fs = require("node:fs");
@@ -2047,7 +2054,7 @@ jobs:
           fi
 
   publish_testops:
-    name: Publish bound Product regression results to TestOps
+    name: Publish bound TestOps plan results
     needs: [authorize, testops_selection, catalog, report]
     if: always() && needs.testops_selection.outputs.job_run_started == 'true' && inputs.image_only != true
     runs-on: ubuntu-latest
