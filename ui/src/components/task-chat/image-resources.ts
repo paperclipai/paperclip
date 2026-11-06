@@ -4,7 +4,6 @@ import type { TaskChatItem, TaskChatMaterializedResourceItem } from "./task-chat
 import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 
-/** Native upload receipts duplicate the linked image tile, rather than adding conversation. */
 export function imagePreparationReceiptIds(
   comments: readonly IssueChatComment[], attachments: readonly IssueAttachment[], products: readonly IssueWorkProduct[],
 ): Set<string> {
@@ -39,7 +38,6 @@ export function imageResourceSource(item: TaskChatItem) {
   return source?.contentPath && isImageLikeOutput(source.contentType, source.filename) ? source : null;
 }
 
-/** Keep chronology and turn boundaries; append new tiles without changing the row key. */
 export function groupImageResources<T extends TaskChatItem>(items: readonly T[]): T[] {
   const rows: T[] = [];
   let group: TaskChatMaterializedResourceItem | null = null;

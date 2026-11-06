@@ -117,7 +117,6 @@ export const Gallery = { render: () => <Feed />, play: async ({ canvasElement })
 } } satisfies Story;
 
 
-/** Includes the generated receipt between every pair of source images. */
 export const ProductionFeed = { render: () => {
   const agent = storybookAgents[0];
   const products = images.map((i, n) => ({ ...i.workProduct!, createdAt: new Date(1793971860000 + n * 3000), updatedAt: new Date(1793971860000 + n * 3000) }));

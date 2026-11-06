@@ -35,7 +35,6 @@ for (const theme of ["light", "dark"]) {
         expect(second!.y).toBe(first!.y);
         expect(second!.x).toBeGreaterThan(first!.x);
         expect(first!.width).toBeLessThan(200);
-        // Desktop uses four columns; mobile wraps to two and fits the viewport.
         expect(await grid.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(" ").length)).toBe(story === "mobile" ? 2 : 4);
       }
       if (story !== "unavailable-image") {

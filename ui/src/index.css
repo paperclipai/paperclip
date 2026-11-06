@@ -5324,7 +5324,6 @@ html:not(.dark) .coordinator-sidebar {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
 
-/* Compact image batches in task history and the live results stream. */
 :root {
   --tc-image-grid-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr));
   --tc-image-grid-max-width: 40rem;
