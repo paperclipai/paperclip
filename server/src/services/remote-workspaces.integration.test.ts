@@ -1675,13 +1675,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     } finally { await recovered.cleanup(); }
   }, 60_000);
 
-  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof"] as const)(
+  it.each(["saved", "dirty", "unsaved", "foreign_snapshot", "delete_requested", "deletion_race", "controller_claim_race", "stale_epoch", "unconfirmed_stop", "unknown_action", "historical_listener_guard", "historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message", "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unconfirmed_stop", "historical_listener_dirty", "historical_listener_stale_block", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_bad_preservation", "historical_listener_absent", "historical_listener_later_candidate", "historical_listener_late_proof", "historical_listener_lock_timeout"] as const)(
     "checks durable remote work at the native safe-replacement decision (%s)", async kind => {
       const historicalListener = kind.startsWith("historical_listener_");
       const processAcceptance = kind === "historical_listener_guard" && process.env.PAPERCLIP_TEST_HISTORICAL_LISTENER === "1";
       const scenario = kind === "historical_listener_late_proof" ? "dirty" : kind === "historical_listener_unconfirmed_stop" ? "unconfirmed_stop"
         : kind === "historical_listener_dirty" ? "dirty" : historicalListener ? "saved" : kind;
-      const shouldSchedule = scenario === "saved" && (!historicalListener || ["historical_listener_guard", "historical_listener_later_candidate"].includes(kind));
+      const shouldSchedule = scenario === "saved" && (!historicalListener || ["historical_listener_guard", "historical_listener_later_candidate", "historical_listener_lock_timeout"].includes(kind));
       const reserved = await reserve({ kind: "empty" }), first = await target("native-replacement-sandbox");
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
         lease: await lease(), target: first, assertOwned: async () => undefined });
@@ -1801,6 +1801,20 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         expect(await executionControlSchedule(db).replacement()).not.toBeNull();
         invalidateNativeReplacementDiscovery(db);
       }
+      if (kind === "historical_listener_lock_timeout") {
+        let release!: () => void, announce!: () => void;
+        const locked = new Promise<void>(resolve => { announce = resolve; });
+        const released = new Promise<void>(resolve => { release = resolve; });
+        const holder = db.transaction(async tx => {
+          await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, ids.issue)).for("update");
+          announce(); await released;
+        });
+        await locked;
+        try {
+          await expect(reconcileSafeNativeReplacements(db)).rejects.toThrow();
+          expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+        } finally { release(); await holder; }
+      }
       let replacement;
       if (scenario === "deletion_race" || scenario === "controller_claim_race") {
         let release!: () => void, announce!: () => void;
@@ -1845,7 +1859,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       }
       if (kind === "historical_listener_guard") expect(await getExecutionBlocker(db, ids.company, ids.issue)).toBeNull();
       if (["historical_listener_provider_event", "historical_listener_checkpoint", "historical_listener_resumed", "historical_listener_other_message",
-        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation", "historical_listener_dirty", "historical_listener_absent", "historical_listener_late_proof"].includes(kind)) {
+        "historical_listener_cancelled", "historical_listener_prior_session", "historical_listener_unknown_event", "historical_listener_budget", "historical_listener_stale_block", "historical_listener_bad_preservation", "historical_listener_dirty", "historical_listener_unconfirmed_stop", "historical_listener_absent", "historical_listener_late_proof"].includes(kind)) {
         expect(await executionControlSchedule(db).replacement()).toBeNull();
       }
       if (kind === "historical_listener_late_proof") {

@@ -198,12 +198,20 @@ export function invalidateNativeReplacementDiscovery(db: Db) {
   state.complete = false; state.rescan = true; state.generation++;
 }
 
-async function replacementHistoryReady(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+async function replacementHistoryReady(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string, retryDatabaseErrors = false) {
   try {
     const continuation = await buildExecutionContinuation({ db, companyId: run.companyId, issueId,
       agentId: run.agentId, context: record(run.contextSnapshot), summary: null, exposeLowTrustRaw: false });
     return continuation.unresolvedInteractionIds.length === 0;
-  } catch { return null; }
+  } catch (error) {
+    let cause: unknown = error;
+    for (let depth = 0; retryDatabaseErrors && depth < 4 && cause && typeof cause === "object"; depth++) {
+      const failure = cause as { code?: unknown; cause?: unknown };
+      if (typeof failure.code === "string" && /^[A-Z0-9_]+$/.test(failure.code)) throw error;
+      cause = failure.cause;
+    }
+    return null;
+  }
 }
 
 async function discoverNativeReplacements(db: Db, after: string | undefined, limit = 25) {
@@ -227,7 +235,7 @@ async function discoverNativeReplacements(db: Db, after: string | undefined, lim
           if (leases.every(lease => lease.releasedAt !== null)) {
             const evidence = await remoteWorkspaceReplacementEvidence(db, row.run, row.coordinator.issueId, leases);
             ready = Boolean(evidence?.workspacePreserved && evidence.providerStopped)
-              && await replacementHistoryReady(db, row.run, row.coordinator.issueId) === true;
+              && await replacementHistoryReady(db, row.run, row.coordinator.issueId, true) === true;
           }
         }
       }
@@ -276,7 +284,7 @@ export async function reconcileSafeNativeReplacements(
   const generation = discovery.generation;
   const selection = await discoverNativeReplacements(db, discovery.after);
   const candidates = selection.candidates;
-  let scheduled = 0;
+  let scheduled = 0, pendingFailures = 0;
   for (const { run, coordinator } of candidates) {
     try {
       if (
@@ -722,12 +730,14 @@ export async function reconcileSafeNativeReplacements(
       }
     } catch (error) {
       if (options.failpoint) throw error;
+      pendingFailures++;
       logger.warn(
         { runId: run.id },
         "Native replacement remains pending; another sweep will retry its durable decision",
       );
     }
   }
+  if (pendingFailures) throw new Error("native_replacement_decision_retry_required");
   settleReplacementDiscovery(discovery, selection.after, generation);
   return { scanned: selection.scanned, scheduled };
 }
