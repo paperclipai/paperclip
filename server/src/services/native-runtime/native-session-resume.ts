@@ -36,7 +36,7 @@ export function nativeToolContractFingerprintForTarget(
   return `sha256:${createHash("sha256")
     .update(
       JSON.stringify({
-        schema: "paperclip.native-tool-contract.v18",
+        schema: "paperclip.native-tool-contract.v19",
         executionTargetKind,
         advertisementPolicy: {
           // Direct provider threads retain declarations from thread/start.
@@ -46,6 +46,9 @@ export function nativeToolContractFingerprintForTarget(
           historicalChatAttachments:
             "always_advertised_conversation_binding_gated.v1",
           registerDeliverable: "verified_local_or_remote_workspace.v2",
+          // Advertised only to Codex runs admitted on an OpenAI API-key
+          // connection; the key stays in the server.
+          generateImage: "codex_openai_api_key_connection_server_key.v1",
           readChatAttachment: "always_advertised_run_scope_local_staging.v2",
           structuredHumanInput:
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
@@ -63,6 +66,7 @@ export function nativeToolContractFingerprintForTarget(
         },
         tools: [
           { name: "register_deliverable", version: 2 },
+          { name: "generate_image", semanticContract: "paperclip.server-openai-image-generation.v1", version: 1 },
           {
             name: "read_current_wake_comments",
             semanticContract: "paperclip.server-current-wake-comments.v1",

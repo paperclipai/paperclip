@@ -2,6 +2,10 @@ import { budgetServiceInTransaction } from "../budgets.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
+import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageIdentity, priceGeneratedImage, requestOpenAiImage, writeGeneratedImageLocally } from "./generate-image-tool.js";
+import { aiConnectionService } from "../ai-connections.js";
+import { createCostEventInTransaction } from "../costs.js";
+import { withOperationAccountingTransaction } from "../accounting-transaction.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -212,6 +216,8 @@ type Binding = {
   readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
   readRemoteTaskFile?: RemoteWorkspaceFileReader;
   installRemoteArtifact?: ArtifactInstaller;
+  /** Server-derived from the run's admitted OpenAI API-key connection; never tool input. */
+  imageGeneration?: { connectionId: string; grantId: string };
   readRemoteApiFile?: (path: string, maxBytes: number) => Promise<Buffer>;
   currentWakeComments?: CurrentWakeCommentsBinding;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
@@ -392,6 +398,7 @@ export class PaperclipRunnerToolAuthority {
     if (!this.binding.firstPartyOnly && !this.binding.museRuntime && !this.binding.dotRuntime && workMode === "standard"
       && this.binding.workspaceRoot && runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)
       && (this.binding.executionTargetKind === "remote" ? this.binding.installRemoteArtifact : process.platform === "linux")) definitions.push(DOWNLOAD_ARTIFACT_DEFINITION);
+    if (this.#imageGenerationAdvertised(workMode)) definitions.push(GENERATE_IMAGE_DEFINITION);
     definitions.push(READ_CURRENT_WAKE_COMMENTS_TOOL_DEFINITION);
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
@@ -413,6 +420,12 @@ export class PaperclipRunnerToolAuthority {
     if (!this.binding.museRuntime) await this.binding.assertBridgeAuthority?.();
     const context = await this.#boundContext({ tool: call.tool });
     const { run } = context;
+    if (call.tool === GENERATE_IMAGE) {
+      const input = generateImageSchema.safeParse(call.arguments);
+      const receipt = record(record(run.resultJson?.imageToolReceipts)[toolCallKey(call.callId)]);
+      return input.success && receipt.state === "completed" && receipt.digest === toolInputDigest(input.data)
+        && Object.hasOwn(receipt, "result") ? { result: receipt.result } : null;
+    }
     if (call.tool === DOWNLOAD_ARTIFACT) {
       try { return { result: await this.#downloadArtifact(call.arguments, true) }; }
       catch (error) {
@@ -637,6 +650,7 @@ export class PaperclipRunnerToolAuthority {
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
     if (call.tool === DOWNLOAD_ARTIFACT) return this.#downloadArtifact(call.arguments);
+    if (call.tool === GENERATE_IMAGE) return this.#generateImage(call.callId, call.arguments);
     if (call.tool === READ_TOOL_RESULT) {
       await this.#boundContext({ tool: call.tool });
       return this.#readToolResult(call.arguments);
@@ -1176,6 +1190,115 @@ export class PaperclipRunnerToolAuthority {
       await audit("unconfirmed").catch(() => undefined);
       throw error;
     }
+  }
+
+  #imageGenerationAdvertised(workMode: string) {
+    return Boolean(this.binding.imageGeneration) && !this.binding.firstPartyOnly && !this.binding.museRuntime && !this.binding.dotRuntime
+      && !this.binding.nativeReview && workMode === "standard" && Boolean(this.binding.workspaceRoot)
+      && (this.binding.executionTargetKind !== "remote" || Boolean(this.binding.installRemoteArtifact));
+  }
+
+  /**
+   * Makes one image with the run's existing OpenAI API key. The key is read
+   * here, in the server, and sent only to OpenAI; it never reaches the
+   * provider process or the agent's shell. One receipt per provider call ID
+   * means a retried or recovered call replays instead of paying twice.
+   */
+  async #generateImage(callId: string, value: unknown): Promise<unknown> {
+    const input = generateImageSchema.parse(value);
+    const binding = this.binding.imageGeneration;
+    const initial = await this.#boundContext({ tool: GENERATE_IMAGE });
+    if (!binding || !this.#imageGenerationAdvertised(initial.issue.workMode) || initial.issue.workMode !== "standard") {
+      throw forbidden("Image generation is unavailable to this run or provider");
+    }
+    const key = toolCallKey(callId);
+    const digest = toolInputDigest(input);
+    const priorReceipt = (resultJson: unknown) => {
+      const receipt = record(record(record(resultJson).imageToolReceipts)[key]);
+      if (!Object.keys(receipt).length) return undefined;
+      if (receipt.digest !== digest) throw badRequest("This tool call ID was already used for a different image request");
+      if (receipt.state === "completed" && Object.hasOwn(receipt, "result")) return { result: receipt.result };
+      if (receipt.state === "failed") throw badRequest(String(receipt.error ?? "Image generation failed"));
+      throw new SemanticToolOutcomeUnknownError("An earlier attempt of this image call did not finish. Call generate_image again with a new request if the image is still needed.");
+    };
+    const replay = priorReceipt(initial.run.resultJson);
+    if (replay) return replay.result;
+    const authorize = async () => {
+      const current = await this.#boundContext({ tool: GENERATE_IMAGE });
+      if (!this.#imageGenerationAdvertised(current.issue.workMode)) throw forbidden("Image generation is unavailable to this run or provider");
+      const decision = await authorizationService(this.db).decide({ actor: this.#privacyActor(current.run), action: "issue:mutate",
+        resource: { type: "issue", companyId: this.binding.companyId, issueId: current.issue.id } });
+      if (!decision.allowed) throw forbidden(decision.explanation);
+      await assertNoCaseHandoffMutation(this.db, this.binding.runId, this.binding.issueId);
+      return current;
+    };
+    const current = await authorize();
+    const connections = aiConnectionService(this.db);
+    const connection = await connections.selectImageGeneration({ companyId: this.binding.companyId, agentId: this.binding.agentId,
+      connectionId: binding.connectionId, grantId: binding.grantId, userId: current.run.responsibleUserId });
+    const apiKey = await connections.credential(connection, 0, { responsibleUserId: current.run.responsibleUserId, actorType: "agent",
+      actorId: this.binding.agentId, issueId: this.binding.issueId, heartbeatRunId: this.binding.runId });
+    if (!apiKey) throw forbidden("Image generation needs an OpenAI API key");
+    const setReceipt = (receipt: Record<string, unknown>, claim = false) => this.db.update(heartbeatRuns).set({
+      resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{imageToolReceipts}',
+        coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) || ${JSON.stringify({ [key]: { digest, ...receipt } })}::jsonb)`,
+    }).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId),
+      ...(claim ? [sql`not (coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) ? ${key})`] : [])))
+      .returning({ id: heartbeatRuns.id });
+    // Claim the call before spending; a concurrent duplicate replays the winner.
+    if (!(await setReceipt({ state: "started" }, true)).length) {
+      const [row] = await this.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
+      const raced = priorReceipt(row?.resultJson);
+      if (raced) return raced.result;
+      throw new SemanticToolOutcomeUnknownError("This image call is already in progress.");
+    }
+    const details = { model: GENERATE_IMAGE_MODEL, size: input.size, quality: input.quality, promptChars: input.prompt.length };
+    const audit = async (outcome: string, extra: Record<string, unknown> = {}) => { await logActivity(this.db, {
+      companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, runId: this.binding.runId,
+      action: "runner.image_generate", entityType: "issue", entityId: this.binding.issueId, details: { ...details, ...extra, outcome } }); };
+    await audit("started");
+    let image: Awaited<ReturnType<typeof requestOpenAiImage>>;
+    try {
+      image = await requestOpenAiImage({ ...input, apiKey });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : "Image generation failed";
+      await setReceipt({ state: "failed", error: message }).catch(() => undefined);
+      await audit("failed", { error: message }).catch(() => undefined);
+      throw badRequest(message);
+    }
+    const price = priceGeneratedImage(image);
+    const identity = imageIdentity(image.bytes);
+    const destination = generatedImageDestination(input.name);
+    const result = { outcome: "completed", path: destination, contentType: "image/png", ...identity, model: image.model, size: input.size,
+      costUsd: price.costUsd, guidance: "Saved in the workspace root. Move or copy it where the task needs it; use register_deliverable if the user should receive it." };
+    let saveError: unknown;
+    try {
+      await authorize();
+      if (this.binding.executionTargetKind === "remote") {
+        await this.binding.installRemoteArtifact!({ destination, ...identity, bytes: image.bytes, authorize: async () => { await authorize(); } });
+      } else {
+        await writeGeneratedImageLocally(this.binding.workspaceRoot!, destination, image.bytes);
+      }
+    } catch (error) { saveError = error; }
+    // The provider has charged for the image whether or not it was saved:
+    // always record the spend. The budget service evaluates hard-stops here.
+    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId, {
+      agentId: this.binding.agentId, issueId: this.binding.issueId, projectId: current.issue.projectId ?? null, heartbeatRunId: this.binding.runId,
+      provider: "openai", biller: "openai", billingType: "metered_api", model: image.model, costStatus: "estimated",
+      inputTokens: image.usage.textInputTokens + image.usage.imageInputTokens, outputTokens: image.usage.outputTokens,
+      costCents: price.costCents, pricingProvenance: price.pricingProvenance, providerRequestId: image.providerRequestId,
+      occurredAt: new Date(), idempotencyKey: `image_gen:${this.binding.runId}:${key}`,
+    }, publications));
+    if (saveError !== undefined) {
+      if (!(saveError instanceof SemanticToolOutcomeUnknownError)) {
+        await setReceipt({ state: "failed", error: "The image was generated but could not be saved to the workspace" }).catch(() => undefined);
+      }
+      await audit("unconfirmed", { destination, ...identity, costCents: price.costCents }).catch(() => undefined);
+      throw saveError;
+    }
+    await setReceipt({ state: "completed", result });
+    await audit("completed", { destination, ...identity, costCents: price.costCents });
+    return result;
   }
 
   async #readToolResult(value: unknown): Promise<unknown> {
