@@ -215,6 +215,19 @@ function boardActor(input: {
   };
 }
 
+// The first case in this file pays the one-time transform of the whole route
+// module graph, because `beforeEach` calls `vi.resetModules()` and the first
+// `createApp` is what pulls `routes/companies.ts` and its imports in. Later
+// cases re-import from the transform cache and take about 1.5s each. The first
+// one took 40.7s on the machine this was written on, against the 15s
+// `testTimeout` in `server/vitest.config.ts`, so it expired and reported
+// `Test timed out in 15000ms` while saying nothing about the authorization
+// behaviour it exists to check. The cost is not in the case: it tracks the size
+// of the module graph, which grew from 1626 to 1848 source files between two
+// rebases of this branch. So the budget is named here rather than the work
+// being cut.
+const COLD_MODULE_GRAPH_TIMEOUT_MS = 120_000;
+
 describe("company route cross-company authorization", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -244,6 +257,7 @@ describe("company route cross-company authorization", () => {
       const directory = await request(app).get("/api/companies").expect(200);
       expect(directory.body.map((company: { id: string }) => company.id)).toEqual([companyBId, companyAId]);
     },
+    COLD_MODULE_GRAPH_TIMEOUT_MS,
   );
 
   it.each([false, true])("returns no navigable companies without memberships (admin=%s)", async (isInstanceAdmin) => {
