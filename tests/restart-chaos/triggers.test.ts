@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChaosApi } from "./api.js";
+import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
 import { QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
@@ -207,6 +207,14 @@ describe("ledger load", () => {
       [{ faultId: "f01", loadAvg1m: 12.5 }, { faultId: "f02", loadAvg1m: 21 }, { faultId: "f03", loadAvg1m: 40 }]);
     expect(line.maxLoadAvg1m).toBe(21);
     expect(ledgerLine(plan, record, grade, "sha", null).maxLoadAvg1m).toBeUndefined();
+  });
+});
+
+describe("socket race", () => {
+  it("matches only the undici setTypeOfService EINVAL race", () => {
+    expect(isSocketTypeOfServiceRace(Object.assign(new Error("setTypeOfService EINVAL"), { code: "EINVAL", syscall: "setTypeOfService" }))).toBe(true);
+    expect(isSocketTypeOfServiceRace(Object.assign(new Error("x"), { code: "EINVAL", syscall: "write" }))).toBe(false);
+    expect(isSocketTypeOfServiceRace(null)).toBe(false);
   });
 });
 

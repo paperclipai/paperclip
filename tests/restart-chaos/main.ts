@@ -12,7 +12,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { ChaosApi } from "./api.js";
+import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
@@ -81,6 +81,12 @@ async function main(): Promise<number> {
   const lines: LedgerLine[] = [];
   let anyFailure = false;
   let harnessError: unknown;
+  process.on("uncaughtException", error => {
+    if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
+    timeline.add("harness_uncaught_exception", { error: error.stack ?? String(error) });
+    harnessError ??= error;
+    interrupted = true;
+  });
   let faultFailures = 0;
   let faultsQueued = 0;
   try {
