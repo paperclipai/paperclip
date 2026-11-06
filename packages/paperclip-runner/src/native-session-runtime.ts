@@ -57,7 +57,29 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
 const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
-type NativeSessionCleanupDomain = string;
+/**
+ * A retained cleanup owner can only still hold resources it was bound to.
+ * `key` names the backend (company, backend kind/name, optional remote
+ * resource). `resources` names the task and provider conversation the owner
+ * may still be writing: its issue and normalized session. Admission is gated
+ * only when both the backend and one of those resources match, so one
+ * session's unrecoverable close cannot block unrelated tasks in the company.
+ */
+interface NativeSessionCleanupDomain {
+  key: string;
+  resources: readonly string[];
+}
+
+function nativeSessionCleanupScopeBlocks(
+  owner: NativeSessionCleanupDomain,
+  admission: NativeSessionCleanupDomain,
+): boolean {
+  return (
+    owner === admission ||
+    (owner.key === admission.key &&
+      owner.resources.some((resource) => admission.resources.includes(resource)))
+  );
+}
 
 const failedSessionCleanupOwners = new Map<
   Promise<void>,
@@ -112,7 +134,7 @@ export function completeRetainedNativeSessionCleanup(
   const matches = [...quarantinedSessionCleanups].filter((entry) => {
     const identity = entry.session.identity();
     return (
-      entry.domain === domain &&
+      entry.domain.key === domain &&
       Object.entries(proof.binding).every(
         ([key, value]) => identity[key as keyof typeof identity] === value,
       )
@@ -151,7 +173,7 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
     const identity = session.identity();
     // Domains are created internally from company, backend kind/name, and the
     // optional remote resource. Local domains have no fourth element.
-    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    const [, , , remoteCleanupScope] = JSON.parse(domain.key) as string[];
     return identity.companyId === binding.companyId && identity.runId === binding.runId &&
       remoteCleanupScope === binding.remoteCleanupScope;
   });
@@ -175,7 +197,7 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
 }): boolean {
   const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    const parts = JSON.parse(domain) as string[];
+    const parts = JSON.parse(domain.key) as string[];
     return parts.length === 3 && identity.companyId === binding.companyId && identity.runId === binding.runId;
   });
   if (matches.some(entry => entry.attempt || entry.recovery ||
@@ -230,6 +252,12 @@ export interface ExecuteNativeSessionOptions {
   sessionGoalControl?: NativeSessionGoalControl | null;
   /** Resume the active durable session goal after a bounded heartbeat rollover. */
   resumeSessionGoalHeartbeat?: boolean;
+  /**
+   * Compact the resumed provider session's context instead of starting an
+   * ordinary turn. The run settles with a synthesized result once the
+   * provider's compaction turn completes; it does no task work.
+   */
+  sessionCompaction?: { requestId: string; contextTokensBefore?: number } | null;
   /**
    * Wait for the backend's close contract before returning a durable result.
    * Use this only for backends whose close path is internally bounded and
@@ -796,18 +824,22 @@ async function retryQuarantinedSessionCleanups(
     if (
       [...quarantinedSessionCleanups].some(
         (cleanup) =>
-          cleanup.domain === cleanupDomain && cleanup.operatorRecoveryRequired,
+          nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain) &&
+          cleanup.operatorRecoveryRequired,
       )
     ) {
       throw new NativeSessionCleanupQuarantinedError();
     }
     const cleanupOwners = new Set<Promise<void>>(
       [...failedSessionCleanupOwners]
-        .filter(([, domain]) => domain === cleanupDomain)
+        .filter(([, domain]) =>
+          nativeSessionCleanupScopeBlocks(domain, cleanupDomain),
+        )
         .map(([owner]) => owner),
     );
     for (const cleanup of quarantinedSessionCleanups) {
-      if (cleanup.domain !== cleanupDomain) continue;
+      if (!nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain))
+        continue;
       if (cleanup.timer) {
         clearTimeout(cleanup.timer);
         cleanup.timer = null;
@@ -863,18 +895,19 @@ async function retryQuarantinedSessionCleanups(
     }
   }
   if (
-    [...failedSessionCleanupOwners.values()].some(
-      (domain) => domain === cleanupDomain,
+    [...failedSessionCleanupOwners.values()].some((domain) =>
+      nativeSessionCleanupScopeBlocks(domain, cleanupDomain),
     ) ||
-    [...quarantinedSessionCleanups].some(
-      (cleanup) => cleanup.domain === cleanupDomain,
+    [...quarantinedSessionCleanups].some((cleanup) =>
+      nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain),
     )
   ) {
     // Admission may have pulled a scheduled retry forward and observed a
     // complete recovery batch that still failed. Restore autonomous ownership
     // before rejecting so cleanup cannot remain dormant until another run.
     for (const cleanup of quarantinedSessionCleanups) {
-      if (cleanup.domain !== cleanupDomain) continue;
+      if (!nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain))
+        continue;
       scheduleQuarantinedSessionCleanup(cleanup);
     }
     throw new Error(
@@ -901,6 +934,8 @@ async function consumeTurn(
   resumeInterruptedTurn?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   checkpointGovernedWait?: (wait: NonNullable<PersistedNativeSession["governedWait"]>, signal: AbortSignal) => Promise<void>,
   initialGovernedWait?: PersistedNativeSession["governedWait"],
+  /** Settles a compaction-only turn, which reports no semantic result. */
+  compactionResult?: PrpStructuredRunResult,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -1289,6 +1324,14 @@ async function consumeTurn(
       }
       if (isTurnTerminal(event)) {
         if (providerFailure) throw providerFailure;
+        if (compactionResult && event.eventType === "turn.completed") {
+          return {
+            event,
+            eventCount,
+            highestContiguousSourceSeq,
+            governedResult: compactionResult,
+          };
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         return {
@@ -1532,6 +1575,43 @@ export async function applyNativeSessionGoalControl(
       ? { tokenBudget: control.tokenBudget }
       : {}),
   });
+}
+
+/**
+ * Result for a compaction-only run. Compaction does no task work, so the
+ * result yields back to the same agent; the server's status arbiter preserves
+ * the task status and schedules nothing for a compaction run.
+ */
+export function sessionCompactionResult(
+  input: NativeExecutionInput,
+  requestId: string,
+): PrpStructuredRunResult {
+  const summary = "Context compacted on request.";
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary,
+    completionClaim: {
+      contractRevision: input.completionContract.contract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.contract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: "unknown",
+        evidenceRefs: [],
+        explanation: "A context compaction run does no task work.",
+      })),
+      remainingWork: [],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    continuation: {
+      kind: "same_agent",
+      summary: "The agent's context was compacted; the task continues unchanged.",
+      idempotencyKey: `context-compaction:${input.binding.issueId}:${requestId}`,
+    },
+  };
 }
 
 function sessionGoalResult(
@@ -1961,12 +2041,24 @@ export async function executeNativeSession(
 ): Promise<NativeSessionExecutionResult> {
   const input = parseNativeExecutionInput(options.input);
   const descriptor = await options.backend.descriptor();
-  const cleanupDomain = JSON.stringify([
-    input.binding.companyId,
-    descriptor.kind,
-    descriptor.name,
-    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
-  ]);
+  const cleanupDomain: NativeSessionCleanupDomain = {
+    key: JSON.stringify([
+      input.binding.companyId,
+      descriptor.kind,
+      descriptor.name,
+      ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
+    ]),
+    // A failed close can leave its provider owning this task's workspace and
+    // this provider conversation. Nothing else is shared between sessions of
+    // the same backend, so other tasks are not gated by it.
+    resources: [
+      JSON.stringify(["issue", input.binding.issueId]),
+      JSON.stringify([
+        "session",
+        input.session.normalizedSessionId ?? `run:${input.binding.runId}`,
+      ]),
+    ],
+  };
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {
     const capabilities = descriptor.runtimeContextCapabilities;
@@ -2394,7 +2486,10 @@ export async function executeNativeSession(
     let restartContinuationStarted = false;
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
-          input.provider.kind !== "codex" || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
+          // A compaction-only run never continues task work after a restart.
+          // Runnerd records a restart-lost turn only for these providers, after
+          // proving the old process ended and restoring the same conversation.
+          !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
           event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
           event.turnId !== persistedSession?.activeTurnId) return false;
@@ -2571,13 +2666,19 @@ export async function executeNativeSession(
                 await checkpoint(signal);
               },
               governedWait,
+              options.sessionCompaction
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : undefined,
             )
           : Promise.resolve({
               event: recoveryTerminal,
               eventCount: 0,
               highestContiguousSourceSeq:
                 replayedDisposition === null ? 0 : recoveryTerminal.sourceSeq,
-              governedResult: null,
+              // A restarted compaction run adopts its completed compaction turn.
+              governedResult: options.sessionCompaction && recoveryTerminal.eventType === "turn.completed"
+                ? sessionCompactionResult(input, options.sessionCompaction.requestId)
+                : null,
             });
       // Event consumption must begin before startTurn so an eager provider cannot
       // outrun us. Observe its rejection immediately, though: if startTurn or
@@ -2592,7 +2693,28 @@ export async function executeNativeSession(
             !adoptedProviderTerminal &&
             !checkpointedDispositionTerminal &&
             !dispositionRecoveryStillOwned));
-        if (options.sessionGoalControl) {
+        if (options.sessionCompaction) {
+          // Compaction summarizes existing provider context. A new session or
+          // one that is still running a turn has nothing safe to compact.
+          // A restart of this same compaction run keeps waiting on (or adopts)
+          // the compaction turn it already started instead of starting another.
+          const resumingThisCompaction = recovered && !shouldStartFreshTurn &&
+            persistedSession?.identity.runId === input.binding.runId;
+          if (!recovered || (!shouldStartFreshTurn && !resumingThisCompaction)) {
+            throw new Error(
+              "native_context_compaction_unavailable: the agent has no idle resumed session to compact",
+            );
+          }
+          if (shouldStartFreshTurn) await session.startTurn({
+            message: { role: "user", text: "" },
+            continuation: true,
+            compact: true,
+            ...(options.sessionCompaction.contextTokensBefore === undefined
+              ? {}
+              : { contextTokensBefore: options.sessionCompaction.contextTokensBefore }),
+          });
+          await checkpoint();
+        } else if (options.sessionGoalControl) {
           // Explicit controls remain authoritative after controller loss. In
           // particular, pause/clear/edit must reach a recovered session even
           // while its provider turn is still active.

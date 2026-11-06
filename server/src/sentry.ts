@@ -40,6 +40,18 @@
 //     and request isolation need it) and turns the breadcrumb off with the
 //     integration's own `breadcrumbs` option.
 //
+// A failed secret-sensitive request (chat setup, provider webhooks, MCP,
+// company observability settings, and similar routes) reports only the
+// generic `Secret-sensitive request failed` error, with its own stack and
+// default grouping. `SecretSensitiveRequestError` adds `secret_route_family`,
+// `http_method`, `http_status` and `error_kind` tags, optional `errno_code`
+// and `db_error_code` tags (a Node errno name or a SQLSTATE), and a
+// `secret_sensitive_request` context. The context holds the matched Express
+// route definition and up to eight complete V8 frames from the original
+// stack. Every value is a closed label, a bounded number, or a code-shaped
+// string; anything else is dropped. The event never carries the request
+// URL, query, body, headers, or the original error name or message.
+//
 // `onUnhandledRejectionIntegration` defaults to `mode: "warn"`, which
 // registers a `process.on("unhandledRejection")` listener. Node cancels its
 // own crash-on-unhandled-rejection behavior when any listener is registered.
@@ -62,7 +74,9 @@ import os from "node:os";
 import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -122,6 +136,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       ...(reference.agentId ? { agent_id: reference.agentId } : {}),
     } : {};
     const storageFailure = storageFailureDiagnosticsFor(error);
+    const lockTimeout = directoryMergeLockTimeoutDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -139,12 +154,37 @@ export function captureException(error: unknown, reference?: SentryRunReference)
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (error instanceof SecretSensitiveRequestError) {
+      // The sanitized error keeps its generic message, stack and default
+      // grouping. Only its fixed-shape diagnostics are added.
+      const diagnostics = error.diagnostics;
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          secret_route_family: diagnostics.routeFamily,
+          http_method: diagnostics.method,
+          http_status: String(diagnostics.status),
+          error_kind: diagnostics.errorKind,
+          ...(diagnostics.errnoCode ? { errno_code: diagnostics.errnoCode } : {}),
+          ...(diagnostics.databaseErrorCode ? { db_error_code: diagnostics.databaseErrorCode } : {}),
+        },
+        contexts: { secret_sensitive_request: { ...diagnostics, originFrames: [...diagnostics.originFrames] } },
+        fingerprint: ["{{ default }}"],
+      });
     } else if (storageFailure) {
       // The original error keeps its default grouping; only the normalized
       // record is added, never the provider's request or response.
       sentryHandle.captureException(error, {
         tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
         contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (lockTimeout) {
+      // Holder evidence distinguishes contention from a stuck owner. The
+      // allowlisted record omits the owner's process id.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, error_code: "workspace_restore_lock_timeout" },
+        contexts: { directory_merge_lock: { ...lockTimeout } },
         fingerprint: ["{{ default }}"],
       });
     } else if (reference) {
@@ -229,6 +269,21 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    // Without a usable root code, unrelated failures that share the error code,
+    // adapter and phase would collapse into one group. Fall back to the root
+    // exception's class name plus its HTTP status or numeric code. These are
+    // bounded values; the message stays out of the fingerprint.
+    const rootFallback: string[] = [];
+    const rootException = diagnostics?.exceptions.at(-1);
+    if (!rootErrorCode && rootException) {
+      if (typeof rootException.name === "string" && /^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(rootException.name)) {
+        rootFallback.push(`exception:${rootException.name}`);
+      }
+      if (rootException.status !== undefined) rootFallback.push(`status:${rootException.status}`);
+      else if (typeof rootException.code === "string" && /^-?[0-9]{1,10}$/.test(rootException.code)) {
+        rootFallback.push(`code:${rootException.code}`);
+      }
+    }
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -303,7 +358,7 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
     });
   } catch (err) {
     // eslint-disable-next-line no-console

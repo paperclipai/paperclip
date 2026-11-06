@@ -67,7 +67,7 @@ describe("lifecycle readiness handoff", () => {
 });
 
 describe("lifecycle failure diagnostics", () => {
-  it.each(["harness_auth_failed", "harness_model_unavailable", "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output"])("waits for repair only for a host verification failure: %s", code => {
+  it.each(["ai_connection_required", "harness_auth_failed", "harness_model_unavailable", "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output"])("waits for repair only for a host verification failure: %s", code => {
     const error = { code };
     expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "verifying" }, error)).toBe(true);
     expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
@@ -83,6 +83,7 @@ describe("lifecycle failure diagnostics", () => {
 
   it.each([
     ["host", "harness_model_unavailable", "Execution configuration check failed. The selected model is unavailable."],
+    ["host", "ai_connection_required", "Execution configuration check failed. This agent's environment requires a managed AI connection and an isolated Runner home."],
     ["plugin", "required_plugin_unavailable", "Execution configuration check: required plugin step failed. A required plugin is unavailable."],
     ["select_plugins", "unknown private code", "Execution configuration check: finding required plugins failed. Paperclip could not complete this step."],
     ["transition", "40P01", "Execution configuration check: saving progress failed. Paperclip could not complete this step."],

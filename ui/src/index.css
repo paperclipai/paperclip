@@ -203,10 +203,9 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Keep this font runtime-resolved: the proposal/sandbox theme substitutes
-   Paper Mono for every shared font-mono consumer, including portaled content. */
+/* Use bundled Paper Mono for all monospace surfaces, including portals. */
 @theme {
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-mono: var(--font-paper-mono);
 }
 
 :root {
@@ -375,6 +374,13 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
+  /* Inline edit diffs (task chat edit rows and the turn changes card). Line
+     tints derive from the status icon hues so both modes stay in step. */
+  --diff-add-fg: var(--status-task-icon-done);
+  --diff-remove-fg: var(--status-task-icon-blocked);
+  --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
+  --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -440,6 +446,8 @@
   --motion-diff-reveal: var(--motion-duration-base);
   --motion-status-enter: var(--motion-duration-fast);
   --motion-status-exit: var(--motion-duration-fast);
+  /* Harness status chip fading to a receipt once a retry recovers. */
+  --motion-status-notice-fade: var(--motion-duration-deliberate);
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
@@ -536,6 +544,8 @@
   --artifact-play-scrim: rgba(0, 0, 0, 0.55);
   --artifact-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
   --tc-interaction-card-max-h: 50dvh;
+  /* About 3.5 queued rows, and less on short windows so the conversation stays visible. */
+  --tc-queued-list-max-h: min(calc(var(--spacing) * 40), 28dvh);
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
   --profile-popover-width: 248px;
@@ -562,6 +572,12 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
+  /* Harness status chips (retry, model fallback, provider warnings) in the
+     task-chat timeline: a quiet amber outline on the page surface. */
+  --tc-status-notice-warning-fg: var(--status-task-icon-todo);
+  --tc-status-notice-warning-border: color-mix(in oklch, var(--status-task-todo) 40%, transparent);
+  --tc-status-notice-warning-bg: color-mix(in oklch, var(--status-task-todo) 8%, transparent);
+
   /* Agent-comment comparison fill used by TaskChatLab. The chosen production
      treatment sits directly on the page surface; this token keeps the darker
      card available as an explicit lab alternative. */
@@ -580,9 +596,11 @@
   --tc-shell-max-w: 60rem;
   --sz-66px: 66px;
 
-  /* Active-turn status island and its checklist overlay. */
+  /* Active-turn status island and its docked plan checklist. */
   --sz-turn-status-island: min(100%, 42rem);
-  --sz-turn-status-popover: min(32rem, calc(100vw - 2rem));
+  --sz-turn-plan-list-max-h: min(40dvh, 22rem);
+  /* A subagent result scrolls inside its card instead of taking over the thread. */
+  --sz-subagent-result-max-h: min(40dvh, 22rem);
 
   /* Mobile pinned-composer bottom offset (PAP-495). The visible-nav offset
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
@@ -599,7 +617,6 @@
   --agent-detail-module-gap: 12px;
   --agent-detail-band-gap: 48px;
   --agent-detail-module-inset: 20px;
-  --agent-detail-portrait-zoom: 1.21875;
   --agent-detail-tile-min-h: 122px;
   --agent-detail-control-h: 40px;
   --agent-detail-logo-rows-h: 60px;
@@ -1759,7 +1776,13 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   );
 }
 
+/* Reasoning section prose is supporting text under its provider headline. */
+.paperclip-markdown.task-chat-reasoning-section-body {
+  color: inherit;
+}
+
 .task-chat-expanded-line-wrap,
+.task-chat-reasoning-headline,
 .paperclip-markdown.task-chat-reasoning-markdown,
 .paperclip-markdown.task-chat-reasoning-markdown :is(p, strong, em, a, code) {
   overflow-wrap: anywhere;
@@ -3375,7 +3398,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   > :nth-child(n + 3) {
   @apply sm:col-span-2;
 }
-.agent-settings-overview section:not([data-agent-tile]),
 .agent-settings-permissions .rounded-lg:not([data-agent-tile]),
 .agent-settings-api-keys .rounded-lg,
 .agent-settings-revisions .rounded-md {
@@ -3534,6 +3556,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --announcement-available-width: calc(100vw - var(--spacing) * 6);
   --announcement-image-height: 8.5rem;
   --announcement-image-mobile-height: 6rem;
+  /* Docked in the sidebar: the navigation keeps at least half the height. */
+  --announcement-sidebar-max-height: 50dvh;
   --announcement-mobile-bottom: calc(var(--spacing) * 19 + env(safe-area-inset-bottom, 0px));
   --announcement-max-height: calc(100dvh - var(--spacing) * 6);
   --announcement-mobile-max-height: calc(100dvh - var(--announcement-mobile-bottom) - var(--spacing) * 3);
@@ -3541,6 +3565,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 
 .announcement-well {
   animation: announcement-enter var(--motion-duration-fast) var(--motion-ease-standard) both;
+}
+/* Docked in the narrow sidebar column: keep the image band compact so the
+   sidebar navigation keeps most of its height. */
+.announcement-well[data-placement="sidebar"] {
+  --announcement-image-height: var(--announcement-image-mobile-height);
 }
 @keyframes announcement-enter {
   from { opacity: 0; }
@@ -3819,6 +3848,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   white-space: nowrap;
 }
 .task-row-stable [data-slot="task-row-content"] { align-self: center; }
+/* Optional details must not reserve title space when they render no content. */
+.task-row-stable :is([data-slot="task-row-external"], [data-slot="task-row-metadata"]):empty { display: none; }
 @media (min-width: 640px) {
   .task-row-stable [data-slot="task-row-recovery"] { width: var(--task-row-recovery-width); }
 }
@@ -5292,3 +5323,75 @@ html:not(.dark) .coordinator-sidebar {
 @media (prefers-reduced-motion: reduce) {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
+
+/* Agent Identity: equal panel gutters and a viewport-bound dirty footer. */
+:root {
+  --agent-identity-panel-gap: calc(var(--spacing) * 6);
+  --agent-identity-resizer-width: calc(var(--spacing) * 2);
+  --agent-identity-column-gap: calc((var(--agent-identity-panel-gap) - var(--agent-identity-resizer-width)) / 2);
+  --agent-save-bar-motion: var(--motion-duration-base);
+  --agent-save-bar-clearance: calc(var(--spacing) * 24);
+}
+.agent-instruction-panels { row-gap: var(--agent-identity-panel-gap); column-gap: var(--agent-identity-column-gap); }
+.agent-config-save-bar {
+  position: fixed;
+  bottom: 0;
+  z-index: 40;
+  padding: calc(var(--spacing) * 4) calc(var(--spacing) * 6);
+  padding-bottom: max(calc(var(--spacing) * 4), env(safe-area-inset-bottom));
+  background: var(--background);
+  border-top: var(--sz-1px) solid var(--border);
+  box-shadow: var(--shadow-flyout);
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform var(--agent-save-bar-motion) var(--motion-ease-standard), visibility var(--agent-save-bar-motion);
+}
+.agent-config-save-bar[data-visible="true"] { transform: translateY(0); visibility: visible; transition-timing-function: var(--motion-ease-out-expo); }
+.agent-file-copy-notice { transition: opacity var(--motion-duration-fast); }
+@media (prefers-reduced-motion: reduce) {
+  .agent-config-save-bar, .agent-file-copy-notice { transition: none; }
+}
+
+.agent-settings-instructions { padding-bottom: var(--agent-save-bar-clearance); }
+
+/* Identity file chrome uses the same input surface and keeps filenames on one line. */
+:root {
+  --agent-identity-preview-title-size: 18px;
+  --agent-identity-preview-title-weight: 500;
+  --agent-save-status-motion: var(--motion-duration-base);
+  --agent-save-status-offset: calc(var(--spacing) * 2);
+  --agent-save-dot-unsaved: var(--color-amber-500);
+}
+.agent-markdown-name-field { background: var(--background-alt); }
+html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
+.agent-markdown-name-field [data-slot="input"] { background: transparent; }
+.agent-instruction-file-row { margin-block: var(--spacing); border-radius: var(--flyout-option-radius); background: transparent; }
+.agent-instruction-file-row:hover { background: var(--muted-highlight); color: var(--foreground); }
+.agent-instruction-file-row > span:has(> .truncate) { overflow: hidden; }
+[data-slot="collapsible-content"][data-agent-disclosure] { overflow: hidden; }
+[data-slot="collapsible-content"][data-agent-disclosure][data-state="open"] {
+  animation: decision-disclosure-open var(--motion-duration-swap) var(--motion-ease-out);
+}
+[data-slot="collapsible-content"][data-agent-disclosure][data-state="closed"] {
+  animation: decision-disclosure-close var(--motion-duration-swap) var(--motion-ease-out);
+}
+.agent-save-status { display: grid; overflow: hidden; }
+.agent-save-status > span { grid-area: 1 / 1; }
+.agent-save-status-out { animation: agent-save-status-out var(--agent-save-status-motion) var(--motion-ease-standard) both; }
+.agent-save-status-in { animation: agent-save-status-in var(--agent-save-status-motion) var(--motion-ease-out-expo) both; }
+@keyframes agent-save-status-out { to { transform: translateY(var(--agent-save-status-offset)); opacity: 0; } }
+@keyframes agent-save-status-in { from { transform: translateY(var(--agent-save-status-offset)); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="collapsible-content"][data-agent-disclosure], .agent-save-status-out, .agent-save-status-in { animation: none; }
+}
+
+.agent-identity-preview-title { font-weight: var(--agent-identity-preview-title-weight); }
+
+/* Tighten the header’s surrounding vertical space by one spacing step per edge. */
+.agent-character-header {
+  margin-block-start: calc(var(--spacing) * -1);
+  margin-block-end: calc(var(--spacing) * 7);
+}
+
+:root { --agent-header-character-size: 102px; }
+.agent-header-character { width: var(--agent-header-character-size); height: var(--agent-header-character-size); }

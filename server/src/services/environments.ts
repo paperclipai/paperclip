@@ -50,6 +50,13 @@ import {
   stockHash,
   type ManagedResourceStockStatus,
 } from "./managed-resource-drift.js";
+import {
+  archiveManagedPluginEnvironment as archiveManagedPluginEnvironmentRow,
+  ensureManagedPluginEnvironment as ensureManagedPluginEnvironmentRow,
+  findManagedPluginEnvironment as findManagedPluginEnvironmentRow,
+  type ManagedPluginEnvironmentInput,
+  type ManagedPluginEnvironmentReconcileAction,
+} from "./managed-plugin-environments.js";
 
 export async function attachSandboxCreation(db: Db, id: string, scope: { companyId: string; environmentId: string; heartbeatRunId?: string | null },
   attach: (tx: Db) => Promise<EnvironmentLease>): Promise<EnvironmentLease> {
@@ -758,7 +765,9 @@ export function environmentService(db: Db) {
               mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
             ),
             status: "active",
-            updatedAt: new Date(),
+            updatedAt: row.status === "active" && stockHash(row.config) === stockHash(desiredConfig)
+              ? row.updatedAt
+              : new Date(),
           })
           .where(eq(environments.id, row.id))
           .returning()
@@ -1059,6 +1068,35 @@ export function environmentService(db: Db) {
     ensureManagedSandboxEnvironment,
 
     archiveManagedSandboxEnvironment,
+
+    /**
+     * Ensure the instance-level row of one managed-config plugin entry,
+     * validating its driver config through the plugin environment validator.
+     * Adopts an unmarked row for the same plugin and driver (see
+     * `managed-plugin-environments.ts`).
+     */
+    ensureManagedPluginEnvironment: async (
+      input: ManagedPluginEnvironmentInput,
+    ): Promise<{ environment: Environment; action: ManagedPluginEnvironmentReconcileAction }> => {
+      const result = await ensureManagedPluginEnvironmentRow(db, input);
+      return { environment: toEnvironment(result.row), action: result.action };
+    },
+
+    /** Archive the active row of a managed plugin entry whose plugin is not running. */
+    archiveManagedPluginEnvironment: async (
+      input: { pluginKey: string; driverKey: string },
+    ): Promise<Environment | null> => {
+      const row = await archiveManagedPluginEnvironmentRow(db, input);
+      return row ? toEnvironment(row) : null;
+    },
+
+    /** The marked row of a managed plugin entry, archived or not. */
+    findManagedPluginEnvironment: async (
+      input: { pluginKey: string; driverKey: string },
+    ): Promise<Environment | null> => {
+      const row = await findManagedPluginEnvironmentRow(db, input);
+      return row ? toEnvironment(row) : null;
+    },
 
     /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for

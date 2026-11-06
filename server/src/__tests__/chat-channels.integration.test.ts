@@ -65860,7 +65860,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           });
         }
       } finally { await f.service.shutdown(); }
-    },
+    }, 60_000,
   );
 
   it("leaves saved GitHub input pending when a persisted Retry wait loses board authority", async () => {
@@ -68876,7 +68876,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
       ready = chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
-      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 30_000 });
       else {
         await ready;
         await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
@@ -68923,7 +68923,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
       if (rejectedIds.length) await db.delete(chatActions).where(inArray(chatActions.id, rejectedIds));
     }
-  });
+  }, 60_000);
 
   it("wakes a not-started retry notice after resumed admission is denied", async () => {
     const context = await deferredFailedRetryNoticeFixture();

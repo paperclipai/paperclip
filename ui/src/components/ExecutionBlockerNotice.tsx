@@ -7,6 +7,12 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 import { ProviderFailureNotice } from "./ProviderFailureNotice";
 
+const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
+  checking_previous_run: "Checking that the previous attempt stopped",
+  saving_previous_files: "Saving files from the previous attempt",
+  finishing_recovery: "Finishing recovery of saved work",
+};
+
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
 export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
   presentation: TaskInterruptionPresentation | null | undefined;
@@ -26,15 +32,22 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
   if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{describeError(error).body}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  const step = !optimistic && presentation?.responsibility === "system" && presentation.recoveryStep
+    && ["working", "retry_scheduled"].includes(presentation.state) ? recoveryStepText[presentation.recoveryStep] : null;
+  const seconds = Math.max(0, Math.ceil((Date.parse(presentation?.nextRetryAt ?? "") - Date.now()) / 1000));
+  const retryIn = `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`;
   if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+    // Saved-work recovery is what the task waits for, so name it over the
+    // generic automatic-retry line while keeping the provider explanation.
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
       actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
-      {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
+      {presentation.state === "retry_scheduled" && <p>{step ? `${step}. ${retryIn}` : "Paperclip will retry automatically."}</p>}
     </ProviderFailureNotice>;
   }
+  if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
+    className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
-  const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));
   return (
     <div className={cn(presentation.state === "failed" && "pt-4", className)}>
       <div role="status" aria-label="Task status" className={cn(
@@ -43,7 +56,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       )}>
         {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
         <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
-          ? `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`
+          ? step ? `${step}. ${retryIn}` : retryIn
           : presentation.retryWait ? presentation.retryWait.message
           : presentation.workspaceFailure
             ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>

@@ -9,7 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
-const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-pi");
+const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-pi"
+  // The explicit reliability facade cell is not an installed-CLI Pi qualification case.
+  && e.task.explicitGroup === undefined);
 const roots: string[] = [];
 // pnpm's source test wrapper sets NODE_PATH; the disposable public-install fixture must start closed.
 beforeEach(() => { vi.stubEnv("NODE_PATH", undefined); vi.stubEnv("NODE_OPTIONS", undefined); });

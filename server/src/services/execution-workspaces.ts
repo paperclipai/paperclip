@@ -49,7 +49,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import { and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -272,7 +272,7 @@ function preserveWorkspaceMetadataForPatch(
       if (patch[key] !== undefined && patch[key] !== current[key]) throw conflict("Remote workspace coordinates belong to its sandbox storage");
     }
   }
-  const remoteAuthorityKeys = ["remoteWorkspace", "remoteWorkspaceMigration", "remoteWorkspaceRecoverySourceRunIds", "remoteWorkspaceRecoveredFiles", "legacyWorkspaceRecoveryMigration"] as const;
+  const remoteAuthorityKeys = ["remoteWorkspace", "remoteWorkspaceSnapshotRepositories", "lifecycleGeneration", "reopenPendingConsumption", "reopenPendingConsumptionSince", "remoteWorkspaceMigration", "remoteWorkspaceRecoverySourceRunIds", "remoteWorkspaceRecoveredFiles", "legacyWorkspaceRecoveryMigration"] as const;
   if (patch.metadata !== undefined && remoteAuthorityKeys.some(key => current.metadata?.[key] !== undefined || patch.metadata?.[key] !== undefined)) {
     nextPatch.metadata = { ...patch.metadata };
     for (const key of remoteAuthorityKeys) {
@@ -518,6 +518,31 @@ async function pathExists(value: string | null | undefined) {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Returns false only when no `.git` entry exists on the path or any ancestor.
+ * Uses lstat so a dangling `.git` symlink still counts, and treats any error
+ * other than ENOENT as "may exist" so unreadable locations fail closed.
+ */
+async function hasGitMarkerInPathOrAncestors(start: string) {
+  let current: string;
+  try {
+    current = await fs.realpath(start);
+  } catch {
+    return true;
+  }
+  while (true) {
+    try {
+      await fs.lstat(path.join(current, ".git"));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") return true;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
   }
 }
 
@@ -963,6 +988,29 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   try {
     repoRoot = (await runGit(["rev-parse", "--show-toplevel"], workspacePath)).stdout.trim() || null;
   } catch (error) {
+    // A plain directory (e.g. a local_fs shared workspace) has no git state to
+    // lose. Only treat it that way when no `.git` exists on the path, so a
+    // broken or unreadable repository still fails closed.
+    if (workspace.providerType !== "git_worktree" && !(await hasGitMarkerInPathOrAncestors(workspacePath))) {
+      return {
+        git: {
+          repoRoot: null,
+          workspacePath,
+          branchName: workspace.branchName,
+          baseRef: workspace.baseRef,
+          hasDirtyTrackedFiles: false,
+          hasUntrackedFiles: false,
+          dirtyEntryCount: 0,
+          untrackedEntryCount: 0,
+          aheadCount: null,
+          behindCount: null,
+          isMergedIntoBase: null,
+          createdByRuntime,
+        },
+        warnings,
+        statusInspectionSucceeded: true,
+      };
+    }
     warnings.push(
       `Could not inspect git status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -2927,9 +2975,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
-    }) => {
+    }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
-      const rows = await db
+      if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));
+      const query = db
         .select({
           id: executionWorkspaces.id,
           name: executionWorkspaces.name,
@@ -2941,8 +2990,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           lastUsedAt: executionWorkspaces.lastUsedAt,
         })
         .from(executionWorkspaces)
-        .where(and(...conditions))
-        .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
+        .where(and(...conditions));
+      const rows = await (pagination
+        ? query.orderBy(asc(executionWorkspaces.id)).limit(pagination.limit)
+        : query.orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt)));
       return rows.map((row) => toExecutionWorkspaceSummary(row));
     },
 

@@ -79,7 +79,7 @@ export interface NativeCodexTurnFailureDiagnostic {
  */
 const OPENCODE_TURN_FAILURE_RUNNER_CODES: ReadonlySet<string> = new Set([
   "opencode_server_exited", "opencode_event_stream_lost", "provider_terminal_error_missing",
-  "opencode_empty_response",
+  "opencode_empty_response", "opencode_output_limit_reached",
 ]);
 const PROVIDER_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<ProviderFailure["category"]>([
   "rate_limit", "quota_exhausted", "authentication", "permission", "model_unavailable", "invalid_request",
