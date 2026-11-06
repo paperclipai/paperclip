@@ -10,7 +10,7 @@ import { skillPackageStore, withSkillPackageReadScope } from "../skill-package-s
 import { assertSkillSnapshotPath, snapshotFile, skillSnapshotHash } from "../skill-snapshot.js";
 import { ensureSkillCacheDirectory, skillRunNeedsFilesSql } from "../skill-version-cache.js";
 import { verifyFileManifest } from "../file-manifest-cache.js";
-import { logActivity } from "../activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { withRuntimeAssetUse } from "./runtime-asset-retention.js";
 import { admittedRuntimeSkills, hasUnversionedRuntimeSkillInputSql, readRuntimeSkillPreservation,
   RUNTIME_SKILL_PRESERVATION_KEY, RUNTIME_SKILL_PRESERVATION_SCHEMA, sameRuntimeSkill,
@@ -98,6 +98,7 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
       packageSnapshotId, packageContentHash: skillSnapshotHash(captured.files) });
   }
   if (!assets.length) return { preserved: 0 };
+  const publications: ActivityPublication[] = [];
   await db.transaction(async tx => {
     const [current] = await tx.select().from(heartbeatRuns).where(where).for("update");
     if (!current || admittedRuntimeSkills(current).inputDigest !== admitted.inputDigest || current.status !== source.status
@@ -113,8 +114,9 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
         bindingDigest: admitted.bindingDigest, assets } } }).where(where);
     await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "runtime-skill-preservation",
       action: "native_runtime_skill_assets_preserved", entityType: "heartbeat_run", entityId: input.runId,
-      agentId: source.agentId, runId: input.runId, details: { inputDigest: admitted.inputDigest, assets: assets.length } });
+      agentId: source.agentId, runId: input.runId, details: { inputDigest: admitted.inputDigest, assets: assets.length } }, publications);
   });
+  for (const publication of publications) publishActivity(publication);
   return { preserved: assets.length };
 }
 
