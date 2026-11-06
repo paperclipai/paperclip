@@ -2497,6 +2497,22 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness?.plannedActions.map((action) => action.kind)).toContain("remove_local_directory");
   });
 
+  it("still blocks close when an ancestor directory holds an unreadable .git marker", async () => {
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ancestor-git-workspace-"));
+    tempDirs.add(parentDir);
+    await fs.writeFile(path.join(parentDir, ".git"), `gitdir: ${path.join(parentDir, "missing-git-dir")}\n`, "utf8");
+    const workspaceDir = path.join(parentDir, "nested", "task");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const { executionWorkspaceId } = await seedSharedLocalWorkspace(workspaceDir);
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness).toMatchObject({ state: "blocked", isDestructiveCloseAllowed: false });
+    expect(readiness?.blockingReasons).toContain(
+      "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+    );
+  });
+
   it("still blocks close when the workspace .git marker is a dangling symlink", async () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dangling-git-workspace-"));
     tempDirs.add(workspaceDir);
