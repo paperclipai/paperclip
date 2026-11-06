@@ -225,9 +225,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   });
 
   it.each([
-    { status: "cancelled", explicitSend: true },
-    { status: "done", explicitSend: false },
-  ] as const)("keeps saved input held on $status with explicit Send=$explicitSend", async ({ status, explicitSend }) => {
+    { status: "cancelled", explicitSend: true, paused: false },
+    { status: "done", explicitSend: false, paused: false },
+    { status: "done", explicitSend: true, paused: true },
+  ] as const)("keeps saved input held on $status with explicit Send=$explicitSend", async ({ status, explicitSend, paused }) => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Saved follow-up", status,
@@ -240,12 +241,16 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
         ...(explicitSend ? { queuedCommentInterrupt: { actorId: ownerUserId, requestedAt: new Date().toISOString() } } : {}) },
     });
-    if (explicitSend) await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    if (paused) {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      await expect(heartbeat.resumeQueuedCommentInterrupt(companyId, queueId)).rejects.toThrow();
+    } else if (explicitSend) await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
     else await heartbeat.resumeExecutionWaitComments({ companyId, requestId: queueId });
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
     expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(status);
   });
 
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
