@@ -28,6 +28,7 @@ import {
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
   readManagedWorkspaceRepositories,
+  listProjectRepositoryStagingPaths,
   copyCloneTree,
   disposeGitWorkspaceSnapshot,
   ReferencedSourceIgnoreScanLimitExceededError,
@@ -1390,6 +1391,7 @@ export async function prepareSandboxManagedRuntime(input: {
     return [`${relative}/.git`, ...repositoryGitPaths(repo.snapshot.repositories ?? [], relative)];
   });
   const repositoryMetadataExcludes = repositoryGitPaths(repositories);
+  const repositoryStagingExcludes = syncWorkspace ? await listProjectRepositoryStagingPaths(input.workspaceLocalDir) : [];
   let managedIgnored: Awaited<ReturnType<typeof createWorkspaceManifest>> | null = null;
   let ignoredPaths = input.workspaceFileMode === "all" ? undefined : gitSnapshot?.ignoredPaths;
   if (!gitSnapshot && repositories.length) {
@@ -1426,6 +1428,7 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceArchiveExclude = mergeExcludes(
     [".paperclip-runtime"],
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
@@ -1433,6 +1436,7 @@ export async function prepareSandboxManagedRuntime(input: {
   );
   const restoreExclude = mergeExcludes(
     repositoryMetadataExcludes,
+    repositoryStagingExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
