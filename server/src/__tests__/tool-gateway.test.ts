@@ -967,7 +967,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
     it.each([
       { method: "resources/templates/list", loggedMethod: "resources/templates/list" },
-      { method: "Bearer diagnostic-method-secret", loggedMethod: "Bearer [REDACTED]" },
+      { method: "Bearer diagnostic-method-secret", loggedMethod: "Bearer ***REDACTED***" },
     ])("logs a redacted method without arguments for $method", async ({ method, loggedMethod }) => {
       const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
       const chunks: string[] = [];

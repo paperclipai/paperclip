@@ -16,6 +16,7 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+import { redactSensitiveText } from "../redaction.js";
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -189,7 +190,7 @@ export function createHttpLogger(baseLogger: Logger) {
     customProps(req, res) {
       const props: Record<string, unknown> = {};
       const method = (res as Response).locals?.mcpMethod;
-      if (typeof method === "string") props.mcpMethod = redactSensitive(method);
+      if (typeof method === "string") props.mcpMethod = redactSensitiveText(method);
       if (res.statusCode >= 400) {
         const ctx = (res as any).__errorContext;
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
