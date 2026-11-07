@@ -296,7 +296,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(descriptor.manifestSha256).toBe(`sha256:${createHash("sha256").update(manifest).digest("hex")}`);
   });
 
-  it.each(["entry-count", "metadata-bytes", "path-bytes", "file-bytes", "total-bytes"])("refuses a WEB manifest beyond its %s bound", control => {
+  it.each(["entry-count", "metadata-bytes", "manifest-bytes", "path-bytes", "file-bytes", "total-bytes"])("refuses a WEB manifest beyond its %s bound", control => {
     const entries: NativeControllerHistoryManifestEntry[] = [{ path: "web-home", mode: 0o700, type: "directory" }];
     if (control === "entry-count") entries.push(...Array.from({ length: NATIVE_CONTROLLER_WEB_LIMITS.entries }, (_, index) => ({
       path: `web-home/entry-${index}`, mode: 0o700, type: "directory" as const,
@@ -304,6 +304,12 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     if (control === "metadata-bytes") entries.push(...Array.from({ length: 1_050 }, (_, index) => ({
       path: `web-home/${index}-${"x".repeat(3_990)}`, mode: 0o700, type: "directory" as const,
     })));
+    if (control === "manifest-bytes") {
+      entries.push(...Array.from({ length: NATIVE_CONTROLLER_WEB_LIMITS.entries - 1 }, (_, index) => ({
+        path: `web-home/${index}-${"x".repeat(240)}`, mode: 0o444, type: "file" as const, size: 0, sha256: "b".repeat(64),
+      })));
+      expect(Buffer.byteLength(JSON.stringify(entries))).toBeLessThan(NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes);
+    }
     if (control === "path-bytes") entries.push({ path: `web-home/${"x".repeat(NATIVE_CONTROLLER_WEB_LIMITS.pathBytes)}`, mode: 0o700, type: "directory" });
     if (control === "file-bytes") entries.push({ path: "web-home/oversized", mode: 0o600, type: "file", size: 16 * 1024 * 1024 + 1, sha256: "b".repeat(64) });
     if (control === "total-bytes") entries.push(...Array.from({ length: 5 }, (_, index) => ({ path: `web-home/file-${index}`,

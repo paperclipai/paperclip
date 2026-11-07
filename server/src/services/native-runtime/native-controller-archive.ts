@@ -105,6 +105,9 @@ export function nativeControllerEvidenceDescriptor(source: { companyId: string; 
       ...(web ? Object.fromEntries(web.entries.filter(entry => entry.type === "file").map(entry => [entry.path, entry.sha256])) : {}) },
     ...(history ? { history, historyBindingDigest: source.historyBindingDigest } : {}),
     ...(web ? { web: { entries: web.entries, bindingDigest: web.bindingDigest, controllerAbsent: source.controllerDigest === null } } : {}) });
+  if (web && Buffer.byteLength(manifest) > NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes) {
+    throw new Error("native_controller_archive_authority_invalid");
+  }
   return { manifest, scopeDigest: sha256(manifest), manifestSha256: `sha256:${sha256(manifest)}` };
 }
 
