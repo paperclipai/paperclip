@@ -3983,7 +3983,8 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#releaseServingLifecycle(connection, command);
+      if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
         this.#sendNextCommand(connection);
       }
       return;
@@ -4028,8 +4029,28 @@ export class DurablePrpControlPlane {
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    if (!this.#isTerminalLifecycleCommand(command)) {
+    this.#releaseServingLifecycle(connection, command);
+    if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
       this.#sendNextCommand(connection);
+    }
+  }
+
+  /**
+   * A rejected runner.suspend changes no provider state, and the runner keeps
+   * serving this connection. Lift the terminal-lifecycle fence it installed
+   * so the controller's next command (a fresh suspend) can be delivered.
+   * Completed suspensions and every shutdown keep the fence.
+   */
+  #releaseServingLifecycle(
+    connection: AuthorityConnection,
+    command: DurableRecoveryCoreCommand,
+  ): void {
+    if (
+      command.type === "runner.suspend" &&
+      (command.status === "failed" || command.status === "rejected") &&
+      connection.terminalLifecycleCommandId === command.commandId
+    ) {
+      connection.terminalLifecycleCommandId = null;
     }
   }
 
