@@ -1,0 +1,164 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: questions-and-approvals
+status: planned
+scenarios:
+  - id: questions-and-approvals.necessary-question
+    capabilities:
+      - questions-and-approvals/questions
+      - tasks/create
+    context: >-
+      A requested site needs a product name that is absent from the brief and history.
+    query: >-
+      Build a landing page for my new product.
+    expected_outcome: >-
+      The agent asks a short, necessary question for the missing product name using the
+      supported interaction. The person can enter a free-text answer; it is saved and delivered
+      to the right work once. The agent uses the answer in the resulting brief without making
+      the person fill in incidental implementation settings.
+  - id: questions-and-approvals.multi-part-question
+    capabilities:
+      - questions-and-approvals/questions
+    context: >-
+      A bounded design request genuinely needs an audience, a tone and a custom headline; the
+      fixture offers a paged form with choices and free text.
+    query: >-
+      Help me choose the details for the launch page before you build it.
+    expected_outcome: >-
+      The question flow retains earlier answers across pages, supports a custom answer and
+      displays validation on missing required input. Only the submitted set resumes the work.
+      Chat summarizes the chosen details accurately rather than treating a highlighted default
+      or an unfinished page as consent.
+  - id: questions-and-approvals.defer-and-reopen
+    capabilities:
+      - questions-and-approvals/dismiss-and-reopen
+      - questions-and-approvals/questions
+    context: >-
+      A non-governing question is open in the feed; the person dismisses it and later reopens
+      it.
+    query: >-
+      Leave that question for later; I want to come back to it.
+    expected_outcome: >-
+      Dismissal leaves the unanswered request in history and does not manufacture an answer or
+      continuation. Reopening restores the form and retained draft state where supported. Later
+      submission resolves the same request once; protected authorization gates are not waived by
+      dismissing their cards.
+  - id: questions-and-approvals.accept-one-proposal
+    capabilities:
+      - questions-and-approvals/confirmations
+      - questions-and-approvals/continuation
+    context: >-
+      Exactly one current confirmation proposes creating a named task; conversational
+      confirmation is supported for this request.
+    query: >-
+      Yes, go ahead with that.
+    expected_outcome: >-
+      The answer binds to the displayed pending proposal and its current version. The accepted
+      action executes once and the UI retains the decision and resulting state. Repeating the
+      reply or reloading does not execute it again, and acceptance is not confused with
+      successful completion of the action.
+  - id: questions-and-approvals.ambiguous-yes
+    capabilities:
+      - questions-and-approvals/confirmations
+    context: >-
+      Two different unresolved proposals are visible and neither is selected by the reply
+      context.
+    query: >-
+      Yes, do it.
+    expected_outcome: >-
+      The agent asks which proposal the person means and names the choices clearly. Neither
+      action runs until the answer is bound to an eligible request. A stale or expired proposal
+      cannot become authorized merely because its wording resembles the current one.
+  - id: questions-and-approvals.reject-and-revise
+    capabilities:
+      - questions-and-approvals/confirmations
+    context: >-
+      A pending proposal would publish a page; the person instead wants a local draft.
+    query: >-
+      Do not publish it; just make a draft I can review.
+    expected_outcome: >-
+      The publication proposal is declined or superseded through its supported path, and the
+      revised scope is retained. No publication occurs under the old approval. The agent
+      produces or delegates the draft and returns its review link, keeping the rejected decision
+      visible in history.
+  - id: questions-and-approvals.review-plan
+    capabilities:
+      - questions-and-approvals/plan-review
+      - documents-artifacts/documents
+      - agent-chat/handoff
+    context: >-
+      A current plan revision is attached to this chat and awaits review; execution will belong
+      to a linked ordinary task.
+    query: >-
+      I approve this plan; start the work.
+    expected_outcome: >-
+      Approval binds to the reviewed revision and the agent hands execution to the linked task
+      through normal assignment. The conversation remains a conversation. If the plan changed
+      after the review opened, the person sees the newer revision instead of unintentionally
+      approving work they did not inspect.
+  - id: questions-and-approvals.wrong-reviewer
+    capabilities:
+      - questions-and-approvals/audience
+      - access/resources
+    context: >-
+      A request is visible to Alex but is addressed to Riley, with no resolver authority
+      delegated to Alex.
+    query: >-
+      I approve Riley's request.
+    expected_outcome: >-
+      The attempted resolution is rejected or routed to Riley without changing the request. The
+      response explains the required resolver and preserves the existing work state. Visibility,
+      company membership and a chat message do not by themselves confer approval authority.
+  - id: questions-and-approvals.formal-hire-revision
+    capabilities:
+      - questions-and-approvals/governance
+      - agents/hire
+    context: >-
+      A hiring proposal is pending board review and the board asks for a lower-cost
+      configuration.
+    query: >-
+      Change the proposed hire to the cheaper model and send it back for approval.
+    expected_outcome: >-
+      The agent revises the proposed configuration through the allowed proposal path and
+      resubmits it with inspectable history. The new proposal remains unapproved until the board
+      decides. It does not treat a request for revisions as approval of either the old or new
+      hire.
+  - id: questions-and-approvals.approve-tool-once
+    capabilities:
+      - questions-and-approvals/tool-review
+      - app-permissions/action-policy
+    context: >-
+      A connected synthetic service allows the CEO's read action only after Ask first approval.
+    query: >-
+      Read the launch notes from that app.
+    expected_outcome: >-
+      A scoped tool-review card describes the action and account before the provider call.
+      Approve once permits exactly that action, after which chat uses the actual result. A
+      second governed action requires its own approval; an approved call that fails remains
+      visibly failed rather than being reported as a successful read.
+  - id: questions-and-approvals.decline-tool
+    capabilities:
+      - questions-and-approvals/tool-review
+      - questions-and-approvals/continuation
+    context: >-
+      The same governed read is pending and the person chooses Decline.
+    query: >-
+      Do not use that app after all.
+    expected_outcome: >-
+      The request is declined, the provider receives no call for it, and the agent continues or
+      explains the limitation within the remaining scope. It does not request the same
+      permission repeatedly, widen the policy or mistake the rejection for an empty document.
+  - id: questions-and-approvals.duplicate-answer
+    capabilities:
+      - questions-and-approvals/continuation
+    context: >-
+      One human question is open in two browser tabs; both submit the same answer nearly
+      simultaneously.
+    query: >-
+      Use Acorn as the product name.
+    expected_outcome: >-
+      The server records one accepted answer and one eligible continuation. Both tabs converge
+      on the resolved state; late submissions do not create another task, run or comment
+      pretending to be a new human instruction. The resulting artifact uses Acorn once in the
+      intended work context.

@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "slug": "braintrust",
+  "name": "Braintrust",
+  "description": "Explore AI traces, manage evaluation datasets and scorers, and run Braintrust evaluations.",
+  "categories": [
+    "developer",
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/braintrust.png",
+    "darkLogoUrl": "/brands/apps/braintrust-dark.png"
+  },
+  "urlPatterns": [
+    "https://api.braintrust.dev/*",
+    "https://api-eu.braintrust.dev/*"
+  ],
+  "docsUrl": "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Braintrust (US)",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+      },
+      "whenToUse": "Use browser sign-in for a Braintrust organization hosted in the US.",
+      "defaults": {
+        "serverUrl": "https://api.braintrust.dev/mcp",
+        "discoveryUrl": "https://api.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "scopesHint": [
+          "mcp"
+        ]
+      },
+      "guidanceMd": "Choose the US endpoint for the organization’s data plane region. Sign in with the Braintrust account whose data agents should access. No developer app registration is needed. Access follows that account’s Braintrust permissions. Review reads, writes, and destructive actions on Permissions after connecting.",
+      "consoleLinks": {
+        "docs": "https://www.braintrust.dev/docs/integrations/developer-tools/mcp"
+      },
+      "warnings": [
+        "Access follows the signed-in Braintrust account or API key. Paperclip action policies do not narrow the provider credential or enforce a separate project boundary.",
+        "Evaluations, evaluator tests, and Topics processing can consume Braintrust or model credits.",
+        "Dataset row edits can permanently delete data. Changing automation status can enable retention or delivery automations; review these actions on Permissions."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "mcp-api-key",
+      "label": "Use a Braintrust API key (US)",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+      },
+      "whenToUse": "Use an API key for a Braintrust organization hosted in the US.",
+      "defaults": {
+        "serverUrl": "https://api.braintrust.dev/mcp"
+      },
+      "guidanceMd": "Choose the US endpoint for the organization’s data plane region. Create a key in Braintrust Settings → API keys. Paste the key for the account whose data agents should access. Access follows that account’s Braintrust permissions. Review reads, writes, and destructive actions on Permissions after connecting.",
+      "consoleLinks": {
+        "docs": "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "keys": "https://www.braintrust.dev/app/~/configuration/org/api-keys"
+      },
+      "warnings": [
+        "Access follows the signed-in Braintrust account or API key. Paperclip action policies do not narrow the provider credential or enforce a separate project boundary.",
+        "Evaluations, evaluator tests, and Topics processing can consume Braintrust or model credits.",
+        "Dataset row edits can permanently delete data. Changing automation status can enable retention or delivery automations; review these actions on Permissions."
+      ],
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Braintrust API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Braintrust API key",
+          "secret": true,
+          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      }
+    },
+    {
+      "key": "mcp-eu-oauth",
+      "label": "Sign in with Braintrust (EU)",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+      },
+      "whenToUse": "Use browser sign-in for a Braintrust organization hosted in the EU.",
+      "defaults": {
+        "serverUrl": "https://api-eu.braintrust.dev/mcp",
+        "discoveryUrl": "https://api-eu.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "scopesHint": [
+          "mcp"
+        ]
+      },
+      "guidanceMd": "Choose the EU endpoint for the organization’s data plane region. Sign in with the Braintrust account whose data agents should access. No developer app registration is needed. Access follows that account’s Braintrust permissions. Review reads, writes, and destructive actions on Permissions after connecting.",
+      "consoleLinks": {
+        "docs": "https://www.braintrust.dev/docs/integrations/developer-tools/mcp"
+      },
+      "warnings": [
+        "Access follows the signed-in Braintrust account or API key. Paperclip action policies do not narrow the provider credential or enforce a separate project boundary.",
+        "Evaluations, evaluator tests, and Topics processing can consume Braintrust or model credits.",
+        "Dataset row edits can permanently delete data. Changing automation status can enable retention or delivery automations; review these actions on Permissions."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "mcp-eu-api-key",
+      "label": "Use a Braintrust API key (EU)",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+      },
+      "whenToUse": "Use an API key for a Braintrust organization hosted in the EU.",
+      "defaults": {
+        "serverUrl": "https://api-eu.braintrust.dev/mcp"
+      },
+      "guidanceMd": "Choose the EU endpoint for the organization’s data plane region. Create a key in Braintrust Settings → API keys. Paste the key for the account whose data agents should access. Access follows that account’s Braintrust permissions. Review reads, writes, and destructive actions on Permissions after connecting.",
+      "consoleLinks": {
+        "docs": "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "keys": "https://www.braintrust.dev/app/~/configuration/org/api-keys"
+      },
+      "warnings": [
+        "Access follows the signed-in Braintrust account or API key. Paperclip action policies do not narrow the provider credential or enforce a separate project boundary.",
+        "Evaluations, evaluator tests, and Topics processing can consume Braintrust or model credits.",
+        "Dataset row edits can permanently delete data. Changing automation status can enable retention or delivery automations; review these actions on Permissions."
+      ],
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Braintrust API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Braintrust API key",
+          "secret": true,
+          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      }
+    }
+  ]
+}

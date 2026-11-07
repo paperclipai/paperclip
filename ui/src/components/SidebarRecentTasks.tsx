@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
-import { authApi } from "@/api/auth";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
+import { useAccountIdentity } from "@/api/companies-query";
 import { useSidebar } from "@/context/SidebarContext";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import {
@@ -28,8 +28,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const RECENT_TASK_MENU_ITEM_CLASS =
   "h-(--profile-popover-row-height) gap-(--profile-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) focus:bg-accent/50 focus:text-foreground";
@@ -76,15 +78,10 @@ export function SidebarRecentTasks({
 }) {
   const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
-  const { data: session, isPending } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
+  const { userId, settled } = useAccountIdentity();
 
-  if (!companyId || isPending) return null;
+  if (!companyId || !settled) return null;
 
-  const userId = session?.user?.id ?? session?.session?.userId ?? null;
   return (
     <RecentTasksList
       key={`${companyId}:${userId ?? "__local_board__"}`}
@@ -236,6 +233,7 @@ function RecentTasksList({
       await queryClient.invalidateQueries({
         queryKey: ["issues", "tree-control-state", entry.id],
       });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) });
     } catch (error) {
       toastActions?.pushToast({
         title: "Task pause update failed",
@@ -255,6 +253,7 @@ function RecentTasksList({
             <SidebarNavItem
               to={`/issues/${entry.id}`}
               label={entry.title}
+              iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon {...taskStatusIconProps(entry)} /> : undefined}
               trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
                 ? <span className="text-xs text-muted-foreground">Idle</span> : undefined}
               trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? "Idle" : undefined}
