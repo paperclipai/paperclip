@@ -6,6 +6,7 @@ const websocketState = vi.hoisted(() => ({
   connectionAttempts: 0,
   failConnectAttempts: 0,
   failAgentRequests: 0,
+  agentAckDelayMs: 0,
   events: [] as string[],
   messages: [] as string[],
 }));
@@ -50,14 +51,19 @@ vi.mock("ws", async () => {
       const responsePayload = request.method === "connect"
         ? { protocol: 3 }
         : { status: "ok", runId: "remote-run-1", summary: "done" };
-      queueMicrotask(() => {
+      const deliver = () => {
         this.emit("message", JSON.stringify({
           type: "res",
           id: request.id,
           ok: true,
           payload: responsePayload,
         }));
-      });
+      };
+      if (request.method === "agent" && websocketState.agentAckDelayMs > 0) {
+        setTimeout(deliver, websocketState.agentAckDelayMs);
+      } else {
+        queueMicrotask(deliver);
+      }
     }
 
     close() {}
@@ -107,6 +113,7 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     websocketState.connectionAttempts = 0;
     websocketState.failConnectAttempts = 0;
     websocketState.failAgentRequests = 0;
+    websocketState.agentAckDelayMs = 0;
     websocketState.events = [];
     websocketState.messages = [];
   });
@@ -225,5 +232,45 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     });
     expect(websocketState.connectionAttempts).toBe(1);
     expect(onDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a dispatch acknowledgement after 59 seconds with the default budget", async () => {
+    vi.useFakeTimers();
+    websocketState.agentAckDelayMs = 59_000;
+    let dispatched!: () => void;
+    const reachedDispatch = new Promise<void>((resolve) => { dispatched = resolve; });
+    const ctx = createContext({ onDispatch: dispatched });
+    ctx.config.timeoutSec = 120;
+    const execution = execute(ctx);
+    await reachedDispatch;
+    await vi.advanceTimersByTimeAsync(59_000);
+    await expect(execution).resolves.toMatchObject({ exitCode: 0 });
+    expect(websocketState.connectionAttempts).toBe(1);
+  });
+
+  it.each([
+    { configured: undefined, delay: 61_000, timeout: 60_000 },
+    { configured: 20_000, delay: 21_000, timeout: 20_000 },
+  ])("expires the dispatch budget at $timeout ms without resending agent", async ({ configured, delay, timeout }) => {
+    vi.useFakeTimers();
+    websocketState.agentAckDelayMs = delay;
+    let dispatched!: () => void;
+    const reachedDispatch = new Promise<void>((resolve) => { dispatched = resolve; });
+    const ctx = createContext({ onDispatch: dispatched });
+    ctx.config.timeoutSec = 120;
+    if (configured !== undefined) ctx.config.dispatchTimeoutMs = configured;
+    const execution = execute(ctx);
+    let finished = false;
+    void execution.then(() => { finished = true; });
+    await reachedDispatch;
+    await vi.advanceTimersByTimeAsync(timeout - 1);
+    expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(execution).resolves.toMatchObject({
+      exitCode: 1, errorCode: "openclaw_gateway_timeout",
+      errorMessage: "gateway request timeout (agent)",
+    });
+    expect(websocketState.events.filter((event) => event === "send:agent")).toHaveLength(1);
+    expect(websocketState.connectionAttempts).toBe(1);
   });
 });
