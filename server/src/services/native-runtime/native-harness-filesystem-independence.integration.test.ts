@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -32,6 +32,7 @@ import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-stora
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { nativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { nativeSha256 } from "./canonical.js";
+import { nativeControllerEvidenceDescriptor } from "./native-controller-archive.js";
 
 vi.mock("../../build-commit.js", () => ({ readBuildCommit: () => "a".repeat(40) }));
 
@@ -173,7 +174,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     return { ...f, execution, controllerPath, raw, supervisor, supervisorPath: descriptor.supervisorPath, identity };
   }
 
-  async function historyFixture(keepHistoricalHeaders = false) {
+  async function historyFixture(keepHistoricalHeaders = false, includeRunnerState = false) {
     const f = await controllerFixture(true);
     const get = f.storage.getObject.bind(f.storage);
     const held = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
@@ -186,7 +187,8 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(currentOnly?.status).toBe("current");
     const [anchor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
-    const entries: Array<{ path: string; contents: string; runId: string; header: typeof nativeRunnerCheckpoints.$inferSelect }> = [];
+    const entries: Array<{ path: string; contents: string; runId: string; header: typeof nativeRunnerCheckpoints.$inferSelect;
+      runner?: { path: string; contents: string } }> = [];
     for (let index = 1; index <= 3; index++) {
       const runId = randomUUID(), bootId = randomUUID(), leaseOwner = randomUUID(), leaseId = randomUUID();
       const execution = parseNativeExecutionInput({ ...f.execution, binding: { ...f.execution.binding, runId } });
@@ -219,6 +221,13 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
         epoch = canonicalEpoch; path = join("authority-epochs", epoch, "control-plane/control-plane-state.json");
       }
       await writeFile(join(f.sourceRoot, path), contents, { mode: 0o600 });
+      const runner = includeRunnerState ? { path: join("authority-epochs", epoch, "runner-state.json"), contents: JSON.stringify({
+        schema: "paperclip.runner.durable.state.v1", ...JSON.parse(contents).identity, lifecycle: "suspended",
+        nextSourceSeq: 2, ackedSourceSeq: 1, lastControllerCommandSeq: 4, reconnectCount: 0,
+        outbox: [{ sourceSeq: 2, sourceEventId: `retired-outbox-${index}`, eventType: "item.delta",
+          payload: { text: `Suspended historical outbox ${index}` } }], processedCommands: {}, diagnostics: ["retained suspended authority"],
+      }) } : undefined;
+      if (runner) await writeFile(join(f.sourceRoot, runner.path), runner.contents, { mode: 0o600 });
       const [result] = await db.insert(nativeRunResults).values({ companyId: f.input.companyId, issueId: f.issueId, runId,
         completionContractId: anchor!.completionContractId!, serverFingerprint: "historical-evidence-fixture", schemaStatus: "accepted",
         resultJson: {}, canonicalSha256: "a".repeat(64) }).returning();
@@ -234,13 +243,13 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
           sourceProviderLeaseId: providerLeaseId, authorizedProviderLeaseId: providerLeaseId },
         remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", companyId: f.input.companyId, runId, leaseId,
           provider: "daytona", providerLeaseId, state: "destroyed", confirmedAt: new Date().toISOString() } } });
-      entries.push({ path, contents, runId, header: header! });
+      entries.push({ path, contents, runId, header: header!, runner });
     }
     return { ...f, entries, currentOnly: currentOnly! };
   }
 
-  it("preserves a four-run session's three authority epochs in authenticated evidence and validates without the original volume", async () => {
-    const f = await historyFixture();
+  it.each([false, true])("preserves a four-run session's three authority epochs with suspended Runner state %s and validates without the original volume", async includeRunnerState => {
+    const f = await historyFixture(false, includeRunnerState);
     const beforeRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId));
     const beforeLeases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
     for (const entry of f.entries) expect(await db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, entry.runId))).toEqual([]);
@@ -255,9 +264,11 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
       scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
     for (const entry of f.entries) {
-      expect(await readFile(join(target, "current", entry.path), "utf8")).toBe(entry.contents);
-      expect((await lstat(join(target, "current", entry.path))).mode & 0o777).toBe(0o600);
-      expect(await readFile(join(f.sourceRoot, entry.path), "utf8")).toBe(entry.contents);
+      for (const file of [entry, ...(entry.runner ? [entry.runner] : [])]) {
+        expect(await readFile(join(target, "current", file.path), "utf8")).toBe(file.contents);
+        expect((await lstat(join(target, "current", file.path))).mode & 0o777).toBe(0o600);
+        expect(await readFile(join(f.sourceRoot, file.path), "utf8")).toBe(file.contents);
+      }
     }
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId))).sort((a, b) => a.id.localeCompare(b.id)))
       .toEqual(beforeRuns.map(run => run.id === f.runId ? { ...run, runnerProfileJson: { ...run.runnerProfileJson,
@@ -267,6 +278,50 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     vi.stubEnv("RAILWAY_VOLUME_ID", ""); vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("replacement must not read storage"));
     expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
     expect(result.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it.each(["active", "foreign-identity"])("retains historical Runner state without publication for %s", async control => {
+    const f = await historyFixture(false, true), runner = f.entries[0]!.runner!, value = JSON.parse(runner.contents);
+    if (control === "active") value.lifecycle = "active";
+    else value.runId = randomUUID();
+    const contents = JSON.stringify(value), path = join(f.sourceRoot, runner.path);
+    await writeFile(path, contents);
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("native_harness_filesystem_independence_unverified");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
+      .not.toHaveProperty("nativeHarnessFilesystemIndependence");
+    expect((await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, f.currentOnly.id)))[0]).toEqual(f.currentOnly);
+    expect(await readFile(path, "utf8")).toBe(contents);
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("bounds historical evidence at sixteen MiB per file and sixty-four MiB total", () => {
+    const limit = 16 * 1024 * 1024;
+    const descriptor = (sizes: number[]) => nativeControllerEvidenceDescriptor({ companyId: randomUUID(), issueId: randomUUID(),
+      runId: randomUUID(), controllerDigest: "a".repeat(64), supervisorDigest: null, purpose: "filesystem_independence",
+      historyBindingDigest: "b".repeat(64), history: [{ path: "authority-epochs", mode: 0o700, type: "directory" },
+        ...sizes.flatMap((size, index) => {
+          const root = `authority-epochs/epoch-${index.toString(16).padStart(24, "0")}`;
+          return [{ path: root, mode: 0o700, type: "directory" as const },
+            { path: `${root}/control-plane`, mode: 0o700, type: "directory" as const },
+            { path: `${root}/control-plane/control-plane-state.json`, mode: 0o600, type: "file" as const, size, sha256: "c".repeat(64) }];
+        })] });
+    expect(() => descriptor([limit])).not.toThrow();
+    expect(() => descriptor([limit + 1])).toThrow("native_controller_archive_authority_invalid");
+    expect(() => descriptor([limit, limit, limit, limit])).not.toThrow();
+    expect(() => descriptor([limit, limit, limit, limit, 1])).toThrow("native_controller_archive_authority_invalid");
+  });
+
+  it("retains an oversized historical file and its existing archive without publication", async () => {
+    const f = await historyFixture(), path = join(f.sourceRoot, f.entries[0]!.path);
+    await truncate(path, 20 * 1024 * 1024);
+    const put = vi.spyOn(f.storage, "putFile");
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("native_harness_filesystem_independence_unverified");
+    expect(put).not.toHaveBeenCalled();
+    expect((await lstat(path)).size).toBe(20 * 1024 * 1024);
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
+      .not.toHaveProperty("nativeHarnessFilesystemIndependence");
+    expect((await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, f.currentOnly.id)))[0]).toEqual(f.currentOnly);
   });
 
   it.each(["foreign", "unknown", "active-owner", "changed-after-upload", "added-after-upload"])("retains authority history without publication for %s", async control => {

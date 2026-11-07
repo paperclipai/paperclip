@@ -81,6 +81,10 @@ and historical headers or their explicit absence stay bound in replacement
 validation. History-free manifests and receipts keep their exact
 existing shape; current-controller-only evidence remains retained when a later
 archive adds historical files. These archives do not become executable backups.
+This maintenance inventory is limited to 128 entries, 16 MiB per file and 64 MiB
+total. These bounds are intentionally smaller than the Runner control-plane
+state's 256 MiB maximum. A larger otherwise valid epoch remains on the original
+volume and blocks filesystem independence; it is never truncated or waived.
 Source locks and a final comparison fence publication; original files, stamps,
 warnings, failed statuses and session pointers remain unchanged. Startup can
 validate the published receipt using only database bindings, without the old
