@@ -47,6 +47,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         default: DEFAULT_TIMEOUT_SEC,
       },
       {
+        key: "idleTimeoutSec",
+        label: "Idle timeout seconds",
+        type: "number",
+        default: 0,
+        hint: "Abort the run if the gateway emits no events for this many seconds (resets on every event). 0 disables; timeoutSec stays the hard ceiling.",
+      },
+      {
         key: "eventReconnectMs",
         label: "Event reconnect ms",
         type: "number",
