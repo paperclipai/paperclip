@@ -153,8 +153,28 @@ function providerSlugForAdapterType(type: string): string {
  * Individual adapter failures are caught and returned as error results rather than
  * letting one provider's outage block the entire response.
  */
-export async function fetchAllQuotaWindows(): Promise<ProviderQuotaResult[]> {
-  const adapters = listServerAdapters().filter((a) => a.getQuotaWindows != null);
+/**
+ * Merge centrally connected subscription accounts with adapter-reported
+ * windows. A connected account stays authoritative for its provider; an
+ * adapter only contributes providers that no connection reports.
+ */
+export function mergeQuotaWindowResults(
+  managed: ProviderQuotaResult[],
+  adapterReported: ProviderQuotaResult[],
+): ProviderQuotaResult[] {
+  const reported = new Set(managed.map((result) => result.provider));
+  return [...managed, ...adapterReported.filter((result) => !reported.has(result.provider))];
+}
+
+export async function fetchAllQuotaWindows(
+  excludeProviders?: ReadonlySet<string>,
+): Promise<ProviderQuotaResult[]> {
+  // Skip adapters whose provider is already covered: their probes are the
+  // expensive part (codex spawns an app-server, claude runs a CLI check), and
+  // the merge would discard their results anyway.
+  const adapters = listServerAdapters().filter(
+    (a) => a.getQuotaWindows != null && !excludeProviders?.has(providerSlugForAdapterType(a.type)),
+  );
 
   const settled = await Promise.allSettled(
     adapters.map((adapter) => withQuotaTimeout(adapter.type, Promise.resolve().then(() => adapter.getQuotaWindows!()))),
