@@ -186,7 +186,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
     for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
       const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
-      const failureMessage = mode === "archive_failed" ? "runner_continuity_break_archive_failed" : "runner_remote_process_identity_unavailable";
+      const failureMessage = mode === "archive_failed"
+        ? "runner_continuity_break_archive_failed: exit=1 timedOut=false mv: cannot remove 'runner': Directory not empty"
+        : "runner_remote_process_identity_unavailable";
       const retryExpected = mode === "unattached" || mode === "archive_failed" || mode === "promoted";
       const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Continue saved work",
         assigneeAgentId: f.agent.id, status: "in_progress" }).returning();

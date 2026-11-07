@@ -2285,6 +2285,22 @@ unknown operations or partial transcripts do not. Replacement uses a fresh
 session and retires only the exact predecessor's obsolete recovery hold while
 recording the proof and successor lineage. Retained provider files are not edited.
 
+A same-run resume does not open a fresh replacement session after a
+deterministic refusal that left the saved state unchanged. The runner reports
+these refusals by closed classification, never by message text:
+`provider_attach_refused` (attaching the new run would change the durable
+provider profile or a protected launch argument) and
+`provider_side_effect_pending` (the saved session still owns a tool call or
+runtime input without a recorded result). The first ends the run with
+`native_provider_state_incompatible`; the second ends it with
+`native_provider_side_effect_pending`. Both stop automatic retries and give the
+task to an operator with the saved local and remote continuity state intact. A
+run with a pending side-effecting call never reaches replacement. Transport
+drops and other unclassified resume failures keep the existing retry and
+replacement behavior. When a replacement does archive remote continuity state
+and the remote move fails, the local state is not moved, and the run error keeps
+the bounded, redacted exit status and output of that move.
+
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. A resume after a graceful shutdown drain suspended the run for reattachment does not consume an attempt, because the run did not cause that restart. A resume after a crash, which leaves no drain record, still consumes one, unless the previous restart resume made progress before the crash. Each restart claim records the run's event-log position. Progress means that, after that position, the provider accepted a new turn and then completed work in that turn: a tool execution or a completed item other than a usage report. Restore activity, failed turns, and accepted turns without completed work are not progress, so a crash loop without progress and a resume that fails each time still use up the budget. This credit stops after 12 controller generations, so a run that makes progress and then crashes the controller each time is still bounded. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
 A due failed remote retry can retain its provider PID after heartbeat completion

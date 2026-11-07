@@ -89,6 +89,7 @@ import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
@@ -13139,6 +13140,21 @@ describe("native session bounded recovery", () => {
     expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
   });
 
+  it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {
+    const failure = new NativeProviderSideEffectPendingError(
+      "Error: native_runner_source_semantic_reconciliation_required",
+    );
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("native_provider_side_effect_pending");
+    const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+    expect(disposition).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+    expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+      issueStatus: "blocked", recoveryOwner: { kind: "board" }, recoveryActionCause: code,
+    });
+    // The same text without the typed class stays an ordinary interruption.
+    expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
   it("makes only typed operator-required cleanup quarantine terminal on the first attempt", () => {
     const code = nativeSessionFailureSourceCode(
       new NativeSessionCleanupQuarantinedError(),
@@ -15460,8 +15476,12 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mockClear(); state.createTransport.mockClear();
     const openSession = vi.fn(async () => ({ close: async () => undefined }));
     state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never);
-    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: request.args[1]?.includes(".continuity-break-") && mode === "failed" ? 1 : 0,
-      stdout: "", stderr: "", timedOut: Boolean(request.args[1]?.includes(".continuity-break-") && mode === "timeout") }));
+    const archiving = (request: { args: string[] }) => Boolean(request.args[1]?.includes(".continuity-break-"));
+    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: archiving(request) && mode === "failed" ? 1 : 0,
+      stdout: "",
+      stderr: archiving(request) && mode === "failed"
+        ? "mv: cannot remove '/runtime/sessions/digest/runner': Directory not empty\nGH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789" : "",
+      timedOut: archiving(request) && mode === "timeout" }));
     const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "archive-controller",
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
         leaseId: "lease", providerKey: "daytona", sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "sandbox" },
@@ -15482,7 +15502,15 @@ describe("runnerd provider runtime wiring", () => {
         .toBe("Retained provider checkpoint");
       expect(existsSync(join(root, "runner"))).toBe(false);
     } else {
-      await expect(replacement).rejects.toThrow("runner_continuity_break_archive_failed");
+      const failure = await replacement.catch((error: unknown) => error as Error);
+      expect(failure.message).toMatch(/^runner_continuity_break_archive_failed: /);
+      if (mode === "failed") {
+        expect(failure.message).toContain("exit=1 timedOut=false");
+        expect(failure.message).toContain("cannot remove '/runtime/sessions/digest/runner': Directory not empty");
+        expect(failure.message).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+      } else {
+        expect(failure.message).toContain("timedOut=true");
+      }
       expect(await readFile(join(root, "runner", "retained.txt"), "utf8")).toBe("Retained provider checkpoint");
       expect(await readFile(join(root, "control-plane", "retained.txt"), "utf8")).toBe("Retained controller journal");
       expect(openSession).not.toHaveBeenCalled();
