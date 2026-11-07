@@ -323,6 +323,40 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
     });
 
+    it("rebinds a child whose own workspace its parent selected, and the parent keeps it", async () => {
+      const fixture = await seedOldReleaseChild();
+      const childWorkspaceId = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id: childWorkspaceId, companyId: fixture.companyId, projectId: fixture.projectId, projectWorkspaceId: fixture.projectWorkspaceId,
+        sourceIssueId: fixture.childIssueId, mode: "isolated_workspace", strategyType: "git_worktree", name: "Child worktree",
+        status: "active", providerType: "git_worktree", providerRef: `/tmp/${childWorkspaceId}`,
+      });
+      await db.update(issues).set({ executionWorkspaceId: childWorkspaceId }).where(eq(issues.id, fixture.childIssueId));
+      await db.update(issues).set({ executionWorkspaceId: childWorkspaceId }).where(eq(issues.id, fixture.parentIssueId));
+      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+      })).toBe(true);
+      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBeNull();
+      expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(childWorkspaceId);
+    });
+
+    it("keeps a child's own unshared workspace", async () => {
+      const fixture = await seedOldReleaseChild();
+      const childWorkspaceId = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id: childWorkspaceId, companyId: fixture.companyId, projectId: fixture.projectId, projectWorkspaceId: fixture.projectWorkspaceId,
+        sourceIssueId: fixture.childIssueId, mode: "isolated_workspace", strategyType: "git_worktree", name: "Child worktree",
+        status: "active", providerType: "git_worktree", providerRef: `/tmp/${childWorkspaceId}`,
+      });
+      await db.update(issues).set({ executionWorkspaceId: childWorkspaceId }).where(eq(issues.id, fixture.childIssueId));
+      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+      })).toBe(false);
+      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBe(childWorkspaceId);
+    });
+
     it("lets a running child finish in the shared workspace before rebinding", async () => {
       const fixture = await seedOldReleaseChild();
       // The deploy lands while the child's earlier run is still running.

@@ -1732,12 +1732,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
    * that wait: the run proceeds on its current binding and nobody is asked to act.
    */
   async function releaseAncestorWorkspaceBindingAtAdmission(input: { companyId: string; issueId: string; runId: string }) {
-    // Cheap unlocked pre-check: most tasks are bound to a workspace they created.
+    // Cheap unlocked pre-check: most tasks are bound to a workspace they created
+    // and that no other task is bound to. An ancestor may still have selected the
+    // task's own workspace, so only skip when no other task shares the binding.
     const [candidate] = await db.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId,
-      sourceIssueId: executionWorkspaces.sourceIssueId })
+      workspaceId: executionWorkspaces.id, sourceIssueId: executionWorkspaces.sourceIssueId })
       .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
       .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
-    if (!candidate || (!candidate.parentId && !candidate.privacyParentIssueId) || candidate.sourceIssueId === input.issueId) return false;
+    if (!candidate || (!candidate.parentId && !candidate.privacyParentIssueId)) return false;
+    if (candidate.sourceIssueId === input.issueId) {
+      const [otherBinding] = await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId),
+        eq(issues.executionWorkspaceId, candidate.workspaceId), ne(issues.id, input.issueId))).limit(1);
+      if (!otherBinding) return false;
+    }
     return db.transaction(async tx => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
       if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
