@@ -35,7 +35,7 @@ export function PluginOrganizationSwitcher({ children, open: controlledOpen, onO
   const selectedCompany = companyList.data?.companies.find(company => company.id === selectedCompanyId) ?? null;
   const contextSettled = settled && companyList.isSuccess && !companyList.data?.unauthorized
     && (selectedCompanyId === null || selectedCompany !== null);
-  const contextLoading = !contextSettled && !failed && !companyList.isError && !companyList.data?.unauthorized;
+  const contextLoading = !contextSettled && !failed && !companyList.isError && !companyList.data?.unauthorized; // query-error-ok: loading gate;on error the built-in fallback renders
   return (
     <OrganizationSwitcher key={JSON.stringify([userId, selectedCompanyId])}
       settled={contextSettled} loading={contextLoading} companyId={selectedCompanyId}

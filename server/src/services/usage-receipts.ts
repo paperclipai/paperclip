@@ -8,7 +8,7 @@ import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, costEvents, costAdjustments, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
-import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits, unitsToCents } from "@paperclipai/shared";
+import { centsToUnits, compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -19,7 +19,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { knownRunCostCents } from "./budget-exposure.js";
 import { createLiveRunUsageProjection, liveRunUsageCostCents } from "./budget-live-usage.js";
 import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
-import type { ActivityPublication } from "./activity-log.js";
+import { logActivity, type ActivityPublication } from "./activity-log.js";
+import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
@@ -43,12 +44,18 @@ const envelopeSchema = z.object({
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
   producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(), providerTurnId: z.string().optional(),
-    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional(),
+    // The restored Runner failed this turn as lost on restore: its usage can
+    // never be reported, so it does not hold the receipt open.
+    lostOnRestore: z.literal(true).optional() }).optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
     try { return compareCents(value, 0) >= 0; } catch { return false; }
   }, "Invalid live cost").transform(normalizeCents).nullable().optional(),
+  // Set when another run's Runner stream reported this run's late usage. The
+  // receipt's usage and cost are then an increment, not a run total.
+  lateDelta: z.object({ attribution: z.enum(["exact", "inferred"]), reportedByRunId: z.string().uuid() }).optional(),
 });
 export type UsageReceiptEnvelope = z.infer<typeof envelopeSchema>;
 export const usageReceiptSpoolPath = idleAccountingSpoolPath;
@@ -106,7 +113,7 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     sequence: envelope.sequence, receiptHash: hash, receiptJson: envelope, complete: envelope.receipt.complete, receivedAt: new Date(envelope.receivedAt),
   });
   const previous = run.usageJson ?? {};
-  if (run.costAccountedAt) {
+  if (run.costAccountedAt || envelope.lateDelta) {
     const activeSource = previous.accountingReceiptSourceId === envelope.sourceId;
     const closedSources = previous.accountingReceiptSourceFences as Record<string, number> | undefined;
     if (!activeSource && typeof closedSources?.[envelope.sourceId] === "number" && envelope.sequence <= closedSources[envelope.sourceId])
@@ -123,13 +130,24 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     const authoritative = envelope.receipt.pricingProvenance
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
-    const changed = (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
+    // A charge settled without its final receipt accepts a complete receipt's
+    // own price, including a rate-card price, as a correction. Reconciliation
+    // can only post a receipt that carries its price; token changes are
+    // detected below as usual.
+    const ownPrice = envelope.receipt.cacheAdjustedCostUsd ?? envelope.receipt.costUsdExact ?? envelope.receipt.costUsd;
+    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true
+      && ownPrice != null && envelope.receipt.costStatus !== "unpriced" && envelope.receipt.usageBasis !== "session_cumulative";
+    const changed = unavailableClosed || envelope.lateDelta !== undefined
+      || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"
       || ["provider", "biller", "model", "billingType"].some(key => {
         const value = envelope.receipt[key as keyof typeof envelope.receipt];
         return value !== undefined && value !== null && value !== previous[key];
       }) || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
-      || (!rateCardOnly && incomingMoney !== null && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
+      // A projection alone cannot be posted against a charge settled without
+      // its receipt; only the receipt's own price (above) can correct it.
+      || (!rateCardOnly && incomingMoney !== null && (previous.accountingReceiptUnavailable !== true || ownPrice != null)
+        && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
       || (!rateCardOnly && envelope.receipt.costStatus !== undefined && envelope.receipt.costStatus !== comparison.costStatus)
       || (authoritative
         && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(comparison.pricingProvenance ?? null));
@@ -212,6 +230,66 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
   return { reconciliationRequired: false };
 }
 
+const receiptTokenKeys = ["inputTokens", "cachedInputTokens", "outputTokens"] as const;
+
+function lateDeltaTotals(usage: Record<string, unknown>) {
+  const saved = (usage.accountingLateDeltas ?? {}) as Record<string, unknown>;
+  const count = (key: string) => typeof saved[key] === "number" ? saved[key] as number : 0;
+  return { tokens: { inputTokens: count("inputTokens"), cachedInputTokens: count("cachedInputTokens"), outputTokens: count("outputTokens") },
+    units: typeof saved.units === "string" ? BigInt(saved.units) : 0n };
+}
+
+function formatUsdUnits(units: bigint) {
+  return `${units / 1_000_000_000n}.${String(units % 1_000_000_000n).padStart(9, "0")}`;
+}
+
+/** A provider can report more usage after its run's charge was posted. Cumulative
+ * reports make the increment exact, so post it instead of leaving the run wrong.
+ * Lower or conflicting evidence stays visible debt for an operator to review. */
+function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEnvelope,
+  event: typeof costEvents.$inferSelect, newer: boolean, reconciled?: UsageReceiptEnvelope["receipt"]) {
+  // A non-terminal report is never rate-card priced when it arrives, but its run
+  // totals are all this growth posts. Price them now, or the tokens stay free.
+  const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...late.receipt, complete: true } as AdapterUsageCheckpoint)) as UsageReceiptEnvelope["receipt"];
+  const accepted = (key: string) => typeof previous[key] === "number" ? previous[key] as number : 0;
+  const billingType = receipt.billingType === "api" ? "metered_api"
+    : receipt.billingType === "subscription" ? "subscription_included" : receipt.billingType ?? "unknown";
+  if (!receipt.usage || receipt.usageBasis === "session_cumulative" || receipt.usageByModel?.length
+    || (Array.isArray(previous.usageByModel) && previous.usageByModel.length) || receipt.model !== event.model
+    || receipt.provider !== event.provider || (receipt.biller ?? receipt.provider) !== event.biller || billingType !== event.billingType) return null;
+  if (!late.lateDelta && (!newer || late.sourceId !== previous.accountingReceiptSourceId)) return null;
+  const reported = (key: typeof receiptTokenKeys[number]) => receipt.usage?.[key] ?? 0;
+  const deltas = lateDeltaTotals(previous);
+  // A source's cumulative receipts never include increments from later runs.
+  const tokens = Object.fromEntries(receiptTokenKeys.map(key =>
+    [key, late.lateDelta ? reported(key) : reported(key) - (accepted(key) - deltas.tokens[key])])) as Record<typeof receiptTokenKeys[number], number>;
+  if (receiptTokenKeys.some(key => tokens[key] < 0) || receiptTokenKeys.every(key => tokens[key] === 0)) return null;
+  const moneyValue = (value: unknown) => typeof value === "number" || typeof value === "string" ? usdToUnits(value) : null;
+  const acceptedUnits = moneyValue(previous.cacheAdjustedCostUsd) ?? moneyValue(previous.costUsdExact) ?? moneyValue(previous.costUsd);
+  const reportedUnits = moneyValue(receipt.cacheAdjustedCostUsd) ?? moneyValue(receipt.costUsdExact) ?? moneyValue(receipt.costUsd);
+  const subscription = billingType === "subscription_included";
+  // A price correction already moved the accepted total, so measure from it.
+  const correctedTotal = reconciled ? moneyValue(reconciled.cacheAdjustedCostUsd) ?? moneyValue(reconciled.costUsdExact) ?? moneyValue(reconciled.costUsd) : null;
+  const units = subscription ? 0n : reportedUnits === null ? null
+    : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? (acceptedUnits ?? 0n) - deltas.units);
+  if (units !== null && units < 0n) return null;
+  const totalUnits = units === null ? acceptedUnits : (acceptedUnits ?? 0n) + units;
+  return { tokens, units, pricingProvenance: receipt.pricingProvenance, costStatus: receipt.costStatus, usage: {
+    inputTokens: accepted("inputTokens") + tokens.inputTokens,
+    cachedInputTokens: accepted("cachedInputTokens") + tokens.cachedInputTokens,
+    outputTokens: accepted("outputTokens") + tokens.outputTokens,
+    ...(late.lateDelta ? { accountingLateDeltas: {
+      inputTokens: deltas.tokens.inputTokens + tokens.inputTokens,
+      cachedInputTokens: deltas.tokens.cachedInputTokens + tokens.cachedInputTokens,
+      outputTokens: deltas.tokens.outputTokens + tokens.outputTokens,
+      units: String(deltas.units + (units ?? 0n)),
+    } } : {}),
+    // Keep the integrity check's receipt total equal to the run's charges.
+    ...(subscription || units === null || totalUnits === null ? {} : { cacheAdjustedCostUsd: null, costUsd: null, costUsdExact: formatUsdUnits(totalUnits) }),
+    ...(units === null && !subscription ? { costStatus: "unpriced" } : {}),
+  } };
+}
+
 /** Caller owns the run row. A money-only authoritative revision can correct one
  * existing final charge. Ambiguous usage/source/model evidence remains debt. */
 export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typeof heartbeatRuns.$inferSelect, publications: ActivityPublication[]) {
@@ -238,14 +316,16 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     .where(and(eq(costAdjustments.companyId, run.companyId), eq(costAdjustments.costEventId, events[0].event.id),
       sql`not (${costAdjustments.actorId} = 'cost_accounting'
         and left(${costAdjustments.idempotencyKey}, length(${automaticCorrectionPrefix})) = ${automaticCorrectionPrefix})`)).limit(1) : [];
-  const sameTokens = receipt?.usage && ["inputTokens", "cachedInputTokens", "outputTokens"].every(key =>
-    Number(previous[key] ?? 0) === Number(receipt.usage?.[key as keyof typeof receipt.usage] ?? 0));
+  const lateDeltas = lateDeltaTotals(previous);
+  const sameTokens = receipt?.usage && receiptTokenKeys.every(key =>
+    Number(previous[key] ?? 0) - lateDeltas.tokens[key] === Number(receipt.usage?.[key] ?? 0));
   const authoritative = receipt?.pricingProvenance && !["rate_card", "unknown"].includes(receipt.pricingProvenance.source);
   const billingType = receipt?.billingType === "api" ? "metered_api"
     : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
-    && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
+    && late.sourceId === previous.accountingReceiptSourceId && sameTokens
+    && (authoritative || (previous.accountingReceiptUnavailable === true && receipt.pricingProvenance?.source === "rate_card"))
     && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1
     && receipt.model === events[0].event.model && receipt.provider === events[0].event.provider
     && biller === events[0].event.biller && billingType === events[0].event.billingType
@@ -263,13 +343,66 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }
+  const growth = late && events.length === 1 && !reviewedValuation
+    ? lateUsageGrowth(previous, late, events[0].event, late.sequence > acceptedSequence,
+      reconciled ? envelopeSchema.parse(reconciled.receiptJson).receipt : undefined) : null;
+  if (growth && late) {
+    const { event } = events[0];
+    const costStatus = growth.units === null && event.billingType !== "subscription_included" ? "unpriced" : growth.costStatus ?? event.costStatus;
+    await createCostEventInTransaction(tx, run.companyId, {
+      idempotencyKey: `${automaticCorrectionPrefix}${late.id}`, agentId: run.agentId, heartbeatRunId: run.id,
+      issueId: event.issueId, projectId: event.projectId, goalId: event.goalId, billingCode: event.billingCode,
+      provider: event.provider, biller: event.biller, providerRequestId: receipt?.providerRequestId ?? null,
+      pricingProvenance: growth.pricingProvenance ?? event.pricingProvenance, model: event.model, billingType: event.billingType,
+      costStatus, inputTokens: growth.tokens.inputTokens, cachedInputTokens: growth.tokens.cachedInputTokens,
+      outputTokens: growth.tokens.outputTokens, costCents: growth.units === null ? "0" : unitsToCents(growth.units),
+      occurredAt: new Date(late.receivedAt),
+    }, publications, undefined, { deferBudgetEvaluation: true });
+    Object.assign(previous, growth.usage);
+    await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting", action: "cost.late_usage_posted",
+      entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+      details: { receiptId: late.id, attribution: late.lateDelta?.attribution ?? "exact", reportedByRunId: late.lateDelta?.reportedByRunId ?? run.id,
+        inputTokens: growth.tokens.inputTokens, cachedInputTokens: growth.tokens.cachedInputTokens, outputTokens: growth.tokens.outputTokens,
+        costCents: growth.units === null ? null : unitsToCents(growth.units) } }, publications);
+    await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: event.projectId });
+    await updateDebtState(true, late.lateDelta === undefined);
+    if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
+      JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
+    return true;
+  }
+  // Totals are cumulative, so an older receipt at or below the accepted totals
+  // from this source is already covered. Conflicting billing stays visible debt.
+  if (late && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId && late.sequence <= acceptedSequence && receipt?.usage
+    && receipt.usageBasis !== "session_cumulative" && events.length === 1 && receipt.model === events[0].event.model
+    && receipt.provider === events[0].event.provider && biller === events[0].event.biller && billingType === events[0].event.billingType
+    && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0) - lateDeltas.tokens[key])) {
+    await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: events[0].event.projectId });
+    await updateDebtState(true, false);
+    if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
+      JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
+    return true;
+  }
   if (!qualified) { await updateDebtState(false); return false; }
+  // A receipt's money covers the whole run. Earlier late charges already hold
+  // their share, so the original charge may only be corrected to the remainder.
+  const lateCharges = await tx.select({ exact: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(and(
+    eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id),
+    sql`left(${costEvents.idempotencyKey}, length(${automaticCorrectionPrefix})) = ${automaticCorrectionPrefix}`));
+  const correctedUnits = usdToUnits(rawAmount) + lateDeltas.units - lateCharges.reduce((sum, charge) => sum + centsToUnits(charge.exact), 0n);
+  if (correctedUnits < 0n) { await updateDebtState(false); return false; }
   const corrected = receipt.billingType === "subscription_included" || receipt.billingType === "subscription"
-    ? "0.0000000" : unitsToCents(usdToUnits(rawAmount));
+    ? "0.0000000" : unitsToCents(correctedUnits);
   if (reviewedValuation) {
     if (compareCents(events[0].exact, corrected) !== 0) { await updateDebtState(false); return false; }
     // The operator has already reconciled this exact billing evidence. Resolve
@@ -312,12 +445,10 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
 
 export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
-  const result = await withOperationAccountingTransaction(db, envelope.companyId,
+  // Late evidence is committed as run-level debt that accounting resolves or
+  // surfaces. It never fails the delivering session or an unrelated later run.
+  await withOperationAccountingTransaction(db, envelope.companyId,
     tx => persistUsageReceiptInTransaction(tx, envelope));
-  // Native delivery keeps its existing explicit reconciliation response, after
-  // the journal/debt commits. Retrying cannot discard the paid evidence.
-  if (result.reconciliationRequired && envelope.producerEvent)
-    throw conflict("native_usage_after_finalization_requires_reconciliation");
 }
 
 export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolPath(), limit = 100) {
@@ -615,7 +746,7 @@ const producerAccountingProjectionFields = [
   "accountingReceiptOwner", "accountingReceiptSourceId", "accountingReceiptSequence", "accountingReceiptReady",
   "accountingReceiptId", "accountingReceiptReceivedAt", "accountingCaptureFailed", "accountingReceiptSourceFences",
   "accountingSourceReceiptPending", "accountingLateReceiptPending", "accountingLateReceiptId",
-  "accountingLateReceiptAttemptedId", "accountingReconciledReceiptId", "accountingLateReceiptDebts",
+  "accountingLateReceiptAttemptedId", "accountingReconciledReceiptId", "accountingLateReceiptDebts", "accountingLateDeltas",
   "accountingReconciledReceiptSourceId", "accountingReconciledReceiptSequence",
   "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
   "provider", "biller", "model", "billingType", "usageSource", "providerRequestId", "usageByModel",

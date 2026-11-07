@@ -1,6 +1,8 @@
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { wakeWorkspaceBusyWaitersInTx } from "../../modules/run-dispatch/index.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -120,6 +122,7 @@ import {
 import {
   findHeartbeatRunCompletionComment,
   hasAcceptedSemanticResult,
+  completedPlanProposalIds,
   readCompletedAssistantMessageCandidate,
   selectHeartbeatRunFinalAgentMessage,
   type RunPresentationDecision,
@@ -586,6 +589,7 @@ export async function persistHeartbeatRunProcessMetadata(
     const run = await tx
       .update(heartbeatRuns)
       .set({
+        legacyProcessSettlement: null,
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
         processStartedAt: Number.isNaN(startedAt.getTime())
@@ -1054,7 +1058,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "runtimeMode" | "nativeIssueId" | "issueId" | "contextSnapshot" | "scheduledRetryReason"> | null,
     write: (tx: Db) => Promise<T>) {
     const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
@@ -1078,6 +1082,10 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
+      // A running run may hold a shared workspace that parked retries wait for.
+      if (previous?.status === "running" && isHeartbeatRunTerminalStatus(status))
+        await wakeWorkspaceBusyWaitersInTx(tx, { companyId: previous.companyId, runId: previous.id,
+          contextSnapshot: parseObject(previous.contextSnapshot), scheduledRetryReason: previous.scheduledRetryReason, now: new Date() });
       return write(tx);
     });
   }
@@ -1509,7 +1517,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     const context = parseObject(run.contextSnapshot);
     if (
       readNonEmptyString(context.goalControlRequestId) ||
-      context.resumeSessionGoalHeartbeat === true
+      context.resumeSessionGoalHeartbeat === true ||
+      isContextCompactionRun(context)
     )
       return;
     const livenessState = run.livenessState as RunLivenessState | null;
@@ -1717,6 +1726,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   ) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
+    // A compaction run did no task work, so it hands nothing off.
+    if (isContextCompactionRun(context)) return;
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
@@ -2034,7 +2045,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     run: typeof heartbeatRuns.$inferSelect,
   ) {
     const contextSnapshot = parseObject(run.contextSnapshot);
-    if (readNonEmptyString(contextSnapshot.goalControlRequestId)) return;
+    if (readNonEmptyString(contextSnapshot.goalControlRequestId) || isContextCompactionRun(contextSnapshot)) return;
     const issueId =
       readNonEmptyString(contextSnapshot.issueId) ??
       readNonEmptyString(contextSnapshot.taskId);
@@ -2331,11 +2342,23 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       sourceEventId: string | null;
       channel: "final" | "unknown";
     }> = [];
+    const proposedItemIds = completedPlanProposalIds(await db
+      .select({ payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(
+        and(
+          eq(heartbeatRunEvents.companyId, companyId),
+          eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.eventType, "plan.proposed"),
+        ),
+      )
+      .limit(200));
     for (const row of rows) {
       const prpEvent = parseObject(parseObject(row.payload).prpEvent);
       const candidate = readCompletedAssistantMessageCandidate({
         seq: row.seq,
         prpEvent,
+        proposedItemIds,
       });
       if (candidate) candidates.push(candidate);
     }
@@ -2597,7 +2620,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     const contextSnapshot = parseObject(run.contextSnapshot);
     // The explicit receipt admitted one turn. A prose-only follow-up cannot
     // reuse it or renew it under the separate transient-failure retry policy.
-    if (readNonEmptyString(contextSnapshot.goalControlRequestId) || contextSnapshot.explicitUserContinuation) {
+    if (
+      readNonEmptyString(contextSnapshot.goalControlRequestId) ||
+      isContextCompactionRun(contextSnapshot) ||
+      contextSnapshot.explicitUserContinuation
+    ) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
           issueCommentStatus: "not_applicable",

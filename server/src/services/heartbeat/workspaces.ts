@@ -1,3 +1,5 @@
+import { retainCurrentWorkspaceSource } from "../workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "../execution-workspace-source-roots.js";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
@@ -589,6 +591,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    await retainCurrentWorkspaceSource(configuredCwd);
     return { cwd: configuredCwd, warning: null };
   }
   return ensureManagedProjectWorkspace({
@@ -2616,7 +2619,8 @@ export function buildWorkspaceConfigFreshnessOperation(
       previousWorkspaceId: input.previousWorkspaceId,
       activeWorkspaceId: input.activeWorkspaceId,
     },
-    system: `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+    system: `[paperclip] ${(input.workspaceReused && input.decision.action === "replace"
+      ? "reused execution workspace" : workspaceConfigFreshnessActionLabel(input.decision.action))} after config freshness check${categorySummary}: ${reasonSummary}\n`,
   };
 }
 
@@ -3398,6 +3402,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       managedBase && workspace.repoUrl
         ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
     ].filter((value): value is string => Boolean(value));
+    for (const sourceCwd of localWorkspaceSourcePaths(workspace)) await retainCurrentWorkspaceSource(sourceCwd);
     const cwd = await resolvePersistedGitWorkspaceSource({
       companyId: agent.companyId,
       projectId: sourceProjectId,
@@ -3652,6 +3657,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         .then((stats) => stats.isDirectory())
         .catch(() => false);
       if (sessionCwdExists) {
+        await retainCurrentWorkspaceSource(sessionCwd!);
         return {
           cwd: sessionCwd,
           source: "task_session" as const,
@@ -3673,6 +3679,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     const cwd = configuredCwd ? path.resolve(configuredCwd)
       : issueId ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId })
       : resolveDefaultAgentWorkspaceDir(agent.id);
+    await retainCurrentWorkspaceSource(cwd);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
@@ -3729,6 +3736,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       previousSessionParams,
       opts,
     );
+    await retainCurrentWorkspaceSource(anchor.cwd);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
       return {
         ...anchor,

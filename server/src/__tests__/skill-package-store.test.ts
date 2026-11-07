@@ -510,14 +510,25 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const upload = { token: randomUUID(), provider: "local_disk" as const, archiveKey: `${companyId}/old/archive`, manifestKey: `${companyId}/old/manifest`, expiresAt: new Date(0).toISOString() };
     const [row] = await db.insert(snapshots).values({ companyId, contentHash: skillSnapshotHash(files), createdAt: new Date(0), upload }).returning();
     const renewed = { ...upload, token: randomUUID(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
-    const racingDb = new Proxy(db, { get(target, key) {
-      if (key !== "delete") return Reflect.get(target, key);
-      return (table: typeof snapshots) => ({ where: (predicate: Parameters<ReturnType<typeof db.delete>["where"]>[0]) => ({ returning: async () => {
-        await db.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
-        return db.delete(table).where(predicate).returning({ id: snapshots.id });
-      } }) });
-    } });
-    expect((await skillPackageMaintenance(racingDb, storage).collectOrphans({ companyId, apply: true })).removed).toBe(0);
+    let unlock!: () => void, locked!: () => void, waiting!: () => void;
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const deleting = new Promise<void>(resolve => { waiting = resolve; });
+    const renewal = withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+      await tx.select().from(snapshots).where(eq(snapshots.id, row!.id)).for("update");
+      await tx.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
+      locked(); await release;
+    }));
+    await acquired;
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => {
+      if (query.includes('from "company_skill_repository_snapshots"') && query.includes("for update")) waiting();
+    };
+    try {
+      const collection = skillPackageMaintenance(db, storage).collectOrphans({ companyId, apply: true });
+      await deleting; unlock(); await renewal;
+      expect((await collection).removed).toBe(0);
+    } finally { unlock(); db.$client.options.debug = debug; }
     const [saved] = await db.select().from(snapshots).where(eq(snapshots.id, row!.id));
     expect(saved!.upload).toEqual(renewed);
   });

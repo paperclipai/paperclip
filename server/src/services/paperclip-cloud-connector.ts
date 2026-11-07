@@ -1,3 +1,4 @@
+import { assertMcpClientMirrorEnvelope } from "./public-mcp/client-mirror-wire.js";
 import { providerRetryAt } from "./provider-retry-after.js";
 import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
@@ -35,7 +36,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "mcp-client-mirror" | "mcp-revocation-index";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
@@ -75,7 +76,7 @@ export type SealedConnectorEvents = {
   leaseId: string;
   events: Array<{
     id: string;
-    provider: "github";
+    provider: "github" | "slack";
     event: string;
     action: string | null;
     installationId: string | null;
@@ -86,12 +87,14 @@ export type SealedConnectorEvents = {
   }>;
 };
 
+type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1";
+
 type SealedEnvelope = {
   v: 1;
   alg: "X25519-HKDF-SHA256-A256GCM";
   purpose: "initial" | "access" | "events";
   provider: PaperclipCloudConnectorProvider;
-  profile: PaperclipCloudConnectorProfileId;
+  profile: SealedEnvelopeProfileId;
   epk: string;
   iv: string;
   ct: string;
@@ -115,10 +118,16 @@ type ConnectorResponse = {
   events?: unknown;
   acknowledged?: unknown;
   githubApps?: { version: number };
+  slackEvents?: { version: number };
+  enrollment?: unknown;
+  retirement?: unknown;
   eventWakeVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
+  "slack-events": "/v1/connector/slack-events",
   "github-app": "/v1/connector/github-apps",
   status: "/v1/connector/instance-status",
   session: "/v1/connector/sessions",
@@ -147,6 +156,9 @@ const BROKER_REJECTION_REASONS = new Set([
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
   "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
+  "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
+  "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
+  "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
 
@@ -192,6 +204,7 @@ export class PaperclipCloudConnectorError extends Error {
     readonly code: string,
     readonly status?: number,
     readonly retryAt?: number,
+    readonly brokerReason?: string,
   ) {
     super(message);
     this.name = "PaperclipCloudConnectorError";
@@ -280,7 +293,7 @@ export function createPaperclipCloudConnector(input: {
   async function call(
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
-    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
+    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -314,12 +327,16 @@ export function createPaperclipCloudConnector(input: {
       request: signRequest(payload, signingKey),
       ...(secret ? { [secret.field]: secret.value } : {}),
     };
+    const encodedBody = JSON.stringify(body);
+    if (operation === "mcp-client-mirror" && secret?.field === "binding") {
+      assertMcpClientMirrorEnvelope(body.request, secret.value, encodedBody);
+    }
     let response: Response;
     try {
       response = await request(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify(body),
+        body: encodedBody,
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
@@ -333,6 +350,7 @@ export function createPaperclipCloudConnector(input: {
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
         providerRetryAt(response.headers.get("retry-after"), now()),
+        reason,
       );
     }
     try {
@@ -380,7 +398,23 @@ export function createPaperclipCloudConnector(input: {
   }
 
   return {
+    async syncMcpClientMirror(serialized: string): Promise<unknown> {
+      const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
+      return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;
+    },
+    async syncMcpRevocationIndex(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
+      const response = await call("mcp-revocation-index", values, { field: "binding", value: values.serialized });
+      return (response as ConnectorResponse & { mcpRevocationIndex?: unknown }).mcpRevocationIndex;
+    },
     eventWakeVersion: () => eventWakeVersion,
+    async slackEventsAvailable() {
+      const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
+      return response.active === true && response.slackEvents?.version === 1;
+    },
+    async slackEventEnrollment(values: { subject: string; companyId: string; enrollment: Record<string, unknown> }) {
+      const response = await call("slack-events", values, { field: "enrollment", value: JSON.stringify(values.enrollment) });
+      return values.enrollment.active === false ? response.retirement : response.enrollment;
+    },
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.githubApps?.version === 2;
@@ -551,6 +585,16 @@ export function createPaperclipCloudConnector(input: {
               || delivery.registrationId !== packet.registrationId) throw badEnvelope();
             event.payload = { githubApp: delivery };
           }
+          if (event.provider === "slack") {
+            const packet = event.payload.slackEvent;
+            if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+            const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.events.v1");
+            const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.events.v1", []);
+            if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId
+              || delivery.environment !== config.environment || delivery.bindingId !== packet.bindingId
+              || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+            event.payload = { slackEvent: delivery };
+          }
           events.push(event);
         } catch {
           failedEventIds.push(event.id);
@@ -684,7 +728,7 @@ function parseEnvelope(
   value: unknown,
   purpose: SealedEnvelope["purpose"],
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
 ): SealedEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw badEnvelope();
   const candidate = value as Partial<SealedEnvelope>;
@@ -737,7 +781,7 @@ function unsealEvents(
     if (parsed.v !== 1 || parsed.instanceId !== instanceId || parsed.environment !== environment
       || typeof parsed.leaseId !== "string" || !Array.isArray(parsed.events)) throw badEnvelope();
     for (const event of parsed.events) {
-      if (!isRecord(event) || typeof event.id !== "string" || event.provider !== "github"
+      if (!isRecord(event) || typeof event.id !== "string" || !["github", "slack"].includes(event.provider)
         || typeof event.event !== "string" || !isRecord(event.payload) || !Array.isArray(event.bindingIds)
         || !event.bindingIds.every((id) => typeof id === "string")) throw badEnvelope();
     }
@@ -754,7 +798,7 @@ function decryptEnvelope(
   instanceId: string,
   environment: string,
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
   scopes: readonly string[],
 ): unknown {
   const ephemeralRaw = Buffer.from(envelope.epk, "base64url");

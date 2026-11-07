@@ -49,9 +49,14 @@ on:
         type: string
         required: false
       testops_case:
-        description: "Product regression TestOps bootstrap: all, case name or case ID; leave empty for normal campaigns"
+        description: "TestOps plan bootstrap: all, case name or case ID; leave empty for normal campaigns"
         type: string
         required: false
+      testops_plan:
+        description: "TestOps plan for a testops_case bootstrap; a TestOps launch names its own plan"
+        type: choice
+        options: [product-regression, reliability]
+        default: product-regression
       ALLURE_JOB_RUN_ID:
         description: "Allure TestOps service input; its requested selection takes precedence"
         type: string
@@ -60,6 +65,10 @@ on:
         description: "Allure TestOps service input"
         type: string
         required: false
+      image_only:
+        description: "Only build, sign and verify the Daytona image for the selected cells; skip every campaign job and paid gate"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -139,8 +148,14 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_NAME: ${{ github.event_name }}
           EVAL_CADENCE: ${{ inputs.cadence || 'manual' }}
+          IMAGE_ONLY: ${{ inputs.image_only == true }}
+          TESTOPS_REQUESTED: ${{ inputs.ALLURE_JOB_RUN_ID != '' || inputs.testops_case != '' }}
         run: |
           set -euo pipefail
+          if [ "$IMAGE_ONLY" = true ] && [ "$TESTOPS_REQUESTED" = true ]; then
+            echo "image_only builds publish no results; it cannot bind a TestOps selection." >&2
+            exit 1
+          fi
           if [ -z "$TARGET_BRANCH" ] || [[ "$TARGET_BRANCH" == refs/* ]]; then
             echo "target_branch must name a branch in this repository without a refs/ prefix." >&2
             exit 1
@@ -297,7 +312,7 @@ jobs:
           if-no-files-found: error
 
   testops_selection:
-    name: Bind Product regression TestOps selection
+    name: Bind TestOps plan selection
     needs: authorize
     if: github.event_name == 'workflow_dispatch' && (inputs.ALLURE_JOB_RUN_ID != '' || inputs.testops_case != '')
     runs-on: ubuntu-latest
@@ -338,10 +353,12 @@ jobs:
           SELECT_ENVIRONMENT: ${{ inputs.environment }}
           SELECT_CASE: ${{ inputs.case }}
           TESTOPS_CASE: ${{ inputs.testops_case }}
+          TESTOPS_PLAN: ${{ inputs.testops_plan || 'product-regression' }}
           ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
           ALLURE_USERNAME: ${{ inputs.ALLURE_USERNAME }}
-          ALLURE_LAUNCH_NAME: Product regression · ${{ github.run_number }}
-          ALLURE_LAUNCH_TAGS: product-regression,github-actions
+          # Names only a bootstrap launch; a TestOps launch already has its plan's name.
+          ALLURE_LAUNCH_NAME: ${{ inputs.testops_plan == 'reliability' && 'Reliability' || 'Product regression' }} · ${{ github.run_number }}
+          ALLURE_LAUNCH_TAGS: ${{ inputs.testops_plan == 'reliability' && 'reliability' || 'product-regression' }},github-actions
         run: node tests/runner-e2e/product-regression-testops-cli.mjs select product-testops/selection.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -516,9 +533,9 @@ jobs:
           {
             echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")"
             echo "needs_daytona=$(jq -r '.needsDaytona' <<< "$catalog_json")"
-            echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
+            echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId | startswith("runner-opencode")) or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
             echo "needs_native_binaries=$(jq -r '[.include[] | select((.profileId | startswith("runner-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
-            echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
+            echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId | startswith("runner-opencode")) or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
             echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
           } >> "$GITHUB_OUTPUT"
           if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
@@ -541,6 +558,10 @@ jobs:
   daytona_image:
     name: Publish verified Daytona image
     needs: [authorize, target_lock, catalog]
+    # testops_selection is skipped outside TestOps campaigns. GitHub's implicit
+    # success() also checks skipped ancestors, so jobs below catalog state
+    # their real dependency results explicitly.
+    if: ${{ !cancelled() && needs.catalog.result == 'success' }}
     # Keep image builds on the same authorized fleet as campaign execution.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 45
@@ -626,9 +647,26 @@ jobs:
           [[ "$IMAGE_CONTENT_ID" =~ ^[0-9a-f]{64}$ ]]
           [[ "$TARGET_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
           identity="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/runner-full-stack-e2e.yml@"
+          verify_signed() {
+            cosign verify \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$IMAGE_TAG@$1" >/dev/null
+          }
+          # Reuse an existing content tag only when its digest carries this
+          # workflow's signature. A run interrupted between push and sign
+          # leaves an unsigned tag; rebuilding, pushing and signing replaces it
+          # instead of failing every later campaign with "no signatures found".
+          digest=""
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-            digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          else
+            existing="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            if verify_signed "$existing" 2>/dev/null; then
+              digest="$existing"
+            else
+              echo "::warning title=Daytona image::Existing $IMAGE_TAG ($existing) has no verifiable workflow signature; rebuilding and signing it"
+            fi
+          fi
+          if [ -z "$digest" ]; then
             cache_args=(
               --cache-from "type=registry,ref=${IMAGE_CACHE}"
             )
@@ -687,7 +725,9 @@ jobs:
   build_runner_artifacts:
     name: Build reusable runner campaign artifacts
     needs: [authorize, target_lock, catalog]
-    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && inputs.image_only != true &&
+      (github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'))
     # Compile native binaries on the same reviewed image used to execute them,
     # avoiding libc/architecture drift between GitHub-hosted and AWS lanes.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
@@ -815,7 +855,10 @@ jobs:
     name: Build reusable remote provider pack
     needs:
       [authorize, target_lock, catalog, daytona_image, build_runner_artifacts]
-    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && inputs.image_only != true &&
+      (github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -951,7 +994,11 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions'
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' &&
+      inputs.image_only != true
     needs:
       [
         authorize,
@@ -1071,7 +1118,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1100,7 +1148,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1150,7 +1199,7 @@ jobs:
           test -e "$daytona_root/node_modules/@daytonaio/sdk"
 
       - name: Materialize verified pinned OpenCode executable
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || startsWith(matrix.profileId, 'runner-opencode') || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
       - name: Install checksum-verified Grok executable
@@ -1165,7 +1214,7 @@ jobs:
           path: runner-e2e-build
 
       - name: Download immutable remote provider pack
-        if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        if: matrix.environmentId == 'daytona' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-'))
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_remote_provider_pack.outputs.provider_pack_artifact_name }}
@@ -1174,7 +1223,7 @@ jobs:
       - name: Verify and restore campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         env:
-          NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
+          NEEDS_RUNNER_TYPESCRIPT: ${{ startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
           NEEDS_NATIVE_BINARY: ${{ startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth' }}
         run: |
           set -euo pipefail
@@ -1194,7 +1243,7 @@ jobs:
           fi
 
       - name: Verify and restore remote provider pack
-        if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        if: matrix.environmentId == 'daytona' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-'))
         env:
           IMAGE_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
         run: |
@@ -1214,7 +1263,7 @@ jobs:
             packages/paperclip-runner/provider-pack/provider-pack.json >/dev/null
 
       - name: Qualify local provider Node interpreter
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth')
+        if: matrix.environmentId == 'local' && (startsWith(matrix.profileId, 'runner-opencode') || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth')
         run: |
           node <<'NODE'
           const fs = require("node:fs");
@@ -1307,7 +1356,7 @@ jobs:
           NODE
 
       - name: Prepare pinned Python artifact oracle image
-        if: (matrix.suiteId == 'everyday-workflows' || matrix.suiteId == 'grok-qualification' || matrix.suiteId == 'grok-subscription-qualification') && (matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect')
+        if: matrix.caseId == 'build-revise' || matrix.caseId == 'delegate-feedback' || matrix.caseId == 'agent-review-handoff' || matrix.caseId == 'hire-reuse' || matrix.caseId == 'recover-controller' || matrix.caseId == 'stop-redirect'
         run: |
           set -euo pipefail
           oracle_image='python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
@@ -1426,7 +1475,8 @@ jobs:
         working-directory: .manual-private-trusted
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           TARGET_ROOT: ${{ github.workspace }}
           SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
@@ -1443,7 +1493,11 @@ jobs:
 
   test_recurring:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      inputs.image_only != true
     needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
@@ -1460,7 +1514,11 @@ jobs:
 
   test_manual_private:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'private' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      !cancelled() && needs.catalog.result == 'success' && needs.daytona_image.result == 'success' &&
+      needs.build_runner_artifacts.result == 'success' && needs.build_remote_provider_pack.result == 'success' &&
+      needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'private' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      inputs.image_only != true
     needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
@@ -1477,7 +1535,7 @@ jobs:
 
   report:
     name: Merge and enforce campaign result
-    if: always() && !cancelled() && needs.catalog.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: always() && !cancelled() && needs.catalog.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.image_only != true
     needs: [authorize, catalog, daytona_image, test, test_recurring, test_manual_private]
     outputs:
       history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
@@ -1519,7 +1577,8 @@ jobs:
         if: needs.authorize.outputs.evidence_retention == 'private'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1557,7 +1616,8 @@ jobs:
         if: steps.manual_read_credentials_0.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1588,7 +1648,8 @@ jobs:
         if: steps.manual_read_credentials_1.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1619,7 +1680,8 @@ jobs:
         if: steps.manual_read_credentials_2.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1650,7 +1712,8 @@ jobs:
         if: steps.manual_read_credentials_3.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1681,7 +1744,8 @@ jobs:
         if: steps.manual_read_credentials_4.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1712,7 +1776,8 @@ jobs:
         if: steps.manual_read_credentials_5.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1743,7 +1808,8 @@ jobs:
         if: steps.manual_read_credentials_6.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1774,7 +1840,8 @@ jobs:
         if: steps.manual_read_credentials_7.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -1793,7 +1860,8 @@ jobs:
         if: steps.manual_report.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           PRIVATE_REPORT_ROOT: ${{ github.workspace }}
           NODE_OPTIONS: ''
@@ -1987,7 +2055,8 @@ jobs:
         if: always() && steps.manual_report_credentials.outcome == 'success' && steps.manual_cells_downloaded.outcome == 'success'
         env:
           MANUAL_PRIVATE_IDS: ${{ needs.authorize.outputs.manual_private_ids }}
-          MANUAL_PRIVATE_APPROVALS_JSON: ${{ vars.RUNNER_E2E_MANUAL_PRIVATE_APPROVALS_JSON }}
+          PAPERCLIP_MANUAL_DISPATCH_AUTHORITY: v1
+          MANUAL_DISPATCH_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
           NODE_OPTIONS: ''
@@ -2016,9 +2085,9 @@ jobs:
           fi
 
   publish_testops:
-    name: Publish bound Product regression results to TestOps
+    name: Publish bound TestOps plan results
     needs: [authorize, testops_selection, catalog, report]
-    if: always() && needs.testops_selection.outputs.job_run_started == 'true'
+    if: always() && needs.testops_selection.outputs.job_run_started == 'true' && inputs.image_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: runner-e2e-testops-reporting
@@ -2081,7 +2150,7 @@ jobs:
   publish_history:
     name: Publish S3 history and Pages bundle with declared screenshots
     needs: [authorize, catalog, report]
-    if: always() && needs.catalog.result == 'success' && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && needs.report.outputs.history_source_ready == 'true'
+    if: always() && needs.catalog.result == 'success' && needs.catalog.outputs.operations_cadence == '' && needs.authorize.outputs.evidence_retention == 'actions' && needs.report.outputs.history_source_ready == 'true' && inputs.image_only != true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -2159,7 +2228,7 @@ jobs:
   pages:
     name: Publish latest dashboard with declared screenshots
     needs: [report, publish_history]
-    if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
+    if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true' && inputs.image_only != true
     runs-on: ubuntu-latest
     permissions:
       pages: write

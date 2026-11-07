@@ -1,5 +1,11 @@
 import { budgetServiceInTransaction } from "../budgets.js";
+import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
+import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
+import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageChargeCostEvent, imageIdentity, ImageGenerationProviderError, priceGeneratedImage, requestOpenAiImage, uncertainImageCharge, writeGeneratedImageLocally } from "./generate-image-tool.js";
+import { aiConnectionService } from "../ai-connections.js";
+import { createCostEventInTransaction } from "../costs.js";
+import { withOperationAccountingTransaction } from "../accounting-transaction.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -210,6 +216,8 @@ type Binding = {
   readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
   readRemoteTaskFile?: RemoteWorkspaceFileReader;
   installRemoteArtifact?: ArtifactInstaller;
+  /** Server-derived from the run's admitted OpenAI API-key connection; never tool input. */
+  imageGeneration?: { connectionId: string; grantId: string };
   readRemoteApiFile?: (path: string, maxBytes: number) => Promise<Buffer>;
   currentWakeComments?: CurrentWakeCommentsBinding;
   chatAttachmentReadScope?: NativeChatAttachmentReadScope;
@@ -390,6 +398,7 @@ export class PaperclipRunnerToolAuthority {
     if (!this.binding.firstPartyOnly && !this.binding.museRuntime && !this.binding.dotRuntime && workMode === "standard"
       && this.binding.workspaceRoot && runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)
       && (this.binding.executionTargetKind === "remote" ? this.binding.installRemoteArtifact : process.platform === "linux")) definitions.push(DOWNLOAD_ARTIFACT_DEFINITION);
+    if (this.#imageGenerationAdvertised(workMode)) definitions.push(GENERATE_IMAGE_DEFINITION);
     definitions.push(READ_CURRENT_WAKE_COMMENTS_TOOL_DEFINITION);
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
@@ -411,6 +420,13 @@ export class PaperclipRunnerToolAuthority {
     if (!this.binding.museRuntime) await this.binding.assertBridgeAuthority?.();
     const context = await this.#boundContext({ tool: call.tool });
     const { run } = context;
+    if (call.tool === GENERATE_IMAGE) {
+      const input = generateImageSchema.safeParse(call.arguments);
+      const receipt = record(record(run.resultJson?.imageToolReceipts)[toolCallKey(call.callId)]);
+      if (!input.success || receipt.digest !== toolInputDigest(input.data)) return null;
+      if (receipt.state === "charged") await this.#recordImageCharge(toolCallKey(call.callId), record(receipt.charge));
+      return receipt.state === "completed" && Object.hasOwn(receipt, "result") ? { result: receipt.result } : null;
+    }
     if (call.tool === DOWNLOAD_ARTIFACT) {
       try { return { result: await this.#downloadArtifact(call.arguments, true) }; }
       catch (error) {
@@ -635,6 +651,7 @@ export class PaperclipRunnerToolAuthority {
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
     if (call.tool === DOWNLOAD_ARTIFACT) return this.#downloadArtifact(call.arguments);
+    if (call.tool === GENERATE_IMAGE) return this.#generateImage(call.callId, call.arguments);
     if (call.tool === READ_TOOL_RESULT) {
       await this.#boundContext({ tool: call.tool });
       return this.#readToolResult(call.arguments);
@@ -1176,6 +1193,172 @@ export class PaperclipRunnerToolAuthority {
     }
   }
 
+  #imageGenerationAdvertised(workMode: string) {
+    return Boolean(this.binding.imageGeneration) && !this.binding.firstPartyOnly && !this.binding.museRuntime && !this.binding.dotRuntime
+      && !this.binding.nativeReview && workMode === "standard" && Boolean(this.binding.workspaceRoot)
+      && (this.binding.executionTargetKind !== "remote" || Boolean(this.binding.installRemoteArtifact));
+  }
+
+  /**
+   * Makes one image with the run's existing OpenAI API key. The key is read
+   * here, in the server, and sent only to OpenAI; it never reaches the
+   * provider process or the agent's shell. One receipt per provider call ID
+   * means a retried or recovered call replays instead of paying twice.
+   */
+  async #generateImage(callId: string, value: unknown): Promise<unknown> {
+    const input = generateImageSchema.parse(value);
+    const binding = this.binding.imageGeneration;
+    const initial = await this.#boundContext({ tool: GENERATE_IMAGE });
+    if (!binding || !this.#imageGenerationAdvertised(initial.issue.workMode) || initial.issue.workMode !== "standard") {
+      throw forbidden("Image generation is unavailable to this run or provider");
+    }
+    const key = toolCallKey(callId);
+    const digest = toolInputDigest(input);
+    const priorReceipt = (resultJson: unknown): { result: unknown } | { charged: Record<string, unknown> } | undefined => {
+      const receipt = record(record(record(resultJson).imageToolReceipts)[key]);
+      if (!Object.keys(receipt).length) return undefined;
+      if (receipt.digest !== digest) throw badRequest("This tool call ID was already used for a different image request");
+      if (receipt.state === "completed" && Object.hasOwn(receipt, "result")) return { result: receipt.result };
+      if (receipt.state === "failed") throw badRequest(String(receipt.error ?? "Image generation failed"));
+      if (receipt.state === "charged") return { charged: receipt };
+      throw new SemanticToolOutcomeUnknownError("An earlier attempt of this image call did not finish. Call generate_image again with a new request if the image is still needed.");
+    };
+    const replay = priorReceipt(initial.run.resultJson);
+    if (replay && "charged" in replay) return this.#settleInterruptedImage(key, replay.charged);
+    if (replay) return replay.result;
+    const authorize = async () => {
+      const current = await this.#boundContext({ tool: GENERATE_IMAGE });
+      if (!this.#imageGenerationAdvertised(current.issue.workMode)) throw forbidden("Image generation is unavailable to this run or provider");
+      const decision = await authorizationService(this.db).decide({ actor: this.#privacyActor(current.run), action: "issue:mutate",
+        resource: { type: "issue", companyId: this.binding.companyId, issueId: current.issue.id } });
+      if (!decision.allowed) throw forbidden(decision.explanation);
+      // #boundContext checks company and agent budgets; spending also needs the task's project.
+      if (current.issue.projectId && await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId,
+        { issueId: current.issue.id, projectId: current.issue.projectId })) throw forbidden("Company or budget authority unavailable");
+      await assertNoCaseHandoffMutation(this.db, this.binding.runId, this.binding.issueId);
+      return current;
+    };
+    const current = await authorize();
+    const connections = aiConnectionService(this.db);
+    const connection = await connections.selectImageGeneration({ companyId: this.binding.companyId, agentId: this.binding.agentId,
+      connectionId: binding.connectionId, grantId: binding.grantId, userId: current.run.responsibleUserId });
+    const apiKey = await connections.credential(connection, 0, { responsibleUserId: current.run.responsibleUserId, actorType: "agent",
+      actorId: this.binding.agentId, issueId: this.binding.issueId, heartbeatRunId: this.binding.runId });
+    if (!apiKey) throw forbidden("Image generation needs an OpenAI API key");
+    const setReceipt = (receipt: Record<string, unknown>, claim = false) => this.db.update(heartbeatRuns).set({
+      resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{imageToolReceipts}',
+        coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) || ${JSON.stringify({ [key]: { digest, ...receipt } })}::jsonb)`,
+    }).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId),
+      ...(claim ? [sql`not (coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) ? ${key})`] : [])))
+      .returning({ id: heartbeatRuns.id });
+    // Claim the call before spending; a concurrent duplicate replays the winner.
+    if (!(await setReceipt({ state: "started" }, true)).length) {
+      const [row] = await this.db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.binding.runId));
+      const raced = priorReceipt(row?.resultJson);
+      if (raced && "charged" in raced) return this.#settleInterruptedImage(key, raced.charged);
+      if (raced) return raced.result;
+      throw new SemanticToolOutcomeUnknownError("This image call is already in progress.");
+    }
+    const details = { model: GENERATE_IMAGE_MODEL, size: input.size, quality: input.quality, promptChars: input.prompt.length };
+    const audit = async (outcome: string, extra: Record<string, unknown> = {}) => { await logActivity(this.db, {
+      companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, runId: this.binding.runId,
+      action: "runner.image_generate", entityType: "issue", entityId: this.binding.issueId, details: { ...details, ...extra, outcome } }); };
+    await audit("started");
+    // Stop, reassignment or a budget stop can commit while the writes above
+    // wait. Recheck live authority as the last step before paying.
+    try {
+      const live = await authorize();
+      // The grant can be revoked while the writes above wait; a revoked grant
+      // does not delete the key, so reload connection access too.
+      await connections.selectImageGeneration({ companyId: this.binding.companyId, agentId: this.binding.agentId,
+        connectionId: binding.connectionId, grantId: binding.grantId, userId: live.run.responsibleUserId });
+    } catch (error) {
+      await setReceipt({ state: "failed", error: "Image generation was stopped before any request was sent" }).catch(() => undefined);
+      await audit("refused").catch(() => undefined);
+      throw error;
+    }
+    let image: Awaited<ReturnType<typeof requestOpenAiImage>>;
+    try {
+      image = await requestOpenAiImage({ ...input, apiKey });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : "Image generation failed";
+      if (!(error instanceof ImageGenerationProviderError && error.rejected)) {
+        // OpenAI may have generated and billed this image. Record unknown spend
+        // through the same settlement path; run accounting retries it.
+        const charge = uncertainImageCharge({ projectId: current.issue.projectId ?? null, reason: message });
+        await setReceipt({ state: "charged", charge, error: message }).catch(() => undefined);
+        // Settle only after the spend is recorded; otherwise run accounting
+        // still finds the `charged` receipt and records it later.
+        const recorded = await this.#recordImageCharge(key, charge).then(() => true, () => false);
+        if (recorded) await setReceipt({ state: "failed", charge, error: `The image request may have been billed but returned no usable image: ${message}` }).catch(() => undefined);
+        await audit("unconfirmed", { error: message }).catch(() => undefined);
+        throw badRequest(`The image request may have been billed but returned no usable image: ${message}`);
+      }
+      await setReceipt({ state: "failed", error: message }).catch(() => undefined);
+      await audit("failed", { error: message }).catch(() => undefined);
+      throw badRequest(message);
+    }
+    const price = priceGeneratedImage(image);
+    const identity = imageIdentity(image.bytes);
+    const destination = generatedImageDestination(input.name);
+    const result = { outcome: "completed", path: destination, contentType: "image/png", ...identity, model: image.model, size: input.size,
+      costUsd: price.costUsd, guidance: "Saved in the workspace root. Move or copy it where the task needs it; use register_deliverable if the user should receive it." };
+    // The provider has charged. Persist the charge before any other step, so a
+    // failed save, accounting write or process crash can still settle it.
+    const charge = { model: image.model, providerRequestId: image.providerRequestId, usage: image.usage, costCents: price.costCents,
+      pricingProvenance: price.pricingProvenance, projectId: current.issue.projectId ?? null, destination, ...identity,
+      chargedAt: new Date().toISOString() };
+    try {
+      await setReceipt({ state: "charged", charge });
+    } catch (error) {
+      // Without the receipt, record the spend now; the call cannot be confirmed.
+      await this.#recordImageCharge(key, charge).catch(() => undefined);
+      await audit("unconfirmed", { destination, ...identity, costCents: price.costCents }).catch(() => undefined);
+      throw new SemanticToolOutcomeUnknownError("The image was generated but its receipt could not be saved. Do not retry this call.", { cause: error });
+    }
+    let saveError: unknown;
+    try {
+      await authorize();
+      if (this.binding.executionTargetKind === "remote") {
+        await this.binding.installRemoteArtifact!({ destination, ...identity, bytes: image.bytes, authorize: async () => { await authorize(); } });
+      } else {
+        await writeGeneratedImageLocally(this.binding.workspaceRoot!, destination, image.bytes);
+      }
+    } catch (error) { saveError = error; }
+    // Spend is recorded whether or not the image was saved. The budget
+    // service evaluates hard-stops here.
+    await this.#recordImageCharge(key, charge);
+    if (saveError !== undefined) {
+      if (!(saveError instanceof SemanticToolOutcomeUnknownError)) {
+        await setReceipt({ state: "failed", error: "The image was generated but could not be saved to the workspace" }).catch(() => undefined);
+      }
+      await audit("unconfirmed", { destination, ...identity, costCents: price.costCents }).catch(() => undefined);
+      throw saveError;
+    }
+    await setReceipt({ state: "completed", result });
+    await audit("completed", { destination, ...identity, costCents: price.costCents });
+    return result;
+  }
+
+  async #recordImageCharge(key: string, charge: Record<string, unknown>) {
+    await withOperationAccountingTransaction(this.db, this.binding.companyId, (tx, publications) => createCostEventInTransaction(tx, this.binding.companyId,
+      imageChargeCostEvent({ agentId: this.binding.agentId, issueId: this.binding.issueId, runId: this.binding.runId, key, charge }), publications));
+  }
+
+  /** An interrupted call was paid for but not confirmed saved: record the spend, then settle it as failed. */
+  async #settleInterruptedImage(key: string, receipt: Record<string, unknown>): Promise<never> {
+    const charge = record(receipt.charge);
+    await this.#recordImageCharge(key, charge);
+    const message = typeof charge.destination === "string"
+      ? `An earlier attempt generated the image but did not confirm saving it. Check whether ${charge.destination} exists in the workspace before generating another.`
+      : "An earlier image request may have been billed but returned no usable image.";
+    await this.db.update(heartbeatRuns).set({
+      resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{imageToolReceipts}',
+        coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) || ${JSON.stringify({ [key]: { ...receipt, state: "failed", error: message } })}::jsonb)`,
+    }).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId)));
+    throw badRequest(message);
+  }
+
   async #readToolResult(value: unknown): Promise<unknown> {
     if (!this.binding.assignedMcpTools) throw forbidden("Saved app-tool results are unavailable to this run");
     const input = readToolResultSchema.parse(value);
@@ -1503,7 +1686,11 @@ export class PaperclipRunnerToolAuthority {
     }
     const [company] = await this.db.select().from(companies).where(eq(companies.id, this.binding.companyId));
     if (company?.status !== "active"
-      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId, { issueId: this.binding.issueId })) throw forbidden("Company or budget authority unavailable");
+      // The running run was admitted already. A temporary accounting hold
+      // gates new work only; a hard stop or pause reaches this run through the
+      // normal pause and cancellation path, and is still refused here.
+      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId,
+        { issueId: this.binding.issueId, runId: this.binding.runId, admittedRecovery: true })) throw forbidden("Company or budget authority unavailable");
     if (this.binding.nativeReview) {
       const admitted = readNativeReviewAssignmentContext(row.run.contextSnapshot);
       if (!admitted || admitted.nativeReviewInteractionId !== this.binding.nativeReview.nativeReviewInteractionId
@@ -1698,19 +1885,81 @@ export class PaperclipRunnerToolAuthority {
     const inputFingerprint = createHash("sha256")
       .update(canonicalJson(input))
       .digest("hex");
+    /** Why this run may not add a child under `parent`, or null when it may. */
+    const parentWriteDenial = async (tx: Db, run: typeof heartbeatRuns.$inferSelect, parent: typeof issues.$inferSelect) => {
+      for (const action of ["issue:read", "issue:mutate"] as const) {
+        const decision = await authorizationService(tx).decide({ actor: this.#privacyActor(run), action, resource: {
+          type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
+          parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
+        }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
+        if (!decision.allowed) return decision.explanation;
+      }
+      return null;
+    };
     const authorizeCreate = async (tx: Db, context: {
       run: typeof heartbeatRuns.$inferSelect;
       issue: typeof issues.$inferSelect;
       actor: typeof agents.$inferSelect;
     }) => {
-      const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
-      const projectId = nullableProviderId(input.projectId) ?? (parentIssueId ? context.issue.projectId : null);
+      // Default parent: the current task, or none from a conversation. An
+      // explicit parentTaskId names another task the run may read and change
+      // (for example a top-level task this conversation just created).
+      let parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
+      let parentProjectId = parentIssueId ? context.issue.projectId : null;
+      const requestedParentId = nullableProviderId(input.parentTaskId);
+      const watchdogScope = await resolveTaskWatchdogMutationScope(tx, {
+        type: "agent", agentId: this.binding.agentId, runId: this.binding.runId, companyId: this.binding.companyId,
+      });
+      if (requestedParentId && requestedParentId !== parentIssueId) {
+        const [parent] = await tx.select().from(issues).where(and(
+          eq(issues.id, requestedParentId), eq(issues.companyId, this.binding.companyId),
+        ));
+        if (!parent) throw new Error("paperclip_runner_task_not_found");
+        if (parent.conversationAgentId) {
+          throw forbidden("A conversation cannot be a parent; omit parentTaskId to create a top-level task");
+        }
+        const denied = await parentWriteDenial(tx, context.run, parent);
+        if (denied) throw forbidden(denied);
+        // A watchdog run may only add work inside its watched subtree, as on the
+        // issues route.
+        if (watchdogScope.kind !== "none") {
+          const allowed = await taskWatchdogScopeAllowsIssueMutation(tx, watchdogScope, { id: parent.id, companyId: parent.companyId });
+          if (allowed.kind === "invalid") throw forbidden(allowed.detail);
+        }
+        parentIssueId = parent.id;
+        parentProjectId = parent.projectId;
+      }
+      // Place the edge the way createChild will, and authorize the parent that
+      // is actually written. Active watchdog runs keep their requested parent.
+      const parentDepthPolicy = watchdogScope.kind === "watchdog" ? "allow_nested" as const : "flatten" as const;
+      let placedParentId = parentIssueId;
+      // Set when the structural parent is dropped; the follow-up still works in
+      // the requester's workspace.
+      let workspaceSourceIssueId: string | null = null;
+      if (parentIssueId) {
+        placedParentId = (await resolveNewTaskParent(tx, this.binding.companyId, parentIssueId, parentDepthPolicy)).effectiveParentId;
+        if (placedParentId && placedParentId !== parentIssueId) {
+          const [placed] = await tx.select().from(issues).where(and(
+            eq(issues.id, placedParentId), eq(issues.companyId, this.binding.companyId),
+          ));
+          const denied = placed ? await parentWriteDenial(tx, context.run, placed) : "Parent issue not found";
+          if (denied) {
+            // A named parent fails closed; the implicit current-task default
+            // falls back to standalone work, as the issues route does.
+            if (requestedParentId) throw forbidden(denied);
+            workspaceSourceIssueId = parentIssueId;
+            parentIssueId = null;
+            placedParentId = null;
+          }
+        }
+      }
+      const projectId = nullableProviderId(input.projectId) ?? parentProjectId;
       if (this.binding.museRuntime && projectId) {
         const access = await authorizationService(tx).decide({ actor: this.#privacyActor(context.run), action: "project:read",
           resource: { type: "project", companyId: this.binding.companyId, projectId } });
         if (!access.allowed) throw forbidden("Project is unavailable to this Muse run");
       }
-      const scope = { projectId, parentIssueId, assigneeAgentId, assigneeUserId };
+      const scope = { projectId, parentIssueId: placedParentId, assigneeAgentId, assigneeUserId };
       const decision = await authorizationService(tx).decide({
         actor: this.#privacyActor(context.run),
         action: "tasks:assign",
@@ -1728,12 +1977,11 @@ export class PaperclipRunnerToolAuthority {
         run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy },
       });
       if (trust.kind === "denied") throw forbidden(trust.detail);
-      return { projectId, trust };
+      return { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId };
     };
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("create_task", idempotencyKey, input, async (tx, context) => {
-      const { projectId, trust } = await authorizeCreate(tx, context);
-      const conversation = Boolean(context.issue.conversationAgentId);
+      const { projectId, trust, parentIssueId, placedParentId, parentDepthPolicy, workspaceSourceIssueId } = await authorizeCreate(tx, context);
       const existingChild = await tx.select().from(issues).where(and(
         eq(issues.companyId, this.binding.companyId),
         eq(issues.originId, durableIdempotencyKey),
@@ -1787,6 +2035,10 @@ export class PaperclipRunnerToolAuthority {
         assigneeUserId,
         blockedByIssueIds,
         blockParentUntilDone: false,
+        // Placement was authorized above; reject the write if the tree changed since.
+        parentDepthPolicy,
+        ...(parentIssueId ? { expectedParentId: placedParentId } : {}),
+        ...(workspaceSourceIssueId ? { inheritExecutionWorkspaceFromIssueId: workspaceSourceIssueId } : {}),
         createdByAgentId: this.binding.agentId,
         originKind: "manual" as const,
         originId: durableIdempotencyKey,
@@ -1799,9 +2051,9 @@ export class PaperclipRunnerToolAuthority {
         idempotencyKey: durableIdempotencyKey,
         onDeduplicated: () => { deduplicated = true; },
       };
-      const child = conversation
-        ? await issueService(tx).create(this.binding.companyId, createInput)
-        : (await issueService(tx).createChild(this.binding.issueId, createInput)).issue;
+      const child = parentIssueId
+        ? (await issueService(tx).createChild(parentIssueId, createInput)).issue
+        : await issueService(tx).create(this.binding.companyId, createInput);
       if (deduplicated && child.originFingerprint !== inputFingerprint) {
         throw new Error("paperclip_runner_tool_idempotency_conflict");
       }
@@ -1826,7 +2078,8 @@ export class PaperclipRunnerToolAuthority {
           agentId: this.binding.agentId, runId: this.binding.runId, issueId: child.id,
           action: "issue.created", entityType: "issue", entityId: child.id,
           details: { identifier: child.identifier, title: child.title, parentId: child.parentId,
-            assigneeAgentId: child.assigneeAgentId, assigneeUserId: child.assigneeUserId, status: childStatus, source: "paperclip_runner_protocol" },
+            assigneeAgentId: child.assigneeAgentId, assigneeUserId: child.assigneeUserId, status: childStatus, source: "paperclip_runner_protocol",
+            ...("parentAdjusted" in child && child.parentAdjusted ? { parentAdjusted: child.parentAdjusted } : {}) },
         });
         publication = activity.publication;
       }

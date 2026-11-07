@@ -20,7 +20,7 @@ const selection = cases => ({ schema: 'paperclip.product-regression-testops-sele
 const result = (overrides = {}) => ({
   executionId: selected.executionId, suiteId: selected.suite, caseId: selected.name,
   profileId: selected.profile, environmentId: 'local', source: { sha: targetSha }, attempt: 1,
-  status: 'passed', cleanup: 'passed', model: 'gpt-5.6-sol', suiteDefinitionHash: 'c'.repeat(64),
+  status: 'passed', cleanup: 'passed', model: 'gpt-6.1-sol', suiteDefinitionHash: 'c'.repeat(64),
   matcherResults: [{ matcher: { kind: 'json_path', path: 'observed.outputVerified', expected: true }, passed: true }],
   ...overrides,
 });
@@ -81,7 +81,7 @@ test('reported pass requires real assertions, successful cleanup and exact curre
 test('missing results remain explicit broken cases and cannot improve the denominator', () => {
   const projected = projectProductResults(undefined, selection(productRegressionCases), targetSha);
   const { cases, ...counts } = projected.summary;
-  assert.deepEqual(counts, { selected: 20, passed: 0, failed: 0, broken: 20, fullPlan: true });
+  assert.deepEqual(counts, { selected: 20, passed: 0, failed: 0, broken: 20, plan: 'product-regression', fullPlan: true });
   assert.equal(cases.length, 20);
   assert.equal(cases.every(row => row.status === 'broken'), true);
   assert.equal(projected.records.filter(row => row.file.endsWith('-result.json')).length, 20);
@@ -133,7 +133,7 @@ test('the transmission projection excludes raw errors, provider IDs, narratives 
 
 test('secret-shaped and unknown metadata cannot cross the reporting boundary', () => {
   const sentinel = 'sk-proj-syntheticcredentialabcdefghijklmnop';
-  for (const mutation of [{ model: sentinel }, { model: 'gpt-6.1-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
+  for (const mutation of [{ model: sentinel }, { model: 'gpt-5.6-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
     { matcherResults: [{ passed: true, matcher: { kind: sentinel } }] }]) {
     assert.throws(() => projectProductResults(campaign([result(mutation)]), selection([selected]), targetSha),
       error => error.message === 'product_regression_testops_metadata_invalid');
@@ -269,4 +269,24 @@ test('workflow keeps reporting credentials and trusted code outside candidate/pr
   assert.doesNotMatch(reportingJob.split('    steps:\n')[0], /!cancelled\(\)/);
   assert.match(reportingJob, /Finish the original TestOps job run\n\s+if: always\(\)/);
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf('\njobs:')), /workflow_call:/);
+});
+
+test('ordinary campaigns still run cells when the TestOps selection job is skipped', async () => {
+  const { parse } = await import('yaml');
+  const { jobs } = parse(await readFile(new URL('../../.github/workflows/runner-full-stack-e2e.yml', import.meta.url), 'utf8'));
+  const needs = name => [jobs[name].needs ?? []].flat();
+  const descends = name => needs(name).some(parent => parent === 'testops_selection' || descends(parent));
+  // GitHub's implicit success() also fails on a skipped ancestor, so any job
+  // below the optional selection must use a status function and then require
+  // each real dependency result itself.
+  const below = Object.keys(jobs).filter(descends);
+  assert.ok(below.includes('test') && below.includes('daytona_image'));
+  for (const name of below) {
+    const condition = String(jobs[name].if ?? '');
+    assert.match(condition, /always\(\)|!cancelled\(\)/, `${name} needs an explicit status function`);
+    if (condition.includes('always()') || name === 'catalog') continue;
+    for (const parent of needs(name).filter(parent => !['authorize', 'target_lock'].includes(parent))) {
+      assert.match(condition, new RegExp(`needs\\.${parent}\\.result == 'success'`), `${name} must still require ${parent}`);
+    }
+  }
 });

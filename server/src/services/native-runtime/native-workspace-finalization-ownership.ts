@@ -2,6 +2,7 @@ import { notifyNativeResultCommit } from "../native-result-commit-notifications.
 import { notifyNativeWorkspaceFinalization, releaseNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -16,9 +17,11 @@ import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
 
 import { currentWorkspaceWorker, requestWorkspaceWorkerStopProof, type WorkspaceWorker, type WorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
+import { currentProcessGroupId, proveLocalWorkspaceOwnerStopped, type LocalWorkspaceOwnerStop } from "./native-workspace-owner-stop-proof.js";
 
 const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
 
@@ -42,12 +45,15 @@ type Owner = {
   hostname: string;
   pid: number;
   processStartedAt: string;
+  /** Copyback children inherit this group; a successor uses it to prove they stopped. */
+  processGroupId?: number;
   worker?: WorkspaceWorker;
 };
 export type NativeWorkspaceFinalizationWaitReason =
   | "busy"
   | "owner_active"
   | "platform_stop_pending"
+  | "local_stop_pending"
   | "owner_unverified"
   | "binding_changed";
 
@@ -74,6 +80,18 @@ function readOwner(value: unknown): Owner | null {
     ? owner as Owner : null;
 }
 
+export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<string, unknown> | null,
+  identity: NativeControllerIdentity, worker: WorkspaceWorker | undefined): boolean {
+  const raw = profile?.[OWNER_KEY];
+  if (raw == null) return true;
+  const owner = readOwner(raw);
+  return Boolean(owner && owner.token.length > 0 && owner.token.length <= 200 && worker && owner.worker
+    && Object.keys(owner.worker).length === Object.keys(worker).length && owner.controllerBootId === identity.bootId
+    && owner.hostname === os.hostname() && owner.pid === identity.pid
+    && Date.parse(owner.processStartedAt) === identity.processStartedAt.getTime()
+    && Object.keys(worker).every(key => owner.worker![key as keyof WorkspaceWorker] === worker[key as keyof WorkspaceWorker]));
+}
+
 /**
  * The advisory lock serializes controllers without holding row locks across I/O.
  * The durable receipt additionally prevents a disconnected lock session from
@@ -85,9 +103,11 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
+  const processGroupId = await currentProcessGroupId();
   const owner: Owner = {
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
-    processStartedAt: identity.processStartedAt.toISOString(), worker: currentWorkspaceWorker(),
+    processStartedAt: identity.processStartedAt.toISOString(),
+    ...(processGroupId ? { processGroupId } : {}), worker: currentWorkspaceWorker(),
   };
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
     input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
@@ -146,6 +166,10 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
         };
         let platformProof: WorkspaceWorkerStopProof | null = null;
         let platformStopPending = false;
+        let localProof: Extract<LocalWorkspaceOwnerStop, { status: "verified" }>["proof"] | null = null;
+        let localStopPending = false;
+        const waitReason = () => platformStopPending ? "platform_stop_pending" as const
+          : localStopPending ? "local_stop_pending" as const : "owner_unverified" as const;
         if (rawPrior != null) {
           const requireStopVerification = async () => {
             if (input.retainedRepairActionId) return { acquired: false, reason: "owner_unverified" } as const;
@@ -166,7 +190,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
                   sql`(${issueRecoveryActions.nextAction} is distinct from ${nextAction} or ${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' is distinct from 'operator_required')`,
                 ));
               }
-              return { acquired: false, reason: platformStopPending ? "platform_stop_pending" : "owner_unverified" } as const;
+              return { acquired: false, reason: waitReason() } as const;
             }
             if (run.issueId) await recovery.upsertSourceScoped({
               companyId: input.companyId, sourceIssueId: run.issueId,
@@ -177,7 +201,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
               nextAction,
               wakePolicy: null, maxAttempts: 1, supersedeOnIdentityChange: true,
             });
-            return { acquired: false, reason: platformStopPending ? "platform_stop_pending" : "owner_unverified" } as const;
+            return { acquired: false, reason: waitReason() } as const;
           };
           // The harness checks the exact owned deployment, including orphaned children.
           // A live deployment, unsigned answer or older receipt stays fenced.
@@ -212,7 +236,17 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
               eq(workspaceOperations.phase, "workspace_finalize"),
               eq(workspaceOperations.status, "succeeded"),
             )).limit(1);
-            if (!completedCopyback) return requireStopVerification();
+            if (!completedCopyback) {
+              // A restart can kill the controller mid-copyback. It can never
+              // confirm its own stop, so prove on this host that it and every
+              // copyback child in its process group exited (RC-47).
+              const local = await proveLocalWorkspaceOwnerStopped({ owner: prior, identity });
+              if (local.status !== "verified") {
+                localStopPending = local.status === "pending";
+                return requireStopVerification();
+              }
+              localProof = local.proof;
+            }
           }
         }
         // Claim before the potentially ambiguous write so finally can remove
@@ -229,9 +263,9 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           )).returning({ id: heartbeatRuns.id });
           return claimedRun;
         };
-        // A stop receipt proves the old worker exited, not that its task is still
-        // current. Revalidate after the provider read and atomically with the CAS.
-        const claimedRun = platformProof ? await input.db.transaction(async tx => {
+        // A stop proof (platform or local) shows the old worker exited, not that its
+        // task is still current. Revalidate after the proof and atomically with the CAS.
+        const claimedRun = platformProof || localProof ? await input.db.transaction(async tx => {
           const result = await currentRecoveryResult(tx as unknown as Db);
           if (!result) return null;
           const claimedRun = await claimOwner(tx as unknown as Db);
@@ -246,10 +280,10 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           claimed = false;
           return { acquired: false, reason: "binding_changed" } as const;
         }
-        if (platformProof && run.issueId) await logActivity(input.db, {
+        if ((platformProof || localProof) && run.issueId) await logActivity(input.db, {
           companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
           action: "issue.workspace_owner_stop_verified", entityType: "issue", entityId: run.issueId,
-          runId: input.runId, details: { proof: platformProof },
+          runId: input.runId, details: platformProof ? { proof: platformProof } : { localProof },
         });
         if (prior) joinedOwnerTokens.delete(prior.token);
         const ownership: NativeWorkspaceFinalizationOwnership = {
@@ -270,7 +304,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           },
         };
         await ownership.assertHeld();
-        if (platformProof && run.issueId) await input.db.update(issueRecoveryActions).set({
+        if ((platformProof || localProof) && run.issueId) await input.db.update(issueRecoveryActions).set({
           evidence: sql`jsonb_set(coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb), '{workspaceOwnerRecovery}', '{"state":"resuming"}'::jsonb)`,
           updatedAt: new Date(),
         }).where(and(
@@ -304,6 +338,8 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeStatusReassessment(tx, { companyId: input.companyId, runId: input.runId });
           await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
+          // Saved messages also wait on this owner after the run finished.
+          await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
           await tx.update(heartbeatRuns).set({
             runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) - ${OWNER_KEY}`,
           }).where(owned);

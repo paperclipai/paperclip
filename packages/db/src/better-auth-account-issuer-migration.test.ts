@@ -119,7 +119,7 @@ describeEmbeddedPostgres("historical issuer migration and patched provider ident
       `,
     ).rejects.toMatchObject({ code: "23505", constraint_name: UNIQUE_INDEX });
 
-    await applySqlMigration(sql, "0432_better_auth_account_identity.sql");
+    await applySqlMigration(sql, "0441_better_auth_account_identity.sql");
     const preserved = await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`;
     expect(preserved).toEqual(rows);
     const [nullable] = await sql`
@@ -153,7 +153,7 @@ describeEmbeddedPostgres("provider identity migration with duplicate legacy keys
         VALUES (${randomUUID()}, 'issuer-a', 'same-subject', 'credential', ${userId}, now(), now()),
                (${randomUUID()}, 'issuer-b', 'same-subject', 'credential', ${userId}, now(), now())`;
       const before = await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`;
-      await expect(applySqlMigration(sql, "0432_better_auth_account_identity.sql"))
+      await expect(applySqlMigration(sql, "0441_better_auth_account_identity.sql"))
         .rejects.toMatchObject({ code: "23505" });
       expect(await sql`SELECT "id", "issuer" FROM "account" ORDER BY "id"`).toEqual(before);
       const [column] = await sql`SELECT "is_nullable" FROM "information_schema"."columns"

@@ -136,6 +136,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
   const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
+  const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
@@ -219,7 +220,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       />
     )
   ) : null;
-  const secondarySidebar = isAgentChatRoute ? (coordinatorWorkspaceEnabled ? null : <AgentConversationsSidebar />) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
@@ -246,7 +247,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
@@ -657,6 +657,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   <Sidebar>{sidebarSections}</Sidebar>
                 )}
               </div>
+              {/* Dock optional announcements in the sidebar column so they never
+                  cover the task thread or composer. While the sidebar is a rail
+                  the card waits until the sidebar is expanded again. */}
+              {sidebarOpen && (replacesPrimarySidebar || !collapsed) ? (
+                <AnnouncementWell health={health} placement="sidebar" />
+              ) : null}
               <SidebarAccountMenu
                 deploymentMode={health?.deploymentMode}
                 forceExpanded={replacesPrimarySidebar}
@@ -665,7 +671,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </SidebarShell>
         )}
 
-        {!isMobile && ((showsAdjacentSecondarySidebar && !keepsPrimarySidebar) || (designSandbox && replacesPrimarySidebar)) ? (
+        {!isMobile && !isAgentChatRoute && ((showsAdjacentSecondarySidebar && !keepsPrimarySidebar) || (designSandbox && replacesPrimarySidebar)) ? (
           <SecondarySidebar className="w-60 shrink-0">
             {secondarySidebar}
           </SecondarySidebar>
@@ -675,12 +681,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           <div
             className={cn(
               "app-breadcrumb",
-              !isMobile && useStreamlinedTaskDetailShell && "hidden",
+              !isMobile && useInsetTaskDetailHeader && "hidden",
               isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar />
+            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">
                 <CompanySettingsNav />
@@ -692,13 +698,13 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
-            {!isMobile && keepsPrimarySidebar ? (
-              <SecondarySidebar className="w-60 shrink-0 bg-background">
+            {!isMobile && (keepsPrimarySidebar || isAgentChatRoute) ? (
+              <SecondarySidebar className={cn(isAgentChatRoute ? "w-70" : "w-60", "shrink-0 bg-background")}>
                 {secondarySidebar}
               </SecondarySidebar>
             ) : null}
             <div className={cn(!isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}>
-              {!isMobile && useStreamlinedTaskDetailShell ? (
+              {!isMobile && useInsetTaskDetailHeader ? (
                 <>
                   <StandaloneBrowserControls mobile={false} />
                   <BreadcrumbBar taskDetailLayout />
@@ -765,7 +771,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <BoardDialogs />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
-      <AnnouncementWell health={health} />
+      {isMobile ? <AnnouncementWell health={health} placement="floating" /> : null}
       <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
     </ChatSetupSidebarProvider>

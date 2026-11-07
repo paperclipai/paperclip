@@ -25,6 +25,7 @@ import {
 } from "acpx/runtime";
 
 import type {
+  AcpxPlanProposal,
   AcpxRuntimeGoalCapability,
   AcpxRuntimeGoalSnapshot,
   AcpxRuntimeSteeringCapability,
@@ -76,6 +77,15 @@ const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 // qualified runtime enough time to complete that local handshake.
 const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
 
+/**
+ * Pi and Claude get the same 60 s cold session.open bound as the runner's
+ * sidecar and the controller's cold admission budget. A cold Claude handshake
+ * exceeded 30 s on a loaded host; a shorter inner bound would fail first.
+ */
+export function acpxSessionHandshakeTimeoutMs(agent: string): number {
+  return agent === "pi" || agent === "claude" ? 60_000 : SESSION_HANDSHAKE_TIMEOUT_MS;
+}
+
 interface GoalAwareAcpRuntime extends AcpRuntime {
   requestExtension?(input: {
     handle: AcpRuntimeHandle;
@@ -105,12 +115,30 @@ interface AcpxRuntimeExtensionTurn {
   promptStarted: Promise<void>;
   onRequest?: AcpRuntimeOptions["onExtensionRequest"];
   onNotification?: AcpRuntimeOptions["onExtensionNotification"];
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
 }
 
 interface AcpxRuntimeExtensionBoundary {
   active: AcpxRuntimeExtensionTurn | null;
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
+}
+
+/**
+ * Claude Code's ExitPlanMode permission request (claude-agent-acp titles it
+ * "Approve Plan" with ACP kind `switch_mode`) carries the proposed plan as
+ * `toolCall.rawInput.plan`. Returns null for every other request.
+ */
+export function claudeExitPlanModeProposal(request: { raw?: unknown }): AcpxPlanProposal | null {
+  const raw = request.raw && typeof request.raw === "object" ? request.raw as Record<string, unknown> : {};
+  const toolCall = raw.toolCall && typeof raw.toolCall === "object" ? raw.toolCall as Record<string, unknown> : {};
+  if (toolCall.kind !== "switch_mode") return null;
+  const input = toolCall.rawInput && typeof toolCall.rawInput === "object" ? toolCall.rawInput as Record<string, unknown> : {};
+  const markdown = typeof input.plan === "string" ? input.plan.trim() : "";
+  if (!markdown) return null;
+  const toolCallId = typeof toolCall.toolCallId === "string" && toolCall.toolCallId.trim()
+    ? toolCall.toolCallId.trim() : "claude-exit-plan-mode";
+  return { toolCallId, markdown };
 }
 
 export class AcpxProviderProcessLostError extends Error {
@@ -420,6 +448,16 @@ export async function openQualifiedAcpxRuntime(
       }
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
+      if (options.profile.agent === "claude") {
+        const plan = claudeExitPlanModeProposal(request);
+        if (plan !== null) {
+          // Paperclip owns plan approval. Record the proposal for the issue's
+          // Plan document and approval gate, then decline Claude's native
+          // "Ready to code?" prompt so the turn ends without implementing.
+          extensionBoundary.active?.onPlanProposal?.(plan);
+          return { outcome: "reject_once" };
+        }
+      }
       if (options.profile.agent === "kimi" && options.readOnly === true
         && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
@@ -514,6 +552,7 @@ export async function openQualifiedAcpxRuntime(
 
   let handle: AcpRuntimeHandle | null = null;
   const ensuredSession = Promise.resolve()
+    .then(() => options.restoringSession ? undefined : resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey))
     .then(() =>
       runtime.ensureSession({
         sessionKey: options.providerSessionKey,
@@ -618,7 +657,7 @@ export async function openQualifiedAcpxRuntime(
   try {
     const boundedHandshake = boundedSessionHandshake(
       handshake,
-      dependencies.sessionHandshakeTimeoutMs ?? SESSION_HANDSHAKE_TIMEOUT_MS,
+      dependencies.sessionHandshakeTimeoutMs ?? acpxSessionHandshakeTimeoutMs(options.profile.agent),
     );
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
@@ -627,6 +666,14 @@ export async function openQualifiedAcpxRuntime(
     modeBinding?.assertReady();
     piThinking?.assertReady();
     effortAdmission?.assertReady();
+    // A read-only (Planning) Claude run uses Claude Code's native plan mode, so
+    // the model proposes through ExitPlanMode instead of editing.
+    if (options.profile.agent === "claude" && options.readOnly === true && !preconfigured) {
+      if (!runtime.setConfigOption) throw new Error("Claude plan mode requires native mode configuration");
+      const spawnsBeforeControl = commandLaunches.count;
+      await runtime.setConfigOption({ handle, key: "mode", value: "plan" });
+      if (commandLaunches.count > spawnsBeforeControl) await commandLaunches.refreshConsumedCommand?.();
+    }
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -1079,6 +1126,24 @@ function nonEmptyRuntimeIdentity(
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * A fresh open has no runner-recorded provider identity, so a saved record for
+ * its session key was left by an earlier bootstrap of the same session that
+ * stopped before any prompt (for example a session.open the controller gave up
+ * on). Its provider session was never used and may not be resumable: Claude
+ * saves nothing until the first prompt. Ask ACPX to start a new session instead
+ * of reusing it. A record that holds any conversation is left unchanged.
+ */
+export async function resetAbandonedBootstrapRecord(store: AcpSessionStore, sessionKey: string): Promise<boolean> {
+  const record = await store.load(sessionKey);
+  if (!record || record.acpx?.reset_on_next_ensure === true) return false;
+  // Only a record that provably holds no conversation qualifies.
+  if (!Array.isArray(record.messages) || record.messages.length > 0 || record.lastSeq !== 0 ||
+      record.lastPromptAt !== undefined) return false;
+  await store.save({ ...record, acpx: { ...record.acpx, reset_on_next_ensure: true } });
+  return true;
+}
+
 async function boundedSessionHandshake(
   handshake: Promise<AcpRuntimeHandle>,
   timeoutMs: number,
@@ -1495,6 +1560,7 @@ function runtimePort(
         signal: input.signal ? AbortSignal.any([controller.signal, input.signal, approval.signal]) : AbortSignal.any([controller.signal, approval.signal]),
         promptStarted: Promise.resolve(),
         onRequest: input.onExtensionRequest, onNotification: input.onExtensionNotification,
+        onPlanProposal: input.onPlanProposal,
       };
       extensionBoundary.active = extensionTurn;
       promptUsage?.begin(input.requestId, identity.backendSessionId);
@@ -1537,6 +1603,9 @@ function runtimePort(
             : approval.signal,
           ...(input.onElicitation
             ? { onElicitation: input.onElicitation }
+            : {}),
+          ...(input.onTerminalSessionFailure
+            ? { onTerminalSessionFailure: input.onTerminalSessionFailure }
             : {}),
         });
       } catch (error) {

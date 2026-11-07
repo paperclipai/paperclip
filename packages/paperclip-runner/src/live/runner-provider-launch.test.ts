@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch,
+import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, runnerLaunchSettingsMatch, validatePreparedRunnerLaunch,
   runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
 const requirements: RunnerProviderLaunchRequirements = {
@@ -19,6 +19,14 @@ const environment: RunnerProviderLaunchEnvironment = {
 };
 
 describe("built-in provider launch preparation", () => {
+  it("compares effective ACPX defaults without changing the saved requirements", () => {
+    const frozen = { ...requirements, provider: "acpx" as const, model: "gpt-5.4", settings: {} };
+    expect(runnerLaunchSettingsMatch(frozen, { acpxAgent: "codex", acpxPermissionMode: "approve-all", acpxPermissionModePinned: true })).toBe(true);
+    expect(runnerLaunchSettingsMatch(frozen, { acpxPermissionMode: "approve-reads" })).toBe(false);
+    expect(runnerLaunchSettingsMatch(frozen, { acpxPermissionModePinned: false })).toBe(false);
+    expect(frozen.settings).toEqual({});
+  });
+
   it("preserves probe project-instruction suppression through a prepared launch", () => {
     const selected = runnerProviderLaunchRequirements({ provider: "codex", disableCodexProjectInstructions: true,
       disableCodexWebSearch: true }, requirements.identity,

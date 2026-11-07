@@ -78,7 +78,9 @@ describe("residual recovery production matrix", () => {
     vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
   });
   afterAll(async () => {
-    await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    if (db) {
+      await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    }
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
   });
   async function fixture() {
@@ -300,6 +302,66 @@ describe("residual recovery production matrix", () => {
       expect((await getRun(retryId)).stdoutExcerpt).toContain("live-recovery-proof");
     }, { timeout: 45_000 });
     await competing.stop(); extraStops.pop(); await quiet();
+  });
+  it("recovers a fresh run from a prior boot at lease expiry instead of waiting for the stale-age threshold", async () => {
+    // RC-27: a Retry admitted just before a kill records a controller lease but
+    // no process. The prior boot's expired lease is the ownership proof.
+    const f = await fixture(), expiry = new Date(Date.now() + 3_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry,
+      executionStage: "preparing", updatedAt: new Date(), startedAt: new Date() }).returning();
+    await start(true);
+    expect((await getRun(run.id)).status).toBe("running");
+    await vi.waitFor(async () => expect((await getRun(run.id)).status).toBe("failed"), { timeout: 15_000 });
+    expect(Date.now() - expiry.getTime()).toBeLessThan(15_000);
+    expect(await getRun(run.id)).toMatchObject({ errorCode: "process_lost",
+      resultJson: expect.objectContaining({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }) });
+    await vi.waitFor(async () => {
+      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+      expect(retries).toHaveLength(1);
+      await heartbeat.drainActiveRunExecutions();
+      expect((await getRun(retries[0].id)).status).toBe("succeeded");
+    }, { timeout: 45_000 });
+    await quiet();
+  });
+  it("keeps the age guard when the prior boot dispatched between the scan and the revocation", async () => {
+    // Stage the race: the scanned row says `preparing`, and the row committed
+    // with the revocation says `dispatching` (the old controller's last renewal).
+    const f = await fixture(), expiry = new Date(Date.now() + 2_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expiry,
+      executionStage: "preparing", updatedAt: new Date(), startedAt: new Date() }).returning();
+    await db.execute(sql.raw(`create or replace function rc27_dispatch_on_revoke() returns trigger language plpgsql as $$
+      begin if new.id = '${run.id}' and new.controller_boot_id is distinct from old.controller_boot_id
+        then new.execution_stage := 'dispatching'; end if; return new; end $$`));
+    await db.execute(sql`create trigger rc27_dispatch_on_revoke before update on heartbeat_runs
+      for each row execute function rc27_dispatch_on_revoke()`);
+    extraStops.push(async () => {
+      await db.execute(sql`drop trigger if exists rc27_dispatch_on_revoke on heartbeat_runs`);
+      await db.execute(sql`drop function if exists rc27_dispatch_on_revoke()`);
+    });
+    await start(true);
+    await vi.waitFor(async () => expect((await getRun(run.id)).controllerBootId).not.toBe(run.controllerBootId), { timeout: 15_000 });
+    await realDelay(5_000); await Promise.allSettled([...passes]);
+    expect(await getRun(run.id)).toMatchObject({ status: "running", executionStage: "dispatching", errorCode: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
+  });
+  it("keeps the stale-age guard for this boot, a recorded process, or a dispatched adapter", async () => {
+    const f = await fixture(), now = Date.now(), expired = new Date(now - 1_000);
+    const [sameBoot] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: expired,
+      executionStage: "preparing", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    const [withProcess] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
+      executionStage: "dispatching", processPid: 2 ** 22 + 17, updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    // A dispatched adapter may hold remote work without a local process.
+    const [dispatched] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id, status: "running",
+      runtimeMode: "legacy", responsibleUserId: f.actorId, controllerBootId: randomUUID(), controllerLeaseExpiresAt: expired,
+      executionStage: "dispatching", updatedAt: new Date(now), startedAt: new Date(now) }).returning();
+    await start(); await advance(4 * 60_000);
+    expect((await getRun(sameBoot.id)).status).toBe("running");
+    expect((await getRun(withProcess.id)).status).toBe("running");
+    expect((await getRun(dispatched.id)).status).toBe("running");
   });
   it.each(["confirmed", "already_retired", "missing_terminal", "unproven_terminal", "ack_failure", "late_terminal"] as const)(
     "settles an API-only Stop after deferred controller retirement without inventing proof: %s", async mode => {

@@ -2417,6 +2417,7 @@ function RunsPane({
     queryFn: () => companySkillsApi.testRunTemplates(companyId),
     enabled: Boolean(companyId),
   });
+  const templatesQueryView = useQueryView(templatesQuery);
   const templates = templatesQuery.data ?? EMPTY_RUN_TEMPLATES;
 
   useEffect(() => {
@@ -2461,7 +2462,7 @@ function RunsPane({
   });
   const templateGateReason = templatesQuery.isLoading
     ? "Loading run templates"
-    : templatesQuery.isError
+    : (templatesQueryView.kind === "error")
       ? "Run templates couldn't load"
       : null;
 
@@ -2603,7 +2604,7 @@ function RunsPane({
           onOpenChange={setAdvancedOpen}
           templates={templates}
           templatesLoading={templatesQuery.isLoading}
-          templatesError={templatesQuery.isError}
+          templatesError={(templatesQueryView.kind === "error")}
           selectedTemplateId={selectedTemplateId}
           selectedTemplate={selectedTemplate}
           selectedTemplateName={selectedTemplateName}

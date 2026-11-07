@@ -192,6 +192,9 @@ pub(crate) enum ProviderStartupStage {
 }
 
 pub(crate) enum ProviderStartupObservation {
+    /// Launch checks passed and the process spawn is about to begin. Until
+    /// this is durable, a startup intent provably owns no process.
+    SpawnStarting,
     Spawned {
         process_id: u32,
         process_group_id: u32,
@@ -449,6 +452,40 @@ pub struct CodexProviderConfig {
     // Older sessions retain their standalone task envelope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_mode: Option<String>,
+}
+
+/// Codex's native plan collaboration mode for a read-only Codex run. The
+/// preset keeps Codex's built-in plan-mode instructions (`developer_instructions`
+/// null) and the run's own model and effort.
+fn codex_plan_collaboration_mode(
+    config: &CodexProviderConfig,
+    observed_model: Option<&str>,
+    effort: Option<&Value>,
+) -> Result<Option<Value>, LocalRunnerError> {
+    if config.provider != "codex" || !config.read_only {
+        return Ok(None);
+    }
+    // A model-less launch uses the model Codex reported for the thread. A
+    // planning run must never silently fall back to default mode.
+    let model = config
+        .model
+        .as_deref()
+        .or(observed_model)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            LocalRunnerError::invalid(
+                "planning_mode_unsupported: Codex reported no model for native plan collaboration mode",
+            )
+        })?;
+    Ok(Some(json!({
+        "mode": "plan",
+        "settings": {
+            "model": model,
+            "reasoning_effort": effort.cloned().unwrap_or(Value::Null),
+            "developer_instructions": Value::Null,
+        },
+    })))
 }
 
 /// Explicit per-turn skill selection. The controller resolves assigned skill
@@ -781,6 +818,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    observed_completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
@@ -798,6 +836,13 @@ pub struct CodexProvider {
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
     exit_drain: Option<ProviderExitDrain>,
+}
+
+#[derive(Debug)]
+pub(crate) struct FencedProviderOutput {
+    pub stdout_drained: bool,
+    pub output_empty: bool,
+    pub next_drain_deadline: Option<std::time::Instant>,
 }
 
 struct ProviderExitDrain {
@@ -1113,6 +1158,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_cursor_cloud_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1134,6 +1180,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_opencode_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1141,6 +1188,7 @@ impl CodexProvider {
                     &environment_keys,
                 )
             } else {
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
                     &launch_args,
@@ -1201,6 +1249,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            observed_completed_turn_authority: None,
             active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             goal_allows_autonomous_turns: false,
@@ -1518,7 +1567,10 @@ impl CodexProvider {
                         }
                         if matches!(
                             method.as_str(),
-                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                            "thread/tokenUsage/updated"
+                                | "paperclip/resumeUsageSnapshot"
+                                | "thread/goal/updated"
+                                | "thread/goal/cleared"
                         ) {
                             accounting.push((method, params));
                             continue;
@@ -1702,6 +1754,21 @@ impl CodexProvider {
         })
     }
 
+    pub(crate) fn observed_completed_turn_authority(&self) -> Option<(u64, &str)> {
+        self.observed_completed_turn_authority
+            .as_ref()
+            .map(|authority| {
+                (
+                    authority.process_generation,
+                    authority.provider_turn_id.as_str(),
+                )
+            })
+    }
+
+    pub(crate) fn has_known_descendants(&self) -> bool {
+        !self.descendant_thread_ids.is_empty()
+    }
+
     pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
@@ -1817,6 +1884,10 @@ impl CodexProvider {
             return Ok(());
         }
         self.restart_idle_identity_epoch()
+    }
+
+    pub(crate) fn has_active_goal(&self) -> bool {
+        self.goal_allows_autonomous_turns
     }
 
     pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
@@ -1988,6 +2059,10 @@ impl CodexProvider {
                 "Codex turn text is empty or exceeds the 1 MiB limit",
             ));
         }
+        // Resolve the planning preset before any turn state changes, so a
+        // local planning error never leaves an ambiguous turn start behind.
+        let collaboration_mode =
+            codex_plan_collaboration_mode(&self.config, self.observed_model.as_deref(), effort)?;
         self.rollover_settled_turn_epoch_if_needed()?;
         // Preserve the prior durable result until a replacement turn identity
         // is accepted. A rejected, ambiguous, or transport-failed attempt does
@@ -2018,6 +2093,12 @@ impl CodexProvider {
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
+        // Codex resolves an unset summary from the model, and current models
+        // resolve it to "none", so reasoning items carry no text. Request the
+        // provider's own reasoning summaries for every Codex turn.
+        if self.config.provider == "codex" {
+            turn_params_object.insert("summary".to_owned(), json!("auto"));
+        }
         if let Some(mode) = reasoning_mode {
             turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
         }
@@ -2028,6 +2109,12 @@ impl CodexProvider {
             );
         } else {
             turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        // A read-only (Planning) Codex run uses Codex's native plan
+        // collaboration mode, so a finished proposal arrives as Codex's own
+        // `plan` item for Paperclip's Plan document and approval gate.
+        if let Some(collaboration_mode) = collaboration_mode {
+            turn_params_object.insert("collaborationMode".to_owned(), collaboration_mode);
         }
         let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
@@ -2154,6 +2241,133 @@ impl CodexProvider {
         )
     }
 
+    /// Starts Codex's on-demand context compaction. Codex runs compaction as
+    /// its own turn, but `thread/compact/start` answers `{}`, so the turn
+    /// identity is bound from the `turn/started` notification that follows.
+    /// Messages read while waiting stay buffered for normal event delivery.
+    pub fn start_compaction_turn(&mut self) -> Result<Value, LocalRunnerError> {
+        if self.config.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "on-demand context compaction requires Codex",
+            ));
+        }
+        if self.quarantined {
+            return Err(LocalRunnerError::invalid(
+                "Codex provider is quarantined after unsafe recovered work",
+            ));
+        }
+        if self.active_provider_turn_id.is_some() {
+            return Err(LocalRunnerError::invalid(
+                "Codex already has an active provider turn",
+            ));
+        }
+        if self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex has an unresolved ambiguous provider turn start",
+            ));
+        }
+        self.rollover_settled_turn_epoch_if_needed()?;
+        let prior_reconciliation_pending = self.completion_reconciliation_pending;
+        self.completion_reconciliation_pending = false;
+        let prior_buffered_message_count = self.pending_messages.len();
+        self.ambiguous_turn_start_pending = true;
+        let runtime_request_scope = new_runtime_request_scope()?;
+        match self.request_classified("thread/compact/start", json!({"threadId": self.thread_id})) {
+            Ok(_) => {}
+            Err(ProviderRequestError::Rejected(error)) => {
+                let definite_rejection = self
+                    .pending_messages
+                    .iter()
+                    .skip(prior_buffered_message_count)
+                    .all(|buffered| is_unbound_rejected_turn_diagnostic(&buffered.value));
+                if definite_rejection {
+                    self.ambiguous_turn_start_pending = false;
+                    self.completion_reconciliation_pending = prior_reconciliation_pending;
+                }
+                return Err(error);
+            }
+            Err(ProviderRequestError::Ambiguous(error)) => return Err(error),
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut scanned = prior_buffered_message_count;
+        loop {
+            while scanned < self.pending_messages.len() {
+                let message = &self.pending_messages[scanned].value;
+                scanned += 1;
+                if message.get("method").and_then(Value::as_str) != Some("turn/started")
+                    || message.get("id").is_some()
+                {
+                    continue;
+                }
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                validate_notification_binding(&self.thread_id, None, &params)?;
+                let provider_turn_id = match bounded_provider_turn_id(notification_turn_id(&params))
+                {
+                    Ok(provider_turn_id) => provider_turn_id,
+                    Err(error) => {
+                        // Codex accepted the compaction without a usable
+                        // identity. It cannot be bound or interrupted, so
+                        // terminate it like an invalid turn/start response.
+                        self.rejected_accepted_turn = Some(RejectedAcceptedTurn::InvalidIdentity);
+                        self.expected_shutdown = true;
+                        self.completed_turn_authority = None;
+                        let _ = self.cancel_pending_requests();
+                        let _ = self.process.terminate_group();
+                        return Err(error);
+                    }
+                };
+                if self.settled_provider_turn_ids.contains(&provider_turn_id) {
+                    return Err(self.reject_accepted_reused_turn_identity(provider_turn_id));
+                }
+                self.accept_replacement_turn(provider_turn_id.clone(), runtime_request_scope);
+                return Ok(json!({"turn": {"id": provider_turn_id}}));
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                // The start stays ambiguous: a late turn/started is still
+                // adopted by the ambiguous-start validator.
+                return Err(LocalRunnerError::invalid(
+                    "Codex thread/compact/start did not report its turn within 30 seconds",
+                ));
+            }
+            let Some(line) = self.receive_provider_stdout_line(remaining)? else {
+                if let Some(exit) = self.process.try_wait()? {
+                    self.drain_provider_diagnostics(Duration::from_millis(50));
+                    let diagnostic_suffix = self.provider_diagnostic_suffix();
+                    return Err(LocalRunnerError::invalid(format!(
+                        "Codex exited before its compaction turn started (exitCode={:?}, signal={:?}){diagnostic_suffix}",
+                        exit.exit_code, exit.signal
+                    )));
+                }
+                continue;
+            };
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line)?;
+            if self
+                .pending_messages
+                .len()
+                .saturating_add(self.deferred_ambiguous_messages.len())
+                >= MAX_BUFFERED_MESSAGES
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Codex emitted too many messages before its compaction turn started",
+                ));
+            }
+            let retained_bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, retained_bytes)
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    })?;
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+        }
+    }
+
     pub fn steer_turn(&mut self, message: &str) -> Result<Value, LocalRunnerError> {
         let turn_id = self
             .active_provider_turn_id
@@ -2237,6 +2451,28 @@ impl CodexProvider {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn read_thread_after_recovery_goal(
+        &mut self,
+        goal_is_dormant: fn(&Value) -> bool,
+    ) -> Result<Value, LocalRunnerError> {
+        // The preceding goal reply supersedes earlier notifications. Inspect only
+        // frames received by this read, and leave them queued for normal delivery.
+        let first = self.pending_messages.len();
+        let snapshot = self.read_thread()?;
+        for message in self.pending_messages.iter().skip(first) {
+            if message.value["method"] == "thread/goal/updated" {
+                let params = &message.value["params"];
+                validate_notification_binding(&self.thread_id, None, params)?;
+                if !params["goal"].is_object() || !goal_is_dormant(params) {
+                    return Err(LocalRunnerError::invalid(
+                        "saved dormant Codex session resumed an active or unknown goal",
+                    ));
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     pub fn read_thread(&mut self) -> Result<Value, LocalRunnerError> {
@@ -2386,7 +2622,7 @@ impl CodexProvider {
         } else {
             json!({"id": rpc_id, "error": {"code": -32000, "message": message}})
         };
-        self.send_frame(&response)?;
+        self.send_courtesy_response(&response)?;
         if self.notification_identity_diagnostics >= 32 {
             return Ok(None);
         }
@@ -2425,7 +2661,7 @@ impl CodexProvider {
         // The terminal notification is already authoritative and may be
         // waiting in the durable outbox. A courtesy rejection must not turn a
         // provider that has closed stdin into a fatal polling error.
-        let _ = self.send_frame(&response);
+        let _ = self.send_courtesy_response(&response);
         Ok(Some(CodexProviderEvent::Notification {
             method: "warning".to_owned(),
             params: json!({"message": message, "providerMethod": bounded_method(method)}),
@@ -2468,6 +2704,59 @@ impl CodexProvider {
     }
 
     pub fn poll(&mut self) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        self.poll_with_control(true)
+    }
+
+    pub(crate) fn poll_disconnected(
+        &mut self,
+    ) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        self.poll_with_control(false)
+    }
+
+    fn disconnected_message_is_passive(&self, message: &Value) -> bool {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return false;
+        };
+        let params = message.get("params").unwrap_or(&Value::Null);
+        // Preserve frames that need a request, authority reconciliation or a
+        // terminal tail drain for the ordinary connected path.
+        if method == "turn/started"
+            && !notification_turn_id(params)
+                .is_some_and(|id| Some(id) == self.active_provider_turn_id.as_deref())
+        {
+            return false;
+        }
+        message.get("id").is_none()
+            && normalized_codex_terminal_event_type(method, params).is_none()
+            && params.pointer("/item/type").and_then(Value::as_str) != Some("collabAgentToolCall")
+            && matches!(
+                classify_notification_thread(
+                    method,
+                    &self.thread_id,
+                    &self.descendant_thread_ids,
+                    params
+                ),
+                Ok(NotificationThread::Root | NotificationThread::UnrelatedInformation)
+            )
+            && validate_notification_binding(
+                &self.thread_id,
+                self.active_provider_turn_id.as_deref(),
+                params,
+            )
+            .is_ok()
+    }
+
+    fn poll_with_control(
+        &mut self,
+        allow_control: bool,
+    ) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        if !allow_control
+            && (self.quarantined
+                || self.ambiguous_turn_start_pending
+                || self.process.try_wait()?.is_some())
+        {
+            return Ok(None);
+        }
         if self.process.stdout_failed() {
             return Err(LocalRunnerError::invalid(
                 "Codex stdout closed without a valid reader EOF",
@@ -2573,6 +2862,22 @@ impl CodexProvider {
             })?;
             (message, trace_frame_id)
         };
+        if !allow_control && !self.disconnected_message_is_passive(&message) {
+            let bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, bytes).ok_or_else(
+                    || {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    },
+                )?;
+            self.pending_messages.push_front(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+            return Ok(None);
+        }
         self.last_trace_frame_id = trace_frame_id;
         if let (Some(trace), Some(frame_id)) = (self.trace.as_mut(), trace_frame_id) {
             let method = message.get("method").and_then(Value::as_str);
@@ -2733,7 +3038,7 @@ impl CodexProvider {
                     "Codex tool name",
                 )?;
                 if !self.authorized_tool_ids.contains(&operation_id) {
-                    self.send_frame(&json!({
+                    self.send_courtesy_response(&json!({
                         "id": rpc_id,
                         "result": codex_tool_failure("Paperclip did not authorize this tool for the run"),
                     }))?;
@@ -2920,7 +3225,7 @@ impl CodexProvider {
                 if self.pending_runtime_requests.len() >= MAX_PENDING_RUNTIME_REQUESTS
                     || retained_request_bytes.is_none()
                 {
-                    self.send_frame(&json!({
+                    self.send_courtesy_response(&json!({
                         "id": rpc_id,
                         "error": {
                             "code": -32000,
@@ -2963,7 +3268,7 @@ impl CodexProvider {
                     question_set,
                 }));
             }
-            self.send_frame(&json!({
+            self.send_courtesy_response(&json!({
                 "id": rpc_id,
                 "error": {"code": -32601, "message": "provider request is unavailable in this runner layer"},
             }))?;
@@ -3186,6 +3491,8 @@ impl CodexProvider {
                 self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
+                // Restored result authority cannot prove this process saw a terminal.
+                self.observed_completed_turn_authority = self.completed_turn_authority.clone();
                 self.completion_reconciliation_pending =
                     terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
@@ -3204,6 +3511,21 @@ impl CodexProvider {
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
+        self.deliver_tool_result_with_courtesy(result, false)
+    }
+
+    pub(crate) fn deliver_tool_rejection(
+        &mut self,
+        result: &ToolResult,
+    ) -> Result<(), LocalRunnerError> {
+        self.deliver_tool_result_with_courtesy(result, true)
+    }
+
+    fn deliver_tool_result_with_courtesy(
+        &mut self,
+        result: &ToolResult,
+        courtesy_rejection: bool,
+    ) -> Result<(), LocalRunnerError> {
         let pending = self
             .pending_tool_requests
             .get(&result.call_id)
@@ -3226,13 +3548,18 @@ impl CodexProvider {
         }
         let text = String::from_utf8(result_bytes)
             .expect("serde_json always serializes JSON values as valid UTF-8");
-        self.send_frame(&json!({
+        let response = json!({
             "id": pending.rpc_id,
             "result": {
                 "success": !result.is_error,
                 "contentItems": [{"type": "inputText", "text": text}],
             },
-        }))?;
+        });
+        if courtesy_rejection && result.is_error {
+            self.send_courtesy_response(&response)?;
+        } else {
+            self.send_frame(&response)?;
+        }
         if let Some(completed) = self.pending_tool_requests.remove(&result.call_id) {
             self.pending_tool_request_bytes = self
                 .pending_tool_request_bytes
@@ -3254,6 +3581,92 @@ impl CodexProvider {
                 "receivedTurnId": notification_turn_id(params).map(|id| id.chars().take(256).collect::<String>()),
             }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn process_exited(&mut self) -> Result<bool, LocalRunnerError> {
+        self.process.try_wait().map(|exit| exit.is_some())
+    }
+
+    /// Fence only the already-owned local process. Keep every buffered frame
+    /// for connected interpretation; no courtesy response or provider RPC runs.
+    /// Reserve one maximum frame before reading; a full FIFO cannot certify EOF.
+    pub(crate) fn fence_local_receipt_limit(
+        &mut self,
+    ) -> Result<FencedProviderOutput, LocalRunnerError> {
+        if self.config.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "local receipt-limit fence requires Codex",
+            ));
+        }
+        self.expected_shutdown = true;
+        self.process.terminate_group_immediately()?;
+        if self
+            .exit_drain
+            .as_ref()
+            .is_none_or(|drain| drain.process_generation != self.process_generation)
+        {
+            self.exit_drain = Some(ProviderExitDrain {
+                process_generation: self.process_generation,
+                deadline: std::time::Instant::now() + self.process.shutdown_grace(),
+                timed_out: false,
+                warning_emitted: false,
+            });
+        }
+        let tick = std::time::Instant::now() + Duration::from_millis(5);
+        while !self.process.stdout_drained() && std::time::Instant::now() < tick {
+            if self
+                .pending_messages
+                .len()
+                .saturating_add(self.deferred_ambiguous_messages.len())
+                >= MAX_BUFFERED_MESSAGES
+                || self.pending_message_bytes
+                    > MAX_BUFFERED_MESSAGE_BYTES.saturating_sub(CODEX_APP_SERVER_MAX_FRAME_BYTES)
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Fenced Codex output reached its bounded raw buffer; EOF remains unverified",
+                ));
+            }
+            let wait = Duration::from_millis(1)
+                .min(tick.saturating_duration_since(std::time::Instant::now()));
+            let Some(line) = self.process.receive_stdout_line(wait)? else {
+                break;
+            };
+            let trace_frame_id = self.trace_inbound(&line);
+            let message = parse_provider_message(&line)?;
+            let bytes = json_size(&message, "buffered Codex provider message")?;
+            self.pending_message_bytes =
+                retain_buffered_message_bytes(self.pending_message_bytes, bytes).ok_or_else(
+                    || {
+                        LocalRunnerError::invalid(
+                            "Codex buffered messages exceed the 16 MiB aggregate limit",
+                        )
+                    },
+                )?;
+            self.pending_messages.push_back(BufferedProviderMessage {
+                value: message,
+                trace_frame_id,
+            });
+        }
+        let drain = self
+            .exit_drain
+            .as_ref()
+            .expect("fenced process has a drain deadline");
+        let stdout_drained = !self.process.stdout_failed() && self.process.stdout_drained();
+        if drain.timed_out || !stdout_drained && std::time::Instant::now() >= drain.deadline {
+            return Err(LocalRunnerError::invalid("Fenced Codex stdout did not reach verified EOF within shutdown grace; output requires reconciliation"));
+        }
+        Ok(FencedProviderOutput {
+            stdout_drained,
+            output_empty: stdout_drained
+                && self.pending_messages.is_empty()
+                && self.deferred_ambiguous_messages.is_empty(),
+            next_drain_deadline: (!stdout_drained).then_some(
+                drain
+                    .deadline
+                    .min(std::time::Instant::now() + Duration::from_millis(25)),
+            ),
+        })
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
@@ -3341,7 +3754,7 @@ impl CodexProvider {
             } else {
                 json!({"answers": {}})
             };
-            if let Err(error) = self.send_frame(&json!({
+            if let Err(error) = self.send_courtesy_response(&json!({
                 "id": request.rpc_id,
                 "result": result,
             })) {
@@ -3349,7 +3762,7 @@ impl CodexProvider {
             }
         }
         for request in pending.into_values() {
-            if let Err(error) = self.send_frame(&json!({
+            if let Err(error) = self.send_courtesy_response(&json!({
                 "id": request.rpc_id,
                 "result": codex_tool_failure("Paperclip stopped the active provider turn"),
             })) {
@@ -3365,6 +3778,18 @@ impl CodexProvider {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, LocalRunnerError> {
         self.request_classified(method, params)
             .map_err(ProviderRequestError::into_inner)
+    }
+
+    fn send_courtesy_response(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
+        // A reply cannot affect a deliberately stopped local conversation.
+        // Commands and authoritative results must still use strict delivery.
+        if self.config.provider == "codex"
+            && self.expected_shutdown
+            && self.process.try_wait()?.is_some()
+        {
+            return Ok(());
+        }
+        self.send_frame(value)
     }
 
     fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
@@ -4510,6 +4935,53 @@ fn codex_question_response(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn read_only_codex_turns_use_native_plan_collaboration_mode() {
+        let mut config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "fixture".to_owned(),
+            command: PathBuf::from("/bin/sh"),
+            args: vec![],
+            cwd: "/tmp".to_owned(),
+            model: Some("gpt-5.6-sol".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+            read_only: true,
+            include_skill_instructions: None,
+            conversation_mode: None,
+        };
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, Some(&json!("high"))).unwrap(),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high", "developer_instructions": null}})
+            ),
+        );
+        // A model-less launch uses the model Codex reported for the thread.
+        config.model = None;
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, Some("gpt-5.6-luna"), None).unwrap(),
+            Some(
+                json!({"mode": "plan", "settings": {"model": "gpt-5.6-luna", "reasoning_effort": null, "developer_instructions": null}})
+            ),
+        );
+        // With no model at all, planning fails loudly instead of running in default mode.
+        assert!(super::codex_plan_collaboration_mode(&config, None, None).is_err());
+        config.read_only = false;
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
+        config.read_only = true;
+        config.provider = "opencode".to_owned();
+        assert_eq!(
+            super::codex_plan_collaboration_mode(&config, None, None).unwrap(),
+            None
+        );
+    }
     use super::*;
 
     #[test]
@@ -4649,6 +5121,205 @@ done
             }
         }
         provider
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_tool_rejection_keeps_identity_and_real_delivery_strict() {
+        let mut provider = completion_tail_provider();
+        provider.expected_shutdown = false;
+        provider.pending_tool_requests.insert(
+            "denied-call".to_owned(),
+            PendingToolRequest {
+                rpc_id: json!(91),
+                operation_id: "denied-operation".to_owned(),
+                input: json!({}),
+                retained_bytes: 0,
+            },
+        );
+        let mut rejection = ToolResult {
+            call_id: "denied-call".to_owned(),
+            operation_id: "denied-operation".to_owned(),
+            result: json!({"error": "denied"}),
+            is_error: true,
+        };
+        provider.process.terminate_group_immediately().unwrap();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        provider.fence_local_receipt_limit().unwrap();
+        assert!(provider.deliver_tool_result(&rejection).is_err());
+        assert!(provider.request("thread/read", json!({})).is_err());
+        provider.config.provider = "cursor_cloud".to_owned();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        provider.config.provider = "codex".to_owned();
+        rejection.operation_id = "foreign-operation".to_owned();
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        rejection.operation_id = "denied-operation".to_owned();
+        rejection.is_error = false;
+        assert!(provider.deliver_tool_rejection(&rejection).is_err());
+        rejection.is_error = true;
+        provider.deliver_tool_rejection(&rejection).unwrap();
+        assert!(provider.pending_tool_requests.is_empty());
+        assert!(provider.completed_tool_call_ids.contains("denied-call"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_retains_terminal_frame_and_exact_connected_replay() {
+        let mut provider = completion_tail_provider();
+        provider.active_provider_turn_id = Some("offline-turn".to_owned());
+        provider.completed_turn_authority = None;
+        let accepted_start = json!({"method":"turn/started","params":{
+            "threadId":"reader-tail-thread","turn":{"id":"offline-turn"}}});
+        let progress = json!({"method":"item/agentMessage/delta", "params":{
+            "threadId":"reader-tail-thread", "turnId":"offline-turn", "delta":"offline output"}});
+        let terminal = json!({"method":"turn/completed", "params":{
+            "threadId":"reader-tail-thread", "turn":{"id":"offline-turn","status":"completed"}}});
+        for (value, trace_frame_id) in [
+            (accepted_start, Some(9)),
+            (progress, Some(10)),
+            (terminal.clone(), Some(11)),
+        ] {
+            provider.pending_message_bytes += json_size(&value, "fixture").unwrap();
+            provider
+                .pending_messages
+                .push_back(BufferedProviderMessage {
+                    value,
+                    trace_frame_id,
+                });
+        }
+        assert!(matches!(provider.poll_disconnected().unwrap(),
+            Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/started"));
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(9));
+        assert!(
+            matches!(provider.poll_disconnected().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "item/agentMessage/delta")
+        );
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(10));
+        let bytes = provider.pending_message_bytes;
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(provider.poll_disconnected().unwrap().is_none());
+            assert_eq!(provider.pending_messages.front().unwrap().value, terminal);
+            assert_eq!(provider.pending_message_bytes, bytes);
+            assert_eq!(provider.active_provider_turn_id(), Some("offline-turn"));
+        }
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, params }) if method == "turn/completed" && params == terminal["params"])
+        );
+        assert_eq!(provider.take_provider_trace_frame_id(), Some(11));
+        assert!(provider.pending_messages.is_empty());
+        assert_eq!(provider.pending_message_bytes, 0);
+        assert_eq!(provider.active_provider_turn_id(), None);
+        provider.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disconnected_poll_defers_requests_lineage_and_turn_reconciliation() {
+        let mut provider = completion_tail_provider();
+        provider.active_provider_turn_id = Some("offline-turn".to_owned());
+        for message in [
+            json!({"id":91,"method":"item/tool/call","params":{}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"unverified-child","delta":"child"}}),
+            json!({"method":"turn/started","params":{"threadId":"reader-tail-thread"}}),
+            json!({"method":"turn/started","params":{"threadId":"reader-tail-thread","turn":{"id":"next-turn"}}}),
+        ] {
+            provider.pending_message_bytes = json_size(&message, "fixture").unwrap();
+            provider
+                .pending_messages
+                .push_back(BufferedProviderMessage {
+                    value: message.clone(),
+                    trace_frame_id: Some(12),
+                });
+            let started = std::time::Instant::now();
+            assert!(provider.poll_disconnected().unwrap().is_none());
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let retained = provider.pending_messages.pop_front().unwrap();
+            assert_eq!(retained.value, message);
+            assert_eq!(retained.trace_frame_id, Some(12));
+            assert_eq!(provider.active_provider_turn_id(), Some("offline-turn"));
+        }
+        provider.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_receipt_output_keeps_prefix_when_stdout_never_closes() {
+        let mut provider = completion_tail_provider();
+        let (sender, receiver) = mpsc::channel();
+        let _original = provider.process.replace_output_receiver_for_test(receiver);
+        let prefix = json!({"method":"configWarning","params":{"message":"retained prefix"}});
+        sender
+            .send(ProcessOutput::Stdout(prefix.to_string()))
+            .unwrap();
+        let status = provider.fence_local_receipt_limit().unwrap();
+        assert!(!status.stdout_drained && !status.output_empty);
+        assert!(
+            status.next_drain_deadline.unwrap()
+                <= std::time::Instant::now() + Duration::from_millis(25)
+        );
+        assert!(
+            status.next_drain_deadline.unwrap() <= provider.exit_drain.as_ref().unwrap().deadline
+        );
+        let bytes = provider.pending_message_bytes;
+        assert_eq!(provider.pending_messages.front().unwrap().value, prefix);
+        provider.exit_drain.as_mut().unwrap().deadline = std::time::Instant::now();
+        assert!(provider
+            .fence_local_receipt_limit()
+            .unwrap_err()
+            .to_string()
+            .contains("EOF"));
+        assert_eq!(provider.pending_messages.front().unwrap().value, prefix);
+        assert_eq!(provider.pending_message_bytes, bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fenced_receipt_output_reports_capacity_without_dropping_known_frames() {
+        for (count, text_bytes, eof_waiting) in [
+            (MAX_BUFFERED_MESSAGES, 1, false),
+            (MAX_BUFFERED_MESSAGES, 1, true),
+            (4, 13 * 1024 * 1024 / 4, false),
+        ] {
+            let mut provider = completion_tail_provider();
+            let (sender, receiver) = mpsc::channel();
+            let _original = provider.process.replace_output_receiver_for_test(receiver);
+            // A full FIFO cannot consume a possibly unstoreable next frame,
+            // even if this controlled reader has only EOF waiting.
+            if eof_waiting {
+                sender.send(ProcessOutput::StdoutClosed).unwrap();
+            }
+            for index in 0..count {
+                let value = json!({"method":"configWarning","params":{"index":index,"message":"x".repeat(text_bytes)}});
+                provider.pending_message_bytes += json_size(&value, "fixture").unwrap();
+                provider
+                    .pending_messages
+                    .push_back(BufferedProviderMessage {
+                        value,
+                        trace_frame_id: Some(index as u64),
+                    });
+            }
+            let bytes = provider.pending_message_bytes;
+            assert!(provider
+                .fence_local_receipt_limit()
+                .unwrap_err()
+                .to_string()
+                .contains("bounded raw buffer"));
+            assert_eq!(provider.pending_messages.len(), count);
+            assert_eq!(provider.pending_message_bytes, bytes);
+            assert_eq!(
+                provider.pending_messages.front().unwrap().trace_frame_id,
+                Some(0)
+            );
+            assert_eq!(
+                provider.pending_messages.back().unwrap().trace_frame_id,
+                Some((count - 1) as u64)
+            );
+            assert_eq!(
+                provider.pending_messages.back().unwrap().value["params"]["index"],
+                count - 1
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -5108,6 +5779,7 @@ done
             None,
             None,
             &mut |observation| match observation {
+                ProviderStartupObservation::SpawnStarting => Ok(()),
                 ProviderStartupObservation::Spawned {
                     process_id,
                     process_group_id,
