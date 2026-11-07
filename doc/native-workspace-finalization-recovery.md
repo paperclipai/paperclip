@@ -1,5 +1,30 @@
 # Native workspace finalization ownership and recovery
 
+Online legacy workspace import may preserve an unresolved terminal source while
+unrelated object-backed work continues. This is a file-authority handoff. It
+does not finish the old result, clear its recovery action, stop a provider, or
+start another turn. Keep every descriptor, retained allocation, and finalization
+checkpoint for the recovery owner.
+
+The migration owner must hold the existing per-run physical finalizer advisory
+locks across capture and publication. It must reject a non-null coordinator
+owner, a durable physical copyback owner, a live controller lease, or an active
+adapter control. An expired owner is still an owner. Historical agent PID fields
+remain unchanged; they do not certify that the provider stopped. Recheck the
+exact source proof under publication row locks. A changed source or checkpoint
+keeps local authority. Provider stop verification and any later file export
+remain the recovery owner's separate obligations.
+
+Periodic heartbeat recovery runs one pass at a time in each server process.
+A tick that arrives during a slow pass reports its age and starts no duplicate.
+A later tick can start a fresh pass after the current work settles. Shutdown
+and idle sleep still track the actual recovery promise through cleanup. Direct
+run operations and scheduled work delivery keep their existing paths. A pass
+that remains active for three scheduler intervals produces an error log with its
+age. A waiting timeout does not admit another pass: the actual work must settle
+before ownership is released. A stuck operation requires investigation and
+recovery at the operation or provider boundary.
+
 A native provider can fail before it submits a result while its workspace still
 contains unpublished edits. A prepared workspace reference is not an export
 receipt. Terminal provider failure pins the exact bound sandbox and records a
@@ -8,6 +33,48 @@ failure handlers record that obligation before their terminal writer and provide
 cleanup run. This includes descriptor reads that fail inside runtime selection. Only its exact live recovery claim can settle an owned
 preparation failure; another owner or a stale claim prevents cleanup. Settling
 that claim and recording file retention share a transaction.
+
+Modern `remoteWorkspace` preparation references use the same failure-retention
+producer as workspace-sync descriptors. A failed native run can also retain an
+expired `awaiting_runner_reattach` coordinator after its task execution lock was
+released. The orphan-lease owner may record a file-only preservation obligation
+for that historical state only when the exact allocation remains active,
+unreleased and ephemeral. It rechecks the task, run, coordinator generation,
+prepared workspace writer, complete allocation history, current controller and
+cleanup state under short row locks. A reusable allocation, accepted result,
+competing writer, manual recovery state or ambiguous cleanup stays held. The
+presence of a Stop-only marker remains a hold even when its value is invalid.
+
+The transaction pins the existing StopAndRetain intent before provider I/O. The
+ordinary cleanup owner stops only the recorded allocation and rechecks all its
+current owners before dispatch. Normal checkpoint restart must first publish its
+task and coordinator claim; that claim prevents preservation intake. After a pin,
+the released task execution lock prevents an observed run from resuming itself.
+No row lock spans provider or archive I/O. Conflicting native or cleanup owners
+produce a nonblocking busy result after transaction rollback.
+
+Only matching source and generation fingerprints plus the exact stopped-and-retained
+receipt let the native environment settlement owner retire that stale coordinator
+into manual terminal reconciliation. The existing workspace worker then verifies
+and saves the original files. The interrupted provider checkpoint and its unknown
+effects remain unknown; this path admits no provider turn, accepts no result and
+changes no task status. A changed or malformed modern workspace claim remains a
+cleanup hold even when it is ineligible for automatic preservation. It cannot fall
+through to destructive orphan cleanup. Invalid workspace authority is refused
+without throwing or stopping preservation of the next source in the batch.
+Already released or mismatched historical
+sources require their owning reconciliation and are not rearmed by this path.
+
+The reconciliation candidate scan selects the complete workspace-sync record and
+the native status wake identifier from each saved run. It keeps their JSON types
+and reads full evidence later where finalization or recovery needs it. Saved
+execution input, runner profiles, and logs stay in the stored run.
+
+Wake-queue release reads keep complete context and result receipts. Native runs
+omit runner profiles and log excerpts from this read; cleanup and execution
+read their own current evidence. Legacy runs retain the full release row so
+workspace-restore and pre-dispatch proofs keep their existing inputs. The
+selection is one scoped database query for either runtime.
 
 The recovery card names the original run and requires evidence that its exact
 allocation stopped and its files were recovered. Recording that evidence does
@@ -59,6 +126,32 @@ database statements. It does not disable the database timeout or reconnect a
 failed lock session. Publication still requires the physical connection and
 the exact durable owner token. A disabled timeout adds no periodic probe.
 
+## Remote startup cancellation and retained uncertainty
+
+Remote artifact staging can outlast the transport's shutdown preparation wait.
+The remote launcher keeps cancellation until staging settles and checks it
+before launch dispatch. A cancelled, undispatched launch starts no process. A
+stop during an in-flight launch waits for the exact process identity before the
+existing guarded signal path can run. An accepted signal request does not prove
+that the process stopped.
+
+Read-only health retries are bounded by three attempts and 30 seconds. An
+unavailable health RPC, missing identity, or changed process generation retains
+the allocation and its files. A healthy listener alone is not identity or stop
+proof. Confirmed predecessor exit can permit bounded transport recovery, but an
+unrelated listener must remain untouched. A close timeout does not certify
+cleanup settlement, file restoration, or provider continuation admission.
+
+A runner receipt that its reconnect grace expired ends that incident. The
+transport recognizes both the coded error and the runner's plain-text message.
+It must not open another recovery window after that receipt.
+
+Verify file restoration independently of runner connection and provider activity.
+A file hash receipt proves the restored bytes only. The normal continuation gates
+must still check current ownership, pause, approval and budget state. Retained
+unknown effects remain unknown; successful file recovery does not authorize
+replay of a historical turn.
+
 ## Automatic cloud recovery
 
 New Railway copyback receipts record the exact project, environment, service and
@@ -81,8 +174,12 @@ checks under short coordinator, issue and run row locks, atomically with the
 owner claim. The task must still be open, assigned to the run or its authoritative
 review participant, and bound to that running native execution and accepted
 result. A different checkout, newer execution or queued/running legacy execution
-prevents takeover. Publication checks repeat this validation; row locks are never
-held across physical copyback I/O.
+prevents takeover. A later wake for the same assignee that has never started,
+such as the answer to the run's question, does not. Its claim waits for this
+run's execution lock, so it waits for this copyback. Counting it would block both
+runs. Another agent's run and a recovery-action wake still prevent takeover.
+Publication checks repeat this validation, so a wake that starts during copyback
+stops publication. Row locks are never held across physical copyback I/O.
 
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
@@ -125,6 +222,23 @@ copyback children after an abrupt parent death before the success barrier. It su
 automatic provider wake. This is an intentional limit: elapsed time or a missing
 database connection never proves the old copyback process stopped.
 
+**Same-host restart (automatic).** A control-plane restart that kills the
+controller mid-copyback leaves a receipt whose owner can never confirm its own
+stop. Each receipt records the controller's process group (`processGroupId`).
+Copyback children (tar and Git) are spawned without `detached`, so they keep that
+group after their parent dies. A successor on the same host releases the
+receipt itself only when all of these hold: the receipt names another
+controller boot, the recorded PID is dead or recycled (process start time), and
+the recorded process group is empty, or its only remaining members predate the
+old controller or belong to the successor's own process tree. It logs
+`issue.workspace_owner_stop_verified` with that local proof, marks the recovery
+`resuming`, and the ordinary finalizer resumes copyback from the accepted
+result with no provider turn. A still-live group member keeps the fence and is
+rechecked automatically (`local_stop_pending`). A receipt without a process
+group, from another host, or on a platform without `ps` still needs the board
+confirmation below. The copyback advisory lock and the coordinator lease are
+unchanged.
+
 An instance operator must first verify through the deployment platform that the
 exact prior controller **and its copyback subprocesses** have stopped. Retain the
 sandbox, accepted native result, and workspace descriptor. Do not run a new
@@ -132,7 +246,11 @@ provider turn, delete workspace contents, or relax archive confinement.
 
 For legacy receipts, an authorized company owner, company administrator or
 instance administrator records independently verified platform evidence through
-the operator API. The task has no shutdown form or resume control. The API is
+the operator API. The task shows this as its one action: its interruption is
+`waiting_for_user` with `userAction: "confirm_owner_stop"`, and the chat offers
+**Confirm the previous server stopped**, which asks for the stop evidence and
+calls the same API. The control is shown only to roles that hold
+`runtime:confirm_owner_stop`. The API is
 `POST /api/issues/:id/recovery-actions/resume-workspace-finalization` with:
 
 ```json
@@ -227,6 +345,12 @@ extracted. No host path or link target is copied into the informational run even
 
 
 ## Repairing a failed workspace export without rerunning the agent
+
+The background workspace worker runs up to four copy-backs at once, one per
+task, so a slow sandbox export does not hold every other task's retry. Due work
+runs oldest first. Work without a saved retry time, such as a copy-back that a
+restart interrupted, is ordered by when it became pending; it does not go ahead
+of older retries that are already due.
 
 Transient export failures retry three times, then produce
 `native_workspace_sync_out_retry_exhausted`. The accepted result stays saved,
@@ -323,6 +447,10 @@ and startup cancellation. Before dispatch, the controller stores a separate
 and original plugin. The initial cleanup and restart sweep both require that
 plugin to advertise `environmentStopLease`. Missing capability or failed stop
 leaves pending cleanup; ordinary release and destroy are never fallback methods.
+A typed terminal stop failure (`PluginEnvironmentStopError` with reason
+`resource_unrecoverable` or `recovery_failed`) escalates the lease for operator
+attention on its first attempt and uses the long retry interval. The lease stays
+in pending cleanup.
 
 A matching stopped receipt clears the pending intent, leaves the lease released
 and resumable, and saves `sandboxStopAndRetainReceipt`. Its request identity,
@@ -359,3 +487,157 @@ A retained source receipt records control-plane evidence; it does not prove the
 provider still holds the original bytes or that copy-back succeeded. Operators
 must verify and recover the exact source separately. Later successful runs and
 completed tasks do not certify recovery of earlier workspace files.
+
+### Quiet task recovery and provider verification
+
+The task conversation does not ask its user to certify recovered infrastructure
+files. A source-bound recovery with a live native run or an eligible future
+bounded retry uses the normal working presentation. A missed retry, exhausted
+budget, unknown action outcome, or unresolved file hold remains visible. The
+notice gives a brief explanation and a run-inspection link; stored diagnostics
+and operator guidance remain under Recovery details. Source-only repair remains
+available through the board-authorized recovery resolution API and its original
+stop-receipt and evidence checks.
+
+After a remote provider pack passes full integrity verification and the session
+passes authenticated admission, the controller saves its manifest and runner
+binary identity in `provider-pack-authority.json`. The receipt binds the company,
+agent, workspace, session, runner instance, environment lease, remote working
+directory, and provider descriptor. It stays in private controller state, outside
+guest workspace and harness backup directories. Projectless runs use their
+original environment lease as the workspace identity because each run otherwise
+has a new workspace placeholder. Real workspace identities still require an exact
+match. A receipt write failure warns and returns the admitted session to its
+normal owner; it does not discard the live session handle. Future recovery still
+fails closed without matching authority.
+
+Exact process reattachment uses that saved release authority. It still verifies
+the full remote pack, runner protocol and capabilities, exact process identity,
+and authenticated PRP handshake. A new controller release alone does not require
+a live provider to change its executable files. Fresh launches and explicit
+session replacement select current release artifacts. Invalid or mismatched
+receipts fail closed. Older sessions without a receipt retain the strict current
+release gate; a sandbox's own manifest cannot supply missing launch authority.
+
+Remote provider-pack verification retries an interrupted read at most once.
+Each command retains its 30-second transport timeout. A timeout, signal, absent
+exit status, or transport exception does not prove artifact incompatibility.
+Two inconclusive attempts hold the original run with
+`runner_remote_provider_verification_unavailable`. Reattachment does not spend
+a new provider attempt, so it cannot renew this exhausted read budget. A
+completed nonzero verification, digest mismatch, or
+wrong OpenCode version remains incompatible and cannot authorize a new provider
+turn. Recovery retains the exact source workspace and existing ownership gates;
+these read-only retries do not replay tools or alter a retained pack. Verification
+errors include bounded, redacted output from both transport streams, including
+providers that combine stderr into stdout.
+
+### Continue after confirmed source destruction
+
+When an old export failed and its exact sandbox has a confirmed destruction
+receipt, the task can continue from surviving attachments. This is reconstruction,
+not recovery of the missing edits. The task's recovery notice exposes **Continue
+from saved sources** to board operators with `runtime:manage`. Select the surviving
+attachments, describe the missing work, and record the observed external action
+outcomes. A retained or unverified sandbox must use the existing export or file
+recovery path instead.
+The source task may still display `in_progress` after an older controller's
+run-only Stop. Reconstruction accepts that inactive state only with no execution
+or checkout owner and the same source, recovery and status-version checks; an
+operator does not need to manufacture a separate blocker merely to record recovery.
+
+`POST /api/issues/{id}/recovery-actions/reconstruct-workspace` records this choice.
+It validates the source run, accepted result, prepared descriptor, exact destroyed
+lease, current task owner and status version. It rejects active copyback owners,
+competing recovery, unreconciled newer executions, and attachments from another task or company.
+The transaction records attachment hashes and a durable fresh-session delivery
+intent. The old run, result, descriptor and failed finalization remain intact.
+Repeated submissions adopt the original intent. Normal admission rechecks source
+identity, attachments, authority, budgets, holds and task eligibility. It preserves
+the retry count and does not grant a new work window or replay completed actions.
+The agent must verify the selected attachments before rebuilding files.
+Queued successors recheck their exact reconstruction receipt, sources and current
+execution gates when claimed and immediately before provider handoff. A later
+human block cannot be overwritten by automatic checkout.
+Bounded retries keep the same reconstruction authority. Dispatch verifies the
+system wake and predecessor chain back to the approved first run. It rechecks
+the saved sources, remaining retry limits and current recovery obligations.
+Unrelated executions and uncertain predecessor outcomes still stop dispatch.
+
+A later native run-only cancellation may coexist with the older loss decision
+only after its exact Stop acknowledgement, stopped lease receipts, and board
+file-only repair have been recorded. Its external-action outcome must be
+`not_performed`; an unknown or performed action stays held. Reconstruction saves
+the identities and hashes of those repair decisions. Queue claim and dispatch
+recheck the same evidence, so a changed receipt or another later run requires a
+fresh decision. The cancelled run stays cancelled and is never replayed.
+
+Stop also preserves a native workspace prepared before `paperclip_finish`.
+The executor pins its files before releasing the environment. Startup and periodic
+recovery process a bounded batch of historical acknowledged cancellations that
+missed this step. The existing stop-only cleanup worker retains their exact
+sandboxes and records provider receipts; this does not reopen a task or start
+another turn. The normal file-only repair control remains required before an
+older lost-work reconstruction can proceed.
+If file retention loses the task lock, teardown keeps the source active for a
+later pass. Historical sources already stopping or stopped remain eligible under
+the existing exact-source checks. A stopped source requires the independent
+stop-and-retain receipts and must not have a competing allocation owner.
+Active warm allocations keep the same retention retry path. Only historical
+stopping or stopped sources require the ephemeral policy, because a reusable
+released allocation may already have a new owner.
+Daytona stop-only cleanup also accepts a freshly verified archived allocation.
+It first confirms that provider auto-delete is disabled. It leaves the archive
+cold, with its files preserved, and records the process as stopped.
+For a cancelled native run, the file-recovery form also offers an optional
+confirmation that no external actions were performed. Leave it unchecked unless
+the run history verifies that fact. The default records files without certifying
+action outcomes. Changing the selected source clears the evidence and confirmations.
+
+Committed chat response authorization reads current run identity, completion
+binding, and chat source fields under the existing nonblocking share lock.
+It excludes saved execution input, runner profiles, and log excerpts. Actual
+retry admission still reads the complete run and its recovery evidence. These
+reads preserve stored run data, source revocation checks, and JSON value types.
+External review-wait discovery selects only chat authorization context fields.
+It keeps the current endpoint, membership, resource, and question-receipt checks;
+saved prompts remain stored and do not cross this discovery query.
+
+Legacy continuation recovery rejects native runs before it loads their saved
+execution input. The persisted disposition check reads only the task binding
+for a native run. It keeps the same task-binding and native-finalization skip
+reasons, including the original nonblank binding values. Native input and history
+stay stored. Real legacy recovery still reads
+its complete context, profile, excerpts, and required failure evidence.
+
+The native Stop continuation recheck reads current run identity, the full Stop
+acknowledgement receipt, and process identity. It does not load saved execution
+input, runner profiles, excerpts, or unrelated result fields. Lease cleanup,
+remote termination receipts, local process checks, task ownership, and admission
+checks keep their existing behavior. Stored runs retain all of their data.
+
+One periodic stranded-message pass coalesces successful native release checks
+for the same company, task, source run, and current source row version. The release
+path already drains that
+task's queue through current admission checks. Each saved request still advances
+its recovery cursor. Rejected attempts, changed source runs, and updated source evidence remain eligible,
+and the next pass checks current state again. Legacy per-request handling stays
+unchanged. Pending work is awaited before a source is marked checked.
+
+Retained saved-work recovery for a finished run uses the same owner receipt.
+When the receipt names a controller that a restart killed and no automatic proof
+can release it, the recovery worker does not spend an attempt on each recheck.
+It records the exact receipt on the retained recovery action as
+`workspaceOwnerRecovery.state = "operator_required"` and keeps rechecking within
+the bounded recovery window. A task Retry waiting on that saved result reports
+`workspace_owner_stop_required` and does not offer another Retry, because another
+click cannot release the receipt. The board confirms the stop through the same
+`resume-workspace-finalization` route. The task chat shows the same single
+**Confirm the previous server stopped** control in place of the retained file
+recovery controls while this hold is active, with the recorded receipt token, to
+roles that hold `runtime:confirm_owner_stop`. The confirmation must name the receipt that
+is still on the run. It clears only that receipt and returns the existing recovery
+to the worker (a spent budget gets one new generation). It accepts no result and
+starts no agent turn. The waiting Retry then continues through its normal path.
+If the recovery window ends first, the board handoff names the same confirmation
+instead of advising another Retry.

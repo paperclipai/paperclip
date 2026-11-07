@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { catalogFromStories, generateStorybook, renderVerification, scanStories, validateCatalog } from "./storybook-catalog.mjs";
+import { catalogFromStories, generateStorybook, renderIndex, renderVerification, scanStories, validateCatalog } from "./storybook-catalog.mjs";
 import { featureIndex } from "./feature-map.mjs";
 import { mapFixture } from "./map-test-fixture.mjs";
 
@@ -70,6 +70,48 @@ test("foundations preserve home and cross-capability references", t => {
   assert.equal(catalog.entries.find(entry => entry.stableId === "stable-control").home, "foundations");
   f.story("control", { capabilities: ["tasks/create"], home: "foundations" }, { area: "foundations", title: "Foundations/Control" });
   assert.match(inspect(f).errors.join("\n"), /foundation home needs an explicit reason/);
+});
+
+test("design proposals keep stable IDs and capability links in a separate catalog section without filling coverage gaps", t => {
+  const f = mapFixture(t);
+  const originalIds = scanStories(f.root)[0].ids;
+  rmSync(path.join(f.root, f.file));
+  f.story("task", {
+    home: "design-proposals",
+    status: "proposed",
+    capabilities: ["tasks/create", "tasks/discussion"],
+    implementation: "production",
+    boundary: "fixtures",
+    exception: "Opt-in task row refresh awaiting design review and application rollout.",
+  }, { area: "design-proposals", title: "Design proposals/Tasks/Task row" });
+  const { catalog, stories, index, errors } = inspect(f);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(stories[0].ids, originalIds);
+  assert.equal(catalog.entries[0].home, "design-proposals");
+  assert.equal(catalog.entries[0].purpose, "Tasks/Task row");
+  const report = renderIndex(catalog, stories, index);
+  const proposalSection = report.split("## Design proposals\n")[1].split("## Work\n")[0];
+  assert.match(proposalSection, /Design proposals\/Tasks\/Task row/);
+  assert.doesNotMatch(report, /feature-map\/design-proposals\.md/);
+  assert.match(report, /- `tasks\/create`: .*\(proposed\)/);
+  assert.match(report, /- `tasks\/discussion`: .*\(proposed\)/);
+  assert.match(renderVerification(catalog, index), /2 without a current, mixed or unreviewed example/);
+});
+
+test("design proposal homes require proposed status, a staging reason and their own navigation", t => {
+  const f = mapFixture(t);
+  const metadata = { home: "design-proposals", status: "proposed", capabilities: ["tasks/create"], exception: "Staged refresh for review." };
+  const options = { area: "design-proposals", title: "Design proposals/Tasks/Task row" };
+  for (const status of ["current", "mixed", "unreviewed", "historical"]) {
+    f.story("proposal", { ...metadata, status }, options);
+    assert.match(inspect(f).errors.join("\n"), /design proposal home requires proposed status/);
+  }
+  f.story("proposal", { ...metadata, exception: undefined }, options);
+  assert.match(inspect(f).errors.join("\n"), /design proposal home needs an explicit staging reason/);
+  f.story("proposal", metadata, { ...options, title: "Work/Tasks/Task row" });
+  assert.match(inspect(f).errors.join("\n"), /sidebar title/);
+  f.story("misplaced", metadata, { title: options.title });
+  assert.match(inspect(f).errors.join("\n"), /primary feature folder design-proposals/);
 });
 
 test("duplicate IDs, missing replacement references and collisions with generated guides fail", t => {

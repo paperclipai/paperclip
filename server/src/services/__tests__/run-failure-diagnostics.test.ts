@@ -223,13 +223,43 @@ describe("run failure diagnostics", () => {
     expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {}).execution).toEqual({});
   });
 
+  it("exports only the closed reviewed-chat denial label of a setup failure", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({
+      errorCode: "setup_failed", error: "reviewed_chat_execution_binding_not_authorized",
+      resultJson: { reviewedChatBinding: { denialReason: "owner_mismatch", runId: "private-run", commentId: "private-comment" } },
+    }), {}));
+    expect(result.execution).toEqual({ reviewedChatBindingDenialReason: "owner_mismatch" });
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, [], { denialReason: "private-reason" },
+      Object.defineProperty({}, "denialReason", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "setup_failed",
+        resultJson: { reviewedChatBinding: value } }), {}).execution).toEqual({});
+    }
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed",
+      resultJson: { reviewedChatBinding: { denialReason: "owner_mismatch" } } }), {}).execution).toEqual({});
+  });
+
+  it("exports how an exited remote runner last left its durable state", () => {
+    const thrown = new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "suspended", runnerSettled: true });
+    expect(sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown })).execution).toEqual({
+      remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running",
+      remoteRunnerLifecycle: "suspended", remoteRunnerSettled: true,
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable", resultJson: {
+      remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running", runnerLifecycle: "private-state", runnerSettled: "yes" },
+    } }), {}).execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
+  });
+
   it("exports the remote recovery stage and reason from an error thrown before the result was saved", () => {
     const thrown = Object.assign(new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" }),
       { path: "private-path", pid: 123 });
     const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown }));
     expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
     expect(result.exceptions).toMatchObject([{ code: "runner_remote_process_identity_unavailable" }]);
-    expect(JSON.stringify(result)).not.toContain("private");
+    expect(JSON.stringify(result)).not.toContain("private-path");
+    expect(result.exceptions[0]).not.toHaveProperty("path");
+    expect(result.exceptions[0]).not.toHaveProperty("pid");
 
     const transport = attachRemoteRunnerRecoveryDiagnostic(new Error("socket closed"),
       { stage: "identity_marker", reason: "probe_transport_failed" });
@@ -458,6 +488,58 @@ describe("run failure diagnostics", () => {
     });
   });
 
+  it("includes the stalled tool's closed kind label, silent time and permission evidence", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000, acpStalledToolTitle: "private lookup",
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000,
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
+  it.each(["other,execute", "private lookup", "", "Other", ["other"], 1])(
+    "omits a stalled tool kind that is not one closed label (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: { acpStalledToolKind: value } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
+  it("includes how the sandbox agent process session ended", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpProcessTerminalSource: "remote_event", acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137, acpProcessTerminalSignal: "SIGKILL",
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpProcessTerminalSource: "remote_event", acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137, acpProcessTerminalSignal: "SIGKILL",
+    });
+  });
+
+  it.each(["private source", "", "PROXY_CLOSE", ["proxy_close"], 1, null])(
+    "omits every process terminal field when the source is not a closed label (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        acpProcessTerminalSource: value, acpProcessTerminalOutcome: "exit",
+        acpProcessTerminalExitCode: 1, acpProcessTerminalSignal: "SIGTERM",
+      } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
+  it.each([-1, 256, 1.5, NaN, "1", "private", "SIGPRIVATE", "sigkill", null])(
+    "omits invalid process terminal details (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        acpProcessTerminalSource: "proxy_close", acpProcessTerminalOutcome: value,
+        acpProcessTerminalExitCode: value, acpProcessTerminalSignal: value,
+      } }), {});
+      expect(result.execution).toEqual({ acpProcessTerminalSource: "proxy_close" });
+    },
+  );
+
   it.each(["execute,private command", "", "execute,", "Execute", ["execute"], 1])(
     "omits pending tool kinds that are not closed labels (%j)", (value) => {
       const result = collectRunFailureDiagnostics(run({ resultJson: { acpPendingToolKinds: value } }), {});
@@ -470,6 +552,9 @@ describe("run failure diagnostics", () => {
       const result = collectRunFailureDiagnostics(run({ resultJson: {
         acpLastEventAgeMs: value, acpObservedEventCount: value, acpPendingToolCount: value,
         acpToolInventoryComplete: value, acpLastEventAgeAtStopMs: value, acpOldestPendingToolAgeAtStopMs: value,
+        acpStalledToolSilentMs: value, acpStalledToolPermissionRequested: value,
+        acpPendingToolPermissionRequestedCount: value, acpSettledSameKindToolCount: value,
+        acpSettledSameKindToolPermissionRequestedCount: value,
       } }), {});
       expect(result.execution).toEqual({});
     },
@@ -478,9 +563,27 @@ describe("run failure diagnostics", () => {
   it("selects declared environment secrets under opaque names and common credential keys", () => {
     expect(collectRunFailureSecretValues({
       CUSTOM_BINDING: "bound-opaque-value", ACCESS_TOKEN: "plain-opaque-value", REGION: "us-east-1", EMPTY_KEY: "",
-    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value", "us-east-1"]);
-    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" }, [], true)).toEqual(["opaque"]);
-    expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"], true)).toEqual(["secret-override"]);
+    }, ["CUSTOM_BINDING"])).toEqual(["bound-opaque-value", "plain-opaque-value"]);
+    expect(collectRunFailureSecretValues({ PATH: "/usr/bin", CUSTOM_BINDING: "opaque" })).toEqual(["opaque"]);
+    expect(collectRunFailureSecretValues({ PATH: "secret-override" }, ["PATH"])).toEqual(["secret-override"]);
+  });
+
+  it("keeps screenshot diagnostics intact when ordinary flags overlap their text", () => {
+    const diagnostic = collectRunFailureDiagnostics(run({
+      runtimeMode: "native", driverKind: "codex_app_server", driverVersion: "phase6-v2",
+      startedAt: new Date("2026-10-19T19:18:20.617Z"), finishedAt: new Date("2026-10-19T19:21:20.385Z"),
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "gpt-6.1-sol" } } },
+    }), {});
+    const input = { diagnostics: diagnostic, errorMessage: "Reconcile any uncertain external action before safely continuing this task." };
+    const values = collectRunFailureSecretValues({ FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1" });
+    expect(redactRunFailureSecretValues(input, values)).toEqual(input);
+  });
+
+  it("finds credentials by content and keeps short declared secrets private", () => {
+    const key = "sk-fixturecredential12345";
+    const values = collectRunFailureSecretValues({ CUSTOM_SETTING: key, FEATURE_FLAG: "1", CUSTOM_BINDING: "2" }, ["CUSTOM_BINDING"]);
+    expect(values).toEqual([key, "2"]);
+    expect(redactRunFailureSecretValues(`key ${key} code 2`, values)).toBe("key ***REDACTED*** code ***REDACTED***");
   });
 
   it("redacts encoded credentials and URL passwords without expanding replacement markers", () => {
@@ -492,12 +595,12 @@ describe("run failure diagnostics", () => {
     expect(result.text).not.toContain("***[REDACTED]");
   });
 
-  it("preserves known boolean and numeric settings without exempting unknown or declared secrets", () => {
+  it("preserves ordinary settings while retaining declared secrets", () => {
     const env = { PAPERCLIP_DB_BACKUP_ENABLED: "false", PAPERCLIP_DB_BACKUP_RETENTION_DAYS: "1" };
-    expect(collectRunFailureSecretValues(env, [], true)).toEqual([]);
-    expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"], true)).toEqual(["false"]);
-    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" }, [], true)).toEqual(["1"]);
-    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" }, [], true)).toEqual(["opaque"]);
+    expect(collectRunFailureSecretValues(env)).toEqual([]);
+    expect(collectRunFailureSecretValues(env, ["PAPERCLIP_DB_BACKUP_ENABLED"])).toEqual(["false"]);
+    expect(collectRunFailureSecretValues({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+    expect(collectRunFailureSecretValues({ PAPERCLIP_DB_BACKUP_ENABLED: "opaque" })).toEqual(["opaque"]);
   });
   it("preserves generic exceptions, numeric codes and nested network causes", () => {
     const root = Object.assign(new Error("network failed"), { code: "ECONNRESET", statusCode: 502, request_id: "req-123" });

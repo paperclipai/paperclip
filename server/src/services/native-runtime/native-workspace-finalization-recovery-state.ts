@@ -5,6 +5,10 @@ import { nativeSha256 } from "./canonical.js";
 
 export const NATIVE_WORKSPACE_OWNER_UNVERIFIED = "native_workspace_finalization_owner_unverified";
 
+export function hasNativeWorkspaceFinalizationOwner(profile: Record<string, unknown> | null | undefined): boolean {
+  return profile?.nativeWorkspaceFinalizationOwner != null;
+}
+
 /** A terminal task does not prove that an older controller's copyback stopped. */
 export async function hasUnverifiedNativeWorkspaceFinalizationOwner(
   db: Db,
@@ -20,5 +24,5 @@ export async function hasUnverifiedNativeWorkspaceFinalizationOwner(
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
   const owner = run?.profile?.nativeWorkspaceFinalizationOwner;
-  return owner != null && action.fingerprint === nativeSha256({ runId, owner });
+  return hasNativeWorkspaceFinalizationOwner(run?.profile) && action.fingerprint === nativeSha256({ runId, owner });
 }

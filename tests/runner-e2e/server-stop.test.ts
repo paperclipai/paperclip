@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { readProcessTable } from "./process-tree.js";
-import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
+import { createProcessTreeOwner, stopOwnedProcessTree, UNCERTAIN_GROUP_IDENTITY } from "./process-tree-owner.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 
 const children: ChildProcess[] = [];
@@ -89,6 +89,7 @@ it.skipIf(process.platform === "win32")("joins signal, final cleanup and repeate
   expect(stop(child)).toBe(first);
   await stop(child);
   expect(logs).toEqual([]);
+  expect(() => stop.assertGracefulExit(child)).not.toThrow();
 });
 
 it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps it with one escalation", async () => {
@@ -98,6 +99,7 @@ it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps 
   const { stop, logs } = stopper(50);
   await Promise.all([stop(child), stop(child), stop(child)]);
   expect(child.signalCode).toBe("SIGKILL");
+  expect(() => stop.assertGracefulExit(child)).toThrow("forced cleanup cannot qualify");
   expect(logs).toHaveLength(1);
   expect(() => process.kill(child.pid!, 0)).toThrow();
 });
@@ -340,4 +342,91 @@ it.skipIf(process.platform === 'win32')('does not re-signal a server after its g
     owner.stopObserving();
     try { process.kill(-pid, 'SIGKILL'); } catch { /* already stopped */ }
   }
+});
+
+it.skipIf(process.platform === "win32")("crashes the owned controller and detached descendant without graceful drain or touching a neighboring process", async () => {
+  const { root } = await fixture();
+  const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
+  await writeFile(descendantEntry, `
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'descendant drained'));
+    process.send('ready'); setInterval(() => {}, 1000);
+  `);
+  const { entry } = await fixture(`
+    const child = require('node:child_process').fork(${JSON.stringify(descendantEntry)}, [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'controller drained'));
+    child.once('message', () => process.send({ ready: true, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = start(entry), controllerReady = once(controller, "message");
+  const { stop } = stopper();
+  await stop.watch(controller);
+  try {
+    const neighborFixture = await fixture(), neighbor = start(neighborFixture.entry);
+    await once(neighbor, "message");
+    const [ready] = await controllerReady;
+    await stop.crashForRestart(controller);
+    expect(controller.signalCode).toBe("SIGKILL");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const table = await readProcessTable();
+    expect(table).not.toBeNull();
+    expect(table!.some(row => row.pid === ready.descendantPid && !row.state?.startsWith("Z"))).toBe(false);
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+    await stop.stopAll();
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+  } finally { await stop.stopAll(); }
+});
+
+it.skipIf(process.platform === "win32")("waits out a provider group that is briefly unproven during the graceful drain", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  let uncertainInspections = 0;
+  let owner: ReturnType<typeof createProcessTreeOwner> | undefined;
+  const messages: unknown[] = [];
+  child.on("message", message => {
+    messages.push(message);
+    // The provider group turns over while the server drains: three inspections cannot prove it.
+    if (message === "stopping") uncertainInspections = 3;
+  });
+  const stop = createRunnerE2EServerStopper({
+    gracefulTimeoutMs: 5_000, forcedTimeoutMs: 2_000,
+    hasSpawnError: () => false, markExpectedStop: () => {}, log: () => {},
+    createOwner: candidate => {
+      owner = createProcessTreeOwner(candidate);
+      return { ...owner, observe: async () => {
+        if (uncertainInspections > 0) {
+          uncertainInspections -= 1;
+          if (uncertainInspections === 0 && child.connected) child.send("finish");
+          throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: 16058 (unowned members: pid=16070 ppid=1 pgid=16058 kind=node started=x)`);
+        }
+        await owner!.observe();
+      } };
+    },
+  });
+  try {
+    await stop(child);
+    expect(messages).toEqual(["stopping", "close-complete"]);
+    expect([child.exitCode, child.signalCode]).toEqual([0, null]);
+  } finally { owner?.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("still fails safely when a group stays unproven past the drain deadline", async () => {
+  const { entry } = await fixture(`process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000);`);
+  const child = start(entry);
+  await once(child, "message");
+  const groupSignals: number[] = [];
+  let stopping = false;
+  const owner = createProcessTreeOwner(child, { signalGroup: pid => { groupSignals.push(pid); } });
+  const uncertain = { ...owner, observe: async () => {
+    if (stopping) throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: 16058 (unowned members: pid=16070 ppid=1 pgid=16058 kind=node started=x)`);
+    await owner.observe();
+  } };
+  try {
+    await uncertain.observe();
+    stopping = true;
+    const stop = createRunnerE2EServerStopper({ gracefulTimeoutMs: 200, forcedTimeoutMs: 200,
+      hasSpawnError: () => false, markExpectedStop: () => {}, log: () => {}, createOwner: () => uncertain });
+    await expect(stop(child)).rejects.toThrow(/identity became uncertain: 16058 \(unowned members: pid=16070/);
+    expect(groupSignals).toEqual([]);
+  } finally { owner.stopObserving(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
 });

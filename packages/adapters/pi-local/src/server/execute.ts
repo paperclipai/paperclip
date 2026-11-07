@@ -53,11 +53,14 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   runChildProcess,
+  sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser } from "./parse.js";
+import { createPiStdoutCompactor, resolvePiStdoutLogMode } from "./stdout-compaction.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
+import { preparePiOpenRouterExtension } from "./openrouter-extension.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -241,6 +244,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
+  const stdoutLogMode = resolvePiStdoutLogMode(config);
 
   // Parse model into provider and model id
   const provider = parseModelProvider(model);
@@ -339,7 +343,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (localAgentConfigDir) {
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }
+  let attributionExtension: Awaited<ReturnType<typeof preparePiOpenRouterExtension>> | undefined;
   try {
+    attributionExtension = await preparePiOpenRouterExtension();
+    let attributionExtensionPath = attributionExtension.extensionPath;
     // Prepend installed skill `bin/` dirs to PATH so an agent's bash tool can
     // invoke skill binaries (e.g. `paperclip-get-issue`) by name. Without this,
     // any pi_local agent whose AGENTS.md calls a skill command via bash hits
@@ -350,7 +357,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const skillBinDirs = piSkillEntries
       .filter((entry) => injectedSkillKeys.has(entry.key) && entry.source.length > 0)
       .map((entry) => path.join(entry.source, "bin"));
-    const mergedEnv = ensurePathInEnv({ ...process.env, ...env });
+    const mergedEnv = ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env });
     const pathKey =
       typeof mergedEnv.Path === "string" && mergedEnv.Path.length > 0 && !mergedEnv.PATH
         ? "Path"
@@ -434,6 +441,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [
             {
+              key: "attribution",
+              localDir: attributionExtension.directory,
+            },
+            {
               key: "skills",
               localDir: localSkillsDir,
               followSymlinks: true,
@@ -467,6 +478,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
         remoteSkillsDir = preparedRemoteRuntime.assetDirs.skills ?? null;
+        const remoteAttributionDir = preparedRemoteRuntime.assetDirs.attribution;
+        if (!remoteAttributionDir) throw new Error("Pi attribution extension was not staged to the execution target.");
+        attributionExtensionPath = path.posix.join(remoteAttributionDir, "openrouter-attribution.mjs");
         if (localAgentConfigDir && preparedRemoteRuntime.assetDirs.agentConfig) {
           env.PI_CODING_AGENT_DIR = preparedRemoteRuntime.assetDirs.agentConfig;
         }
@@ -495,7 +509,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         Object.assign(env, paperclipBridge.env);
         loggedEnv = buildInvocationEnvForLogs(env, {
           runtimeEnv: Object.fromEntries(
-            Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+            Object.entries(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env })).filter(
               (entry): entry is [string, string] => typeof entry[1] === "string",
             ),
           ),
@@ -622,6 +636,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (stdoutLogMode !== "raw") {
+        notes.push(`Pi stdout run-log compaction mode: ${stdoutLogMode}`);
+      }
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsReadFailed) {
         notes.push(
@@ -655,6 +672,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
 
       if (extraArgs.length > 0) args.push(...extraArgs);
+      args.push("--extension", attributionExtensionPath);
 
       // Add the user prompt as the last argument
       args.push(userPrompt);
@@ -716,6 +734,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Buffer stdout by lines to handle partial JSON chunks
       let stdoutBuffer = "";
+      const compactStdoutLine = createPiStdoutCompactor(stdoutLogMode);
+      // Compaction only affects the persisted run log; parsePiJsonl reads the unfiltered proc.stdout.
+      const emitCompacted = async (line: string, suffix: string) => {
+        const compacted = compactStdoutLine(line);
+        if (compacted !== null) {
+          await onLog("stdout", compacted + suffix);
+        }
+      };
       const bufferedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
         if (stream === "stderr") {
           // Pass stderr through immediately (not JSONL)
@@ -723,16 +749,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return;
         }
 
-        // Buffer stdout and emit only complete lines
         stdoutBuffer += chunk;
         const lines = stdoutBuffer.split("\n");
         // Keep the last (potentially incomplete) line in the buffer
         stdoutBuffer = lines.pop() || "";
 
-        // Emit complete lines
         for (const line of lines) {
           if (line) {
-            await onLog(stream, line + "\n");
+            await emitCompacted(line, "\n");
           }
         }
       };
@@ -760,7 +784,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       // Flush any remaining buffer content
       if (stdoutBuffer) {
-        await onLog("stdout", stdoutBuffer);
+        await emitCompacted(stdoutBuffer, "");
       }
 
       // Display output is capped by the process transport. Keep accounting
@@ -900,6 +924,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
-    await preparedRuntimeConfig.cleanup();
+    await Promise.all([preparedRuntimeConfig.cleanup(), attributionExtension?.cleanup()]);
   }
 }
