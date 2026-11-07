@@ -932,6 +932,7 @@ async function runAttempt(input: {
         manualDiagnostic!.stage = "seal-original";
         await sealStandardOriginalEvidence({ context: manualPrivateHandoff,
           executionId: candidate.id, source: casePrivateDir, evidence: originalEvidence, secrets: credentials, expectPassScreenshot: originalFeaturePassed });
+        manualDiagnostic!.stage = "attach-original";
         if (evidence.files.includes(PRIVATE_FRAMEWORK_REPORT)) await referenceSealedFrameworkAttachments(uploadDir,
           path.join(manualPrivateHandoff.root, "originals", manualCellKind(candidate.id)), candidate.id);
       } else {

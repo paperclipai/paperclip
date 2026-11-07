@@ -123,7 +123,7 @@ it("retains each remaining fixed scanner reason without dynamic text", () => {
 
 import { readFileSync } from "node:fs";
 it("gives every fixed packaging, sealing and report-asset refusal a closed finalization code", () => {
-  const messages = ["manual-private-handoff.ts", "evidence.ts", "manual-private-report-assets.ts", "private-framework-report.ts", "redaction.ts", "manual-private-retention.ts"].flatMap(file =>
+  const messages = ["manual-private-handoff.ts", "evidence.ts", "manual-private-report-assets.ts", "private-framework-report.ts", "redaction.ts", "manual-private-retention.ts", "chat-readiness-detail.ts", "source-sdk-evidence.ts"].flatMap(file =>
     [...readFileSync(new URL(`./${file}`, import.meta.url), "utf8").matchAll(/(?:new Error|budgetFailure)\("([^"$`]+)"/g)].map(match => match[1]!));
   expect(messages.length).toBeGreaterThan(20);
   for (const message of messages) {

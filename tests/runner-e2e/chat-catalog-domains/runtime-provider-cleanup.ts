@@ -29,7 +29,9 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
   try {
     const ps = async (field: string) => (await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", `${field}=`], { timeout: 5_000, maxBuffer: 65_536 })).stdout.trim();
     const [uid, parent, executable, command, startedAt] = await Promise.all([ps("uid"), ps("ppid"), ps("comm"), ps("args"), readProcessStartedAt(pid)]);
-    const canonical = await realpath(ownedNativeExecutablePath(pid, executable));
+    // A pinned binary may be executed from an inherited descriptor (/proc/self/fd/N); its real
+    // executable is then only reachable through the kernel's /proc/<pid>/exe link.
+    const canonical = await realpath(ownedNativeExecutablePath(pid, executable)).catch(() => realpath(`/proc/${pid}/exe`));
     const args = command.split(/\s+/);
     // node may carry runtime flags before the script; the absolute proxy script is the last argument.
     const script = args.at(-1)!, flags = args.slice(1, -1);
