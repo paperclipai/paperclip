@@ -737,6 +737,8 @@ export async function migrateRemoteWorkspaceCohort(input: {
     for (const member of members) {
       const current = await inspect(db, { ...member.input, onlineSource: member.onlineSource }, cohort);
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
+      if (fingerprint(current.workspace) !== fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!))
+        throw new Error("workspace_cohort_source_changed");
     }
   };
   if (!input.apply) { await preflight(input.db); return { companyId, cohortId: cohort.id, applied: false, eligible: true, workspaceIds }; }

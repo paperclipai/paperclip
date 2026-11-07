@@ -229,16 +229,17 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(operations).toHaveLength(2);
     expect(operations.every(row => row.status === "succeeded" && JSON.stringify(row.metadata!.cohortMigration) === JSON.stringify(membership))).toBe(true);
   });
-  it("does not persist a stale cohort source proof when a member changes before reservation", async () => {
+  it.each(["first", "last"] as const)("does not persist a stale cohort source proof when the %s member changes before reservation", async position => {
     const f = await fixture(), [first, second] = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id));
+    const changedMember = position === "first" ? first : second;
     await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${second.id}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));
     await db.execute(sql`create trigger cohort_reserve_fault before insert on workspace_operations for each row execute function cohort_reserve_fault()`);
     const inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource; let changed = false;
     vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
       if (!changed) {
         changed = true;
-        await db.update(executionWorkspaces).set({ metadata: { ...first.metadata, preservedEvidence: "new source metadata" } })
-          .where(eq(executionWorkspaces.id, first.id));
+        await db.update(executionWorkspaces).set({ metadata: { ...changedMember.metadata, preservedEvidence: "new source metadata" } })
+          .where(eq(executionWorkspaces.id, changedMember.id));
       }
       return inspect(...args);
     });
