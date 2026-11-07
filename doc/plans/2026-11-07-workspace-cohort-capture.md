@@ -59,7 +59,11 @@ instant return from a storage callback that ignores its signal.
 Each reserved operation stores the same versioned cohort identifier, logical
 source fingerprint, and exact sorted workspace/operation membership. Only those
 exact journals are admitted together. Other running or uncertain journals block
-the batch. A single-workspace import refuses a cohort journal.
+the batch. Every saved pending member must still be running and unfinished;
+cancelled, failed or finished journals are refused before either preflight
+eligibility or snapshot work. Publication repeats that check. The owner does
+not reset or reopen those journals. A single-workspace import refuses a cohort
+journal.
 
 After capture, the owner transaction locks and freshly validates every member,
 source, journal, recovery binding, and uploaded snapshot before it writes any

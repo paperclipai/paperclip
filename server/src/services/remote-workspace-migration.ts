@@ -502,7 +502,7 @@ async function validateMigrationPublication(tx: MigrationTransaction, input: Mig
   if (cohort) {
     const [journal] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, input.companyId),
       eq(workspaceOperations.id, operation.id), eq(workspaceOperations.executionWorkspaceId, input.workspaceId))).for("update", { noWait: true });
-    if (!journal || journal.status !== "running" || journal.phase !== "remote_workspace_migration"
+    if (!journal || journal.status !== "running" || journal.finishedAt !== null || journal.phase !== "remote_workspace_migration"
       || journal.issueId !== operation.issueId || journal.cwd !== operation.cwd
       || canonical(journal.metadata) !== canonical(operation.metadata)) throw new Error("workspace_cohort_journal_changed");
   }
@@ -722,6 +722,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
       eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
       eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration")));
     if (!operation?.metadata?.cohortMigration) throw new Error("workspace_cohort_foreign_journal");
+    if (operation.status !== "running" || operation.finishedAt !== null) throw new Error("workspace_cohort_journal_changed");
     pending.push(cohortSchema.parse(operation.metadata.cohortMigration));
   }
   const cohort: WorkspaceMigrationCohort = pending[0] ?? { schema: "paperclip.remote-workspace-cohort.v1", id: randomUUID(), companyId,

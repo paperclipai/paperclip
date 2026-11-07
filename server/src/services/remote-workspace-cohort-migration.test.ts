@@ -176,7 +176,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(capture.mock.calls.filter(([input]) => input.cwd === cwd && path.basename(input.archivePath) === "current.pcws")).toHaveLength(4);
     expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe("nested dirty bytes\n");
   }, 60_000);
-  it.each(["foreign", "journal"])("refuses a changed %s operation before any authority write", async mode => {
+  it.each(["foreign", "journal", "finished"])("refuses a changed %s operation before any authority write", async mode => {
     const f = await fixture(), put = storage.putFile.bind(storage); let uploaded = 0;
     await db.execute(sql`create sequence cohort_publish_attempts minvalue 0 start 0`);
     await db.execute(sql`create function cohort_publish_probe() returns trigger language plpgsql as $$ begin perform nextval('cohort_publish_attempts'); return new; end $$`);
@@ -186,6 +186,8 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       if (++uploaded === 2) {
         if (mode === "foreign") await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.parent.id,
           issueId: f.parent.sourceIssueId, cwd: f.root, phase: "worktree_prepare", status: "running" });
+        else if (mode === "finished") await db.update(workspaceOperations).set({ finishedAt: new Date() })
+          .where(eq(workspaceOperations.executionWorkspaceId, f.leaves[1].id));
         else await db.update(workspaceOperations).set({ metadata: sql`${workspaceOperations.metadata} || '{"unexpected":"changed journal"}'::jsonb` })
           .where(eq(workspaceOperations.executionWorkspaceId, f.leaves[1].id));
       }
@@ -225,6 +227,30 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const operations = await db.select().from(workspaceOperations);
     expect(operations).toHaveLength(2);
     expect(operations.every(row => row.status === "succeeded" && JSON.stringify(row.metadata!.cohortMigration) === JSON.stringify(membership))).toBe(true);
+  });
+  it.each(["cancelled", "failed", "running-finished"] as const)("refuses a %s member journal before preflight or snapshot work", async status => {
+    const f = await fixture(), second = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id))[1];
+    await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${second.id}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_reserve_fault before insert on workspace_operations for each row execute function cohort_reserve_fault()`);
+    await expect(run(f)).rejects.toThrow();
+    await db.execute(sql`drop trigger cohort_reserve_fault on workspace_operations`);
+    const [operation] = await db.select().from(workspaceOperations);
+    expect(operation.status).toBe("running");
+    await db.update(workspaceOperations).set({ status: status === "running-finished" ? "running" : status, finishedAt: new Date() })
+      .where(eq(workspaceOperations.id, operation.id));
+    const calls: string[] = [], noStorage = new Proxy(storage, { get(_target, key) {
+      calls.push(String(key)); throw new Error("unexpected_storage_operation");
+    } });
+    await db.transaction(async tx => {
+      expect((await tx.execute(sql`select current_setting('transaction_read_only') as ro`))[0].ro).toBe("on");
+      await expect.soft(run(f, { db: tx as unknown as Db, storage: noStorage, apply: false }))
+        .rejects.toThrow("workspace_cohort_journal_changed");
+    }, { accessMode: "read only" });
+    await expect.soft(run(f, { storage: noStorage })).rejects.toThrow("workspace_cohort_journal_changed");
+    expect.soft(calls).toEqual([]);
+    expect.soft(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    expect.soft(await db.select().from(workspaceOperations)).toHaveLength(1);
+    await assertLocal(f);
   });
   it.each(["failure", "cancel"] as const)("joins active capture peers and keeps the fence on %s", async mode => {
     const f = await fixture(), controller = new AbortController(); let entered = 0, firstFailed!: () => void, release!: () => void;
