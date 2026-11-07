@@ -123,6 +123,17 @@ describe("identity catalog independent oracle calibration", () => {
     const observation = valid("navigation-preferences.quick-search"); observation.state.observerPrivatePaletteHidden = false;
     expect(gradeNavigation(observation).passed).toBe(false);
   });
+  it("quick search accepts any spelling of the palette shortcut and rejects answers without it", () => {
+    const observation = valid("navigation-preferences.quick-search");
+    for (const reply of ["Press **⌘K** (or Ctrl+K on Windows) and type Launch.", "Hit `Ctrl` + `K` anywhere to open search.", "Use <kbd>⌘</kbd><kbd>K</kbd>, then pick Search all.",
+      "Open the command palette with Cmd/Ctrl-K and type \"Launch\".", "Command-K opens quick search from any page."]) {
+      observation.reply = reply; expect(gradeNavigation(observation).passed, reply).toBe(true);
+    }
+    for (const reply of ["Keep it in chat: just ask me to show Launch tasks and I'll list them here.", "Use the command palette to find Launch tasks.",
+      "Use the task list command to filter by the Launch project.", "Press Ctrl+Shift+F to search."]) {
+      observation.reply = reply; expect(gradeNavigation(observation).passed, reply).toBe(false);
+    }
+  });
   it("requires native provider question identity and answer-bearing creation provenance", () => {
     const o = valid("questions-and-approvals.necessary-question"); const original = o.state.original as Interaction;
     o.runs = [o.runs[0]!]; original.payload.runtimeRequestId = "request-7"; original.idempotencyKey = "paperclip-runner-question:run:request-7";

@@ -4,6 +4,19 @@ import { checks, entity, hasLink, project, task, verifyInternalResult } from "./
 import { identityDefinition, identityObservation, waitForReply, probeAgentPermission } from "./identity-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+// The palette shortcut is a fixed product fact the person needs to act on, so it is graded as a literal key combination:
+// a modifier immediately followed by K, allowing the usual spellings (Cmd+K, ⌘K, Ctrl-K, `Ctrl` + `K`, <kbd>⌘</kbd><kbd>K</kbd>).
+const paletteShortcut = /(?:⌘|\b(?:cmd|command|ctrl|control|mod)\b)(?:[\s`*+\-–/]|<\/?kbd>)*k\b/i;
+async function openQuickSearch(page: ChatCatalogContext["input"]["page"]) {
+  const input = page.getByPlaceholder("Search tasks, agents, projects...");
+  // A freshly loaded page fires keydown before the app mounts the palette listener; wait for the shell and retry the shortcut.
+  await expect(page.getByRole("button", { name: "Global search" }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(async () => {
+    if (!await input.isVisible()) await page.keyboard.press("ControlOrMeta+k");
+    await expect(input).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  return input;
+}
 const searchObservers = new WeakMap<ChatCatalogContext, Awaited<ReturnType<typeof createAuthenticatedPerson>>>();
 
 export function gradeNavigation(value: unknown) {
@@ -21,7 +34,7 @@ export function gradeNavigation(value: unknown) {
     c.add("personal-preferences-not-agent-mutated", o.state.agentPreferenceReadStatus === 403 && o.state.preferencesBefore !== undefined
       && JSON.stringify(o.state.preferencesBefore) === JSON.stringify(o.state.preferencesAfterReply), "The actual agent cannot impersonate the person's preferences, and the response does not change saved order or browser favorites/recents.");
   } else if (o.scenarioId === "navigation-preferences.quick-search") {
-    c.add("documented-palette-entry", /(?:command|cmd|ctrl|control|⌘).*k|quick\s+search|command\s+palette/i.test(o.reply), "The answer identifies the actual quick-search entry point.");
+    c.add("documented-palette-entry", paletteShortcut.test(o.reply), "The answer gives the actual quick-search shortcut (Cmd/Ctrl+K) the person can press without leaving their page.");
     c.add("browser-search-transition", o.state.paletteTaskVisible === true && o.state.searchTaskVisible === true
       && o.state.searchQuery === "Launch" && o.state.searchStatus === "backlog", "The human opens the palette, finds the fixture task, and carries its query and chosen status filter into full search.");
     c.add("independent-search-audience", o.state.observerPublicVisible === true && o.state.observerPrivatePaletteHidden === true && o.state.observerPrivateSearchHidden === true,
@@ -71,12 +84,11 @@ export const navigationIdentityCases = [
       return { ...state, privateTask, observerId: observer.id };
     } catch (error) { await observer.dispose(); searchObservers.delete(ctx); throw error; }
   }, gradeNavigation, {
-    authentication: "human-session",
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.identity.quick-search.v2",
     sourceFiles: ["chat-catalog-domains/identity-navigation-preferences.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/navigation-preferences.yaml"],
     async act(ctx, state) {
       await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); const source = ctx.input.page.url();
-      await ctx.input.page.keyboard.press("ControlOrMeta+k");
-      await ctx.input.page.getByPlaceholder("Search tasks, agents, projects...").fill("Launch status:backlog");
+      await (await openQuickSearch(ctx.input.page)).fill("Launch status:backlog");
       await expect(ctx.input.page.getByRole("dialog").getByText(entity(state, "task").title!, { exact: true })).toBeVisible();
       state.paletteTaskVisible = true;
       await ctx.input.page.getByTestId("command-search-all").click();
@@ -87,8 +99,7 @@ export const navigationIdentityCases = [
       const page = await observer.context.newPage();
       try {
         await page.goto(`/${ctx.input.fixtures.company.issuePrefix}/projects/${entity(state, "project").id}`, { waitUntil: "domcontentloaded" });
-        await page.keyboard.press("ControlOrMeta+k");
-        await page.getByPlaceholder("Search tasks, agents, projects...").fill("Launch status:backlog");
+        await (await openQuickSearch(page)).fill("Launch status:backlog");
         const palette = page.getByRole("dialog");
         await expect(palette.getByText(entity(state, "task").title!, { exact: true })).toBeVisible();
         await expect(palette.getByText(entity(state, "privateTask").title!, { exact: true })).toHaveCount(0); state.observerPrivatePaletteHidden = true;
