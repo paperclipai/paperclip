@@ -182,8 +182,11 @@ const URL_PREAMBLE_RE = /the url below to sign in/i;
 const PROMPT_LINE_RE = /^Paste code here if prompted\b[\s>*]*$/;
 
 // The copy hint that `claude` 2.1.291 prints between the URL block and the
-// prompt. The parser skips this exact line and binds no value from it.
-const COPY_HINT_LINE_RE = /^Hold\s+Shift\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+// prompt. The key it names depends on the host terminal and platform. The parser
+// skips this exact hint, even when it wraps, and binds no value from it.
+const COPY_HINT_LINE_RE = /^Hold\s+(?:Shift|Option|Fn|Shift\s+\(Option\s+in\s+iTerm2,\s+Fn\s+in\s+Terminal\.app\))\s+while\s+selecting\s+to\s+use\s+your\s+terminal['’]s\s+native\s+copy\.?$/i;
+
+const MAX_COPY_HINT_LINES = 3;
 
 // The maximum number of characters between the end of the URL preamble line and
 // the start of the URL. The Claude UI prints the URL right after the preamble.
@@ -368,7 +371,8 @@ function reassembleUrl(lines: string[], startLine: number): SetupTokenUrlMatch |
  * end line. The Claude UI can emit one full URL line per wrapped display row, so
  * it repeats the same full authorization URL on a few consecutive lines. The
  * parser skips a line that repeats `url`. The `claude` 2.1.291 UI also prints a
- * copy hint before the prompt, so the parser skips a line that matches {@link
+ * copy hint before the prompt, so the parser skips the up to {@link
+ * MAX_COPY_HINT_LINES} non-blank lines that together match {@link
  * COPY_HINT_LINE_RE}. The parser then binds the prompt on the first non-blank
  * line that is not a repeat and not the copy hint. That line must match the
  * exact prompt shape. Returns null when that line is not the prompt.
@@ -381,8 +385,25 @@ function findBrowserCodePrompt(lines: string[], endLine: number, url: string): s
     // punctuation first, the same way the repeated-URL comparison needs, so a
     // repeated URL with a trailing punctuation mark still matches.
     if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
-    if (COPY_HINT_LINE_RE.test(trimmed)) continue;
+    const hintEnd = copyHintEndLine(lines, i);
+    if (hintEnd !== null) {
+      i = hintEnd;
+      continue;
+    }
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
+  }
+  return null;
+}
+
+function copyHintEndLine(lines: string[], start: number): number | null {
+  let joined = "";
+  let rows = 0;
+  for (let i = start; i < lines.length && rows < MAX_COPY_HINT_LINES; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+    joined = rows === 0 ? trimmed : `${joined} ${trimmed}`;
+    rows += 1;
+    if (COPY_HINT_LINE_RE.test(joined)) return i;
   }
   return null;
 }
