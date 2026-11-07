@@ -241,6 +241,7 @@ function buildExports(input: {
   const escaped = (value: string) => value.replace(/'/g, "'\"'\"'");
   return [
     `export PAPERCLIP_API_URL='${escaped(input.apiBase)}'`,
+    `export PAPERCLIP_RUNTIME_API_URL='${escaped(input.apiBase)}'`,
     input.companyId ? `export PAPERCLIP_COMPANY_ID='${escaped(input.companyId)}'` : null,
     input.agentId ? `export PAPERCLIP_AGENT_ID='${escaped(input.agentId)}'` : null,
     `export ${input.envName}='${escaped(input.token)}'`,

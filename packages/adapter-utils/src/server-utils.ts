@@ -3255,11 +3255,13 @@ export function buildPaperclipEnv(agent: {
   // An explicit PAPERCLIP_API_URL override must win over the URL derived from
   // authPublicBaseUrl: the derived URL can be unreachable from inside the
   // runtime container (e.g. when the public base URL is VPN/tailnet-only).
-  const apiUrl =
-    process.env.PAPERCLIP_API_URL ??
+  const runtimeApiUrl =
     process.env.PAPERCLIP_RUNTIME_API_URL ??
+    process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
+  const apiUrl = process.env.PAPERCLIP_API_URL ?? runtimeApiUrl;
   vars.PAPERCLIP_API_URL = apiUrl;
+  vars.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   return vars;
 }
 

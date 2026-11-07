@@ -122,6 +122,26 @@ describe("claude_local ACP startup fallback", () => {
     );
   });
 
+  it("also trusts a pinned internal callback origin when network access is allowlisted", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "https://dashboard.example.test");
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "http://127.0.0.1:4310");
+    const ctx = buildContext({ engine: "cli", networkScope: "allowlist" });
+
+    await execute(ctx as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        localProcessSandbox: expect.objectContaining({
+          networkTrustedUrls: ["https://dashboard.example.test", "http://127.0.0.1:4310"],
+        }),
+      }),
+    );
+  });
+
   it("keeps explicit ACP strict when startup fails", async () => {
     const ctx = buildContext({ engine: "acp" });
 
