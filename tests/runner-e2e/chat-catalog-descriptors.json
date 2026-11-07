@@ -4701,11 +4701,12 @@
     "scenarioId": "routines.run-now",
     "sourceFiles": [
       "chat-catalog-domains/integrator-routine-invocation.ts",
+      "run-observations.ts",
       "chat-catalog-domains/integrator-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/routines.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.integrator.routine-invocation.v2",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,

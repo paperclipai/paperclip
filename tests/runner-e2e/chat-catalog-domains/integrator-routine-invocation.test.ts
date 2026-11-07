@@ -2,21 +2,37 @@ import { describe, expect, it } from "vitest";
 import { gradeIntegratorRoutineInvocation } from "./integrator-routine-invocation.js";
 function valid() {
   const task = { id: "task", identifier: "ACN-2", projectId: "project", assigneeAgentId: "ceo", status: "done", title: "Launch summary" };
-  const invocation = { id: "invocation", routineId: "routine", source: "manual", status: "completed", linkedIssueId: "task", idempotencyKey: "delivery", triggerPayload: { variables: { projectName: "Launch" } } };
+  const invocation = { id: "invocation", routineId: "routine", source: "manual", status: "completed", linkedIssueId: "task", idempotencyKey: "delivery",
+    completedAt: "2026-01-01T00:02:00.000Z", triggerPayload: { variables: { projectName: "Launch" } } };
+  const chatRun = { id: "chat-run", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "chat" } };
+  const outputRun = { id: "output-run", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "task" } };
+  const followUpRun = { id: "follow-up-run", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "chat" } };
   const base = { scenarioId: "routines.run-now", origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" } },
     tasks: [task], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], activity: [], links: ["/ACN/issues/ACN-2"],
     routine: { id: "routine" }, invocations: [invocation], outputComments: [{ id: "output", authorAgentId: "ceo", createdByRunId: "output-run", body: "Launch: payment approval is pending." }],
-    runs: [{ id: "output-run", agentId: "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: "task" } }], reply: "Accepted the Launch summary invocation; its task is waiting." };
+    runs: [chatRun, outputRun], reply: "Accepted the Launch summary invocation; its task is waiting.",
+    toolReads: [
+      { runId: "output-run", name: "paperclip_list_projects", at: "2026-01-01T00:01:30.000Z", output: '{"projects":[{"id":"project"}]}' },
+      { runId: "follow-up-run", name: "paperclip_get_task", at: "2026-01-01T00:03:00.000Z", output: '{"data":{"id":"task","status":"done"}}' },
+    ] };
   const first = structuredClone(base); first.invocations[0]!.status = "issue_created"; first.tasks[0]!.status = "todo";
-  return { ...base, state: { ...base.state, replayRunId: "invocation", replayIssueId: "task", firstInvocation: first },
+  return { ...base, runs: [...base.runs, followUpRun], state: { ...base.state, replayRunId: "invocation", replayIssueId: "task", firstInvocation: first },
     reply: `${first.reply}\nThe summary completed: Launch is still waiting on payment approval. Here is its result task.` };
 }
+type Observation = ReturnType<typeof valid>;
+const withLater = (o: Observation, later: string) => ({ ...o, reply: `${o.state.firstInvocation.reply}\n${later}` });
 describe("real manual invocation and delivery distinction", () => {
   it("accepts substantive actual result and refuses missing receipts", () => {
     expect(gradeIntegratorRoutineInvocation(valid()).passed).toBe(true);
     expect(gradeIntegratorRoutineInvocation(undefined).passed).toBe(false);
     const o = valid(); o.outputComments = [];
     expect(gradeIntegratorRoutineInvocation(o).passed).toBe(false);
+    const noReads = valid(); delete (noReads as Partial<Observation>).toolReads;
+    expect(gradeIntegratorRoutineInvocation(noReads).passed).toBe(false);
+  });
+  it("does not depend on the wording of a correct later result", () => {
+    expect(gradeIntegratorRoutineInvocation(withLater(valid(), "RUN-2 is closed and nothing failed. Per its saved comment, the payment sign-off has not come through yet.")).passed).toBe(true);
+    expect(gradeIntegratorRoutineInvocation(withLater(valid(), "It's done — approval for payment is outstanding.")).passed).toBe(true);
   });
   it("rejects duplicate delivery, wrong input and unrelated native output", () => {
     const duplicate = valid(); duplicate.invocations.push({ ...duplicate.invocations[0]!, id: "another" });
@@ -25,16 +41,28 @@ describe("real manual invocation and delivery distinction", () => {
     expect(gradeIntegratorRoutineInvocation(wrongInput).passed).toBe(false);
     const wrongReplay = valid(); wrongReplay.state.replayIssueId = "other-task";
     expect(gradeIntegratorRoutineInvocation(wrongReplay).passed).toBe(false);
-    const wrongRun = valid(); wrongRun.runs[0]!.contextSnapshot.issueId = "other-task";
+    const wrongRun = valid(); wrongRun.runs[1]!.contextSnapshot.issueId = "other-task";
     expect(gradeIntegratorRoutineInvocation(wrongRun).passed).toBe(false);
+    const unread = valid(); unread.toolReads = unread.toolReads.filter(row => row.runId !== "output-run");
+    expect(gradeIntegratorRoutineInvocation(unread).passed).toBe(false);
   });
-  it("rejects false early completion, later acceptance-only and invented approved outcome", () => {
+  it("rejects false early completion and a later answer not grounded on the completed result", () => {
     const early = valid(); early.state.firstInvocation.reply = "The Launch summary completed successfully.";
     early.reply = `${early.state.firstInvocation.reply}\nThe summary completed; payment approval remains pending for Launch.`;
     expect(gradeIntegratorRoutineInvocation(early).passed).toBe(false);
-    const o = valid();
-    expect(gradeIntegratorRoutineInvocation({ ...o, reply: `${o.state.firstInvocation.reply}\nI accepted the Launch summary, waiting for payment approval.` }).passed).toBe(false);
-    expect(gradeIntegratorRoutineInvocation({ ...o, reply: `${o.state.firstInvocation.reply}\nThe Launch summary completed. Payment is approved.` }).passed).toBe(false);
+    const future = valid(); future.state.firstInvocation.reply = "I started the routine; RUN-2 will be marked done once the summary is finished.";
+    future.reply = `${future.state.firstInvocation.reply}\nThe summary completed; payment approval remains pending.`;
+    expect(gradeIntegratorRoutineInvocation(future).passed).toBe(true);
+    const recalled = valid(); recalled.toolReads = recalled.toolReads.filter(row => row.runId !== "follow-up-run");
+    expect(gradeIntegratorRoutineInvocation(recalled).passed).toBe(false);
+    const stale = valid(); stale.toolReads[1]!.at = "2026-01-01T00:01:00.000Z";
+    expect(gradeIntegratorRoutineInvocation(stale).passed).toBe(false);
+    const noFollowUp = valid(); noFollowUp.runs = noFollowUp.runs.filter(run => run.id !== "follow-up-run");
+    expect(gradeIntegratorRoutineInvocation(noFollowUp).passed).toBe(false);
+    const silent = valid(); silent.reply = silent.state.firstInvocation.reply;
+    expect(gradeIntegratorRoutineInvocation(silent).passed).toBe(false);
+    const unlinked = valid(); unlinked.links = [];
+    expect(gradeIntegratorRoutineInvocation(unlinked).passed).toBe(false);
   });
 });
 
