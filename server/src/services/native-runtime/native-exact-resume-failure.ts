@@ -73,12 +73,13 @@ export function boundOriginalMessage(message: string): string {
 }
 
 /**
- * The text that failure classification reads for a run. A refused exact
- * resume reports the interrupted attempt in `error` for operators, but retry
- * and recovery decisions must follow the current refusal, which the run
- * result keeps separately.
+ * The run's current failure text. A refused exact resume reports the
+ * interrupted attempt in `error` for operators in company-scoped run records,
+ * but retry and recovery decisions and Sentry failure reports must use only
+ * the current refusal, which the run result keeps separately. The earlier
+ * attempt's provider text stays out of Sentry.
  */
-export function failureClassificationText(run: { error?: string | null; resultJson?: unknown } | null | undefined): string | null {
+export function currentRunFailureText(run: { error?: string | null; resultJson?: unknown } | null | undefined): string | null {
   const refusal = record(record(run?.resultJson).nativeExactResumeRefusal).refusal;
   return typeof refusal === "string" ? refusal : run?.error ?? null;
 }

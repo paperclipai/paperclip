@@ -176,7 +176,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
-import { failureClassificationText } from "../native-runtime/native-exact-resume-failure.js";
+import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -434,7 +434,7 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
   return /(?:usage|rate|quota) limit|you(?:'|’)ve hit your (?:\w+ )?limit|quota (?:exceeded|reset)|try again after/i.test(
-    failureClassificationText(latestRun) ?? "",
+    currentRunFailureText(latestRun) ?? "",
   );
 }
 
@@ -631,7 +631,7 @@ export function classifyAdapterFailureForRecovery(
   const { nativeExactResumeRefusal: _interruptedAttempt, ...currentResult } = resultJson;
   const error = [
     latestRun.errorCode ?? "",
-    failureClassificationText(latestRun) ?? "",
+    currentRunFailureText(latestRun) ?? "",
     JSON.stringify(currentResult),
   ].join("\n");
   if (
