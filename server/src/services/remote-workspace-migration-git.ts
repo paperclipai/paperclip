@@ -18,6 +18,7 @@ import { materializeManagedProjectWorkspace } from "./managed-repository-checkou
 import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import { physicalPath } from "./remote-workspace-migration-tree.js";
 import { formatCommandForDisplay } from "./workspace-command-display.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { recordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -30,7 +31,71 @@ export type ArchivedGitMigrationSource = {
 };
 const execute = promisify(execFile);
 const unavailable = () => new Error("remote_workspace_migration_archived_git_source_unavailable");
+function originalLocalSource(workspace: Workspace, sourcePath: string) {
+  return Boolean(workspace.repoUrl && /^file:/i.test(workspace.repoUrl) && localRepositoryPath(workspace.repoUrl) === sourcePath
+    && !managedSourcePaths(workspace).includes(sourcePath) && recordedIsolatedRemoteSource(workspace) !== sourcePath);
+}
+function originalDeletionReceipt(workspace: Workspace, operation: typeof workspaceOperations.$inferSelect | undefined) {
+  return Boolean(operation && workspace.closedAt && operation.phase === "worktree_cleanup" && operation.status === "succeeded"
+    && operation.exitCode === 0 && operation.finishedAt && operation.finishedAt >= operation.startedAt && operation.startedAt >= workspace.closedAt
+    && operation.companyId === workspace.companyId && operation.executionWorkspaceId === workspace.id
+    && (!operation.issueId || operation.issueId === workspace.sourceIssueId)
+    && operation.command === `git branch -d ${workspace.branchName}` && operation.metadata?.cleanupAction === "branch_delete"
+    && operation.metadata.workspaceId === workspace.id && operation.metadata.workspacePath === (workspace.providerRef ?? workspace.cwd)
+    && operation.metadata.branchName === workspace.branchName);
+}
+async function localGit(cwd: string, args: string[]) {
+  return (await execute("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`,
+    "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "-C", cwd, ...args], {
+    timeout: 30_000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH, LANG: "C", LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" },
+  })).stdout.trim();
+}
+async function verifiedOriginalLocalSource(workspace: Workspace, sourcePath: string) {
+  const root = resolvePaperclipInstanceRoot(), relative = path.relative(root, sourcePath), full = workspace.metadata?.baseRefSha;
+  if (!originalLocalSource(workspace, sourcePath) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative) || path.resolve(sourcePath) !== sourcePath || await fs.realpath(root) !== root
+    || typeof full !== "string" || !/^[a-f0-9]{40}$/.test(full)) throw unavailable();
+  let current = root;
+  for (const part of relative.split(path.sep)) {
+    current = path.join(current, part);
+    const entry = await fs.lstat(current);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw unavailable();
+  }
+  const pending = [sourcePath]; let entries = 0;
+  while (pending.length) {
+    const directory = await fs.opendir(pending.pop()!);
+    for await (const entry of directory) {
+      if (++entries > 10_000) throw unavailable();
+      const target = path.join(directory.path, entry.name), stat = await fs.lstat(target);
+      if (stat.isSymbolicLink() || !stat.isDirectory() && !stat.isFile()) throw unavailable();
+      if (stat.isDirectory()) pending.push(target);
+    }
+  }
+  for (const name of ["objects", "refs"]) {
+    const entry = await fs.lstat(path.join(sourcePath, name));
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw unavailable();
+  }
+  const config = await fs.lstat(path.join(sourcePath, "config"));
+  if (!config.isFile() || config.isSymbolicLink() || config.nlink !== 1 || config.size > 64 * 1024) throw unavailable();
+  for (const name of ["objects/info/alternates", "objects/info/http-alternates", "refs/replace", "info/grafts", "shallow", "commondir"]) {
+    const entry = await fs.lstat(path.join(sourcePath, name)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null; throw error;
+    });
+    if (entry) throw unavailable();
+  }
+  const keys = (await localGit(sourcePath, ["config", "--local", "--no-includes", "--name-only", "--null", "--list"])).split("\0").filter(Boolean);
+  if (keys.some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch|mirror))$/.test(key))
+    || await localGit(sourcePath, ["rev-parse", "--is-bare-repository"]) !== "true"
+    || await localGit(sourcePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) !== sourcePath
+    || await localGit(sourcePath, ["rev-parse", "--show-object-format"]) !== "sha1"
+    || await localGit(sourcePath, ["rev-parse", "--verify", `${full}^{commit}`]) !== full) throw unavailable();
+  const refs = (await localGit(sourcePath, ["for-each-ref", "--format=%(objectname) %(refname)"])).split("\n").filter(Boolean);
+  if (!refs.length || refs.length > 64 || refs.some(ref => !ref.startsWith(`${full} refs/heads/`) && !ref.startsWith(`${full} refs/tags/`))) throw unavailable();
+  return sourcePath;
+}
 function verifiedReceiptObjectSource(workspace: Workspace, sourcePath: string) {
+  if (originalLocalSource(workspace, sourcePath)) return verifiedOriginalLocalSource(workspace, sourcePath);
   return managedSourcePaths(workspace).includes(sourcePath)
     ? verifiedManagedGitObjectSource(workspace, sourcePath) : verifiedGitCacheSource(workspace, sourcePath);
 }
@@ -102,7 +167,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
   const saved = journal?.metadata?.archivedGitSource;
   const savedPath = saved && typeof saved === "object" && !Array.isArray(saved)
     && typeof (saved as { sourcePath?: unknown }).sourcePath === "string" ? (saved as { sourcePath: string }).sourcePath : null;
-  const sourcePath = savedPath ?? (privatePresent && privateSource ? privateSource : projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0]);
+  let sourcePath = savedPath ?? (privatePresent && privateSource ? privateSource : projectWorkspace?.cwd ?? managedSourcePaths(workspace)[0]);
   if (!sourcePath || !privatePresent && projectWorkspace?.repoUrl && projectWorkspace.repoUrl !== workspace.repoUrl) throw unavailable();
   const [operation] = archived && workspace.closedAt ? await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
@@ -157,9 +222,19 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
   if (!operation || !receipt?.startsWith(prefix) || !receipt.endsWith(").")) return null;
   const abbreviation = receipt.slice(prefix.length, -2);
   if (!/^[a-f0-9]{7,40}$/.test(abbreviation)) throw unavailable();
+  if (!savedPath && managedSourcePaths(workspace).includes(sourcePath)) {
+    const present = await fs.lstat(sourcePath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (!present) {
+      const original = workspace.repoUrl && /^file:/i.test(workspace.repoUrl) ? localRepositoryPath(workspace.repoUrl) : null;
+      if (original && projectWorkspace?.repoUrl === workspace.repoUrl && originalDeletionReceipt(workspace, operation)
+        && await physicalPath(sourcePath) === sourcePath) sourcePath = original;
+    }
+  }
+  if (originalLocalSource(workspace, sourcePath) && (!projectWorkspace || projectWorkspace.repoUrl !== workspace.repoUrl
+    || !originalDeletionReceipt(workspace, operation))) throw unavailable();
   await verifiedReceiptObjectSource(workspace, sourcePath);
-  const commit = await git(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
-  if (!/^[a-f0-9]{40}$/.test(commit)) throw unavailable();
+  const commit = await (originalLocalSource(workspace, sourcePath) ? localGit : git)(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
+  if (!/^[a-f0-9]{40}$/.test(commit) || originalLocalSource(workspace, sourcePath) && commit !== workspace.metadata?.baseRefSha) throw unavailable();
   return { commit, sourcePath, cleanupOperationId: operation.id, recipe: null };
 }
 
@@ -176,6 +251,18 @@ async function authorizeNestedSource(db: Pick<Db, "select">, workspace: Workspac
 }
 
 export async function lockArchivedGitMigrationSources(db: Pick<Db, "select">, workspace: Workspace, source: ArchivedGitMigrationSource) {
+  if (originalLocalSource(workspace, source.sourcePath)) {
+    const [configured] = await db.select({ repoUrl: projectWorkspaces.repoUrl }).from(projectWorkspaces).where(and(
+      eq(projectWorkspaces.companyId, workspace.companyId), eq(projectWorkspaces.id, workspace.projectWorkspaceId!),
+      eq(projectWorkspaces.projectId, workspace.projectId!))).for("share", { noWait: true });
+    const [receipt] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
+      eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.id, source.cleanupOperationId!))).for("share", { noWait: true });
+    if (!configured || configured.repoUrl !== workspace.repoUrl || !receipt || !originalDeletionReceipt(workspace, receipt)
+      || source.commit !== workspace.metadata?.baseRefSha) throw unavailable();
+    const prefix = `Deleted branch ${workspace.branchName} (was `, output = receipt.stdoutExcerpt?.trim();
+    if (!output?.startsWith(prefix) || !output.endsWith(").") || !/^[a-f0-9]{7,40}$/.test(output.slice(prefix.length, -2))
+      || !source.commit.startsWith(output.slice(prefix.length, -2))) throw unavailable();
+  }
   for (const checkout of [...(source.recipe?.contents?.checkouts ?? [])].sort((a, b) => a.source.id.localeCompare(b.source.id))) {
     await authorizeNestedSource(db, workspace, checkout.source, true);
   }
@@ -187,7 +274,9 @@ export async function materializeArchivedGitMigrationSource(input: {
 }) {
   const { workspace, source } = input, cwd = path.join(input.scratch, "retained-git");
   if (!workspace.sourceIssueId || !workspace.repoUrl || !workspace.branchName) throw unavailable();
-  const resolveGitAuth = createIssueGitRemoteAuthProvider(input.db, workspace.companyId, workspace.sourceIssueId);
+  const original = originalLocalSource(workspace, source.sourcePath), runGit = original ? localGit : git;
+  if (original && (source.recipe || !source.cleanupOperationId || source.retainedBranch || source.commit !== workspace.metadata?.baseRefSha)) throw unavailable();
+  const resolveGitAuth = original ? async () => { throw unavailable(); } : createIssueGitRemoteAuthProvider(input.db, workspace.companyId, workspace.sourceIssueId);
   const present = await fs.lstat(source.sourcePath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -199,13 +288,13 @@ export async function materializeArchivedGitMigrationSource(input: {
     if (!source.recipe && !source.cleanupOperationId && source.retainedBranch !== workspace.branchName) throw unavailable();
     const verified = source.recipe ? await verifiedGitCacheSource(workspace, source.sourcePath)
       : await verifiedReceiptObjectSource(workspace, source.sourcePath);
-    if (source.retainedBranch && (await git(verified, ["rev-parse", "--verify", `refs/heads/${source.retainedBranch}^{commit}`])) !== source.commit) throw unavailable();
-    await fs.mkdir(cwd, { mode: 0o700 }); await git(cwd, ["init", "--quiet"]);
+    if (source.retainedBranch && (await runGit(verified, ["rev-parse", "--verify", `refs/heads/${source.retainedBranch}^{commit}`])) !== source.commit) throw unavailable();
+    await fs.mkdir(cwd, { mode: 0o700 }); await runGit(cwd, ["init", "--quiet"]);
     if (source.recipe?.restorePoint) await copyVerifiedGitExcludes(verified, cwd).catch(() => { throw unavailable(); });
     // Fetch objects, never the current working tree of a shared project root.
-    const presentCommit = await git(verified, ["cat-file", "-e", `${source.commit}^{commit}`]).then(() => true, () => false);
+    const presentCommit = await runGit(verified, ["cat-file", "-e", `${source.commit}^{commit}`]).then(() => true, () => false);
     if (presentCommit) {
-      await git(cwd, ["fetch", "--no-tags", "--no-recurse-submodules", "--", verified, source.commit]);
+      await runGit(cwd, ["fetch", "--no-tags", "--no-recurse-submodules", "--", verified, source.commit]);
     } else if (source.recipe?.restorePoint && !source.recipe.restorePoint.headOnRemote) {
       // The archived branch can have been pruned from the base while its
       // encrypted bundle still owns the unpushed commits. Import only that
@@ -213,8 +302,8 @@ export async function materializeArchivedGitMigrationSource(input: {
       // verify and import the saved history below.
       const { manifest } = await loadGitRestorePoint({ storage: input.storage, workspace, ref: source.recipe.restorePoint });
       for (const commit of manifest.prerequisites) {
-        const local = await git(verified, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false);
-        if (local) await git(cwd, ["fetch", "--no-tags", "--no-recurse-submodules", "--", verified, commit]);
+        const local = await runGit(verified, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false);
+        if (local) await runGit(cwd, ["fetch", "--no-tags", "--no-recurse-submodules", "--", verified, commit]);
         else await ensureSavedGitCommit(cwd, workspace.repoUrl, commit, resolveGitAuth);
       }
     }
@@ -224,12 +313,13 @@ export async function materializeArchivedGitMigrationSource(input: {
   }
   if (source.recipe?.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage, workspace,
     ref: source.recipe.restorePoint, repositoryCwd: cwd });
-  await ensureSavedGitCommit(cwd, workspace.repoUrl, source.commit, resolveGitAuth);
-  await git(cwd, ["check-ref-format", `refs/heads/${workspace.branchName}`]);
-  await git(cwd, ["checkout", "--detach", source.commit]);
-  await git(cwd, ["update-ref", `refs/heads/${workspace.branchName}`, source.commit]);
-  await git(cwd, ["symbolic-ref", "HEAD", `refs/heads/${workspace.branchName}`]);
-  await git(cwd, ["config", "remote.origin.url", workspace.repoUrl]);
+  if (original) await runGit(cwd, ["cat-file", "-e", `${source.commit}^{commit}`]);
+  else await ensureSavedGitCommit(cwd, workspace.repoUrl, source.commit, resolveGitAuth);
+  await runGit(cwd, ["check-ref-format", `refs/heads/${workspace.branchName}`]);
+  await runGit(cwd, ["checkout", "--detach", source.commit]);
+  await runGit(cwd, ["update-ref", `refs/heads/${workspace.branchName}`, source.commit]);
+  await runGit(cwd, ["symbolic-ref", "HEAD", `refs/heads/${workspace.branchName}`]);
+  await runGit(cwd, ["config", "remote.origin.url", workspace.repoUrl]);
   if (source.recipe?.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage, workspace,
     ref: source.recipe.restorePoint, repositoryCwd: cwd, worktreePath: cwd, preserveImportedHistory: true });
   const approvedLocalSources = new Set<string>();
@@ -251,9 +341,9 @@ export async function materializeArchivedGitMigrationSource(input: {
   // the original repository and unstaged files remain untouched.
   for (const repository of [cwd, ...(source.recipe?.contents?.checkouts ?? [])
     .map(checkout => path.join(cwd, PROJECT_REPOSITORIES_DIR, checkout.name))]) {
-    const tree = await git(repository, ["write-tree"]);
-    await git(repository, ["read-tree", "--empty"]);
-    await git(repository, ["read-tree", tree]);
+    const tree = await runGit(repository, ["write-tree"]);
+    await runGit(repository, ["read-tree", "--empty"]);
+    await runGit(repository, ["read-tree", tree]);
   }
   return cwd;
 }
