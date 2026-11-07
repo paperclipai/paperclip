@@ -386,12 +386,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     return (
       <div key={agent.id} className="agent-pin-row agent-roster-pin-row group/agent-pin relative">
       <EntityRow
-        title={agent.name}
+        // Match the agent page header: job title (or role) first, name below.
+        title={agent.title || (roleLabels[agent.role] ?? agent.role)}
         titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
         titleClassName="agent-pin-text flex-1"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        subtitle={agent.name}
         to={agentUrl(agent)}
         className="agent-roster-identity group py-3 group-hover/agent-pin:bg-accent/50 group-focus-within/agent-pin:bg-accent/50"
         leading={hasInvalidOrgChain ? (
