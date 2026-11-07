@@ -28,6 +28,9 @@ it.each([startRunnerToolBridge, startOpenCodeMcpBridge])("recovers task scope th
     format: "markdown", body: "Other task body", baseRevisionId: null });
   const foreignId = randomUUID();
   await server.db.insert(issues).values({ id: foreignId, companyId: fixture.foreignCompanyId, title: "Foreign task" });
+  await service.upsertIssueDocument({ issueId: foreignId, key: "notes", title: "Foreign notes",
+    format: "markdown", body: "Foreign company private body", baseRevisionId: null });
+  expect((await service.getIssueDocumentByKey(foreignId, "notes"))?.body).toBe("Foreign company private body");
   const handler = vi.fn((call: Call) => fixture.authority.execute(call));
   const bridge = await start({ tools: fixture.authority.definitions(), handler });
   let id = 0;
@@ -59,7 +62,8 @@ it.each([startRunnerToolBridge, startOpenCodeMcpBridge])("recovers task scope th
     expect(active.content[0]!.text).toContain("silver-wren");
     expect(active.content[0]!.text).not.toContain("Other task body");
     const forbidden = await call("read_task_document", { taskId: foreignId, key: "notes" });
-    expect(forbidden.isError || forbidden.content[0]!.text.includes('"ok":false')).toBeTruthy();
+    expect(JSON.parse(forbidden.content[0]!.text)).toMatchObject({ ok: false, status: 404 });
+    expect(forbidden.content[0]!.text).not.toContain("Foreign company private body");
     expect(forbidden.content[0]!.text).not.toContain("silver-wren");
     expect((await service.getIssueDocumentByKey(fixture.blockerId, "notes"))?.latestRevisionId).toBe(other.document.latestRevisionId);
   } finally { await bridge.close(); }
