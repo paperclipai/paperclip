@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 export const PRIVATE_REFUSAL_MODULES = [
   "manual-private-transfer.ts", "manual-private-handoff.ts", "manual-private-retention.ts", "manual-private-report-assets.ts",
   "private-history.ts", "private-framework-report.ts", "history-budget.ts", "evidence.ts", "redaction.ts",
+  "manual-dispatch-authority.ts", "testops-chat-admission.ts",
 ] as const;
 
 let known: ReadonlySet<string> | undefined;
