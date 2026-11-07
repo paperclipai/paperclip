@@ -102,12 +102,14 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * settled, not one usage receipt was ever journaled for the run (a provider
  * turn journals one as soon as it starts), and its local process either never
  * launched or was verified stopped. Settle it at once, like a pre-provider
- * failure, instead of holding company work. */
+ * failure, instead of holding company work. A usage recorder binds every run
+ * with an empty fence map; only a replaced receipt source (a non-empty map)
+ * shows that provider work began. */
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
   and coalesce((${heartbeatRuns.usageJson}->>'accountingReceiptSequence')::int, 0) = 0
-  and ${heartbeatRuns.usageJson}->'accountingReceiptSourceFences' is null
+  and coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb) = '{}'::jsonb
   and not exists (select 1 from ${runUsageReceipts} journaled_receipt
     where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
