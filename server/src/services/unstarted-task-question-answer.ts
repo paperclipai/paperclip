@@ -9,8 +9,9 @@ import { isUuidLike } from "@paperclipai/shared";
  * A todo task that has never started has no parked execution to protect, so
  * its answer may check the task out from todo.
  *
- * Reads only server-owned rows: the interaction must belong to this task and
- * carry no source run, and the task must still be todo with no startedAt.
+ * Reads only server-owned rows: the interaction must be an answered question
+ * on this task with no source run, and the task must still be todo with no
+ * startedAt. Confirmations and other interaction kinds keep the stricter rule.
  */
 export async function isUnstartedTaskQuestionAnswer(
   db: Db,
@@ -29,6 +30,8 @@ export async function isUnstartedTaskQuestionAnswer(
       eq(issueThreadInteractions.id, interactionId),
       eq(issueThreadInteractions.companyId, input.companyId),
       eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      eq(issueThreadInteractions.status, "answered"),
       isNull(issueThreadInteractions.sourceRunId),
       eq(issues.status, "todo"),
       isNull(issues.startedAt),

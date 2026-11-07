@@ -1872,28 +1872,40 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     issueId: string;
     agentId: string;
     sourceRunId: string | null;
+    rejectedConfirmation?: boolean;
   }) {
     const interactionId = randomUUID();
-    await db.insert(issueThreadInteractions).values({
+    const resolved = {
       id: interactionId,
       companyId: input.companyId,
       issueId: input.issueId,
-      kind: "ask_user_questions",
-      status: "answered",
       continuationPolicy: "wake_assignee",
-      payload: { version: 1, questions: [{ id: "first-task-opening", prompt: "What would you like to do?", selectionMode: "single",
-        required: true, options: [{ id: "interview", label: "Interview me" }] }] },
-      result: { version: 1, answers: [{ questionId: "first-task-opening", optionIds: ["interview"] }] },
       createdByAgentId: input.agentId,
       sourceRunId: input.sourceRunId,
       resolvedByUserId: "responsible-user",
       resolvedAt: new Date(),
-    });
+    };
+    await db.insert(issueThreadInteractions).values(input.rejectedConfirmation
+      ? {
+        ...resolved,
+        kind: "request_confirmation",
+        status: "rejected",
+        payload: { version: 1, prompt: "Approve the plan?" },
+        result: { version: 1, outcome: "rejected", reason: "Needs more work" },
+      }
+      : {
+        ...resolved,
+        kind: "ask_user_questions",
+        status: "answered",
+        payload: { version: 1, questions: [{ id: "first-task-opening", prompt: "What would you like to do?", selectionMode: "single",
+          required: true, options: [{ id: "interview", label: "Interview me" }] }] },
+        result: { version: 1, answers: [{ questionId: "first-task-opening", optionIds: ["interview"] }] },
+      });
     // Mirrors the context question-response delivery queues for an answer.
     return {
       interactionId,
-      interactionKind: "ask_user_questions",
-      interactionStatus: "answered",
+      interactionKind: input.rejectedConfirmation ? "request_confirmation" : "ask_user_questions",
+      interactionStatus: input.rejectedConfirmation ? "rejected" : "answered",
       mutation: "interaction",
       sourceRunId: input.sourceRunId,
       externalChatContinuation: false,
@@ -1936,9 +1948,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   });
 
   it.each([
-    { name: "a started task parked back in todo", startedAt: new Date("2026-01-01T00:00:00.000Z"), askedByRun: false },
-    { name: "a question an agent run asked", startedAt: null, askedByRun: true },
-  ])("keeps cancelling an answer continuation for $name", async ({ startedAt, askedByRun }) => {
+    { name: "a started task parked back in todo", startedAt: new Date("2026-01-01T00:00:00.000Z"), askedByRun: false, rejectedConfirmation: false },
+    { name: "a question an agent run asked", startedAt: null, askedByRun: true, rejectedConfirmation: false },
+    { name: "a rejected confirmation no run asked", startedAt: null, askedByRun: false, rejectedConfirmation: true },
+  ])("keeps cancelling an answer continuation for $name", async ({ startedAt, askedByRun, rejectedConfirmation }) => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Parked or agent-asked", status: "todo", priority: "medium",
@@ -1947,7 +1960,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       ? await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment", status: "succeeded",
         startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId } }).returning()
       : [null];
-    const contextExtras = await seedAnsweredQuestion({ companyId, issueId, agentId, sourceRunId: sourceRun?.id ?? null });
+    const contextExtras = await seedAnsweredQuestion({ companyId, issueId, agentId, sourceRunId: sourceRun?.id ?? null,
+      rejectedConfirmation });
     const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_commented",
       invocationSource: "automation", contextExtras });
 
