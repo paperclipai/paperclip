@@ -83,6 +83,22 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
+## ACPX checkpoints after a rejected turn start
+
+A matching `turn.start` response with `SESSION_RESUME_REQUIRED` and
+`retryable: true` can retain the exact saved conversation. The session must have
+no active turn, pending request or buffered event. The saved identity must still
+match, with no retained work event or active goal. A pending `session.resumed`
+notification is retained for the normal drain; it does not start provider work. The Runner first reaps
+the sidecar, then confirms the provider lifetime fence. It stores this boundary
+as `prepared`, with exit confirmation, before the normal drain and suspension
+make it reusable. The scheduled recovery keeps its existing attempt limit.
+
+Unknown acceptance, malformed replies, other rejection codes, pending work and
+unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
+An arbitrary `closed` provider state stays closed. This path does not establish
+recovery for a Runner killed during an accepted turn.
+
 ## Settled ACPX sessions across a Runner upgrade
 
 Saved ACPX provider state records the digest of the launch profile that wrote

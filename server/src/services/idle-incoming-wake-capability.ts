@@ -5,8 +5,8 @@ export interface IdleIncomingWakeCapability {
   ownerId: string;
   generation: string;
   routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "slack-broker-events-v1" | "mcp-oauth-http-v1")[];
-  mcpOAuthProof?: { version: 1; challenge: string };
   apiKeyProof?: { version: 1; challenge: string };
+  mcpOAuthProof?: { version: 1; challenge: string };
   githubBroker?: { instanceId: string; bindingsFingerprint: string };
   slackBroker?: SlackConfiguredCoverage;
 }
@@ -97,8 +97,8 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
   if (parsed.incomingWake) {
     Object.freeze(parsed.incomingWake.routes);
     if (parsed.incomingWake.slackBroker) parsed.incomingWake.slackBroker = parseSlackConfiguredCoverage(parsed.incomingWake.slackBroker);
-    if (parsed.incomingWake.mcpOAuthProof) Object.freeze(parsed.incomingWake.mcpOAuthProof);
     if (parsed.incomingWake.apiKeyProof) Object.freeze(parsed.incomingWake.apiKeyProof);
+    if (parsed.incomingWake.mcpOAuthProof) Object.freeze(parsed.incomingWake.mcpOAuthProof);
     if (parsed.incomingWake.githubBroker)
       Object.freeze(parsed.incomingWake.githubBroker);
     Object.freeze(parsed.incomingWake);

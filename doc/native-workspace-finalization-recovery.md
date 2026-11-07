@@ -632,7 +632,10 @@ It records the exact receipt on the retained recovery action as
 the bounded recovery window. A task Retry waiting on that saved result reports
 `workspace_owner_stop_required` and does not offer another Retry, because another
 click cannot release the receipt. The board confirms the stop through the same
-`resume-workspace-finalization` route. The confirmation must name the receipt that
+`resume-workspace-finalization` route. The task chat shows the same single
+**Confirm the previous server stopped** control in place of the retained file
+recovery controls while this hold is active, with the recorded receipt token, to
+roles that hold `runtime:confirm_owner_stop`. The confirmation must name the receipt that
 is still on the run. It clears only that receipt and returns the existing recovery
 to the worker (a spent budget gets one new generation). It accepts no result and
 starts no agent turn. The waiting Retry then continues through its normal path.

@@ -1,3 +1,4 @@
+import { assertMcpClientMirrorEnvelope } from "./public-mcp/client-mirror-wire.js";
 import { providerRetryAt } from "./provider-retry-after.js";
 import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
@@ -35,7 +36,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
@@ -126,6 +127,8 @@ type ConnectorResponse = {
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
   "slack-events": "/v1/connector/slack-events",
   "slack-forms": "/v1/connector/slack-forms",
   "github-app": "/v1/connector/github-apps",
@@ -329,12 +332,16 @@ export function createPaperclipCloudConnector(input: {
       request: signRequest(payload, signingKey),
       ...(secret ? { [secret.field]: secret.value } : {}),
     };
+    const encodedBody = JSON.stringify(body);
+    if (operation === "mcp-client-mirror" && secret?.field === "binding") {
+      assertMcpClientMirrorEnvelope(body.request, secret.value, encodedBody);
+    }
     let response: Response;
     try {
       response = await request(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify(body),
+        body: encodedBody,
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
@@ -397,6 +404,14 @@ export function createPaperclipCloudConnector(input: {
 
   return {
     instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
+    async syncMcpClientMirror(serialized: string): Promise<unknown> {
+      const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
+      return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;
+    },
+    async syncMcpRevocationIndex(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
+      const response = await call("mcp-revocation-index", values, { field: "binding", value: values.serialized });
+      return (response as ConnectorResponse & { mcpRevocationIndex?: unknown }).mcpRevocationIndex;
+    },
     eventWakeVersion: () => eventWakeVersion,
     async slackEventsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });

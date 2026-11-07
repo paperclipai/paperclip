@@ -152,6 +152,16 @@ selection remains blocked until guarded retirement/recovery; it does not imply
 that a cold launch is safe. Confirmed claim or physical cleanup clears only the
 matching proof. Raw tickets are never stored in this record.
 
+When graceful host eviction has saved a suspended session and Core has recorded
+physical stop, a later allocation can use ordinary `resumeFrom` recovery. Core
+checks the old task, source identity and current scope before detaching a cached
+released controller. Cached and detached paths then use the same retained-state
+checks. Missing state, a foreign identity or an unsettled checkpoint refuses
+continuation; Core does not replace the provider session on that refusal. This
+covers eviction before allocation and stopped-task inspection during `describe`.
+A later loss during claim still needs reconciliation. Abrupt process death without
+a suspended checkpoint remains a separate recovery path.
+
 These Core paths do not advertise the capability or opt ordinary tasks into a
 private host channel. Existing durable lease and plugin-worker idle checks still
 apply; retaining a released Runner does not by itself make a tenant safe to sleep.
@@ -216,6 +226,16 @@ Codex App Server and `acpxSourceRecoveryVersion: 1` for ACPX. It can advertise
 either, both, or neither. Each field means the host can verify and restore a
 stopped source for that provider without starting another turn. Core requires
 the field for the selected provider and verifies the run’s eligibility.
+
+Core admission recognizes native Codex and qualified Claude through ACPX. ACPX
+Codex is a different provider and cannot use either attestation. Claude admission
+checks both saved and current profiles against Runner’s qualified catalog;
+decodable historical profiles do not authorize recovery. Preparation, submission
+and attachment retain that provider binding. Runner’s launch factory normalizes
+Claude’s model, mode, permissions, effort and runtime content before Core compares
+them with the saved source or current owner. Core revalidates the claim and
+profiles after worker replies. This admission does not activate executor recovery.
+It grants no replacement authority or exception to deterministic recovery refusals.
 
 The authenticated request belongs to
 the current run while `prepare` and `submit` carry the predecessor Runner identity.
