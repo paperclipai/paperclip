@@ -305,6 +305,7 @@ import {
 } from "./conversation-continuation.js";
 
 import {
+  LEGACY_DISPOSITION_SUPPRESSION_KEY,
   settleInterruptedNativeBootstrap,
   settleCancelledLegacyPreparation,
 } from "./legacy-execution-recovery.js";
@@ -2891,6 +2892,11 @@ export function heartbeatService(
           const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
             finishedAt: new Date(), errorCode: "legacy_disposition_repair_suppressed",
             error: `Disposition repair suppressed: ${repairBlock}`,
+            ...(run.runtimeMode === "legacy" && !legacyAdapterEntered && !nativeDispatchStarted && !nativeOwnershipHeld && run.controllerBootId
+              ? { runnerProfileJson: { [LEGACY_DISPOSITION_SUPPRESSION_KEY]: {
+                version: 1, runId: run.id, controllerBootId: legacyControllerBootId,
+                providerDispatchStarted: false, reason: repairBlock,
+              } } } : {}),
           });
           if (cancelled.updated) {
             await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: new Date(), error: repairBlock });
