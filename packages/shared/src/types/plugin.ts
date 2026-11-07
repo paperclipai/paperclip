@@ -923,6 +923,12 @@ export interface PluginCompanySettings {
 export interface PluginEntityQuery {
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
+  /** Optional filter by scope kind. */
+  scopeKind?: PluginStateScopeKind;
+  /** Optional filter by scope ID. */
+  scopeId?: string;
+  /** Optional filter by company ID. */
+  companyId?: string | null;
   /** Optional filter by external system identifier. */
   externalId?: string;
   /** Maximum number of records to return. Defaults to 100. */
@@ -943,6 +949,8 @@ export interface PluginEntityRecord {
   id: string;
   /** FK to `plugins.id`. */
   pluginId: string;
+  /** Company scope — NULL for instance-level entities. */
+  companyId: string | null;
   /** Plugin-defined entity type. */
   entityType: string;
   /** Scope where this entity lives. */

@@ -1,7 +1,7 @@
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { isDeepStrictEqual } from "node:util";
 import { writePluginJobChange } from "./plugin-job-work-notifications.js";
-import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
+import { asc, eq, isNull, ne, sql, and, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
@@ -541,6 +541,35 @@ export function pluginRegistryService(db: Db) {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
+      if (query?.scopeKind) conditions.push(eq(pluginEntities.scopeKind, query.scopeKind));
+      if (query?.scopeId !== undefined) {
+        conditions.push(query.scopeId === null ? isNull(pluginEntities.scopeId) : eq(pluginEntities.scopeId, query.scopeId));
+      }
+      if (query?.companyId !== undefined) {
+        if (query.companyId === null) {
+          conditions.push(isNull(pluginEntities.companyId));
+        } else {
+          const companyCond = or(
+            eq(pluginEntities.companyId, query.companyId),
+            and(
+              isNull(pluginEntities.companyId),
+              eq(pluginEntities.scopeKind, "company"),
+              eq(pluginEntities.scopeId, query.companyId),
+            ),
+          );
+          if (companyCond) conditions.push(companyCond);
+        }
+      } else if (query?.scopeKind === "company" && query?.scopeId) {
+        const companyCond = or(
+          eq(pluginEntities.companyId, query.scopeId),
+          and(
+            isNull(pluginEntities.companyId),
+            eq(pluginEntities.scopeKind, "company"),
+            eq(pluginEntities.scopeId, query.scopeId),
+          ),
+        );
+        if (companyCond) conditions.push(companyCond);
+      }
 
       return db
         .select()
@@ -575,7 +604,14 @@ export function pluginRegistryService(db: Db) {
       const companyIdPredicate =
         companyId == null
           ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, companyId);
+          : or(
+              eq(pluginEntities.companyId, companyId),
+              and(
+                isNull(pluginEntities.companyId),
+                eq(pluginEntities.scopeKind, "company"),
+                eq(pluginEntities.scopeId, companyId),
+              ),
+            );
       return db
         .select()
         .from(pluginEntities)
@@ -610,10 +646,23 @@ export function pluginRegistryService(db: Db) {
       // may share the same (pluginId, entityType, externalId) tuple, so the
       // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
       // otherwise — to avoid returning and overwriting another tenant's row.
+      const resolvedCompanyId =
+        input.companyId !== undefined
+          ? input.companyId
+          : (input as any).scopeKind === "company" && (input as any).scopeId
+            ? (input as any).scopeId
+            : null;
       const companyIdPredicate =
-        input.companyId == null
+        resolvedCompanyId == null
           ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, input.companyId);
+          : or(
+              eq(pluginEntities.companyId, resolvedCompanyId),
+              and(
+                isNull(pluginEntities.companyId),
+                eq(pluginEntities.scopeKind, "company"),
+                eq(pluginEntities.scopeId, resolvedCompanyId),
+              ),
+            );
       const existing = await db
         .select()
         .from(pluginEntities)
@@ -632,6 +681,7 @@ export function pluginRegistryService(db: Db) {
           .update(pluginEntities)
           .set({
             ...input,
+            companyId: resolvedCompanyId,
             updatedAt: new Date(),
           })
           .where(eq(pluginEntities.id, existing.id))
@@ -643,6 +693,7 @@ export function pluginRegistryService(db: Db) {
         .insert(pluginEntities)
         .values({
           ...input,
+          companyId: resolvedCompanyId,
           pluginId,
         } as any)
         .returning()

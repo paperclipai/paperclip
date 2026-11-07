@@ -532,6 +532,9 @@ async function buildPluginSdk() {
 }
 
 async function getNativeRunnerRequired(): Promise<boolean> {
+  if (process.platform === "win32") {
+    return false;
+  }
   const status = await runPnpm(
     [
       "--silent",

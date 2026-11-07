@@ -306,6 +306,8 @@ export interface PluginEntityUpsert {
   scopeKind: PluginStateScopeKind;
   /** Optional scope ID. */
   scopeId?: string;
+  /** Optional company scope ID. */
+  companyId?: string | null;
   /** External identifier in the remote system (e.g. Linear issue ID). */
   externalId?: string;
   /** Human-readable title for display in the Paperclip UI. */
@@ -324,6 +326,8 @@ export interface PluginEntityUpsert {
 export interface PluginEntityRecord {
   /** UUID primary key. */
   id: string;
+  /** Company ID, if any. */
+  companyId?: string | null;
   /** Plugin-defined entity type. */
   entityType: string;
   /** Scope kind. */
@@ -348,6 +352,8 @@ export interface PluginEntityRecord {
  * Query parameters for `ctx.entities.list()`.
  */
 export interface PluginEntityQuery {
+  /** Filter by company ID. */
+  companyId?: string | null;
   /** Filter by entity type. */
   entityType?: string;
   /** Filter by scope kind. */

@@ -525,4 +525,179 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as { cause?: { code?: string } }).cause?.code).toBe("23505");
   });
+
+  it("pluginRegistryService.listEntities scopes by companyId and scopeId — never returns another company's records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+      entityType: "lead",
+      externalId: "lead-1",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+      entityType: "lead",
+      externalId: "lead-2",
+      title: "Lead B",
+      status: "open",
+      data: { name: "Bob" },
+    });
+
+    const listA = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.externalId).toBe("lead-1");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    const listB = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.externalId).toBe("lead-2");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
+
+  it("resolves and backfills legacy records with NULL company_id during list and upsert", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    // Seed a legacy row where companyId is NULL, but scopeKind = 'company' and scopeId = companyA
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead",
+      status: "open",
+      data: { name: "Legacy" },
+    });
+
+    // 1. Querying by companyId or scopeId should find the legacy row
+    const list = await registry.listEntities(pluginId, { companyId: companyA });
+    expect(list).toHaveLength(1);
+    expect(list[0]?.externalId).toBe("legacy-lead-1");
+
+    // 2. Querying by externalId with companyA should find the legacy row
+    const legacyByExt = await registry.getEntityByExternalId(pluginId, "lead", "legacy-lead-1", companyA);
+    expect(legacyByExt).not.toBeNull();
+    expect(legacyByExt?.externalId).toBe("legacy-lead-1");
+
+    // 3. Upserting the legacy row should update it and backfill companyId without creating duplicates
+    const updated = await registry.upsertEntity(pluginId, {
+      companyId: companyA,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead Updated",
+      status: "qualified",
+      data: { name: "Legacy", updated: true },
+    });
+    expect(updated?.id).toBe(list[0]?.id);
+    expect(updated?.companyId).toBe(companyA);
+    expect(updated?.title).toBe("Legacy Lead Updated");
+
+    const all = await db.select().from(pluginEntities);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.companyId).toBe(companyA);
+  });
+
+  it("buildHostServices entities.upsert and entities.list isolate entities between two companies", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    // Company A upserts an entity with scopeKind company and scopeId companyA
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "shared-lead",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    // Company B upserts an entity with the same externalId under companyB
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "shared-lead",
+      title: "Lead B",
+      status: "qualified",
+      data: { name: "Bob" },
+    });
+
+    // Listing for companyA should return only Lead A
+    const listA = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.title).toBe("Lead A");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    // Listing for companyB should return only Lead B
+    const listB = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.title).toBe("Lead B");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
+  it("buildHostServices entities.list with companyId: null returns only instance-level entities and excludes company records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "instance",
+      companyId: null,
+      externalId: "global-conf",
+      title: "Global Config",
+      status: "active",
+      data: { key: "global" },
+    });
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "company-conf",
+      title: "Company Config",
+      status: "active",
+      data: { key: "company" },
+    });
+
+    const instanceList = await services.entities.list({
+      entityType: "system-config",
+      companyId: null,
+    });
+    expect(instanceList).toHaveLength(1);
+    expect(instanceList[0]?.title).toBe("Global Config");
+    expect(instanceList[0]?.companyId).toBeNull();
+  });
 });
