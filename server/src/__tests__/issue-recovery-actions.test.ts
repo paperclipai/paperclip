@@ -1101,6 +1101,74 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result?.status).toBe("cancelled");
   });
 
+  it("serializes recovery with child creation before locking the company counter (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId, assigneeAgentId: coderId, prefix, issueNumber: 916, withExecutionRun: true,
+    });
+    const childDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const probeDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    let ready!: () => void;
+    let release!: () => void;
+    let holderPid = 0;
+    let allowChildCreation = false;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // Pause at createChild's parent lock, before create updates issueCounter.
+    const childCreation = childDb.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
+      await tx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.id, routineIssue.id)).for("update");
+      holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      ready();
+      await gate;
+      if (!allowChildCreation) return null;
+      return issueService(tx as unknown as ReturnType<typeof createDb>).createChild(routineIssue.id, {
+        title: "Concurrent recovery blocker", status: "todo", priority: "medium", blockParentUntilDone: true,
+      });
+    });
+    await locked;
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const escalation = recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue, previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(), agentId: coderId, status: "failed", error: "adapter connection refused",
+        errorCode: "adapter_failed", contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup", ...LATEST_RUN_TIMES,
+      } as const,
+    });
+    void escalation.catch(() => {});
+    let child: Awaited<typeof childCreation> = null;
+    try {
+      await vi.waitFor(async () => {
+        const [state] = await probeDb.execute<{ waiting: boolean }>(sql`
+          select exists (select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and ${holderPid} = any(pg_blocking_pids(pid))) as waiting
+        `);
+        expect(state!.waiting).toBe(true);
+      }, { timeout: 5_000, interval: 20 });
+      const companyRowFree = await probeDb.transaction(async (tx) => {
+        await tx.select({ id: companies.id }).from(companies)
+          .where(eq(companies.id, companyId)).for("update", { noWait: true });
+        return true;
+      }).catch(() => false);
+      expect(companyRowFree).toBe(true);
+      allowChildCreation = true;
+    } finally {
+      release();
+      child = await childCreation;
+      await escalation;
+    }
+    expect(child?.parentBlockerAdded).toBe(true);
+    const [parent] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(parent?.status).not.toBe("cancelled");
+    const blockers = await db.select().from(issueRelations).where(and(
+      eq(issueRelations.relatedIssueId, routineIssue.id), eq(issueRelations.type, "blocks"),
+    ));
+    expect(blockers.map((relation) => relation.issueId)).toEqual([child!.issue.id]);
+  });
+
   it("retries routine recovery after company lock contention instead of dropping the candidate", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineIssue = await seedRoutineExecutionIssue({

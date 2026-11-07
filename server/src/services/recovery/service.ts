@@ -4339,6 +4339,10 @@ export function recoveryService(
           eq(routines.companyId, input.issue.companyId),
           eq(routines.id, originRoutineId),
         )).for("share").then((rows) => rows[0] ?? null);
+        // Child creation takes this advisory lock before the parent row and
+        // the company counter update. Join that order before locking the
+        // company, or recovery and child creation can wait on each other.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${input.issue.companyId}`}, 0))`);
         // A company pause/archive can already hold this row before cascading
         // to routines. Do not wait in the reverse order: reject this attempt
         // so the recovery worker retains the candidate with its retry backoff.
