@@ -6,8 +6,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiConnectionAccountIdentity, AiManagedConnectionSummary, ConnectionGrant, ToolConnection } from "@paperclipai/shared";
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user" } })) } }));
 
 const account: AiManagedConnectionSummary = {
   id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",
@@ -59,9 +61,9 @@ afterEach(async () => {
 
 async function render(value = account, selectedGrant = grant, completePanel = false) {
   await act(async () => {
-    root.render(<QueryClientProvider client={client}>{completePanel
+    root.render(<QueryClientProvider client={client}><TooltipProvider>{completePanel
       ? <ManagedAiConnectionDetails connection={{ id: value.id, companyId: value.companyId } as ToolConnection} />
-      : <AiConnectionAccountDetails account={value} grant={selectedGrant} />}</QueryClientProvider>);
+      : <AiConnectionAccountDetails account={value} grant={selectedGrant} />}</TooltipProvider></QueryClientProvider>);
   });
   await act(async () => { await vi.advanceTimersByTimeAsync(10); });
   await act(async () => { await vi.advanceTimersByTimeAsync(10); });
@@ -79,7 +81,7 @@ it("shows the provider email and organization separately from the Paperclip owne
 it("explains profile permission denial while preserving connected account controls", async () => {
   observation = { ...known, status: "unavailable", accountLabel: null, organizationLabel: null, errorCode: "permission_denied", message: "Anthropic did not permit this connection to read the account email." };
   await render(account, grant, true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).toContain("Reconnect");
   expect(host.textContent).toContain("did not permit");
   expect(host.textContent).not.toContain("avery@example.test");
@@ -91,12 +93,12 @@ it("explains profile permission denial while preserving connected account contro
 it("keeps maintenance controls visible during a stalled lookup and recovers only the identity request", async () => {
   blocked = true;
   await render(account, grant, true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).toContain("Reconnect");
   expect(host.textContent).toContain("Checking account details…");
   await act(async () => { await vi.advanceTimersByTimeAsync(20_001); });
   expect(signals[0].aborted).toBe(true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).not.toContain("Checking account details…");
   const ordinaryCalls = fetchMock.mock.calls.length - identityCalls().length;
   blocked = false;

@@ -1,3 +1,4 @@
+import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -2617,6 +2618,7 @@ function createSandboxEnvironmentDriver(
         ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
       }, resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000);
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
+        if (resumeReplyConfirmsAbsence(resumed)) throw new RetainedSandboxAbsentError();
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");
       }
       return resumed;
