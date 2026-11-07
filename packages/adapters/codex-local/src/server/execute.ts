@@ -775,7 +775,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome && !runtimeSkillDigest ? null : effectiveCodexHome,
+    codexHome: configuredCodexHome && !configuredHomeIsManaged && !runtimeSkillDigest ? null : effectiveCodexHome,
   });
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
