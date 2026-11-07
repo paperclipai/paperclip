@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSessionFingerprint,
+  buildSessionKey,
   finalizeLaunchEnvironment,
   projectAcpxInheritedHostEnvironment,
 } from "./execute.js";
@@ -57,6 +58,18 @@ describe("acpx identity split and launch environment", () => {
       buildSessionFingerprint({ ...SAMPLE_FINGERPRINT_IDENTITY, taskKey: "t" });
     }
     void _assertOnlyIdentity;
+  });
+
+  it("test_session_key_changes_with_conversation_generation_only", () => {
+    const identity = { companyId: "c", agentId: "a", taskKey: "t" };
+    const fingerprint = buildSessionFingerprint(SAMPLE_FINGERPRINT_IDENTITY);
+    const legacy = buildSessionKey(identity, fingerprint);
+    expect(legacy).toBe(`paperclip:c:a:t:${fingerprint}`);
+    expect(buildSessionKey({ ...identity, conversationGeneration: 0 }, fingerprint)).toBe(legacy);
+    const first = buildSessionKey({ ...identity, conversationGeneration: 1 }, fingerprint);
+    expect(first).not.toBe(legacy);
+    expect(buildSessionKey({ ...identity, conversationGeneration: 1 }, fingerprint)).toBe(first);
+    expect(buildSessionKey({ ...identity, conversationGeneration: 2 }, fingerprint)).not.toBe(first);
   });
 
   it("test_finalize_launch_environment_is_sole_constructor_of_branded_environment", () => {
