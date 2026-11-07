@@ -1455,14 +1455,22 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     expect(error.defaultBranch).toBeNull();
   });
 
-  it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
-    const repoRoot = await createTempRepo();
+  describe("a managed worktree directory that git no longer registers", () => {
     const branchName = "PAP-447-add-worktree-support";
-    const poisonedPath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
-    await fs.mkdir(poisonedPath, { recursive: true });
 
-    await expect(
-      realizeExecutionWorkspace({
+    async function createStaleManagedWorktree(repoRoot: string) {
+      const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+      await execFileAsync("git", ["worktree", "add", "-b", branchName, stalePath, "HEAD"], { cwd: repoRoot });
+      await fs.writeFile(path.join(stalePath, "committed.txt"), "kept\n");
+      await execFileAsync("git", ["add", "committed.txt"], { cwd: stalePath });
+      await execFileAsync("git", ["commit", "-m", "task work"], { cwd: stalePath });
+      await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "lost\n");
+      await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
+      return stalePath;
+    }
+
+    function realizeForTask(repoRoot: string, recorder?: WorkspaceOperationRecorder) {
+      return realizeExecutionWorkspace({
         base: {
           baseCwd: repoRoot,
           source: "project_primary",
@@ -1487,8 +1495,78 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
           name: "Codex Coder",
           companyId: "company-1",
         },
-      }),
-    ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
+        recorder,
+      });
+    }
+
+    async function quarantinedCopies(stalePath: string) {
+      const quarantineRoot = path.join(await fs.realpath(path.dirname(stalePath)), ".quarantine");
+      const names = await fs.readdir(quarantineRoot);
+      return names.map((name) => path.join(quarantineRoot, name));
+    }
+
+    it("is recreated on the task branch after its directory is moved aside", async () => {
+      const repoRoot = await createTempRepo();
+      const stalePath = await createStaleManagedWorktree(repoRoot);
+
+      const realized = await realizeForTask(repoRoot);
+
+      expect(await fs.realpath(realized.worktreePath!)).toBe(await fs.realpath(stalePath));
+      expect(realized.branchName).toBe(branchName);
+      await expect(fs.readFile(path.join(stalePath, "committed.txt"), "utf8")).resolves.toBe("kept\n");
+      await expect(fs.access(path.join(stalePath, "uncommitted.txt"))).rejects.toThrow();
+      const [quarantined, ...others] = await quarantinedCopies(stalePath);
+      expect(others).toEqual([]);
+      expect(path.basename(quarantined!)).toMatch(new RegExp(`^${branchName}-`));
+      await expect(fs.readFile(path.join(quarantined!, "uncommitted.txt"), "utf8")).resolves.toBe("lost\n");
+      expect(realized.warnings).toContain(`Moved unregistered worktree directory ${await fs.realpath(stalePath)} to ${quarantined}`);
+      const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
+      expect(stdout).toContain(await fs.realpath(stalePath));
+    });
+
+    it("is moved aside inside the recorded cleanup operation", async () => {
+      const repoRoot = await createTempRepo();
+      const stalePath = await createStaleManagedWorktree(repoRoot);
+      const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+      const directoryExistedWhenRecorded: boolean[] = [];
+      const observingRecorder: WorkspaceOperationRecorder = {
+        ...recorder,
+        recordOperation: async (input) => {
+          if (input.metadata?.cleanupAction === "quarantine_unregistered_worktree_directory") {
+            directoryExistedWhenRecorded.push(await fs.access(path.join(stalePath, "uncommitted.txt")).then(() => true, () => false));
+          }
+          return recorder.recordOperation(input);
+        },
+      };
+
+      await realizeForTask(repoRoot, observingRecorder);
+
+      expect(directoryExistedWhenRecorded).toEqual([true]);
+      const [quarantined] = await quarantinedCopies(stalePath);
+      const cleanups = operations.filter((operation) => operation.metadata?.cleanupAction === "quarantine_unregistered_worktree_directory");
+      expect(cleanups).toHaveLength(1);
+      expect(cleanups[0]!.metadata?.quarantinePath).toBe(quarantined);
+      expect(cleanups[0]!.result.system).toBe(`Moved unregistered worktree directory ${await fs.realpath(stalePath)} to ${quarantined}\n`);
+    });
+
+    it("is never removed when the directory is an unrelated clone", async () => {
+      const repoRoot = await createTempRepo();
+      const clonePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+      await fs.mkdir(clonePath, { recursive: true });
+      await execFileAsync("git", ["init"], { cwd: clonePath });
+      await execFileAsync("git", ["config", "user.email", "test@example.com"], { cwd: clonePath });
+      await execFileAsync("git", ["config", "user.name", "Test"], { cwd: clonePath });
+      await fs.writeFile(path.join(clonePath, "own-history.txt"), "mine\n");
+      await execFileAsync("git", ["add", "own-history.txt"], { cwd: clonePath });
+      await execFileAsync("git", ["commit", "-m", "unrelated history"], { cwd: clonePath });
+
+      await expect(realizeForTask(repoRoot)).rejects.toThrow(/not a reusable git worktree/);
+
+      await expect(fs.access(path.join(path.dirname(clonePath), ".quarantine"))).rejects.toThrow();
+      await expect(fs.readFile(path.join(clonePath, "own-history.txt"), "utf8")).resolves.toBe("mine\n");
+      const { stdout } = await execFileAsync("git", ["log", "--format=%s"], { cwd: clonePath });
+      expect(stdout.trim()).toBe("unrelated history");
+    });
   });
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
@@ -9796,6 +9874,25 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
       recordedBranchOwnership,
     });
   }
+
+  it("moves aside an unregistered worktree of a long existing branch within the file name limit", async () => {
+    const repoRoot = await createTempRepo();
+    const existingBranch = "b".repeat(240);
+    await execFileAsync("git", ["branch", existingBranch], { cwd: repoRoot });
+    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", existingBranch);
+    await execFileAsync("git", ["worktree", "add", stalePath, existingBranch], { cwd: repoRoot });
+    await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "kept aside\n");
+    await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
+
+    const realized = await realizeExistingBranch(repoRoot, existingBranch);
+
+    expect(realized.branchName).toBe(existingBranch);
+    const quarantineRoot = path.join(await fs.realpath(path.dirname(stalePath)), ".quarantine");
+    const [quarantined, ...others] = await fs.readdir(quarantineRoot);
+    expect(others).toEqual([]);
+    expect(Buffer.byteLength(quarantined!)).toBeLessThanOrEqual(255);
+    await expect(fs.readFile(path.join(quarantineRoot, quarantined!, "uncommitted.txt"), "utf8")).resolves.toBe("kept aside\n");
+  });
 
   function restoreExistingBranch(
     repoRoot: string,

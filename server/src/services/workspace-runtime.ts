@@ -2829,6 +2829,34 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+function quarantineDirectoryName(worktreeName: string, movedAt: Date): string {
+  const suffix = `-${movedAt.toISOString().replace(/[:.]/g, "-")}`;
+  const limit = 255 - Buffer.byteLength(suffix);
+  let name = "";
+  for (const character of worktreeName) {
+    if (Buffer.byteLength(name + character) > limit) break;
+    name += character;
+  }
+  return `${name}${suffix}`;
+}
+
+async function isLeftoverLinkedWorktreeOf(repoRoot: string, worktreePath: string): Promise<boolean> {
+  const gitEntry = path.join(worktreePath, ".git");
+  const entryStats = await fs.lstat(gitEntry).catch(() => null);
+  if (!entryStats?.isFile()) return false;
+  const gitdirLine = /^gitdir:\s*(.+)$/m.exec(await fs.readFile(gitEntry, "utf8").catch(() => ""));
+  if (!gitdirLine?.[1]) return false;
+  const linkedGitDir = path.resolve(worktreePath, gitdirLine[1].trim());
+  const commonDirRaw = await runGit(["rev-parse", "--git-common-dir"], repoRoot).catch(() => null);
+  if (!commonDirRaw) return false;
+  const commonDir = path.resolve(repoRoot, commonDirRaw);
+  const commonDirs = [commonDir, await resolvePathForWorktreeComparison(commonDir)];
+  return commonDirs.some((dir) => {
+    const relative = path.relative(path.join(dir, "worktrees"), linkedGitDir);
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+}
+
 async function resolvePathForWorktreeComparison(value: string): Promise<string> {
   const resolved = path.resolve(value);
   return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
@@ -3586,28 +3614,63 @@ export async function realizeExecutionWorkspace(input: {
     return { validation, branchName, warnings: [] };
   }
 
-  const existingWorktree = await directoryExists(worktreePath);
-  if (existingWorktree) {
+  if (await directoryExists(worktreePath)) {
     const reusable = await validateReusableWorktree(worktreePath);
     if (reusable.validation?.valid) {
       return await reuseExistingWorktree(worktreePath, reusable.branchName, reusable.warnings);
     }
     const validation = reusable.validation;
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    if (requestedExistingBranch) {
-      throw new WorkspaceRuntimeValidationFailure(
-        `Workspace strategy pins existing branch "${requestedExistingBranch}", but the worktree path "${worktreePath}" already exists and is not a reusable checkout of that branch${reason}. Repair or remove that worktree, then retry; exact-branch realization never reconciles it onto another branch.`,
-        {
-          workspaceValidation: {
-            reason: "existing_branch_worktree_not_reusable",
-            reasonCode: validation && !validation.valid ? validation.reasonCode : null,
-            requestedExistingBranch,
-            worktreePath,
-          },
-        },
+    if (
+      validation
+      && !validation.valid
+      && validation.reasonCode === "not_registered"
+      && await isLeftoverLinkedWorktreeOf(repoRoot, worktreePath)
+    ) {
+      const quarantinePath = path.join(
+        path.dirname(worktreePath),
+        ".quarantine",
+        quarantineDirectoryName(path.basename(worktreePath), new Date()),
       );
+      const moveAside = async () => {
+        await fs.mkdir(path.dirname(quarantinePath), { recursive: true });
+        await fs.rename(worktreePath, quarantinePath);
+      };
+      const message = `Moved unregistered worktree directory ${worktreePath} to ${quarantinePath}`;
+      if (input.recorder) {
+        await input.recorder.recordOperation({
+          phase: "worktree_prepare",
+          cwd: repoRoot,
+          metadata: { repoRoot, worktreePath, branchName, quarantinePath, cleanupAction: "quarantine_unregistered_worktree_directory" },
+          run: async () => {
+            await moveAside();
+            return {
+              status: "succeeded",
+              exitCode: 0,
+              system: `${message}\n`,
+            };
+          },
+        });
+      } else {
+        await moveAside();
+      }
+      baseRefreshWarnings.push(message);
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      if (requestedExistingBranch) {
+        throw new WorkspaceRuntimeValidationFailure(
+          `Workspace strategy pins existing branch "${requestedExistingBranch}", but the worktree path "${worktreePath}" already exists and is not a reusable checkout of that branch${reason}. Repair or remove that worktree, then retry; exact-branch realization never reconciles it onto another branch.`,
+          {
+            workspaceValidation: {
+              reason: "existing_branch_worktree_not_reusable",
+              reasonCode: validation && !validation.valid ? validation.reasonCode : null,
+              requestedExistingBranch,
+              worktreePath,
+            },
+          },
+        );
+      }
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
     }
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
