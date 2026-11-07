@@ -25,7 +25,7 @@ import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
 import { resolveCodexCommand } from "../drivers/codex/codex-command.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
-import { readLocalProcessStartedAt } from "./linux-process-start.js";
+import { readLinuxProcessStartedAt } from "./linux-process-start.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -117,6 +117,49 @@ const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
+function readLocalProcessStartedAt(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      return readLinuxProcessStartedAt(pid);
+    }
+    if (
+      ["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(
+        process.platform,
+      )
+    ) {
+      const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      }).trim();
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    if (process.platform === "win32") {
+      const script = [
+        `$target = Get-Process -Id ${pid} -ErrorAction Stop`,
+        "$target.StartTime.ToUniversalTime().ToString('o')",
+      ].join("; ");
+      for (const command of ["powershell.exe", "pwsh.exe"]) {
+        try {
+          const raw = execFileSync(
+            command,
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", timeout: 1_500, windowsHide: true },
+          ).trim();
+          const parsed = new Date(raw);
+          if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+        } catch {
+          // Try the other supported PowerShell host.
+        }
+      }
+    }
+  } catch {
+    // Process exit and restricted process metadata both produce no fingerprint.
+  }
+  return null;
+}
 
 const CONTROL_PLANE_STATE_MAX_BYTES = 256 * 1024 * 1024;
 
