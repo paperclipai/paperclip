@@ -4422,6 +4422,16 @@ authenticates the durable PRP authority. A provider lease acquisition described 
 `resumed` does not establish that this already-running harness was suspended.
 Ordinary resumed leases retain their verified suspension and backup checks.
 
+A scheduled same-run retry keeps the remote reattach claim of the attempt before
+it. Closing a failed adopted attempt suspends its Runner, which then exits, so the
+retry can find no live process. When the exact process is proven gone, the
+Runner's saved state is read again. If that state has the same six identity fields,
+lifecycle `suspended`, an empty outbox and no pending terminal delivery, provider
+cleanup or warm transition, the retry launches a Runner from that state instead
+of adopting one. This matches a settled staged source. Any other exit stays
+fail-closed for reconciliation, and the provider attempt budget still bounds the
+retries.
+
 Reattachment keeps the complete durable PRP binding, including its turn and item
 attachment IDs. A healthy warm handoff can create new attachment IDs within the
 retained Runner. Replacing that run's controller must preserve those IDs; deriving

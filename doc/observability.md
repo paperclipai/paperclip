@@ -1314,7 +1314,9 @@ executor's identity redaction. These observations do not change close, quarantin
 or recovery behavior.
 
 Remote runner reattachment failures also record `remoteRunnerRecoveryStage`
-and `remoteRunnerRecoveryReason` from the saved run. When reattachment fails
+and `remoteRunnerRecoveryReason` from the saved run. A confirmed missing process
+also records the closed `remoteRunnerLifecycle` and boolean `remoteRunnerSettled`
+from the exited runner's saved state. When reattachment fails
 before the coordinator saves its result, the report reads the same labels from
 the caught recovery error instead. These fields contain
 closed labels for marker reads and process verification. They distinguish
