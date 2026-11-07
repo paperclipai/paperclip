@@ -2746,7 +2746,7 @@ export async function runWorkspaceIsFinalized(
   return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
 }
 
-async function listIssueDependencyReadinessMap(
+export async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
