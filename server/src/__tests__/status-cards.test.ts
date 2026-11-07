@@ -194,6 +194,47 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues)).toEqual([]);
   });
 
+  it("keeps a card with a queued compile when its activity record fails", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    // Fail only the card's creation activity record, which is written after the compile is queued.
+    const failingActivityDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "insert") {
+          return (table: unknown) => {
+            const builder = target.insert(table as never);
+            if (table !== activityLog) return builder;
+            return new Proxy(builder, {
+              get(inner, key) {
+                if (key === "values") {
+                  return (values: { action?: string }) => {
+                    if (values?.action === "status_card.created") throw new Error("activity log unavailable");
+                    return inner.values(values as never);
+                  };
+                }
+                const value = Reflect.get(inner, key, inner);
+                return typeof value === "function" ? value.bind(inner) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Db;
+    const response = await request(createApp(failingActivityDb, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Recently updated launch tasks" });
+
+    expect(response.status).toBe(500);
+    const cards = await db.select().from(statusCards);
+    expect(cards).toHaveLength(1);
+    const generation = await db.select().from(issues).where(eq(issues.id, cards[0]!.generatingIssueId!)).then((rows) => rows[0]);
+    expect(generation).toBeDefined();
+    expect(generation!.status).not.toBe("cancelled");
+  });
+
   it("creates, patches, archives, restores, lists updates, and deletes a card", async () => {
     const company = await seedCompany();
     await enableStatusCards();
