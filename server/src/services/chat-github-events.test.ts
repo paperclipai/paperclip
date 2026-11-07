@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { githubAutomaticIssueEvent, githubBodyMentionsBot, githubExplicitMentionEvent } from "./chat-github-events.js";
+import { githubAutomaticIssueEvent, githubAutomaticReviewEvent, githubBodyMentionsBot, githubExplicitMentionEvent } from "./chat-github-events.js";
 
 function payload() {
   return {
@@ -12,7 +12,7 @@ describe("GitHub issue event parsing", () => {
   it("preserves author versus sender authority and bounds untrusted content", () => {
     const input = payload();
     expect(githubAutomaticIssueEvent(input, "delivery")).toMatchObject({
-      event: "issue_opened", deliveryId: "delivery", repositoryId: "12", repository: "test/repo",
+      event: "issue_opened", deliveryId: "delivery", repositoryId: "12", repository: "Test/Repo",
       issueNumber: 2, body: "", author: { id: "42", isBot: false }, sender: { id: "77" }, labels: ["triage"],
     });
     expect(githubAutomaticIssueEvent({ ...input, issue: { ...input.issue, body: "x".repeat(30000) } }, "delivery")!.body).toHaveLength(24000);
@@ -73,5 +73,16 @@ describe("explicit GitHub mentions", () => {
     expect(githubExplicitMentionEvent("issues", { ...input, repository: { id: 1, full_name: "wrong/repo/extra" } }, "delivery", "maya")).toBeNull();
     expect(githubExplicitMentionEvent("issues", { ...input, sender: { id: Number.MAX_SAFE_INTEGER + 1, login: "sender" } }, "delivery", "maya")).toBeNull();
     expect(githubExplicitMentionEvent("issues", input, "", "maya")).toBeNull();
+  });
+});
+
+describe("automatic GitHub events", () => {
+  it("keeps GitHub's repository casing so automatic threads match native follow-up comments", () => {
+    const pull = { number: 2, title: "Review me", body: null, draft: false, base: { sha: "a".repeat(40), ref: "main" }, head: { sha: "b".repeat(40) }, user: { id: 42, login: "author", type: "User" }, labels: [] };
+    const review = githubAutomaticReviewEvent({ ...payload(), pull_request: pull }, "delivery");
+    expect(review).toMatchObject({ repositoryId: "12", repository: "Test/Repo", pullNumber: 2 });
+    const comment = { ...payload(), action: "created", issue: { ...payload().issue, pull_request: {} }, comment: { id: 123, body: "@maya help" } };
+    expect(githubExplicitMentionEvent("issue_comment", comment, "delivery", "maya")!.threadId).toBe(`github:${review!.repository}:${review!.pullNumber}`);
+    expect(githubAutomaticIssueEvent(payload(), "delivery")!.repository).toBe("Test/Repo");
   });
 });

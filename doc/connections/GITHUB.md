@@ -364,10 +364,13 @@ mentioning both bots allows both to receive the request, subject to their normal
 authorization and repository checks.
 
 Unaddressed follow-ups and incidental human or unknown mentions retain the existing
-subscription behavior. Explicitly mentioning this bot admits a request even when
-another recipient is named. The routing rule does not change automatic issue or PR
-event policies. Archived bots and identities from other companies or providers
-are excluded from the routing lookup.
+subscription behavior. Thread identity keeps the repository name as GitHub sends
+it, including uppercase letters, so automatic review, issue, and inline-finding
+threads receive the same unaddressed follow-ups as mention-created threads.
+Explicitly mentioning this bot admits a request even when another recipient is
+named. The routing rule does not change automatic issue or PR event policies.
+Archived bots and identities from other companies or providers are excluded from
+the routing lookup.
 
 ## Retrying a saved request
 

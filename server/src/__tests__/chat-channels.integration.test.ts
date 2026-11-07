@@ -7068,6 +7068,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect((await f.management.configuration(f.endpoint.id, "owner-user")).configuration.defaults.invocation).toBe("mentions_only");
       },
     );
+    it.each(["pull_request", "issues"])("binds automatic %s threads with GitHub's repository casing so native follow-ups reach the task", async (event) => {
+      const f = await reviewBotFixture();
+      const saved = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: saved.revision, configuration: { ...saved.configuration, defaults: { ...saved.configuration.defaults, issueOpened: true } } }, "owner-user");
+      const target = { number: 84, title: "Keep repository casing", body: "", draft: false, user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) } };
+      const payload = { action: "opened", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "PaperclipAI/Paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" }, issue: target, pull_request: target };
+      expect((await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({ event, delivery: randomUUID(), payload, webhookSecret: f.webhookSecret }))).status).toBeLessThan(300);
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readChatConversationsByEndpointId(f.endpoint.id)).length;
+      }, { timeout: 10_000 }).toBe(1);
+      const [conversation] = await readChatConversationsByEndpointId(f.endpoint.id);
+      const threadId = `github:PaperclipAI/Paperclip:${event === "issues" ? "issue:" : ""}84`;
+      expect(conversation.externalThreadId).toBe(threadId);
+      const thread = makeThread({ channelId: "PaperclipAI/Paperclip", id: threadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "subscribed_message", message: makeMessage({ id: "84001", text: "Plain follow-up without a mention", userId: "42", userName: "octocat" }) });
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readIssueCommentsByIssueId(conversation.issueId!)).length;
+      }, { timeout: 10_000 }).toBe(2);
+      expect(await readChatConversationsByEndpointId(f.endpoint.id)).toHaveLength(1);
+      const comments = await readIssueCommentsByIssueId(conversation.issueId!).orderBy(asc(issueComments.createdAt));
+      expect(comments[1].body).toContain("Plain follow-up without a mention");
+      const [followUp] = await db.select().from(chatDeliveries).where(and(eq(chatDeliveries.endpointId, f.endpoint.id), eq(chatDeliveries.eventKind, "message")));
+      expect(followUp).toMatchObject({ state: "processed", redactedError: null });
+    });
     it.each(["created", "edited"])("retains attachment provenance in a signed GitHub mention %s", async action => {
       const f = await reviewBotFixture();
       const file = "https://github.com/user-attachments/files/31917991/proof.txt";
