@@ -2494,6 +2494,140 @@ fn retains_opencode_state_when_a_valid_new_proxy_replaces_the_admitted_bytes() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn resumes_opencode_after_cold_state_and_artifact_restore_into_a_new_allocation() {
+    let root = temporary_directory("opencode-cold-artifact-restore");
+    let account = root.join("owned-account");
+    let old_state = root.join("old-controller-and-lease");
+    let new_state = root.join("new-controller-and-lease");
+    let old_cwd =
+        root.join(".paperclip-workspaces/workspace-1-42fd5504-d7d5-4374-a622-b06335b61e61");
+    let new_cwd = old_cwd.clone();
+    for path in [&account, &old_state, &new_state, &old_cwd, &new_cwd] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let original_config = opencode_config(&account);
+    let mut initial_config = original_config.clone();
+    initial_config.state_dir = old_state.clone();
+    let mut initial_payload = opencode_prepare_payload(&account);
+    initial_payload["provider"]["cwd"] = json!(old_cwd);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&old_state, &initial_config);
+    first
+        .execute(&command(1, "run.prepare", initial_payload))
+        .unwrap();
+    let opened = first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+    let state = fs::read(old_state.join("codex-provider-state.json")).unwrap();
+    let profile = original_config.opencode_launch_profile.as_ref().unwrap();
+    let files = [
+        &profile.command.path,
+        &profile.proxy_script.path,
+        &profile.executable.path,
+    ];
+    let saved: Vec<_> = files.iter().map(|path| fs::read(path).unwrap()).collect();
+    for path in files {
+        fs::remove_file(path).unwrap();
+    }
+    fs::remove_dir_all(&old_state).unwrap();
+    fs::remove_dir_all(&old_cwd).unwrap();
+    fs::create_dir_all(&new_cwd).unwrap();
+    fs::write(new_state.join("codex-provider-state.json"), &state).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(
+        new_state.join("codex-provider-state.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    fs::write(
+        new_cwd.join("retained-work.txt"),
+        "original useful workspace content",
+    )
+    .unwrap();
+    let mut recovered_config = original_config.clone();
+    recovered_config.state_dir = new_state.clone();
+    recovered_config.environment_lease_id = "new-allocation-lease".to_owned();
+    let mut payload = opencode_prepare_payload(&account);
+    payload["provider"]["cwd"] = json!(new_cwd);
+    let calls_before = fs::read(account.join("fake-opencode-calls.log")).unwrap();
+    let missing_state = root.join("rejected-controller-without-artifacts");
+    fs::create_dir_all(&missing_state).unwrap();
+    fs::write(missing_state.join("codex-provider-state.json"), &state).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(
+        missing_state.join("codex-provider-state.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let mut missing_config = recovered_config.clone();
+    missing_config.state_dir = missing_state.clone();
+    let mut missing =
+        NativeProviderCommandExecutor::with_runner_config(&missing_state, &missing_config);
+    assert!(missing
+        .execute(&command(3, "run.prepare", payload.clone()))
+        .is_err());
+    drop(missing);
+    assert_eq!(
+        fs::read(new_state.join("codex-provider-state.json")).unwrap(),
+        state
+    );
+    assert_eq!(
+        fs::read(account.join("fake-opencode-calls.log")).unwrap(),
+        calls_before
+    );
+    for (path, bytes) in files.iter().zip(saved) {
+        fs::write(path, bytes).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    let mut resumed =
+        NativeProviderCommandExecutor::with_runner_config(&new_state, &recovered_config);
+    resumed
+        .execute(&command(4, "run.prepare", payload))
+        .unwrap();
+    let reopened = resumed
+        .execute(&command(5, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(reopened.result["provider"], opened.result["provider"]);
+    assert_eq!(opencode_call_count(&account, "thread/start"), 1);
+    assert_eq!(opencode_call_count(&account, "thread/resume"), 1);
+    assert_eq!(opencode_call_count(&account, "turn/start"), 0);
+    resumed
+        .execute(&command(
+            6,
+            "turn.start",
+            json!({"text":"Deliver useful output from retained work."}),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut terminal = false;
+    while std::time::Instant::now() < deadline {
+        let events = resumed.poll_events().unwrap();
+        terminal |= events
+            .iter()
+            .any(|event| event.event_type == "run.terminal");
+        resumed.acknowledge_events(events.len()).unwrap();
+        if terminal {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        terminal,
+        "the resumed native provider must finish useful work"
+    );
+    assert_eq!(opencode_call_count(&account, "turn/start"), 1);
+    assert_eq!(
+        fs::read_to_string(new_cwd.join("retained-work.txt")).unwrap(),
+        "original useful workspace content"
+    );
+    resumed.shutdown().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn rejects_pi_without_an_explicit_model_before_starting_a_sidecar() {
     let directory = temporary_directory("pi-model");
     let config = pi_acpx_config(&directory, "bootstrap");

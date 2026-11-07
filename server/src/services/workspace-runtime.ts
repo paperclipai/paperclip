@@ -6688,6 +6688,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let childFailure: Promise<Error>;
   try {
     child = spawn(shell, ["-lc", command], {
       cwd: serviceCwd,
@@ -6698,27 +6699,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       // on an orphaned socketpair during startup reconciliation.
       stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
     });
+    childFailure = new Promise<Error>((resolve) => {
+      child.once("error", resolve);
+      child.once("close", (code, signal) => {
+        resolve(new Error(
+          `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+        ));
+      });
+    });
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
-  const earlyExitPromise = new Promise<never>((_, reject) => {
-    // `close` follows `exit` after the child's inherited stdout/stderr file
-    // descriptors are closed. Waiting for it makes the startup log excerpt
-    // deterministic instead of racing the final validation line.
-    child.once("close", (code, signal) => {
-      reject(new Error(
-        `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
-      ));
-    });
-  });
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6784,8 +6778,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         waitForAllocatedPortBind({ service: input.service, port: ownedPort, child })
       ),
     ]).then(() => undefined),
-    spawnErrorPromise,
-    earlyExitPromise,
+    childFailure.then((error) => { throw error; }),
   ]).then(async () => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);

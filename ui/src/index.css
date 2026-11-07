@@ -380,6 +380,9 @@
   --diff-remove-fg: var(--status-task-icon-blocked);
   --diff-add-bg: color-mix(in oklab, var(--status-task-icon-done) 12%, transparent);
   --diff-remove-bg: color-mix(in oklab, var(--status-task-icon-blocked) 12%, transparent);
+  --patch-add-fg: #116329;
+  --patch-remove-fg: #9a1c1c;
+  --patch-meta-fg: color-mix(in oklab, var(--foreground) 85%, var(--background));
   --sz-edit-diff-max-h: calc(var(--spacing) * 100);
 
   --folder-color-indigo: #6366f1;
@@ -712,6 +715,8 @@
   --status-task-icon-todo: #fbbf24;
   --status-task-icon-in_progress: var(--color-blue-400); /* matches nav dots and live labels */
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
+  --patch-add-fg: #7ee787;
+  --patch-remove-fg: #ffa198;
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
 }
@@ -5324,6 +5329,16 @@ html:not(.dark) .coordinator-sidebar {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
 
+.paperclip-patch-line { min-width: 0; }
+span.paperclip-patch-line { display: block; }
+.paperclip-patch-line[data-patch-line="add"] { color: var(--patch-add-fg); background: var(--diff-add-bg); }
+.paperclip-patch-line[data-patch-line="remove"] { color: var(--patch-remove-fg); background: var(--diff-remove-bg); }
+.paperclip-patch-line[data-patch-line="hunk"] { color: var(--patch-meta-fg); background: var(--muted); }
+.paperclip-patch-line[data-patch-line="skip"] { color: var(--patch-meta-fg); }
+
+.paperclip-patch-preview .paperclip-patch-line { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+
+.paperclip-patch-line[data-line-selected] { background: var(--code-highlight-bg-resolved); }
 /* Agent Identity: equal panel gutters and a viewport-bound dirty footer. */
 :root {
   --agent-identity-panel-gap: calc(var(--spacing) * 6);
