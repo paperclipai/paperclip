@@ -5,6 +5,7 @@ import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-clea
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5305,6 +5306,58 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       });
     },
   );
+
+  it("retries a run-release teardown at the next sweep after the releasing server dies", async () => {
+    // Shape of a chaos incident: the run finished, its release claimed the lease
+    // and called the provider, and the server was SIGKILLed before the reply.
+    const seeded = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, seeded.runId));
+    let enterProvider!: () => void;
+    let finishProvider!: () => void;
+    const entered = new Promise<void>((resolve) => { enterProvider = resolve; });
+    const finish = new Promise<void>((resolve) => { finishProvider = resolve; });
+    let serverAlive = true;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentDestroyLease") throw new Error(`Unexpected method ${method}`);
+      if (serverAlive) {
+        enterProvider();
+        await finish;
+        throw new Error("Server stopped");
+      }
+      return { providerLeaseId: seeded.reusableLease.providerLeaseId, state: "destroyed" };
+    });
+    const makeRuntime = () => environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const closing = makeRuntime().releaseRunLeases(seeded.runId, "released", undefined, "destroy");
+    try {
+      await entered;
+      const claimed = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+      expect(claimed).toMatchObject({ status: "pending_cleanup", metadata: { pendingCleanupInFlight: true } });
+      const attemptId = claimed.metadata?.pendingCleanupAttemptId;
+      // The releasing server exits: its recorded process is gone. Mark it as an
+      // earlier boot whose PID has exited, as a restarted server observes it.
+      const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise(resolve => child.once("exit", resolve));
+      const recorded = claimed.metadata?.pendingCleanupController as Record<string, unknown> | undefined;
+      expect(recorded).toMatchObject({ attemptId });
+      await db.update(environmentLeases).set({ metadata: { ...claimed.metadata,
+        pendingCleanupController: { ...recorded, bootId: randomUUID(), pid: child.pid } } })
+        .where(eq(environmentLeases.id, claimed.id));
+      serverAlive = false;
+
+      const restarted = heartbeatService(db, { environmentRuntime: makeRuntime() });
+      expect(await restarted.sweepPendingCleanupLeases({ backoffMs: 0 })).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+      const settled = (await environmentService(db).getLeaseById(claimed.id))!;
+      expect(settled).toMatchObject({ status: "expired", cleanupStatus: "success" });
+      // The interrupted release was not a failed teardown attempt.
+      expect(settled.metadata?.pendingCleanupRetryAttempts).toBe(1);
+    } finally {
+      finishProvider();
+      await closing.catch(() => undefined);
+    }
+  });
 
   it.each([false, true])("preserves a newer destroy receipt when an old run cleanup returns (failure=%s)", async failure => {
     const seeded = await seedReusablePluginSandboxLease();
