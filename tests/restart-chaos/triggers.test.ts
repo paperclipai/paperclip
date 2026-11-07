@@ -25,9 +25,15 @@ const options: WaveOptions = { env: "local", adapters: ["codex", "claude", "open
   triggers: ["time", "comment", "retry", "queued", "tool"] };
 
 type Json = Record<string, unknown>;
-function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json }) {
+function scriptedApi(state: { runs: Json[]; issue: Json; retry?: Json; events?: Json[] }) {
   const api = {
-    async get(route: string) { return route.endsWith("/runs") ? state.runs : route.endsWith("/comments") ? [] : state.issue; },
+    async get(route: string) {
+      if (route.includes("/events")) {
+        const after = Number(new URL(route, "http://x").searchParams.get("afterSeq") ?? 0);
+        return (state.events ?? []).filter(event => Number(event.seq) > after);
+      }
+      return route.endsWith("/runs") ? state.runs : route.endsWith("/comments") ? [] : state.issue;
+    },
     async post(route: string) {
       if (route.endsWith("/issues")) return { id: "i1", identifier: "CHA-1" };
       if (route.endsWith("/retry")) return state.retry ?? { accepted: true };
@@ -198,17 +204,44 @@ describe("trigger firing", () => {
     expect(observer.faultDue(start + 50_000)).toMatchObject({ trigger: "tool" });
   });
 
-  it("result: fires its delay after the run that received the follow-up accepts its result", async () => {
-    const observer = new TaskObserver({ ...base, trigger: "result", triggerDelayMs: 4_000 },
-      scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
+  it("result: arms from the target run's result event and fires only while that run is running", async () => {
+    const running = { runId: "r1", status: "running", startedAt: new Date().toISOString() };
+    const state = { runs: [running] as Json[], issue: { id: "i1", status: "in_progress" },
+      events: [{ seq: 1, eventType: "turn.started", createdAt: new Date().toISOString() }] as Json[] };
+    const observer = new TaskObserver({ ...base, trigger: "result", triggerDelayMs: 2_000 }, scriptedApi(state), lab, new Timeline(null), ready);
     await observer.launch();
     const start = observer.record.createdAt!;
-    expect(observer.faultDue(start + 60_000)).toBeNull();
-    observer.record.followUp = { at: start + 1_000, postedAt: start + 1_000, commentId: "c1", error: null, duringRun: true };
-    expect(observer.faultDue(start + 60_000)).toBeNull();
-    observer.record.resultAcceptedAt = start + 30_000;
-    expect(observer.faultDue(start + 33_999)).toBeNull();
-    expect(observer.faultDue(start + 34_000)).toMatchObject({ trigger: "result" });
+    observer.record.followUp = { at: start, postedAt: start, commentId: "c1", error: null, duringRun: true };
+    await observer.poll(start + 1_000);
+    // An unrelated event does not arm the trigger.
+    expect(observer.record.resultAcceptedAt).toBeUndefined();
+    state.events.push({ seq: 2, eventType: "run.result.accepted", createdAt: new Date().toISOString() });
+    await observer.poll(start + 2_000);
+    const armedAt = observer.record.resultAcceptedAt!;
+    expect(observer.record.resultRunId).toBe("r1");
+    expect(observer.faultDue(armedAt + 1_999)).toBeNull();
+    const fault = observer.faultDue(armedAt + 2_000);
+    expect(fault).toMatchObject({ trigger: "result" });
+    expect(await observer.confirmTrigger(fault!, armedAt + 2_000)).toBe(true);
+    // The run settled before dispatch: the fault would land outside the window.
+    state.runs = [{ ...running, status: "succeeded", finishedAt: new Date().toISOString() }];
+    expect(await observer.confirmTrigger(fault!, armedAt + 2_000)).toBe(false);
+    expect(observer.record.triggerMissed).toEqual(["result"]);
+  });
+
+  it("result: records a miss when the target run settled during the delay", async () => {
+    const state = { runs: [{ runId: "r1", status: "running" }] as Json[], issue: { id: "i1", status: "in_progress" },
+      events: [{ seq: 1, eventType: "run.result.proposed", createdAt: new Date().toISOString() }] as Json[] };
+    const observer = new TaskObserver({ ...base, trigger: "result", triggerDelayMs: 3_000 }, scriptedApi(state), lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    observer.record.followUp = { at: start, postedAt: start, commentId: "c1", error: null, duringRun: true };
+    await observer.poll(start + 1_000);
+    const armedAt = observer.record.resultAcceptedAt!;
+    state.runs = [{ runId: "r1", status: "succeeded" }];
+    await observer.poll(armedAt + 1_000);
+    expect(observer.faultDue(armedAt + 3_000)).toBeNull();
+    expect(observer.record.triggerMissed).toEqual(["result"]);
   });
 
   it("result: misses when the follow-up was posted at rest", async () => {

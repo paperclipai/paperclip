@@ -34,7 +34,7 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   retry: [0, 2_000],
   queued: [0, 0],
   tool: [15_000, 60_000],
-  result: [2_000, 12_000],
+  result: [0, 3_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {

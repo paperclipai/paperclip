@@ -206,8 +206,10 @@ export interface TaskRecord {
   /** B5: distinct bench progress values the observer read during polling. */
   benchProgressSeen?: string[];
   benchFirstSeenAt?: number | null;
-  /** C1: first time the observer saw the run that received the follow-up accept its result. */
+  /** C1: first time the observer saw the run that received the follow-up propose or accept its result. */
   resultAcceptedAt?: number | null;
+  /** The run whose result armed the `result` trigger; the fault fires only while it is still running. */
+  resultRunId?: string | null;
   triggerMissed?: TriggerId[];
 }
 
