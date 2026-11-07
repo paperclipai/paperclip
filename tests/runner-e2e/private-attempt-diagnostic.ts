@@ -50,6 +50,15 @@ function carrierReasons(input: unknown, source: "reporter" | "packaging") {
     }));
 }
 const failures = new Map([
+  ["Invalid private diagnostic registry path", "invalid-private-diagnostic-registry-path"],
+  ["Private diagnostic registry ownership or permissions are invalid", "private-diagnostic-registry-ownership-or-permissions"],
+  ["Invalid private diagnostic registry", "invalid-private-diagnostic-registry"],
+  ["Private diagnostic registry requires an owned temporary root", "private-diagnostic-registry-requires-an-owned"],
+  ["Private diagnostic registry execution mismatch", "private-diagnostic-registry-execution-mismatch"],
+  ["Private diagnostic secret registration must be a string", "private-diagnostic-secret-registration-must-be"],
+  ["Diagnostic expansion has no raw-root provenance", "diagnostic-expansion-has-no-rawroot-provenance"],
+  ["SDK public source proof unavailable", "sdk-public-source-proof-unavailable"],
+  ["SDK public source parse unavailable", "sdk-public-source-parse-unavailable"],
   ["Bounded diagnostic unavailable", "bounded-diagnostic-unavailable"],
   ["Diagnostic withheld", "diagnostic-withheld"],
   ["Diagnostic custody invalid", "diagnostic-custody-invalid"],
@@ -191,7 +200,7 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
   return {
     schema: "paperclip.private-attempt-diagnostic/v1",
     packagingBudget: closedPackagingBudget(record(input.error).evidenceBudget ?? evidence.budget, message),
-    stage: member(input.stage, ["execution", "package-original", "seal-original", "attach-original"]),
+    stage: member(input.stage, ["execution", "package-original", "seal-original", "attach-original", "attach-health-detail", "attach-source-sdk"]),
     status: member(result.status, ["passed", "failed", "skipped"]),
     failureClass: member(result.failureClass, ["candidate_failure", "transient_infrastructure", "permanent_infrastructure", "secret_leak", "cleanup_failure"]),
     finalization: failures.get(message) ?? (record(input.error).code === "ENOENT" ? "missing-file"

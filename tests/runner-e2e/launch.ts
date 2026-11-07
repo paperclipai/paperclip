@@ -950,7 +950,9 @@ async function runAttempt(input: {
           await writeFile(path.join(uploadDir, "result.json"), safeResult, "utf8");
         }
       }
+      if (manualDiagnostic) manualDiagnostic.stage = "attach-health-detail";
       await copyHealthHelloDetail(temporaryRoot, candidate.id, uploadDir, credentials);
+      if (manualDiagnostic) manualDiagnostic.stage = "attach-source-sdk";
       await copyRetainedSourceSdk(temporaryRoot, candidate.id, result.source?.sha ?? null, uploadDir, credentials, repositoryRoot);
       console.log(
         `${result.status === "passed" ? "PASS" : "FAIL"} ${candidate.id} attempt ${attempt} -> ${uploadDir}`,

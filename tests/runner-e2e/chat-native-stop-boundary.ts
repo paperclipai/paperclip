@@ -13,7 +13,9 @@ export function assertNativeStopCallback(implementation: ChatCatalogCase) {
 // A request receipt or a cancelled status alone does not establish this interval.
 export function nativeStopPendingReceiptMatches(input: { receipt: NativeStopBoundaryReceipt; run: { id?: string; companyId?: string; nativeIssueId?: string; agentId?: string; runtimeMode?: string; status?: string; resultJson?: { nativeCancellation?: Record<string, unknown> } }; companyId: string; sourceIssueId: string; assignedAgentId: string; setupRunIds: string[] }) {
   const { receipt: r, run } = input, intent = run.resultJson?.nativeCancellation;
-  return !!r && Object.keys(r).every(key => ["runId", "issueId", "intentId", "intentRecordedAt"].includes(key)) && [r.runId, r.issueId, r.intentId].every(id => typeof id === "string" && /^[a-f0-9-]{36}$/i.test(id))
+  return !!r && Object.keys(r).every(key => ["runId", "issueId", "intentId", "intentRecordedAt"].includes(key)) && [r.runId, r.issueId].every(id => typeof id === "string" && /^[a-f0-9-]{36}$/i.test(id))
+    // Production intent ids are `native-cancellation:<uuid>` (native-cancellation-request.ts).
+    && typeof r.intentId === "string" && /^native-cancellation:[a-f0-9-]{36}$/i.test(r.intentId)
     && Number.isFinite(Date.parse(r.intentRecordedAt)) && input.setupRunIds.includes(r.runId) && run.id === r.runId && run.companyId === input.companyId && run.nativeIssueId === r.issueId
     && r.issueId === input.sourceIssueId && run.agentId === input.assignedAgentId && run.runtimeMode === "native" && run.status === "running" && intent?.schema === "paperclip.native-cancellation.v1" && intent.companyId === input.companyId && intent.runId === r.runId && intent.issueId === r.issueId
     && intent.intentId === r.intentId && intent.recordedAt === r.intentRecordedAt && intent.scope === "run" && intent.dispatchState === "pending" && intent.dispatched === false && intent.acknowledgedAt == null;
