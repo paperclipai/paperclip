@@ -205,7 +205,8 @@ describe("streamed S3 multipart uploads", () => {
     const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
       if (command instanceof CreateMultipartUploadCommand) return { UploadId: command.input.Key };
       if (command instanceof UploadPartCommand) {
-        started.set(command.input.Key, (started.get(command.input.Key) ?? 0) + 1);
+        const key = command.input.Key!;
+        started.set(key, (started.get(key) ?? 0) + 1);
         await reading;
         let bytes = 0;
         for await (const chunk of command.input.Body as Readable) bytes += chunk.length;
