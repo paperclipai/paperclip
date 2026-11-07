@@ -8,6 +8,7 @@ export function boardAccessQueryOptions(
   bootstrap: BoardBootstrap | undefined,
   updatedAt: number,
   onAccountChanged: () => void,
+  onAccessDenied?: () => void,
 ) {
   const initialData = userId && bootstrap?.userId === userId && bootstrap.boardAccess.userId === userId
     ? bootstrap.boardAccess
@@ -23,6 +24,7 @@ export function boardAccessQueryOptions(
       try {
         access = await accessApi.getCurrentBoardAccess();
       } catch (error) {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) onAccessDenied?.();
         if (error instanceof ApiError && error.status === 401) onAccountChanged();
         throw error;
       }

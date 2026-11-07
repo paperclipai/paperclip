@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
@@ -22,6 +22,7 @@ import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 
 /** Poll while the server reports `starting`; outages are polled by `lib/connectivity`. */
 const SERVER_STARTING_POLL_MS = 5_000;
+const deniedBootstrapAccounts = new WeakMap<QueryClient, Set<string>>();
 
 export function CloudAccessError({
   temporary,
@@ -112,7 +113,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   const sessionBootstrap = sessionQuery.isSuccess ? sessionQuery.data?.boardBootstrap : undefined;
   const sessionUserId = sessionQuery.data?.user.id ?? null;
   const accessError = queryClient.getQueryState([...queryKeys.access.currentBoardAccess, sessionUserId])?.error;
-  const accessDenied = accessError instanceof ApiError && (accessError.status === 401 || accessError.status === 403);
+  const accessDenied = (sessionUserId !== null && deniedBootstrapAccounts.get(queryClient)?.has(sessionUserId))
+    || (accessError instanceof ApiError && (accessError.status === 401 || accessError.status === 403));
   const bootstrap = sessionBootstrap?.userId === sessionQuery.data?.user.id
     && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id && !accessDenied ? sessionBootstrap : undefined;
   const boardAccessQuery = useBootstrapQuery({
@@ -123,6 +125,12 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
       () => {
         const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
         if (current?.user.id === sessionUserId) void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      },
+      () => {
+        if (!sessionUserId) return;
+        let denied = deniedBootstrapAccounts.get(queryClient);
+        if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Set());
+        denied.add(sessionUserId);
       },
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
