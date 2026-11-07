@@ -203,9 +203,10 @@
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/internal-run-history.ts",
       "chat-catalog-domains/internal-run-brief.ts",
-      "../e2e/fetch-allowed-port.ts"
+      "../e2e/fetch-allowed-port.ts",
+      "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.run-history.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,

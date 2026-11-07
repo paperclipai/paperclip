@@ -2,11 +2,27 @@ import { randomUUID } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { startRunBriefGate } from "./internal-run-brief.js";
 import { checks, entity, hasLink, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
 interface OwnedTask extends Entity { checkoutRunId?: string | null; executionRunId?: string | null }
-interface RunHistory extends InternalObservation { currentTask: OwnedTask; agentRunReadStatuses: number[] }
+interface RunHistory extends InternalObservation { currentTask: OwnedTask; agentRunReadStatuses: number[]; runHistoryRead?: boolean }
+const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+/**
+ * The chat run read the task's execution history through a product tool before
+ * answering. Tool outputs are product data, so they are matched exactly; the
+ * agent's own wording is never matched.
+ */
+export function readTaskRunHistory(events: readonly Record<string, unknown>[], taskId: string, runIds: readonly string[]) {
+  return !!taskId && events.some(row => {
+    const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
+    const output = typeof payload.output === "string" ? payload.output : "";
+    return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
+      && (/apiOperationId\\*"\s*:\s*\\*"GET \/api\/issues\/\{id\}\/runs(?![\w/{])/.test(output) && output.includes(taskId)
+        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/heartbeat-runs\/\{runId\}(?![\w/{])/.test(output) && runIds.some(id => !!id && output.includes(id)));
+  });
+}
 function runHref(o: InternalObservation, agentId: string, runId: string) {
   return o.links.find(href => { try { const u = new URL(href, o.origin); return u.origin === o.origin && u.pathname.endsWith(`/agents/${agentId}/runs/${runId}`); } catch { return false; } });
 }
@@ -24,10 +40,11 @@ export function gradeRunHistory(value: unknown) {
   c.add("independent-agent-execution-read-authority", Array.isArray(o.agentRunReadStatuses) && o.agentRunReadStatuses.length === 2 && o.agentRunReadStatuses.every(status => status === 200), "The actual acting agent can read both exact run details under its own bearer; task access alone is not assumed to grant run access.");
   c.add("exact-task-and-agent-run-links", !!t && hasLink(o, "issues", t) && !!worker && !!first && !!later && !!runHref(o, worker.id, first.id) && !!runHref(o, worker.id, later.id),
     "Each relevant execution links to the actual Morgan run detail and the originating website task.");
-  const runPart = (id: string) => o.reply.split(/\n/).filter(part => part.includes(id)).join(" ");
-  c.add("interrupted-and-continuation-states-explained", !!first && !!later && /\b(?:cancelled|canceled|interrupted|stopped)\b/i.test(runPart(first.id))
-    && /\b(?:succeeded|successful|completed|finished)\b/i.test(runPart(later.id)) && /\bMorgan\b/.test(o.reply),
-    "Run-attributed reply rows distinguish the cancelled attempt from the successful continuation and identify the actual executing agent.");
+  // Which state words or agent naming the reply uses is not matched: the exact
+  // native run links (opened in verifyResult against each run's real status)
+  // and the run's own product read of the task's execution history are graded.
+  c.add("read-actual-task-run-history", o.runHistoryRead === true,
+    "The chat run read the website task's execution history through a product tool before answering.");
   c.add("no-history-rewrite-or-extra-owner", o.currentTask.id === t?.id && o.currentTask.assigneeAgentId === worker?.id && o.currentTask.status === "done"
     && history.every(run => [first?.id, later?.id].includes(run.id))
     && !o.activity.some(row => row.entityId === t?.id && row.agentId === o.leadId && /issue\.(?:updated|deleted)/.test(row.action ?? "")),
@@ -67,16 +84,22 @@ function findRuns(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-real-interrupted-continuation.json", state); return state;
     } catch (error) { await gate.close(); gate = undefined; throw error; }
   }, gradeRunHistory);
-  return { ...base, expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.run-history.v2", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts"],
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RunHistory> {
       if (!key) throw new Error("Run read probe was not created during setup"); const o = await observeInternal(ctx, state);
       const agentRunReadStatuses = await Promise.all(["interruptedRun", "continuationRun"].map(async name => {
         const url = new URL(`/api/heartbeat-runs/${entity(state, name).id}`, ctx.input.api.baseURL);
         const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${key!.token}` } }); await response.body?.cancel(); return response.status;
       }));
-      return { ...o, agentRunReadStatuses, currentTask: await ctx.input.api.get<OwnedTask>(`/api/issues/${entity(state, "task").id}`) };
+      const taskId = entity(state, "task").id ?? "", runIds = ["interruptedRun", "continuationRun"].map(name => entity(state, name).id ?? "");
+      let runHistoryRead = false;
+      for (const run of o.runs.filter(row => row.agentId === o.leadId && row.contextSnapshot?.issueId === ctx.issue()?.id)) {
+        const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
+        runHistoryRead = runHistoryRead || readTaskRunHistory(events, taskId, runIds);
+      }
+      return { ...o, agentRunReadStatuses, runHistoryRead, currentTask: await ctx.input.api.get<OwnedTask>(`/api/issues/${entity(state, "task").id}`) };
     },
     async verifyResult(ctx, state, value) {
       const o = value as RunHistory; await base.verifyResult(ctx, state, value); const source = ctx.input.page.url(); const worker = entity(state, "worker");
