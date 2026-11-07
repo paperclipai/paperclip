@@ -20,6 +20,7 @@ mod cursor_cloud_proxy;
 pub mod dot_provider_backend;
 pub mod durable;
 pub mod external_provider_backend;
+mod external_provider_transport;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;

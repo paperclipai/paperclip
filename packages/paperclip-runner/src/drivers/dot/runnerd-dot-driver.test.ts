@@ -277,3 +277,102 @@ describe("external Runner failure diagnostics", () => {
     expect(recognized).not.toContain("private.example");
   });
 });
+
+it.each([false, true])("delivers complete dispatch and exact attachment pages through authenticated Rust PRP (startup failure=%s)", async startupFailure => {
+  const root = await mkdtemp(join(tmpdir(), "dot-lossless-transport-"));
+  const instructions = "Follow these synthetic instructions. ".repeat(300);
+  await writeFile(join(root, "AGENTS.md"), instructions);
+  const input = execution(root);
+  const body = Buffer.from(Array.from({ length: 64379 }, (_, n) => (n * 73 + Math.floor(n / 251)) % 256));
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256").update(body).digest("hex");
+  const attachmentId = randomUUID();
+  let send: ((op: ExternalProviderOperation) => Promise<void>) | undefined;
+  let reads = 0;
+  const settlements = new Map<string, any>();
+  const dispatches: any[] = [];
+  const identity = { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
+    normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId };
+  let handle: controlPlane.RunnerProcessHandle | undefined;
+  let authority: controlPlane.DurablePrpControlPlane | undefined;
+  const spawn = controlPlane.spawnRunner;
+  const spawnSpy = vi.spyOn(controlPlane, "spawnRunner").mockImplementation(options => {
+    handle = spawn(options);
+    return handle;
+  });
+  const driver = new RunnerdDotDriver({
+    execution: input, stateDirectory: join(root, "state"), identity,
+    controlPlaneRegistration: startupFailure ? async core => {
+      authority = core;
+      await core.start();
+      return { connectUrl: core.connectUrl, release: () => core.stop() };
+    } : undefined,
+    onSpawn: startupFailure ? async () => {
+      await vi.waitFor(() => expect(authority?.activeRunnerConnectionCount()).toBeGreaterThan(0), { timeout: 5_000 });
+      throw new Error("synthetic startup failure");
+    } : undefined,
+    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
+    dynamicTools: [{ name: "read_task_attachment", description: "Read a synthetic verified attachment", inputSchema: { type: "object" } }],
+    dynamicToolHandler: async call => {
+      reads++;
+      const offset = (call.arguments as { offset: number }).offset;
+      const end = Math.min(body.length, offset + 12000);
+      return { attachmentId, sourceCommentId: null, filename: "fixture.bin", contentType: "application/octet-stream",
+        byteSize: body.length, sha256: hash, encoding: "base64", content: body.subarray(offset, end).toString("base64"),
+        offset, returnedBytes: end - offset, nextOffset: end < body.length ? end : null, contentTrust: "untrusted_attachment" };
+    },
+    port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
+      attach: async callback => { send = callback; return async () => { send = undefined; }; } },
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
+    requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
+    normalizedSessionId: input.session.normalizedSessionId!, turnId: identity.turnId, assignmentRevision: 1,
+    action, input: args, digest: externalOperationDigest(action, args),
+  });
+  try {
+    if (startupFailure) {
+      await expect(driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! }))
+        .rejects.toThrow("synthetic startup failure");
+      expect(handle).toBeDefined();
+      return;
+    }
+    session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+    const text = "Preamble é. ".repeat(1500) + "CURRENT MESSAGE: read the complete attachment.";
+    await session.startTurn({ message: { role: "user", text } });
+    await vi.waitFor(() => expect(dispatches).toHaveLength(1));
+    expect(dispatches[0].payload.text).toBe(text);
+    expect(dispatches[0].payload.instructions).toContain(instructions.trim());
+    await send!(operation("accept", {}));
+    const chunks: Buffer[] = [];
+    for (let offset = 0; offset < body.length;) {
+      const call = operation("tool", { name: "read_task_attachment", arguments: { attachmentId, offset, encoding: "base64", expectedSha256: hash } });
+      await send!(call);
+      await vi.waitFor(() => expect(settlements.get(call.requestId)?.status).toBe("completed"), { timeout: 10000 });
+      const outcome = settlements.get(call.requestId);
+      expect(outcome.isError).toBe(false);
+      const page = outcome.result;
+      const chunk = Buffer.from(page.content, "base64");
+      expect(chunk.length).toBe(page.returnedBytes);
+      expect(chunk.toString("base64")).toBe(page.content);
+      expect(chunk).toEqual(body.subarray(offset, offset + page.returnedBytes));
+      chunks.push(chunk);
+      await send!(call);
+      expect(settlements.get(call.requestId)).toEqual(outcome);
+      offset += page.returnedBytes;
+      expect(page.nextOffset).toBe(offset < body.length ? offset : null);
+    }
+    expect(chunks.map(chunk => chunk.length)).toEqual([12000, 12000, 12000, 12000, 12000, 4379]);
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(hash);
+    expect(reads).toBe(6);
+  } finally {
+    spawnSpy.mockRestore();
+    if (handle?.child.exitCode === null && handle.child.signalCode === null) handle.child.kill("SIGKILL");
+    try {
+      if (handle) await controlPlane.waitForProcess(handle, 5_000);
+    } finally {
+      await session?.detachControllerForRestart?.();
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60000);
