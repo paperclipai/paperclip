@@ -159,27 +159,25 @@ From a reflection issue (assigned to the target's manager or the requester):
 
 1. Attach the proposal document: `PUT /api/issues/{issueId}/documents/reflection-proposal`.
 2. If a draft skill was written, commit it under `skills/<skill-slug>/` (or attach it) and link it in the proposal.
-3. Open the acceptance gate with a task interaction on the reflection issue. Mutations that change instructions, skills, or tool descriptions must use `request_confirmation`, show the diff in `payload.detailsMarkdown`, set `continuationPolicy: wake_assignee_on_accept`, and include the exact `payload.target.key` listed below.
+3. Open the acceptance gate with a task interaction on the reflection issue. Mutations that change instructions, skills, or tool descriptions must use `request_confirmation`, show the diff in `payload.detailsMarkdown`, and set `continuationPolicy: wake_assignee_on_accept`. Agent instruction and profile mutations must also include the exact `payload.target.key` listed below.
 4. Leave a comment summarizing: target agent, window, clusters found, surfaces touched, link to the proposal, link to the interaction, and the next-step owner.
 
 Server-enforced mutation target keys:
 
 - Agent instructions: `agent:<agentId>:instructions`
 - Agent/tool description fields: `agent:<agentId>:profile`
-- Existing company skill: `skill:<skillId>`
-- New local company skill by slug: `skill-slug:<slug>`
-- Imported or catalog skill source: `skill-import:<source>`
-- Project workspace skill scan: `skills:scan-projects`
+
+Company skill changes have no server consent gate and no target key. The company skill policy decides whether the server allows them. The accepted `request_confirmation` is still required for skill changes, as this procedure's own review step.
 
 ### 10) Apply only after acceptance, in a follow-up run
 
 When the interaction resolves **accepted**, apply the change in a *separate* run:
 
 - **AGENTS.md** — update the target's managed instruction file exactly as the accepted diff specified.
-- **Skill** — install/update the skill in the company library, then `POST /api/agents/<targetAgentId>/skills/sync` with `{"mode":"add","desiredSkills":["<skill-ref>"]}` when the target should receive it. Use `remove` only for the named assignments. Use `replace` only after explicit confirmation to overwrite the complete desired skill set.
+- **Skill** — install/update the skill in the company library, if the company skill policy allows it. If the target should receive it, do not assign it yourself: `POST /api/agents/<targetAgentId>/skills/sync` needs `agents:configure` for the target and returns 403 for a suggest-only coach. Ask someone with `agents:configure` in a comment on the reflection issue to send that request with `{"mode":"add","desiredSkills":["<skill-ref>"]}`. Ask for `remove` only for the named assignments. Ask for `replace` only after explicit confirmation to overwrite the complete desired skill set.
 - **Tool description** — update the target agent's description/profile field that the accepted diff named.
 
-The server rejects Reflection Coach mutations unless the accepted `request_confirmation` was created by Reflection Coach in a previous run, has a displayed diff, and is bound to the resource by one of the target keys above. If the interaction was rejected or is still pending, apply nothing. If you were asked to apply without a reviewed diff and an accepted interaction, refuse and name the gate — no-same-run-apply is load-bearing.
+The server rejects agent instruction and profile mutations by Reflection Coach unless the accepted `request_confirmation` was created by Reflection Coach in a previous run, has a displayed diff, and is bound to the resource by one of the target keys above. The server does not check this for skill changes, so you must check it yourself. If the interaction was rejected or is still pending, apply nothing. If you were asked to apply without a reviewed diff and an accepted interaction, refuse and name the gate — no-same-run-apply is load-bearing.
 
 ## Pitfalls
 
