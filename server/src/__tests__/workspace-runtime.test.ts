@@ -1037,7 +1037,7 @@ describeEmbeddedPostgres("repository-scoped task worktree preparation", () => {
     await runGit(repoRoot, ["branch", "-D", branch]);
   });
 
-  it("keeps a branch that another process creates after the branch check when worktree add then fails", async () => {
+  it("keeps a branch that another process creates after the branch check when branch creation then fails", async () => {
     const { repoRoot } = await fixture();
     const input = request(repoRoot, "TASK-1");
     const branch = "tasks/TASK-1-concurrent-preparation";
@@ -1045,7 +1045,7 @@ describeEmbeddedPostgres("repository-scoped task worktree preparation", () => {
     const racing: WorkspaceOperationRecorder = {
       ...recorder,
       recordOperation: async operation => {
-        if (operation.command?.includes("worktree add")) {
+        if (operation.command?.includes("git branch --no-track")) {
           await runGit(repoRoot, ["branch", "--no-track", branch, "origin/master"]);
         }
         return recorder.recordOperation(operation);
@@ -1055,6 +1055,57 @@ describeEmbeddedPostgres("repository-scoped task worktree preparation", () => {
     await expect(realizeExecutionWorkspace({ ...input, recorder: racing })).rejects.toThrow(/already exists/);
     expect(await readGit(repoRoot, ["rev-parse", branch])).toBe(await readGit(repoRoot, ["rev-parse", "origin/master"]));
     expect(existsSync(path.join(repoRoot, ".paperclip", "worktrees", branch))).toBe(false);
+  });
+
+  it("removes the branch and worktree that this attempt created when a post-checkout hook fails, and a retry owns the branch", async () => {
+    const { repoRoot } = await fixture();
+    const input = request(repoRoot, "TASK-1");
+    const branch = "tasks/TASK-1-concurrent-preparation";
+    const hook = path.join(repoRoot, ".git", "hooks", "post-checkout");
+    await fs.mkdir(path.dirname(hook), { recursive: true });
+    await fs.writeFile(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    await expect(realizeExecutionWorkspace({ ...input, recorder: await operationRecorder() })).rejects.toThrow();
+    expect(await readGit(repoRoot, ["branch", "--list", branch])).toBe("");
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"])).not.toContain(branch);
+    expect(existsSync(path.join(repoRoot, ".paperclip", "worktrees", branch))).toBe(false);
+
+    await fs.rm(hook);
+    const retried = await realizeExecutionWorkspace({ ...input, recorder: await operationRecorder() });
+    expect(retried.branchCreatedByRuntime).toBe(true);
+    await expectUpstream(repoRoot, branch);
+  });
+
+  it("removes the branch that this attempt created when worktree add then fails", async () => {
+    const { repoRoot } = await fixture();
+    const input = request(repoRoot, "TASK-1");
+    const branch = "tasks/TASK-1-concurrent-preparation";
+    const worktree = path.join(repoRoot, ".paperclip", "worktrees", branch);
+    const recorder = await operationRecorder();
+    let injected = false;
+    const failing: WorkspaceOperationRecorder = {
+      ...recorder,
+      recordOperation: async operation => {
+        if (!injected && operation.command?.includes("worktree add")) {
+          injected = true;
+          // A non-empty directory at the target path makes the checkout step fail
+          // after this attempt has already created the branch.
+          await fs.mkdir(worktree, { recursive: true });
+          await fs.writeFile(path.join(worktree, "occupied.txt"), "test-owned\n");
+        }
+        return recorder.recordOperation(operation);
+      },
+    };
+
+    await expect(realizeExecutionWorkspace({ ...input, recorder: failing })).rejects.toThrow(/already exists/);
+    expect(await readGit(repoRoot, ["branch", "--list", branch])).toBe("");
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"])).not.toContain(branch);
+    expect(await fs.readFile(path.join(worktree, "occupied.txt"), "utf8")).toBe("test-owned\n");
+
+    await fs.rm(worktree, { recursive: true, force: true });
+    const retried = await realizeExecutionWorkspace({ ...input, recorder: await operationRecorder() });
+    expect(retried.branchCreatedByRuntime).toBe(true);
+    await expectUpstream(repoRoot, branch);
   });
 
   it("rolls back a new worktree whose parent directory is reached through a symlink", async () => {
@@ -3114,14 +3165,20 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
 
     expect(operations.map((operation) => operation.phase)).toEqual([
       "worktree_prepare",
+      "worktree_prepare",
       "workspace_provision",
     ]);
-    expect(operations[0]?.command).toContain("git worktree add");
+    expect(operations[0]?.command).toContain("git branch --no-track");
     expect(operations[0]?.metadata).toMatchObject({
+      branchName: "PAP-540-record-workspace-operations",
+      branchCreated: true,
+    });
+    expect(operations[1]?.command).toContain("git worktree add");
+    expect(operations[1]?.metadata).toMatchObject({
       branchName: "PAP-540-record-workspace-operations",
       created: true,
     });
-    expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
+    expect(operations[2]?.command).toBe("bash ./scripts/provision.sh");
   });
 
   it("truncates oversized provision command output before storing it in memory", async () => {

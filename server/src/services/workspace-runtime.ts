@@ -3398,42 +3398,67 @@ async function createTrackedGitWorktree(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const { repoRoot, worktreePath, branchName, baseRef, baseRefSha, recorder } = input;
-  // A failed `worktree add` created nothing, and the branch or path may belong
-  // to another process. Only the branch and worktree that this attempt created
-  // are rolled back.
+  // The branch is created in its own step, so that this attempt knows exactly
+  // what it created. If `git branch` fails, the branch may belong to another
+  // process and nothing is rolled back. After it succeeds, the branch is this
+  // attempt's own, and a later failure (checkout, a post-checkout hook, the
+  // upstream setup) removes that branch and any worktree registered at this
+  // attempt's path.
   await recordGitOperation(recorder, {
     phase: "worktree_prepare",
-    args: ["worktree", "add", "--no-track", "-b", branchName, worktreePath, baseRef],
+    args: ["branch", "--no-track", branchName, baseRef],
     cwd: repoRoot,
-    metadata: { repoRoot, worktreePath, branchName, baseRef, baseRefSha, created: true },
-    successMessage: `Created git worktree at ${worktreePath}\n`,
+    metadata: { repoRoot, branchName, baseRef, baseRefSha, created: true, branchCreated: true },
+    failureLabel: `Create branch ${branchName}`,
   });
   try {
+    await recordGitOperation(recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", worktreePath, branchName],
+      cwd: repoRoot,
+      metadata: { repoRoot, worktreePath, branchName, baseRef, baseRefSha, created: true },
+      successMessage: `Created git worktree at ${worktreePath}\n`,
+    });
     await ensureGitBranchUpstream(repoRoot, branchName, baseRef, recorder, true);
   } catch (error) {
     try {
-      const registeredPath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
-      if (registeredPath && await resolvePathForWorktreeComparison(registeredPath)
-        === await resolvePathForWorktreeComparison(worktreePath)) {
-        await recordGitOperation(recorder, {
-          phase: "worktree_cleanup",
-          args: ["worktree", "remove", "--force", worktreePath],
-          cwd: repoRoot,
-          metadata: { branchName, rollback: true },
-        });
-      }
-      if (await localBranchExists(repoRoot, branchName)) {
-        await recordGitOperation(recorder, {
-          phase: "worktree_cleanup",
-          args: ["branch", "-D", branchName],
-          cwd: repoRoot,
-          metadata: { branchName, rollback: true },
-        });
-      }
+      await rollBackCreatedGitWorktree({ repoRoot, worktreePath, branchName, recorder });
     } catch (rollbackError) {
       throw new AggregateError([error, rollbackError], `Worktree preparation and rollback failed for ${branchName}`);
     }
     throw error;
+  }
+}
+
+async function rollBackCreatedGitWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const { repoRoot, worktreePath, branchName, recorder } = input;
+  const registeredPath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+  if (registeredPath) {
+    if (await resolvePathForWorktreeComparison(registeredPath)
+      !== await resolvePathForWorktreeComparison(worktreePath)) {
+      // Another worktree now uses the branch, so it is no longer only this
+      // attempt's branch. Keep both.
+      return;
+    }
+    await recordGitOperation(recorder, {
+      phase: "worktree_cleanup",
+      args: ["worktree", "remove", "--force", worktreePath],
+      cwd: repoRoot,
+      metadata: { branchName, rollback: true },
+    });
+  }
+  if (await localBranchExists(repoRoot, branchName)) {
+    await recordGitOperation(recorder, {
+      phase: "worktree_cleanup",
+      args: ["branch", "-D", branchName],
+      cwd: repoRoot,
+      metadata: { branchName, rollback: true },
+    });
   }
 }
 
