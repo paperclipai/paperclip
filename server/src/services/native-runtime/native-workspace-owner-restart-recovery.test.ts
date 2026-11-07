@@ -226,6 +226,26 @@ describe("native workspace owner recovery after a restart", () => {
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
     });
 
+    it("records the volume on a new receipt only when the volume is fully configured", async () => {
+      const seed = await seedAbandonedCopyback();
+      await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, seed.runId));
+      currentDeployment({ RAILWAY_VOLUME_ID: "half-configured", RAILWAY_VOLUME_MOUNT_PATH: "" });
+      let recorded: Record<string, unknown> | undefined;
+      await withNativeWorkspaceFinalizationOwnership(seed, async () => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+        recorded = run.runnerProfileJson?.nativeWorkspaceFinalizationOwner as Record<string, unknown>;
+      });
+      expect(recorded).toBeDefined();
+      expect(recorded!.volumeId).toBeUndefined();
+      await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, seed.runId));
+      currentDeployment({ RAILWAY_VOLUME_ID: "mounted-volume" });
+      await withNativeWorkspaceFinalizationOwnership(seed, async () => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId));
+        recorded = run.runnerProfileJson?.nativeWorkspaceFinalizationOwner as Record<string, unknown>;
+      });
+      expect(recorded!.volumeId).toBe("mounted-volume");
+    });
+
     it("keeps the save fenced when the receipt names a different volume", async () => {
       currentDeployment();
       const seed = await previousDeploymentOwner();

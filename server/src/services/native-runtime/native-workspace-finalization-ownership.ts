@@ -22,7 +22,7 @@ import {
 
 import { currentWorkspaceWorker, requestWorkspaceWorkerStopProof, type WorkspaceWorker, type WorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
 import { currentProcessGroupId, proveLocalWorkspaceOwnerStopped, type LocalWorkspaceOwnerStop } from "./native-workspace-owner-stop-proof.js";
-import { proveOwnerGone } from "../owner-proof.js";
+import { currentDeploymentIdentity, proveOwnerGone } from "../owner-proof.js";
 
 const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
 
@@ -107,11 +107,13 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
   const identity = await currentNativeControllerIdentity();
   const processGroupId = await currentProcessGroupId();
+  const deployment = currentDeploymentIdentity();
   const owner: Owner = {
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
     processStartedAt: identity.processStartedAt.toISOString(),
     ...(processGroupId ? { processGroupId } : {}), worker: currentWorkspaceWorker(),
-    ...(process.env.RAILWAY_VOLUME_ID?.trim() ? { volumeId: process.env.RAILWAY_VOLUME_ID.trim() } : {}),
+    // Record a volume only when this deployment is volume-exclusive by the same rule the proof uses.
+    ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
   };
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
     input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
