@@ -1629,6 +1629,34 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  it.each([
+    { preferRequestedModel: true, expected: "acme-claude-sonnet-gw" },
+    { preferRequestedModel: undefined, expected: "opus" },
+  ])("labels usage with the model $expected when preferRequestedModel is $preferRequestedModel", async ({ preferRequestedModel, expected }) => {
+    const root = await makeTempRoot();
+    const onUsage = vi.fn();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        getStatus: async () => ({ models: { currentModelId: "opus", availableModelIds: [] } }),
+      }) as never,
+      resolveBillingIdentity: () => ({ provider: "anthropic", biller: "anthropic", billingType: "api", preferRequestedModel }),
+    });
+    const result = await execute({
+      runId: "run-requested-model",
+      onUsage,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), model: "acme-claude-sonnet-gw" },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe(expected);
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ model: expected, complete: true }));
+  });
+
   it.each(["checkpoint", "terminal"])("returns received usage after the %s receipt sink rejects and still closes the runtime", async (failedSave) => {
     const root = await makeTempRoot();
     const close = vi.fn(async () => {});

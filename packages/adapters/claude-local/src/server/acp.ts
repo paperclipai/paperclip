@@ -40,6 +40,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { resolveEnvBillingIdentity, resolveManagedApiKeyBilling } from "./acp-billing.js";
 import {
   materializeRemoteClaudeConfig,
   overrideRemoteClaudeLocalPermissionMode,
@@ -172,7 +173,9 @@ export function buildClaudeAcpConfig(
 export function resolveClaudeAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
-): { provider: string; biller: string; billingType: AdapterBillingType } {
+): { provider: string; biller: string; billingType: AdapterBillingType; preferRequestedModel?: true } {
+  const connection = resolveManagedApiKeyBilling(ctx.config);
+  if (connection) return connection;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -185,18 +188,7 @@ export function resolveClaudeAcpBillingIdentity(
     const fromHost = considerHostEnv ? process.env[key] : undefined;
     return typeof fromHost === "string" ? fromHost.trim() : "";
   };
-  const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
-  const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
-  const billingType: AdapterBillingType = bedrock
-    ? "metered_api"
-    : readEnvValue("ANTHROPIC_API_KEY")
-    ? "api"
-    : "subscription";
-  return {
-    provider: "anthropic",
-    biller: bedrock ? "aws_bedrock" : "anthropic",
-    billingType,
-  };
+  return resolveEnvBillingIdentity(readEnvValue);
 }
 
 /**

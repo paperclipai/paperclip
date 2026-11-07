@@ -1761,6 +1761,74 @@ describe("resolveClaudeAcpBillingIdentity", () => {
     });
   });
 
+  describe("with a managed AI connection", () => {
+    const attribution = (overrides: Record<string, unknown>) => ({
+      connectionId: "conn-1", grantId: "grant-1", mode: "shared", responsibleUserId: null, ...overrides,
+    });
+
+    it("labels a gateway api_key connection from the connection, whatever credential env it projects", () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      expect(
+        resolveClaudeAcpBillingIdentity({
+          config: {
+            model: "acme-claude-sonnet-gw",
+            managedAiConnection: attribution({ provider: "anthropic", method: "api_key" }),
+            managedAiRouting: { kind: "gateway", auth: "bearer", baseUrl: "https://gateway.example.test", protocol: "messages" },
+            env: { ANTHROPIC_AUTH_TOKEN: "token", ANTHROPIC_BASE_URL: "https://gateway.example.test" },
+          },
+        }),
+      ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "metered_api", preferRequestedModel: true });
+    });
+
+    it("bills an OpenRouter connection to OpenRouter", () => {
+      expect(
+        resolveClaudeAcpBillingIdentity({
+          config: {
+            managedAiConnection: attribution({ provider: "openrouter", method: "api_key" }),
+            managedAiRouting: { kind: "openrouter", auth: "bearer" },
+          },
+        }),
+      ).toEqual({ provider: "openrouter", biller: "openrouter", billingType: "metered_api", preferRequestedModel: true });
+    });
+
+    it("bills a local-routing connection to its provider", () => {
+      expect(
+        resolveClaudeAcpBillingIdentity({
+          config: {
+            managedAiConnection: attribution({ provider: "anthropic", method: "api_key" }),
+            managedAiRouting: { kind: "local", auth: "none" },
+          },
+        }),
+      ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "metered_api", preferRequestedModel: true });
+    });
+
+    it("keeps Bedrock routing metered", () => {
+      expect(
+        resolveClaudeAcpBillingIdentity({
+          config: {
+            managedAiConnection: attribution({ provider: "anthropic", method: "api_key" }),
+            managedAiRouting: { kind: "bedrock", region: "eu-central-1" },
+          },
+        }),
+      ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api", preferRequestedModel: true });
+    });
+
+    it("leaves a subscription connection with the labels it always got", () => {
+      delete process.env.ANTHROPIC_API_KEY;
+      delete process.env.CLAUDE_CODE_USE_BEDROCK;
+      delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+      const identity = resolveClaudeAcpBillingIdentity({
+        config: {
+          model: "claude-sonnet-5-5",
+          managedAiConnection: attribution({ provider: "anthropic", method: "subscription" }),
+          env: { ANTHROPIC_API_KEY: "" },
+        },
+      });
+      expect(identity).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "subscription" });
+      expect(identity).not.toHaveProperty("preferRequestedModel");
+    });
+  });
+
   it("ignores host env for remote execution targets", () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
     expect(
