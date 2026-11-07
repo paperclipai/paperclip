@@ -1128,9 +1128,15 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
         && !durableAuthority && stagedAttachment === null
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
-        && row.coordinator.phase === "observed" && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
-        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid
-          && row.coordinator.controllerProcessStartedAt && row.coordinator.leaseOwner)
+        && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
+        // Either the executor still held the claim, or it settled a same-run
+        // bootstrap retry itself (for example after a shutdown closed its local
+        // runtime listener) and released the lease. That retry already proved
+        // no provider session, event or checkpoint; the checks below re-prove it.
+        && (row.coordinator.phase === "observed" ? Boolean(row.coordinator.leaseOwner)
+          : row.coordinator.phase === "retryable_failure" && row.run.status === "failed"
+            && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && !row.coordinator.leaseOwner)
         && !row.coordinator.failureDetail?.successorRunId
         && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
         && !row.run.sessionIdBefore && !row.run.sessionIdAfter

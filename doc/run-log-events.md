@@ -361,6 +361,9 @@ runner-sourced event or controller checkpoint, records
 `remote_runner_never_launched` with the same disposition and budget. The
 executor records `native.process_start_requested` before a backend may spawn a
 runner, so its absence (with no checkpoint) proves nothing reached a runner.
+The same rule covers a remote run that its executor already settled as a
+same-run `bootstrap_retry` (for example when a shutdown closed the local
+runtime listener during startup) and that is due when the server restarts.
 
 For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
