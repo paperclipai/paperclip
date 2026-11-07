@@ -1,3 +1,5 @@
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
@@ -392,6 +394,34 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     const second = await heartbeat.sweepStaleIssueLocks();
     expect(first.cleared).toBe(1);
     expect(second.cleared).toBe(0);
+  });
+
+  it.each([["local", true], ["remote", false]] as const)("stamps a %s process pid with its PID space", async (targetKind, local) => {
+    const { runningRunId } = await seed();
+    await persistHeartbeatRunProcessMetadata(db, runningRunId, { pid: process.pid, processGroupId: null,
+      startedAt: new Date().toISOString(), targetKind });
+    const [run] = await db.select({ processHostHash: heartbeatRuns.processHostHash }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId));
+    expect(run?.processHostHash).toBe(local ? currentProcessSpaceHash() : "remote");
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space", false],
+    ["a sandbox", "remote", false],
+    ["an unreadable PID space", "unknown", false],
+    ["this PID space", "current", true],
+  ] as const)("judges a dead recorded pid only in its own PID space (%s)", async (_name, space, terminalized) => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000,
+      processHostHash: space === "current" ? currentProcessSpaceHash() : space })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({ id: randomUUID(), companyId, title: "Cross-host orphan", status: "in_progress",
+      priority: "high", assigneeAgentId: agentId, checkoutRunId: runningRunId, executionRunId: runningRunId,
+      executionLockedAt: new Date() });
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
+    const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run?.status).toBe(terminalized ? "interrupted" : "running");
   });
 
   it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
