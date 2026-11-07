@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 const execute = promisify(execFile);
 let root: string;
@@ -24,6 +25,14 @@ async function repository(name = "repository") {
   return cwd;
 }
 describe("Git physical source roots", () => {
+  it.each([
+    { cwd: "/source/a", providerRef: null, paths: ["/source/a"] },
+    { cwd: null, providerRef: "/source/a", paths: ["/source/a"] },
+    { cwd: "/source/a", providerRef: "/source/b", paths: ["/source/a", "/source/b"] },
+    { cwd: "/source/a", providerRef: "/source/a", paths: ["/source/a"] },
+  ])("retains every distinct local locator $cwd $providerRef", ({ cwd, providerRef, paths }) => {
+    expect(localWorkspaceSourcePaths({ cwd, providerRef })).toEqual(paths);
+  });
   it.each([false, true])("maps a configured directory symlink before strict Git inspection (%s)", async isGit => {
     vi.stubEnv("PAPERCLIP_HOME", root);
     const companyId = randomUUID(), projectId = randomUUID();

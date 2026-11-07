@@ -9,6 +9,7 @@ import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 import { assertCurrentWorkspaceSourceHeld, workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -7803,7 +7804,8 @@ async function withRuntimeServiceSourceLocks<T>(input: {
   issue: ExecutionWorkspaceIssueRef | null; adapterEnv: Record<string, string>; services: Record<string, unknown>[];
 }, action: () => Promise<T>): Promise<T> {
   if (!input.db || input.services.length === 0) return action();
-  const paths = [input.workspace.cwd, input.workspace.baseCwd, ...input.services.map(service =>
+  const paths = [...localWorkspaceSourcePaths({ cwd: input.workspace.cwd, providerRef: input.workspace.worktreePath }),
+    input.workspace.baseCwd, ...input.services.map(service =>
     resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
   const projectIds: string[] = [], issueIds: string[] = [];
   for (const cwd of new Set(paths)) {

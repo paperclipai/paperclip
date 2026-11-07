@@ -13,6 +13,7 @@ import { currentRestorePointSnapshot, RestorePointSkip, type RestorePointLimits 
 import { abandonGitRestorePoint, abandonGitRestorePointsByKey, activateGitRestorePoints, restorePointHistoryUnchanged, restorePointSnapshotMatches, storeGitRestorePoint } from "./git-restore-point-storage.js";
 import { withIsolatedRepositorySourceLock, verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
@@ -294,7 +295,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
   if (!snapshot.sourceIssueId) return { ...result, skipReason: "missing_source_issue" };
   try {
     return await withIsolatedRepositorySourceLock(db, snapshot.companyId, snapshot.sourceIssueId, async () => {
-      if (snapshot.cwd) await retainCurrentWorkspaceSource(snapshot.cwd);
+      for (const cwd of localWorkspaceSourcePaths(snapshot)) await retainCurrentWorkspaceSource(cwd);
       const retainedSource = readGitCacheRestoration(snapshot)?.sourcePath;
       if (retainedSource) await retainCurrentWorkspaceSource(retainedSource);
       return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {

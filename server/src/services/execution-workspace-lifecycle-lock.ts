@@ -2,6 +2,7 @@ import { executionWorkspaces, withDedicatedDbConnection, type Db } from "@paperc
 import { eq, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import { workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -22,12 +23,12 @@ export async function withExecutionWorkspaceLifecycleLock<T>(
 ): Promise<T> {
   const [source] = await db.select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId,
     providerType: executionWorkspaces.providerType, sourceIssueId: executionWorkspaces.sourceIssueId, cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
-  const sourceRoots = source && (source.cwd ?? source.providerRef)
-    ? await workspaceSourceIdentities(source.companyId, (source.cwd ?? source.providerRef)!) : null;
-  const projectIds = [...new Set([...(sourceRoots?.projectIds ?? []),
+  const sourceRoots = source ? await Promise.all(localWorkspaceSourcePaths(source)
+    .map(cwd => workspaceSourceIdentities(source.companyId, cwd))) : [];
+  const projectIds = [...new Set([...sourceRoots.flatMap(root => root.projectIds),
     source && ["local_fs", "git_worktree"].includes(source.providerType) ? source.projectId : null,
   ].filter((id): id is string => Boolean(id)))].sort();
-  const issueIds = [...new Set([...(sourceRoots?.issueIds ?? []),
+  const issueIds = [...new Set([...sourceRoots.flatMap(root => root.issueIds),
     source && ["local_fs", "git_worktree"].includes(source.providerType) ? source.sourceIssueId : null,
   ].filter((id): id is string => Boolean(id)))].sort();
   const workWithLifecycle = () => withDedicatedDbConnection(db, (connection) =>
@@ -36,8 +37,8 @@ export async function withExecutionWorkspaceLifecycleLock<T>(
       if ((projectIds.length || issueIds.length) && source) {
         const [fresh] = await tx.select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId,
           providerType: executionWorkspaces.providerType, sourceIssueId: executionWorkspaces.sourceIssueId, cwd: executionWorkspaces.cwd, providerRef: executionWorkspaces.providerRef }).from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
-        const freshRoots = fresh && (fresh.cwd ?? fresh.providerRef)
-          ? await workspaceSourceIdentities(fresh.companyId, (fresh.cwd ?? fresh.providerRef)!) : null;
+        const freshRoots = fresh ? await Promise.all(localWorkspaceSourcePaths(fresh)
+          .map(cwd => workspaceSourceIdentities(fresh.companyId, cwd))) : [];
         if (!fresh || fresh.companyId !== source.companyId || fresh.projectId !== source.projectId
           || fresh.providerType !== source.providerType || fresh.sourceIssueId !== source.sourceIssueId || !isDeepStrictEqual(freshRoots, sourceRoots)) {
           throw new Error("workspace_source_scope_changed");

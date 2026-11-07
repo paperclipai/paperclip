@@ -10,6 +10,7 @@ import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceR
 import type { LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { hasPendingGitExpiration } from "./git-workspace-expiration.js";
 import { readGitCacheRestoration } from "./git-workspace-restoration.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
@@ -25,13 +26,17 @@ const intersects = (values: string[], keys: Set<string>) => values.some(value =>
 
 export async function requiresOnlineWorkspaceSource(workspace: Workspace): Promise<boolean> {
   if (await requiresOnlineOrdinarySource(workspace)) return true;
-  const cwd = workspace.cwd ?? workspace.providerRef;
-  if (!cwd || !path.isAbsolute(cwd) || !["local_fs", "git_worktree"].includes(workspace.providerType)) return false;
-  const entry = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
-  if (!entry?.isDirectory() || entry.isSymbolicLink()) return false;
-  return Boolean(workspace.repoUrl || workspace.branchName || workspace.strategyType === "git_worktree"
-    || await fs.lstat(path.join(cwd, ".git")).then(() => true,
-      (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; }));
+  if (!["local_fs", "git_worktree"].includes(workspace.providerType)) return false;
+  for (const cwd of localWorkspaceSourcePaths(workspace)) {
+    if (!path.isAbsolute(cwd)) continue;
+    const root = await physicalPath(cwd);
+    const entry = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+    if (!entry?.isDirectory() || entry.isSymbolicLink()) continue;
+    if (workspace.repoUrl || workspace.branchName || workspace.strategyType === "git_worktree"
+      || await fs.lstat(path.join(root, ".git")).then(() => true,
+        (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; })) return true;
+  }
+  return false;
 }
 
 async function companion(db: ReadDb, workspace: Workspace) {
@@ -76,13 +81,12 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   if (rows.length > 1000) return null;
   const nodes: Array<{ row: Workspace; identities: Identities }> = [];
   for (const row of rows) {
-    const cwd = row.cwd ?? row.providerRef;
-    if (!cwd || !path.isAbsolute(cwd)) return null;
+    const paths = localWorkspaceSourcePaths(row);
+    if (!paths.length || paths.some(cwd => !path.isAbsolute(cwd))) return null;
     try {
-      const identities = await workspaceSourceIdentities(workspace.companyId, cwd);
-      if (row.cwd && row.providerRef && row.providerRef !== row.cwd) {
-        if (!path.isAbsolute(row.providerRef)) return null;
-        const alternate = await workspaceSourceIdentities(workspace.companyId, row.providerRef);
+      const identities = await workspaceSourceIdentities(workspace.companyId, paths[0]);
+      for (const cwd of paths.slice(1)) {
+        const alternate = await workspaceSourceIdentities(workspace.companyId, cwd);
         identities.projectIds = [...new Set([...identities.projectIds, ...alternate.projectIds])].sort();
         identities.issueIds = [...new Set([...identities.issueIds, ...alternate.issueIds])].sort();
       }
@@ -134,8 +138,7 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
         inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]), ...(after ? [gt(executionWorkspaces.id, after)] : [])))
       .orderBy(executionWorkspaces.id).limit(256);
     for (const row of foreign) {
-      for (const cwd of new Set([row.cwd, row.providerRef])) {
-        if (!cwd) continue;
+      for (const cwd of localWorkspaceSourcePaths(row)) {
         if (!path.isAbsolute(cwd)) return null;
         try {
           if (owned(await physicalPath(cwd))) return null;
@@ -161,7 +164,7 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   return { kind: "git", root: selected.git.root, projectId: null, projectIds: [...projectIds].sort(), issueIds,
     workspaceIds: [...aliases].sort(), device: entry.dev, inode: entry.ino, gitSourceRoots, companions,
-    physicalRoots: included.map(node => node.row.cwd ?? node.row.providerRef!).sort(),
+    physicalRoots: included.flatMap(node => localWorkspaceSourcePaths(node.row)).sort(),
     settledPreparedWorkspaceIds: settledPreparedWorkspaceIds.sort(), settledRecoveryIssueIds: [...settledRecoveryIssueIds].sort(),
     settledFinalizationRunIds: [...new Set(companions.flatMap(proof => proof.sources.map(source => source.runId)))].sort(),
     gitSourceFingerprints: included.map(node => ({ workspaceId: node.row.id, fingerprint: node.identities.git?.fingerprint ?? null })), importedChildren,

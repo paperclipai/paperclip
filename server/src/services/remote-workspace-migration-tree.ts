@@ -7,6 +7,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { managedProjectSourceIdentity } from "./workspace-source-lock.js";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -56,17 +57,22 @@ export type WorkspaceSourceScope = {
 };
 
 export async function requiresOnlineOrdinarySource(workspace: Workspace): Promise<boolean> {
-  if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return false;
-  const parts = path.relative(resolvePaperclipInstanceRoot(), workspace.cwd).split(path.sep);
-  const managed = parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
-    parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2])
-    || parts[2] === workspace.sourceIssueId && (parts[0] === "isolated-workspaces" && parts.length === 3
-      || parts[0] === "isolated-workspace-attempts" && parts.length === 4));
-  if (!managed) return false;
-  const entry = await fs.lstat(workspace.cwd).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null; throw error;
-  });
-  return Boolean(entry?.isDirectory() && !entry.isSymbolicLink());
+  if (workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return false;
+  const instance = await physicalPath(resolvePaperclipInstanceRoot());
+  for (const cwd of localWorkspaceSourcePaths(workspace)) {
+    const root = await physicalPath(cwd);
+    const parts = path.relative(instance, root).split(path.sep);
+    const managed = parts[1] === workspace.companyId && Boolean(workspace.sourceIssueId) && (
+      parts[0] === "projects" && parts.length === 4 && /^[a-f0-9-]{36}$/.test(parts[2])
+      || parts[2] === workspace.sourceIssueId && (parts[0] === "isolated-workspaces" && parts.length === 3
+        || parts[0] === "isolated-workspace-attempts" && parts.length === 4));
+    if (!managed) continue;
+    const entry = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null; throw error;
+    });
+    if (entry?.isDirectory() && !entry.isSymbolicLink()) return true;
+  }
+  return false;
 }
 
 export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<WorkspaceSourceScope | null> {
@@ -100,10 +106,10 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
   if (rows.length > 1000) return null;
   const aliases: typeof rows = [];
   for (const row of rows) {
-    const cwd = rootOf(row);
-    let physical: string;
-    try { physical = cwd ? await physicalPath(cwd) : ""; } catch { return null; }
-    if (!physical || !overlaps(root, physical)) continue;
+    const paths = localWorkspaceSourcePaths(row);
+    let physical: string[];
+    try { physical = await Promise.all(paths.map(physicalPath)); } catch { return null; }
+    if (!physical.some(cwd => overlaps(root, cwd))) continue;
     if (row.cwd !== root || row.providerRef && row.providerRef !== root
       || row.providerType !== "local_fs" || row.repoUrl || row.branchName || !row.sourceIssueId
       || isolated && row.sourceIssueId !== workspace.sourceIssueId
@@ -121,8 +127,9 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
       ...(after ? [gt(executionWorkspaces.id, after)] : []),
     )).orderBy(executionWorkspaces.id).limit(256);
     for (const row of foreign) {
-      const cwd = rootOf(row);
-      try { if (cwd && overlaps(root, await physicalPath(cwd))) return null; } catch { return null; }
+      for (const cwd of localWorkspaceSourcePaths(row)) {
+        try { if (overlaps(root, await physicalPath(cwd))) return null; } catch { return null; }
+      }
     }
     if (foreign.length < 256) break;
     if (page === 39) return null;
@@ -216,14 +223,14 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
   ));
   const root = await physicalPath(cwd);
   for (const row of local) {
-    const cwd = rootOf(row);
-    if (!cwd) continue;
-    const physical = await physicalPath(cwd);
-    if (onlineSource?.gitSourceRoots && physical.startsWith(`${root}/.paperclip/worktrees/`)) {
-      const entry = await fs.lstat(physical).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
-      if (entry) return ["nested_workspace_import_required"];
+    for (const cwd of localWorkspaceSourcePaths(row)) {
+      const physical = await physicalPath(cwd);
+      if (onlineSource?.gitSourceRoots && physical.startsWith(`${root}/.paperclip/worktrees/`)) {
+        const entry = await fs.lstat(physical).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+        if (entry) return ["nested_workspace_import_required"];
+      }
+      if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
     }
-    if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
   }
   if (onlineSource?.gitSourceRoots) return [];
   const migrated = await db.select({ cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(

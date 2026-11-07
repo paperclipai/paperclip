@@ -20,6 +20,13 @@ before Git inspection. Git pointer files and administration/object-store links
 retain their strict checks. A configured symlink does not make a direct symlink
 migration source admissible.
 
+Physical exclusion enumerates both `cwd` and `providerRef` through one source
+path owner. Company/foreign alias checks, early admission, layout checks and
+filesystem mutation owners use that set. A managed or Git source in either
+locator requires a proven scope before the legacy fallback. Capture and display
+keep their existing preferred-path selection. Missing archived sources retain
+their existing reconstruction path.
+
 Preparation, lifecycle, runtime-service, expiration, and reopen owners retain
 the same physical keys before filesystem mutation or lifecycle exclusion. The
 importer holds all cohort task/project and lifecycle keys through publication.

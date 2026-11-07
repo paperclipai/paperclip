@@ -9,6 +9,7 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
 import { workspaceSourceIdentities, retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration, listIssuesUsingGitWorkspace } from "./git-workspace-expiration.js";
 import { expireIsolatedTaskDirectory, hasPendingTaskDirectoryRetention, isIsolatedTaskDirectoryWorkspace, isRetryableTaskDirectorySkip,
   mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, restoreIsolatedTaskDirectory, supersedeTaskDirectoryRestorePoint,
@@ -4776,8 +4777,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (freshSnapshot.providerType === "plugin") return reopenSource();
       const projectIds = new Set<string>(), issueIds = new Set<string>();
       if (freshSnapshot.projectId) projectIds.add(freshSnapshot.projectId);
-      for (const cwd of new Set([freshSnapshot.cwd, freshSnapshot.providerRef])) {
-        if (!cwd) continue;
+      for (const cwd of localWorkspaceSourcePaths(freshSnapshot)) {
         const identities = await workspaceSourceIdentities(freshSnapshot.companyId, cwd);
         for (const id of identities.projectIds) projectIds.add(id);
         for (const id of identities.issueIds) issueIds.add(id);

@@ -101,18 +101,75 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   async function stored(workspaceId: string) {
     return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0];
   }
-  it("rejects a foreign Git alias recorded only in providerRef", async () => {
-    const f = await gitFixture(), companyId = randomUUID(), cwd = path.join(home, "foreign-display-root");
-    await fs.mkdir(cwd);
-    await db.insert(companies).values({ id: companyId, name: "Foreign Git owner", issuePrefix: "FGIT" });
-    await db.insert(executionWorkspaces).values({ companyId, name: "Foreign Git alias", mode: "shared_workspace",
-      strategyType: "project_primary", providerType: "local_fs", cwd, providerRef: f.child.cwd });
-    const input = { companyId: f.companyId, workspaceId: f.child.id };
-    expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: false });
-    await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).rejects.toThrow("remote_workspace_migration_blocked");
-    expect(readRemoteWorkspaceAuthority((await stored(f.child.id)).metadata)).toBeNull();
-    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([]);
-    expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  it.each(["ordinary", "Git"].flatMap(kind => ["cwd", "providerRef", "different", "alias"].map(locator => ({ kind, locator }))))(
+    "rejects foreign $kind ownership through $locator source locators", async ({ kind, locator }) => {
+      const base = await fixture(), f = kind === "Git" ? await gitFixture(base) : null;
+      const workspaceId = f?.child.id ?? base.workspaceId, sourcePath = f?.child.cwd ?? base.cwd;
+      const companyId = randomUUID(), unrelated = path.join(home, "foreign-display-root"), alias = path.join(home, "foreign-path-alias");
+      await fs.mkdir(unrelated); await fs.symlink(sourcePath, alias);
+      await db.insert(companies).values({ id: companyId, name: "Foreign source owner", issuePrefix: "FOREIGN" });
+      await db.insert(executionWorkspaces).values({ companyId, name: "Foreign source alias", mode: "shared_workspace",
+        strategyType: "project_primary", providerType: "local_fs",
+        cwd: locator === "cwd" ? sourcePath : locator === "providerRef" ? null : unrelated,
+        providerRef: locator === "cwd" ? null : locator === "alias" ? alias : sourcePath });
+      const input = { companyId: base.companyId, workspaceId };
+      expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: false });
+      await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).rejects.toThrow("remote_workspace_migration_blocked");
+      expect(readRemoteWorkspaceAuthority((await stored(workspaceId)).metadata)).toBeNull();
+      expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([]);
+      expect(await fs.readFile(path.join(sourcePath, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+    });
+  it.each(["cwd", "providerRef"] as const)("rejects a mismatched same-company ordinary %s owner", async locator => {
+    const f = await fixture(), unrelated = path.join(home, "another-source");
+    await fs.mkdir(unrelated);
+    await db.update(executionWorkspaces).set({ cwd: locator === "cwd" ? f.cwd : unrelated,
+      providerRef: locator === "cwd" ? unrelated : f.cwd }).where(eq(executionWorkspaces.id, f.aliases[1].workspace.id));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
+  });
+  it.each(["providerRef", "different", "alias", "secondary-Git"] as const)("requires a proven source for the selected %s locator before fallback", async locator => {
+    const base = await fixture(), f = locator === "secondary-Git" ? await gitFixture(base) : null;
+    for (const alias of base.aliases.slice(f ? 0 : 1)) await db.update(executionWorkspaces).set({ providerType: "plugin" })
+      .where(eq(executionWorkspaces.id, alias.workspace.id));
+    const workspaceId = f?.child.id ?? base.workspaceId, sourcePath = f?.child.cwd ?? base.cwd;
+    const unrelated = path.join(home, "selected-display-root"); await fs.mkdir(unrelated);
+    const alias = path.join(home, "selected-path-alias"); await fs.symlink(sourcePath, alias);
+    await db.update(executionWorkspaces).set({ cwd: locator === "providerRef" ? null : unrelated,
+      providerRef: locator === "alias" ? alias : sourcePath, repoUrl: null, branchName: null,
+      strategyType: "project_primary" }).where(eq(executionWorkspaces.id, workspaceId));
+    const input = { companyId: base.companyId, workspaceId };
+    expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
+    expect(await fs.readFile(path.join(sourcePath, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
+  it.each(["cwd", "providerRef", "different", "alias"] as const)("reserves every %s source locator before the actual lifecycle owner", async locator => {
+    const f = await fixture(), unrelated = path.join(home, "lifecycle-display-root"), alias = path.join(home, "lifecycle-path-alias");
+    await fs.mkdir(unrelated); await fs.symlink(f.cwd, alias);
+    await db.update(executionWorkspaces).set({ projectId: null,
+      cwd: locator === "cwd" ? f.cwd : locator === "providerRef" ? null : unrelated,
+      providerRef: locator === "cwd" ? null : locator === "alias" ? alias : f.cwd }).where(eq(executionWorkspaces.id, f.workspaceId));
+    let entered!: () => void, release!: () => void, mutated = false;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId] }, async () => { entered(); await pending; });
+    await started;
+    const lifecycle = withExecutionWorkspaceLifecycleLock(db, f.workspaceId, async () => { mutated = true; });
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(waiting[0].n).toBeGreaterThan(0);
+      });
+      expect(mutated).toBe(false);
+      const key = `execution_workspace_lifecycle:${f.workspaceId}`;
+      const locks = await db.execute(sql`select count(*)::int n from pg_locks where locktype='advisory' and granted
+        and classid=((hashtextextended(${key},0)>>32)&4294967295)::oid and objid=(hashtextextended(${key},0)&4294967295)::oid`);
+      expect(locks[0].n).toBe(0);
+    } finally { release(); await owner; await lifecycle; }
+    expect(mutated).toBe(true);
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
   function uploadBarrier() {
     let entered!: () => void, release!: () => void;
