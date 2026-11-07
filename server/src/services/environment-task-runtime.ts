@@ -80,7 +80,6 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   } : null;
   const launches = operation.kind === "submit" || operation.kind === "prepare";
   const scopesProjects = launches || operation.kind === "check_project_auth" || operation.kind === "read_file";
-  // Release/resume carry no scope of their own; the provider binds them to the scope the run prepared.
   const retainedTask = operation.kind === "release" || operation.kind === "resume";
   const resumeFrom = launches || checkpointIdentity ? (operation as { resumeFrom?: string }).resumeFrom : undefined;
   const savedIdentity = metadata.runnerTaskIdentity as Record<string, unknown> | undefined;
