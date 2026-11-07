@@ -1,3 +1,4 @@
+import { teamsThreadRootMessageId } from "../inbound/surfaces.js";
 import { createHash } from "node:crypto";
 import type { ChatEndpointRuntime } from "../../voice/voice-runtime.js";
 import { MAX_INBOUND_TEXT, lifecycleActorFromAuthor, type LifecycleActor } from "../message-lifecycle.js";
@@ -96,4 +97,27 @@ export function teamsActivitySentAt(raw: unknown): Date | null {
     return null;
   const sentAt = new Date(value);
   return Number.isFinite(sentAt.getTime()) ? sentAt : null;
+}
+
+export function teamsOrphanFollowUp(threadId: string, messageId: string): boolean {
+  const rootMessageId = teamsThreadRootMessageId(threadId);
+  return Boolean(rootMessageId) && rootMessageId !== messageId;
+}
+
+export function teamsAttachmentReferenceText(count: number, providerUrl: string | null): string {
+  return `Shared ${count} Microsoft Teams file reference${count === 1 ? "" : "s"}.${providerUrl ? ` Open in Microsoft Teams: ${providerUrl}` : ""}`;
+}
+
+export function teamsWebhookLifecycleEventFromPayload(
+  payload: unknown,
+  endpointRuntime: Pick<ChatEndpointRuntime, "acceptsProviderScope" | "parseMicrosoftTeamsMessage">,
+): MicrosoftTeamsLifecycleEvent | null {
+  if (!payload || !endpointRuntime.acceptsProviderScope(payload)) return null;
+  return microsoftTeamsLifecycleEventFromPayload(payload, endpointRuntime);
+}
+
+export function teamsRootMentionCanEnableSetupDestination(
+  resource: { type: string } | null | undefined,
+): boolean {
+  return resource?.type === "channel";
 }

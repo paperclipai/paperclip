@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -379,6 +380,77 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
 });
 
 describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => {
+  // The pod's pinned descriptor protocol depends on Linux /proc/self/fd.
+  it.skipIf(process.platform !== "linux")("preserves source entry names when requested while retaining explicit exclusions", async () => {
+    const remoteDir = await makeTmp("k8s-source-entry-"), hostOut = await makeTmp("k8s-source-output-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const names = ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"];
+    await fs.chmod(path.join(remoteDir, "nested"), 0o775);
+    for (const name of names) {
+      await fs.writeFile(path.join(remoteDir, name), `user work: ${name}`);
+      await fs.chmod(path.join(remoteDir, name), 0o664);
+    }
+    await fs.writeFile(path.join(remoteDir, "excluded.txt"), "excluded by caller");
+    const { exec } = makeRealExec();
+    await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
+      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["excluded.txt"],
+    }] }] });
+    for (const name of names) {
+      expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`user work: ${name}`);
+      expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`user work: ${name}`);
+      expect((await fs.stat(path.join(hostOut, name))).mode & 0o777).toBe(0o664);
+    }
+    expect((await fs.stat(path.join(hostOut, "nested"))).mode & 0o777).toBe(0o775);
+    await expect(fs.stat(path.join(hostOut, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "linux")("preserves literal excluded paths without excluding same basenames or glob matches", async () => {
+    const remoteDir = await makeTmp("k8s-literal-"), hostOut = await makeTmp("k8s-literal-out-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const socket = createServer();
+    await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path.join(remoteDir, "ipc"), resolve); });
+    try {
+      const names = ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"];
+      for (const name of names) {
+        await fs.mkdir(path.dirname(path.join(remoteDir, name)), { recursive: true });
+        await fs.writeFile(path.join(remoteDir, name), `literal work: ${name}`);
+      }
+      await fs.writeFile(path.join(remoteDir, "omit[ab]*?"), "excluded literal file");
+      await fs.mkdir(path.join(remoteDir, "skip[ab]*?"));
+      await fs.writeFile(path.join(remoteDir, "skip[ab]*?/excluded.txt"), "excluded subtree");
+      const { exec } = makeRealExec();
+      const result = await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "literal", files: [{
+        kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["ipc", "omit[ab]*?", "skip[ab]*?"],
+      }] }] });
+      expect(result.operations[0].filesTransferred).toBe(4);
+      for (const name of names) {
+        expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`literal work: ${name}`);
+        expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`literal work: ${name}`);
+      }
+      for (const name of ["ipc", "omit[ab]*?", "skip[ab]*?"]) await expect(fs.lstat(path.join(hostOut, name))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.lstat(path.join(remoteDir, "ipc"))).isSocket()).toBe(true);
+    } finally { await new Promise<void>(resolve => socket.close(() => resolve())); }
+  });
+
+  it.skipIf(process.platform !== "linux").each(["file", "directory"])("refuses preserved %s special modes before host writes", async kind => {
+    const remoteDir = await makeTmp("k8s-special-source-"), hostOut = await makeTmp("k8s-special-output-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    await fs.writeFile(path.join(remoteDir, "result.txt"), "source work");
+    await fs.writeFile(path.join(hostOut, "retained.txt"), "existing host work");
+    const source = path.join(remoteDir, kind === "directory" ? "nested" : "result.txt");
+    const mode = kind === "directory" ? 0o1775 : 0o1664;
+    await fs.chmod(source, mode);
+    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
+    const { exec } = makeRealExec();
+    await expect(performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
+      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true,
+    }] }] })).rejects.toThrow("special mode bits");
+    expect(await fs.readdir(hostOut)).toEqual(["retained.txt"]);
+    expect(await fs.readFile(path.join(hostOut, "retained.txt"), "utf8")).toBe("existing host work");
+    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
+    expect(await fs.readFile(path.join(remoteDir, "result.txt"), "utf8")).toBe("source work");
+  });
+
   it("streams all file mappings back over a SINGLE exec and reassembles them at host targets, preserving mode and per-operation counts", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const hostOut = await makeTmp("k8s-hostout-");

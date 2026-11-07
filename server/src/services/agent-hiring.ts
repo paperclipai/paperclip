@@ -1,3 +1,7 @@
+import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
+import { initializeDurableAgentFiles } from "./agent-file-durability.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifySkillVersionRetention, notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
@@ -12,8 +16,20 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
+import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 
-export async function prepareAgentHire(db: Db, companyId: string, data: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+  await notifyAttentionRetentionWork(db, { companyId });
+  const { runner, ...data } = input;
+  const selection = options?.runnerResolved
+    ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
+    : await resolveNewAgentRunnerForCompany(db, companyId, {
+        ...data, adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {}, runner,
+      });
+  data.adapterType = selection.adapterType;
+  data.adapterConfig = selection.adapterConfig;
   const { ensureManager, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
   assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
@@ -25,7 +41,7 @@ export async function prepareAgentHire(db: Db, companyId: string, data: CreateAg
     .select({ id: agents.id, name: agents.name, status: agents.status })
     .from(agents)
     .where(eq(agents.companyId, companyId));
-  const uniqueName = deduplicateAgentName(data.name, existingAgents);
+  const uniqueName = deduplicateAgentName(data.name, existingAgents.filter(agent => agent.id !== options?.setupAgentId));
 
   const role = data.role ?? "general";
   const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
@@ -35,11 +51,20 @@ export async function prepareAgentHire(db: Db, companyId: string, data: CreateAg
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+  const profile = { adapterType, adapterConfig };
+  const providerApiDraft = options?.setupOnly === true && isProviderApiSetupDraft(profile);
+  const providerApi = providerApiDraft ? null : resolveProviderApiPlacement({ agent: profile });
+  if (providerApi) assertProviderApiPlacementPolicy(await instanceSettingsService(db).getGeneral());
+  if (!providerApiDraft && !providerApi && adapterType === "paperclip_runner" && !["openai_dot", "grok_bot", "muse"].includes(String(adapterConfig.provider)) &&
+      (await resolveAgentRunnerTaskDriverForCompany(db, companyId, data.defaultEnvironmentId))?.warmTaskVersion === 1) {
+    adapterConfig.lifecycleMode = "warm";
+  }
   await agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
     companyId, consume: true, environmentId: data.defaultEnvironmentId ?? null,
     childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,
     decision: assertClaudeOAuthBindingInvariant({ adapterType, nextConfig: adapterConfig }),
   });
+  if (options?.setupAgentId) await notifySkillVersionRetention(db, companyId);
   return { ...data, name: uniqueName,
     appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
     role, adapterType, adapterConfig, permissions: normalizedPermissions, runtimeConfig };
@@ -48,10 +73,12 @@ export async function prepareAgentHire(db: Db, companyId: string, data: CreateAg
 export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, options?: CreateAgentOptions) {
   const tx = txDb;
   const companyId = created.companyId;
+  assertEphemeralAgentInstructions({ ...created, name: "" });
+  await initializeDurableAgentFiles(txDb, created);
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
   // New standard agents receive the standard direct grants at activation.
   // Low-trust and bundled agents keep their explicit, narrower grants.
-  if (created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
+  if (!options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
       !readBuiltInAgentMarker(created.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
@@ -73,7 +100,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
     }))).onConflictDoNothing();
   }
   await agentCredentialService(txDb).syncAgentSecretBindings(created, txDb);
-  if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
+  if (!options?.setupOnly && options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
     await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
   }
 }
@@ -115,6 +142,8 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
         nextConfig: patch.adapterConfig, priorConfig: existing.adapterConfig }),
     });
   }
+  if (patch.adapterConfig !== undefined) await notifySkillVersionPinChange(txDb, existing.companyId, existing.adapterConfig ?? {}, patch.adapterConfig);
+  assertEphemeralAgentInstructions({ ...existing, ...patch, name: "" });
   return patch;
 }
 

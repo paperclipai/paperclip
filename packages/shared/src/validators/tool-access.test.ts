@@ -5,12 +5,20 @@ import {
   createToolMcpGatewayTokenSchema,
   createToolConnectionSchema,
   startConnectionAuthorizationSchema,
+  startToolOAuthSchema,
   toolCredentialSecretRefSchema,
   toolRedactedValueSummarySchema,
   toolTransportConfigSchema,
 } from "./tool-access.js";
 
 describe("tool access validators", () => {
+  it("accepts only nonempty reviewed Workspace service groups", () => {
+    expect(startToolOAuthSchema.parse({ workspaceServices: { gmail: "read", drive: "write" } }).workspaceServices).toEqual({ gmail: "read", drive: "write" });
+    for (const workspaceServices of [{}, { chat: "read" }, { people: "read" }, { gmail: "admin" }]) {
+      expect(startToolOAuthSchema.safeParse({ workspaceServices }).success).toBe(false);
+      expect(connectToolAppSchema.safeParse({ galleryKey: "google-workspace", workspaceServices }).success).toBe(false);
+    }
+  });
   it("treats a gateway token owner note as optional", () => {
     const parsed = createToolMcpGatewayTokenSchema.parse({
       name: "cursor-client",

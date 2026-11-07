@@ -1,6 +1,6 @@
 import type { DbOrTransaction } from "../runtime-types.js";
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, chatActions, chatDeliveries, chatMessageLinks, chatPublications, issueComments } from "@paperclipai/db";
@@ -18,9 +18,13 @@ type NoticeOptions = {
   isExternalActionAuthorizationChange: (error: unknown) => boolean;
   isShuttingDown: () => boolean;
 };
+export type InboundWakeNoticeScope = { companyId: string; issueId?: string };
+export type InboundWakeNoticeCursor = { createdAt: string; id: string };
+type NoticeCandidate = { action: typeof chatActions.$inferSelect; cursorCreatedAt: string };
+
 export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
   const { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange } = options;
-  let inboundWakeNoticeCursor: { createdAt: Date; id: string } | null = null;
+  let inboundWakeNoticeCursor: InboundWakeNoticeCursor | null = null;
   async function currentInboundWakeNotice(
     tx: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
@@ -130,15 +134,19 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
     return Boolean(link);
   }
 
-  async function enqueueInboundWakeupPublications(limit = 50): Promise<number> {
-    if (options.isShuttingDown()) return 0;
-    const retryInserted = await enqueueFailedChatRetryPublications(limit);
+  function noticeCandidateQuery(cursor: InboundWakeNoticeCursor | null, scope?: InboundWakeNoticeScope) {
     const owner = alias(agentWakeupRequests, "chat_notice_owner");
-    const cursor = inboundWakeNoticeCursor;
+    // Keep UUID columns indexable. Match only canonical lowercase UUID text,
+    // preserving the old comparison while malformed payloads match nothing.
+    const payloadUuid = (value: SQL) =>
+      sql<string>`(case when ${value} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (${value})::uuid end)`;
+    const payloadIssueId = payloadUuid(sql`${chatActions.payload}->>'issueId'`);
+    const payloadCommentId = payloadUuid(sql`${chatActions.payload}->>'commentId'`);
+    const coalescedOwnerId = sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId'`;
     const sourceRemoved = sql`exists (select 1 from issue_comments removed_comment
       where removed_comment.company_id = ${chatActions.companyId}
-        and removed_comment.issue_id::text = ${chatActions.payload}->>'issueId'
-        and removed_comment.id::text = ${chatActions.payload}->>'commentId'
+        and removed_comment.issue_id = ${payloadIssueId}
+        and removed_comment.id = ${payloadCommentId}
         and removed_comment.deleted_at is not null)`;
     const hasVisibleQueue = sql`exists (select 1 from chat_publications queued_notice
       join chat_message_links visible_queue on visible_queue.publication_id = queued_notice.id
@@ -148,14 +156,15 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
         and visible_queue.provider_message_id = queued_notice.provider_message_id
         and visible_queue.direction = 'outbound' and visible_queue.comment_id is null
       where queued_notice.company_id = ${chatActions.companyId}
-        and queued_notice.comment_id::text = ${chatActions.payload}->>'commentId'
+        and queued_notice.comment_id = ${payloadCommentId}
         and queued_notice.state = 'published'
         and queued_notice.idempotency_key = 'wake:' || ${owner.id}::text || ':queued:' ||
           ${chatActions.endpointId}::text || ':' || ${chatActions.conversationId}::text)`;
     // A bounded keyset sweep, not an in-memory work queue. Advancing even past
     // revoked candidates prevents an inaccessible old message starving others.
-    const candidates = await db
-      .select({ action: chatActions })
+    return db
+      .select({ action: chatActions, cursorCreatedAt: sql<string>`${chatActions.createdAt}::text`,
+        issueId: payloadIssueId.as("notice_issue_id") })
       .from(chatActions)
       .innerJoin(
         agentWakeupRequests,
@@ -163,11 +172,14 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
       )
       .innerJoin(
         owner,
-        sql`${owner.id}::text = coalesce(${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId', ${agentWakeupRequests.id}::text)`,
+        sql`${owner.id} = case when ${coalescedOwnerId} is null then ${agentWakeupRequests.id} else ${payloadUuid(coalescedOwnerId)} end`,
       )
       .where(
         and(
           eq(chatActions.kind, "inbound_wakeup"),
+          sql`${payloadIssueId} is not null`,
+          scope ? eq(chatActions.companyId, scope.companyId) : undefined,
+          scope?.issueId ? eq(payloadIssueId, scope.issueId) : undefined,
           inArray(chatActions.status, ["processed", "failed"]),
           eq(owner.companyId, chatActions.companyId),
           or(
@@ -186,7 +198,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
           and ${agentWakeupRequests.status} not in ('cancelled','failed','skipped') and not (${sourceRemoved}))
           or ${hasVisibleQueue})`,
           cursor
-            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`
             : undefined,
           sql`not exists (select 1 from chat_publications notice
           where notice.company_id = ${chatActions.companyId}
@@ -196,16 +208,28 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
                 then 'queued' else 'not_started' end) || ':' ||
               ${chatActions.endpointId}::text || ':' || ${chatActions.conversationId}::text)`,
         ),
-      )
+      );
+  }
+
+  async function noticeCandidates(limit: number, cursor: InboundWakeNoticeCursor | null, scope?: InboundWakeNoticeScope): Promise<NoticeCandidate[]> {
+    return noticeCandidateQuery(cursor, scope)
       .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
       .limit(Math.max(1, Math.min(limit, 200)));
-    const last = candidates.at(-1)?.action;
-    inboundWakeNoticeCursor =
-      candidates.length >= Math.max(1, Math.min(limit, 200)) && last
-        ? { createdAt: last.createdAt, id: last.id }
-        : null;
-    let inserted = retryInserted;
+  }
+
+  function continuation(candidates: NoticeCandidate[], limit: number): InboundWakeNoticeCursor | null {
+    const last = candidates.at(-1);
+    return candidates.length === limit && last
+      ? { createdAt: last.cursorCreatedAt, id: last.action.id }
+      : null;
+  }
+
+  async function projectNotices(candidates: NoticeCandidate[], signal?: AbortSignal) {
+    let inserted = 0;
+    let contended = false;
     for (const { action } of candidates) {
+      signal?.throwIfAborted();
+      if (options.isShuttingDown()) throw new Error("Inbound wake notice reconciliation stopped");
       try {
         inserted += await db.transaction(async (tx) => {
           const [receipt] = await tx
@@ -285,15 +309,44 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
           return rows.length;
         });
       } catch (error) {
-        if (
-          !isExternalActionAuthorizationChange(error) &&
-          !isExternalChatWaitAuthorizationContention(error) &&
-          !(error instanceof NativeChatReviewPresentationContentionError)
-        )
-          throw error;
+        if (isExternalChatWaitAuthorizationContention(error)
+          || error instanceof NativeChatReviewPresentationContentionError) contended = true;
+        else if (!isExternalActionAuthorizationChange(error)) throw error;
       }
     }
-    return inserted;
+    return { inserted, contended };
+  }
+
+  /** The explicit/manual API keeps its bounded cursor and combined retry-notice
+   * behavior. Background owners reconcile the two duties independently. */
+  async function enqueueInboundWakeupPublications(limit = 50): Promise<number> {
+    if (options.isShuttingDown()) return 0;
+    const retryInserted = await enqueueFailedChatRetryPublications(limit);
+    const pageSize = Math.max(1, Math.min(limit, 200));
+    const candidates = await noticeCandidates(pageSize, inboundWakeNoticeCursor);
+    inboundWakeNoticeCursor = continuation(candidates, pageSize);
+    return retryInserted + (await projectNotices(candidates)).inserted;
+  }
+
+  async function loadInboundWakeNoticeScopes(scope?: InboundWakeNoticeScope, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (scope?.issueId) return [{ companyId: scope.companyId, issueId: scope.issueId }];
+    const candidates = noticeCandidateQuery(null, scope).as("inbound_notice_candidates");
+    return db.selectDistinct({ companyId: candidates.action.companyId, issueId: candidates.issueId })
+      .from(candidates);
+  }
+
+  async function reconcileInboundWakeNotices(input: {
+    scope: InboundWakeNoticeScope; limit?: number; cursor?: InboundWakeNoticeCursor | null; signal?: AbortSignal;
+  }) {
+    // Bound authorization work, not successful publications: denied history is
+    // still a candidate check. The worker retains this precise cursor between
+    // passes and resets it when a committed change invalidates the scope.
+    input.signal?.throwIfAborted();
+    const limit = Math.max(1, Math.min(input.limit ?? 100, 200));
+    const candidates = await noticeCandidates(limit, input.cursor ?? null, input.scope);
+    const result = await projectNotices(candidates, input.signal);
+    return { ...result, nextCursor: continuation(candidates, limit) };
   }
 
   async function authorizeInboundWakePublication(
@@ -373,5 +426,5 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
       throw error;
     }
   }
-  return { enqueueInboundWakeupPublications, authorizeInboundWakePublication };
+  return { enqueueInboundWakeupPublications, loadInboundWakeNoticeScopes, reconcileInboundWakeNotices, authorizeInboundWakePublication };
 }

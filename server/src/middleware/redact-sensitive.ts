@@ -27,6 +27,12 @@ const SENSITIVE_KEYS = new Set<string>([
   "configuration_token",
   "credential",
   "credentials",
+  // The app-connect/reconnect envelope. Its keys are caller-chosen provider
+  // config paths (`credentials.authorization`, `headers.X-Api-Key`), so they
+  // never match a leaf name in this set; redact the envelope by name. This is
+  // the durable half: the path list in http-log-redaction.ts only ever covers
+  // shapes someone has already seen leak.
+  "credentialvalues",
   "password",
   "currentpassword",
   "newpassword",
@@ -76,6 +82,8 @@ const SENSITIVE_KEYS = new Set<string>([
   "signingsecret",
   "webhook_secret",
   "webhooksecret",
+  "webhookkey",
+  "webhookurl",
   "paperclip_capability",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may

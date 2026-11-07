@@ -4,10 +4,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { recordChatWebhookReceipt } from "../../chat-webhook-diagnostics.js";
 import type { Db } from "@paperclipai/db";
+import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import { chatEndpoints } from "@paperclipai/db";
 import { logger } from "../../../middleware/logger.js";
 import { logActivity } from "../../activity-log.js";
-import type { EndpointRow } from "../runtime-types.js";
+import type { EndpointRow, InternalSetupState } from "../runtime-types.js";
 import type { GitHubWebhookScope } from "./webhook-scope.js";
 import type { createGitHubWebhookIngress } from "./webhook-ingress.js";
 import type { createChatCredentials } from "../credentials.js";
@@ -34,9 +35,30 @@ export function retryableGitHubWebhookResponse(): Response {
 }
 export function createGitHubWebhookAuthentication(db: Db, options: AuthenticationOptions) {
   const { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, reconcileGitHubWebhookRepository, stageGitHubWebhookIngress, processGitHubWebhookIngress, githubIngressAcceptedResponse, scheduleMessageProcessing, backgroundMessageTasks, redactError } = options;
+  async function recordVerifiedWebhook(endpoint: EndpointRow, credentialLease: CredentialMutationLeaseGuard, providerDeliveryId: string | null) {
+    const verifiedAt = new Date();
+    await db.transaction(async tx => {
+      // Verification belongs to the same credential lease and ingress epoch
+      // that authenticated the original provider bytes.
+      await credentialLease.assertOwned(tx);
+      await tx.update(chatEndpoints).set({
+        setup: { ...endpoint.setup, ...(endpoint.status === "attention" ? { step: "provider_setup" as const } : {}), webhookVerifiedAt: verifiedAt.toISOString() },
+        healthMessage: "GitHub webhook verified", updatedAt: verifiedAt,
+      }).where(eq(chatEndpoints.id, endpoint.id));
+      await logActivity(tx as unknown as Db, {
+        companyId: endpoint.companyId, actorType: "system", actorId: "github-webhook",
+        action: "chat_endpoint.webhook_verified", entityType: "tool_connection", entityId: endpoint.connectionId,
+        details: { endpointId: endpoint.id, provider: "github", providerDeliveryId },
+      });
+      await credentialLease.assertOwned(tx);
+    });
+  }
   async function authenticateGitHubWebhook(endpoint: EndpointRow, request: Request, scope: GitHubWebhookScope): Promise<Response | null> {
     const { replayingDurableGitHubIngress, matchesGitHubIngressFence, completeGitHubPreflightBeforeDeadline } = scope;
-    if (!replayingDurableGitHubIngress) {
+    const eventType = request.headers.get("x-github-event")?.trim() ?? "";
+    const verificationOnly = !replayingDurableGitHubIngress && endpoint.status === "attention" &&
+      ["issue_comment", "issues", "pull_request", "pull_request_review", "pull_request_review_comment"].includes(eventType);
+    if (!replayingDurableGitHubIngress && !verificationOnly) {
       await options.githubWebhookAuthenticationBarrier?.();
       let staged: GitHubIngressStageResult;
       try {
@@ -76,7 +98,6 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
     const inspection = request.clone();
     const body = await inspection.text();
     const signature = inspection.headers.get("x-hub-signature-256");
-    const eventType = inspection.headers.get("x-github-event");
     if (!replayingDurableGitHubIngress)
       await options.githubWebhookAuthenticationBarrier?.();
     if (eventType === "ping") {
@@ -107,39 +128,7 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
             valid = false;
           }
           if (!valid) return false;
-          const verifiedAt = new Date();
-          await db.transaction(async (tx) => {
-            // Bind the verified receipt to the same lease and secret that
-            // authenticated it. A reclaimed lease cannot commit a stale
-            // webhook verification after secret rotation or reconnect.
-            await credentialLease.assertOwned(tx);
-            await tx
-              .update(chatEndpoints)
-              .set({
-                setup: {
-                  ...current.endpoint.setup,
-                  webhookVerifiedAt: verifiedAt.toISOString(),
-                },
-                healthMessage: "GitHub webhook verified",
-                updatedAt: verifiedAt,
-              })
-              .where(eq(chatEndpoints.id, endpoint.id));
-            await logActivity(tx as unknown as Db, {
-              companyId: current.endpoint.companyId,
-              actorType: "system",
-              actorId: "github-webhook",
-              action: "chat_endpoint.webhook_verified",
-              entityType: "tool_connection",
-              entityId: current.endpoint.connectionId,
-              details: {
-                endpointId: current.endpoint.id,
-                provider: "github",
-                providerDeliveryId:
-                  inspection.headers.get("x-github-delivery") ?? null,
-              },
-            });
-            await credentialLease.assertOwned(tx);
-          });
+          await recordVerifiedWebhook(current.endpoint, credentialLease, inspection.headers.get("x-github-delivery"));
           return true;
         },
       );
@@ -184,6 +173,8 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
           !current ||
           current.endpoint.provider !== "github" ||
           !matchesGitHubIngressFence(runtimeContextForRecord(current)) ||
+          (verificationOnly && (current.endpoint.status !== "attention" ||
+            runtimeContextForRecord(current).generation !== ((endpoint.setup as InternalSetupState).runtimeGeneration ?? 0))) ||
           current.endpoint.status === "archived" ||
           current.endpoint.status === "paused" ||
           (current.endpoint.status === "revoked" &&
@@ -215,6 +206,7 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
         } catch {
           // Let the native adapter return its normal invalid-JSON response.
         }
+        const lifecycleEvent = ["github_app_authorization", "installation", "installation_repositories"].includes(eventType ?? "");
         if (payload) {
           const incomingInstallationId = payload.installation?.id;
           if (
@@ -233,6 +225,19 @@ export function createGitHubWebhookAuthentication(db: Db, options: Authenticatio
             // the endpoint.
             return "ignored";
           }
+          // A fresh signed event for the bound installation proves delivery
+          // after repair even when Cloud has already deduplicated the old ping.
+          // Foreign/lifecycle traffic cannot qualify a changed installation.
+          if (!current.endpoint.setup.webhookVerifiedAt &&
+              ["active", "verifying", "attention"].includes(current.endpoint.status) &&
+              incomingInstallationId !== undefined &&
+              String(incomingInstallationId) === credentials.installationId &&
+              !lifecycleEvent) {
+            await recordVerifiedWebhook(current.endpoint, credentialLease, inspection.headers.get("x-github-delivery"));
+          }
+        }
+        if (current.endpoint.status === "attention" && !lifecycleEvent) return "ignored";
+        if (payload) {
           await reconcileGitHubWebhookRepository(
             current.endpoint,
             payload,

@@ -18,11 +18,11 @@ export function resolveIssueDocumentDeepLink(hash: string): IssueDocumentDeepLin
   const target = parseDocumentAnnotationHash(hash);
   if (!target) return null;
 
-  if (target.documentKey === ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY) {
+  if (target.documentKey === ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY && !target.documentIssueId) {
     return { kind: "continuation-summary" };
   }
   const maximize = target.viewer === "full";
-  if (target.documentKey === "plan") {
+  if (target.documentKey === "plan" && !target.revisionId && !target.documentIssueId) {
     return { kind: "properties-pane", tab: "plans", documentKey: "plan", maximize };
   }
   return { kind: "properties-pane", tab: "document", documentKey: target.documentKey, maximize };

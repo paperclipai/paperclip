@@ -16,7 +16,9 @@ const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
 export default defineConfig({
   testDir: ".",
   projects: [
-    { name: "stories", testIgnore: "agent-personas.spec.ts" },
+    // The reproduction trial has a dedicated fixed-clock/browser contract and
+    // requires its frozen first-submission PNG via TRIAL_REFERENCE_PNG.
+    { name: "stories", testIgnore: ["agent-personas.spec.ts", "task-list-reproduction-trial.spec.ts"] },
     {
       name: "agent-personas", testMatch: "agent-personas.spec.ts", fullyParallel: false,
       snapshotPathTemplate: `${snapshotDir}/agent-personas/{arg}{ext}`,
@@ -47,7 +49,7 @@ export default defineConfig({
     deviceScaleFactor: 1,
     // JS-driven tickers/timers key off prefers-reduced-motion for
     // deterministic captures (CSS animations are already disabled).
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
     baseURL: process.env.STORYBOOK_TEST_BASE_URL ?? `http://localhost:${storybookPort}`,
   },
   webServer: process.env.STORYBOOK_TEST_BASE_URL ? undefined : {

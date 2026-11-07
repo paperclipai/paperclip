@@ -78,6 +78,7 @@ export interface SkillSource {
   lastSuccessAt: Date | null;
   lastScanCommit: string | null;
   lastError: string | null;
+  repairAction?: 'connection' | 'branch' | 'retry' | null;
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceSettingsRequest {
@@ -85,6 +86,15 @@ export interface SkillSourceSettingsRequest {
   automaticUpdates?: boolean;
   importNewSkills?: boolean;
   connectionId?: string | null;
+  /** Follow this branch/ref, or HEAD for the default branch. Version pins remain intact. */
+  trackingRef?: string;
+}
+export interface SkillSourceBranchesQuery { connectionId?: string }
+export interface SkillSourceBranches {
+  defaultBranch: string;
+  branches: Array<{ name: string; isDefault: boolean }>;
+  /** The bounded list may omit branches; an unlisted name can still be entered. */
+  truncated: boolean;
 }
 export interface ProjectSkillRepository {
   projectId: string;
@@ -96,6 +106,7 @@ export interface ProjectSkillRepository {
   bindingId: string | null;
   sourceId: string | null;
   status: 'available' | 'pending' | 'ready' | 'error';
+  importState?: 'queued' | 'importing';
   lastError: string | null;
 }
 export interface SkillSourceDiscoveryRequest {

@@ -233,3 +233,10 @@ export function telegramMarkdownAttachment(text: string): Attachment {
       type: "file",
     };
   }
+
+export function telegramIgnoresInboundMessage(message: { id: string; raw: unknown }): boolean {
+  return telegramZeroMessageId(message.id) ||
+    (message.raw !== null && typeof message.raw === "object" &&
+      (message.raw as { message_id?: unknown }).message_id === 0) ||
+    isTelegramEditedMessageRaw(message.raw) || isTelegramMigrationRaw(message.raw);
+}

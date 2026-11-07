@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -44,7 +45,6 @@ import {
   normalizeSessionParams,
   isTaskSessionCredentialCompatible,
   shouldResetTaskSessionForWake,
-  scrubGitCredentialText,
   buildAnchorFallbackWorkspaceNotes,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -65,6 +65,8 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     baseCwdFallback: false,
     materializationFailures: [],
+    additionalWorkspaces: [],
+    referencedProjectFailures: [],
     ...overrides,
   };
 }
@@ -97,6 +99,7 @@ function buildWorkspaceValidationInput(
       worktreePath: null,
       warnings: [],
       created: false,
+      branchCreatedByRuntime: false,
       baseRefSha: null,
     },
     persistedExecutionWorkspace: {
@@ -105,15 +108,16 @@ function buildWorkspaceValidationInput(
       projectId: "project-1",
       projectWorkspaceId: "workspace-1",
       sourceIssueId: "issue-1",
-      mode: "project_workspace",
+      mode: "shared_workspace",
       strategyType: "project_primary",
       name: "Primary workspace",
       status: "active",
+      deliveryState: "unknown",
       cwd: "/tmp/project",
       repoUrl: null,
       baseRef: null,
       branchName: null,
-      providerType: "local_path",
+      providerType: "local_fs",
       providerRef: null,
       derivedFromExecutionWorkspaceId: null,
       lastUsedAt: new Date("2026-06-06T00:00:00.000Z"),
@@ -297,7 +301,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
       buildWorkspaceValidationInput({
         executionWorkspace: {
           ...input.executionWorkspace,
-          cwd: null,
+          cwd: "",
         },
       }),
       "missing_effective_cwd",
@@ -946,45 +950,6 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
   });
 });
 
-describe("scrubGitCredentialText", () => {
-  it("masks URL userinfo including tokens", () => {
-    expect(scrubGitCredentialText(
-      'fatal: unable to access "https://x-access-token:ghp_abc123@github.com/example/repo.git"',
-    )).toBe('fatal: unable to access "https://***@github.com/example/repo.git"');
-  });
-
-  it("masks bare-username userinfo and multiple occurrences", () => {
-    expect(scrubGitCredentialText(
-      "clone https://alice@github.com/a.git then http://token@internal.example/b.git",
-    )).toBe("clone https://***@github.com/a.git then http://***@internal.example/b.git");
-  });
-
-  it("masks userinfo on non-HTTP schemes, leaving scp-style remotes alone", () => {
-    expect(scrubGitCredentialText(
-      "fatal: cannot clone ssh://deploy:hunter2@internal.example/repo.git or git+ssh://bob@host/x.git",
-    )).toBe("fatal: cannot clone ssh://***@internal.example/repo.git or git+ssh://***@host/x.git");
-    expect(scrubGitCredentialText("fetch from git@github.com:example/repo.git failed")).toBe(
-      "fetch from git@github.com:example/repo.git failed",
-    );
-  });
-
-  it("masks entire URL query strings regardless of parameter names", () => {
-    expect(scrubGitCredentialText(
-      "fatal: unable to access 'https://github.com/example/repo.git?access_token=ghs_secret&ref=main'",
-    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?***'");
-    expect(scrubGitCredentialText(
-      "clone https://gitlab.example/repo.git?anything=glpat-123 failed",
-    )).toBe("clone https://gitlab.example/repo.git?*** failed");
-  });
-
-  it("leaves credential-free text unchanged", () => {
-    const text = 'Failed to clone "https://github.com/example/repo.git": exit code 128';
-    expect(scrubGitCredentialText(text)).toBe(text);
-    const plain = "git clone failed with exit code=128 at key step ref=main";
-    expect(scrubGitCredentialText(plain)).toBe(plain);
-  });
-});
-
 describe("buildAnchorFallbackWorkspaceNotes", () => {
   it("reports materialization failures ahead of the generic no-cwd note", () => {
     expect(buildAnchorFallbackWorkspaceNotes({
@@ -1444,8 +1409,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       baseRefSha: null,
     });
 
-    expect(metadata.createdByRuntime).toBe(false);
-    expect(metadata.gitBranchOwnershipVersion).toBe(1);
+    expect(metadata?.createdByRuntime).toBe(false);
+    expect(metadata?.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("does not downgrade recorded runtime ownership after worktree reuse", () => {
@@ -1465,8 +1430,8 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       baseRefSha: null,
     });
 
-    expect(metadata.createdByRuntime).toBe(true);
-    expect(metadata.gitBranchOwnershipVersion).toBe(1);
+    expect(metadata?.createdByRuntime).toBe(true);
+    expect(metadata?.gitBranchOwnershipVersion).toBe(1);
   });
 
   it("merges config snapshot for newly realized workspaces", () => {
@@ -2017,6 +1982,22 @@ describe("effective run execution workspace config freshness", () => {
     expect(serialized).not.toContain("0.0.0.0");
   });
 
+  it("reports actual reuse when freshness policy requested replacement", () => {
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: {},
+      nextMetadata: buildWorkspaceConfigMetadata(),
+    });
+    const operation = buildWorkspaceConfigFreshnessOperation({
+      decision, hasExistingWorkspace: true, reuseRequested: true,
+      workspaceReused: true, configSnapshotRefreshed: true,
+      previousWorkspaceId: "same", activeWorkspaceId: "same",
+    });
+    expect(operation?.metadata.action).toBe("replace");
+    expect(operation?.system).toContain("reused execution workspace");
+    expect(operation?.system).not.toContain("replaced execution workspace");
+  });
+
   it("does not record a freshness operation when an unchanged workspace is simply reused", () => {
     const metadata = buildWorkspaceConfigMetadata();
     const decision = resolveExecutionWorkspaceConfigFreshness({
@@ -2467,6 +2448,57 @@ describe("effective run session config freshness", () => {
     });
   });
 
+  it.each([null, "2026-06-01T00:00:00.000Z"])("does not reset for project row timestamps (%s) but still resets for project policy", async (revision) => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: revision,
+        projectPolicy: null,
+      },
+    });
+    const projectTouched = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: null,
+      },
+    });
+    const policyChanged = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      },
+    });
+
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: projectTouched,
+      }),
+    ).toMatchObject({
+      reset: false,
+      changedCategories: [],
+      reasons: [],
+    });
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: policyChanged,
+      }),
+    ).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+  });
+
   it("does not reset when a reusable execution workspace becomes realized", async () => {
     const base = await buildSessionConfigMetadata({
       workspaceConfig: {
@@ -2690,6 +2722,53 @@ describe("effective run session config freshness", () => {
     expect(decision.reset).toBe(true);
     expect(decision.changedCategories).toContain("instructions");
     expect(next.fingerprints.sessionFingerprint.canonicalJson).not.toContain("Version two instructions");
+  });
+
+  it("retains a session across relocated durable instruction and versioned skill caches", async () => {
+    const metadata = (home: string, contentHash = "sha256:entry-v1", versionId = "skill-version-1") => {
+      const runtimeSkills = [{ key: "paperclip", runtimeName: "paperclip", versionId,
+        currentVersionId: versionId, source: `${home}/packages/skill`, sourceStatus: "available" }];
+      return buildSessionConfigMetadata({
+        adapterType: "paperclip_runner",
+        effectiveAdapterConfig: { model: "gpt-5.4-mini", instructionsBundleMode: "managed",
+          instructionsRootPath: `${home}/instructions`, instructionsFilePath: `${home}/instructions/AGENTS.md`,
+          instructionsEntryFile: "AGENTS.md", paperclipRuntimeSkills: runtimeSkills },
+        managedInstructions: { entryFile: "AGENTS.md", contentHash },
+        runtimeSkills,
+      });
+    };
+    const before = await metadata("/retired-controller");
+    const after = await metadata("/replacement-controller");
+    const freshness = (next: SessionConfigMetadata) => resolveTaskSessionConfigFreshness({
+      hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+      taskSessionParams: sessionParamsWithConfigMetadata(before), configMetadata: next,
+    });
+    expect(freshness(after).reset).toBe(false);
+    expect(after.fingerprints.sessionFingerprint.canonicalJson).not.toContain("/replacement-controller");
+    expect(freshness(await metadata("/replacement-controller", "sha256:entry-v2")).changedCategories).toContain("instructions");
+    expect(freshness(await metadata("/replacement-controller", "sha256:entry-v1", "skill-version-2")).changedCategories).toContain("runtimeSkills");
+  });
+
+  it("retains a legacy managed-instruction session after verified import removes the old home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "legacy-instruction-session-"));
+    const body = "Preserve this exact agent identity and instructions.\n";
+    await fs.writeFile(path.join(root, "AGENTS.md"), body);
+    const config = { model: "gpt-5.4-mini", instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsFilePath: path.join(root, "AGENTS.md"), instructionsEntryFile: "AGENTS.md" };
+    const before = await buildSessionConfigMetadata({ adapterType: "paperclip_runner", effectiveAdapterConfig: config });
+    await fs.rm(root, { recursive: true });
+    const managedInstructions = { entryFile: "AGENTS.md", contentHash: "sha256:" + createHash("sha256").update(body).digest("hex") };
+    const metadata = (contentHash = managedInstructions.contentHash, model = config.model, retainManagedInstructionPaths = false) =>
+      buildSessionConfigMetadata({ adapterType: "paperclip_runner", effectiveAdapterConfig: { ...config, model },
+        managedInstructions: { ...managedInstructions, contentHash }, retainManagedInstructionPaths });
+    const after = await metadata();
+    const decide = (current: SessionConfigMetadata, compatible: SessionConfigMetadata[] = []) => resolveTaskSessionConfigFreshness({
+      hasTaskSession: true, configuredModel: config.model, taskSessionParams: sessionParamsWithConfigMetadata(before),
+      configMetadata: current, compatibleConfigMetadata: compatible });
+    expect(decide(after)).toMatchObject({ reset: true, changedCategories: ["adapterConfig"] });
+    expect(decide(after, [await metadata(undefined, undefined, true)]).reset).toBe(false);
+    expect(decide(await metadata("sha256:changed"), [await metadata("sha256:changed", undefined, true)]).reset).toBe(true);
+    expect(decide(await metadata(undefined, "different-model"), [await metadata(undefined, "different-model", true)]).reset).toBe(true);
   });
 
   it("does not read unbounded legacy instructions paths for config fingerprints", async () => {

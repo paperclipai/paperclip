@@ -1,0 +1,152 @@
+/*
+  2 · Tint — custom properties, scoped to the wrapper every frame puts around a
+  kit slot. Structure (page, text, radius, type, motion) comes from the app's
+  token layer; only what that layer lacks is minted here. Colours are OKLCH,
+  as in the app's own layer.
+
+  Four groups:
+    1. neutral materials — the slab ladder, derived from the semantic tokens
+    2. kind hues — ONE hue per artifact kind (nine hues for ten kinds: image
+       and video share the media hue), tuned per theme so the label on the
+       glyph holds 4.5:1 (white everywhere; near-black on amber)
+    3. kind wells — the same hue as a quiet fill, set per theme at one
+       lightness and as much chroma as the hue allows, so red stays red and
+       amber stays amber (an alpha mix over the page turned them all brown)
+    4. geometry the Tailwind scale has no step for (folded-corner clips)
+*/
+
+[data-direction="d2-tint"] {
+  /* 1 · Neutral materials. A slab is a filled card: no stroke, no shadow. 1.20:1 on the page. */
+  --tint-slab: color-mix(in oklab, var(--foreground) 7.5%, var(--background));
+  /* One step up, still neutral: the hover of a unit whose hue is already spent. */
+  --tint-slab-raised: color-mix(in oklab, var(--foreground) 11.5%, var(--background));
+  /* A filled neutral button on a slab; also the pressed step of a neutral slab. */
+  --tint-button: color-mix(in oklab, var(--foreground) 16%, var(--background));
+  /* A hole punched in a slab back to the page: state pills, and the sheet a text preview is set on. */
+  --tint-well: var(--background);
+  /* Secondary text: at least 4.5:1 on every fill above and on every kind well. */
+  --tint-ink-2: color-mix(in oklab, var(--foreground) 64%, var(--background));
+  /* Pictogram and extension label on a kind hue; the dark one is for amber, the one light hue. */
+  --tint-on-kind: oklch(1 0 0);
+  --tint-on-kind-dark: oklch(0.22 0.04 80);
+
+  /* 2 · Kind hues (light). Violet is left out on purpose: it is the app's Review hue. */
+  --tint-kind-document: oklch(0.528 0.207 262.2);
+  --tint-kind-pdf: oklch(0.556 0.209 22.9);
+  --tint-kind-slides: oklch(0.56 0.175 40.3);
+  --tint-kind-sheet: oklch(0.518 0.132 152.2);
+  --tint-kind-media: oklch(0.555 0.219 352.9);
+  --tint-kind-archive: oklch(0.74 0.156 75.1);
+  --tint-kind-code: oklch(0.516 0.087 204.2);
+  --tint-kind-link: oklch(0.52 0.121 242.6);
+  --tint-kind-file: oklch(0.519 0.017 260.7);
+
+  /* 3 · Kind wells (light): L 0.93, the slab's own lightness, told from it by hue. PDF and slides are pulled apart (rose / apricot). */
+  --tint-well-document: oklch(0.931 0.033 261);
+  --tint-well-pdf: oklch(0.93 0.035 15.7);
+  --tint-well-slides: oklch(0.931 0.043 59.4);
+  --tint-well-sheet: oklch(0.93 0.044 152.4);
+  --tint-well-media: oklch(0.929 0.041 352.9);
+  --tint-well-archive: oklch(0.93 0.044 83.9);
+  --tint-well-code: oklch(0.93 0.045 205.1);
+  --tint-well-link: oklch(0.929 0.037 244.4);
+  --tint-well-file: oklch(0.93 0.009 258.3);
+
+  /*
+    A tile-sized well (gallery) keeps its lightness and hue but gives up part of
+    its chroma to a neutral of the same lightness: a large area reads stronger.
+  */
+  --tint-well-neutral: oklch(0.93 0 0);
+  --tint-well-lg-share: 70%;
+
+  /* How much white the folded corner's facet takes; how much hue a hovered and a pressed thread slab take. */
+  --tint-facet-lift: 30%;
+  --tint-wash-hover: 9%;
+  --tint-wash-pressed: 15%;
+
+  /* 4 · Geometry. */
+  /* The dot in the mono meta line gets half-cell margins (a full " · " is three cells). */
+  --tint-meta-gap: 0.5ch;
+  /* Optical centring of a play triangle in its disc; on a small poster the disc sits clear of the extension tab. */
+  --tint-play-nudge: 4%;
+  --tint-play-y-sm: 42%;
+  /* Radius of a glyph-sized object (the sm glyph's own corner), and the fold of a preview at each size. */
+  --tint-radius-glyph: 0.4375rem;
+  --tint-fold-sm: 0.75rem;
+  --tint-fold-md: 1.125rem;
+  --tint-fold-lg: 1.75rem;
+  /* The top-right corner cut on the diagonal, one clip per fold size. */
+  --tint-clip-fold-sm: polygon(0 0, calc(100% - var(--tint-fold-sm)) 0, 100% var(--tint-fold-sm), 100% 100%, 0 100%);
+  --tint-clip-fold-md: polygon(0 0, calc(100% - var(--tint-fold-md)) 0, 100% var(--tint-fold-md), 100% 100%, 0 100%);
+  --tint-clip-fold-lg: polygon(0 0, calc(100% - var(--tint-fold-lg)) 0, 100% var(--tint-fold-lg), 100% 100%, 0 100%);
+  /* A neutral scrim behind the play mark on a video poster. */
+  --tint-scrim: color-mix(in oklab, black 55%, transparent);
+  --tint-scrim-strong: color-mix(in oklab, black 75%, transparent);
+
+  /*
+    The flat folder (Artifacts page stacks). No shadow and no gradient: the
+    pocket in front is the ordinary slab, and the back panel with its tab is
+    the one fill a folder adds — a clear neutral step further from the page
+    than the slab, in both themes.
+  */
+  --tint-folder-back: color-mix(in oklab, var(--foreground) 16%, var(--background));
+}
+
+.dark [data-direction="d2-tint"] {
+  --tint-slab: color-mix(in oklab, var(--foreground) 9%, var(--background));
+  --tint-slab-raised: color-mix(in oklab, var(--foreground) 14%, var(--background));
+  --tint-button: color-mix(in oklab, var(--foreground) 20%, var(--background));
+  --tint-ink-2: color-mix(in oklab, var(--foreground) 72%, var(--background));
+
+  /* Kind hues (dark): as bright as the white label allows; amber is a true amber with dark ink. */
+  --tint-kind-document: oklch(0.569 0.21 262.3);
+  --tint-kind-pdf: oklch(0.587 0.217 22.6);
+  --tint-kind-slides: oklch(0.579 0.177 41.4);
+  --tint-kind-sheet: oklch(0.548 0.14 152.4);
+  --tint-kind-media: oklch(0.586 0.227 351.9);
+  --tint-kind-archive: oklch(0.801 0.165 80.1);
+  --tint-kind-code: oklch(0.548 0.092 204.5);
+  --tint-kind-link: oklch(0.554 0.129 243.6);
+  --tint-kind-file: oklch(0.564 0.016 258.4);
+
+  /* Kind wells (dark): the page's own lightness (L 0.21), so a kind well is the neutral well — a hole back to the page — with the kind's hue. About 1.2:1 against the slab; the glyph on it holds 3.6:1 or better. */
+  --tint-well-document: oklch(0.209 0.066 262.8);
+  --tint-well-pdf: oklch(0.211 0.065 16);
+  --tint-well-slides: oklch(0.21 0.051 57.2);
+  --tint-well-sheet: oklch(0.21 0.055 152.5);
+  --tint-well-media: oklch(0.209 0.065 352.4);
+  --tint-well-archive: oklch(0.209 0.043 84.6);
+  --tint-well-code: oklch(0.21 0.036 204.3);
+  --tint-well-link: oklch(0.21 0.052 244);
+  --tint-well-file: oklch(0.211 0.012 254.1);
+  /* A dark colour needs all its chroma to stay a colour: tile-sized wells give none up here. */
+  --tint-well-neutral: oklch(0.21 0 0);
+  --tint-well-lg-share: 100%;
+
+  --tint-facet-lift: 26%;
+  --tint-wash-hover: 11%;
+  --tint-wash-pressed: 18%;
+
+  --tint-folder-back: color-mix(in oklab, var(--foreground) 19%, var(--background));
+}
+
+/* Derived per unit: label ink, the fold facet, and the hover and pressed fills of a thread slab. */
+[data-direction="d2-tint"] [data-kind] {
+  --kind-ink: var(--tint-on-kind);
+  --kind-facet: color-mix(in oklab, var(--kind) calc(100% - var(--tint-facet-lift)), white);
+  --kind-wash: color-mix(in oklab, var(--kind) var(--tint-wash-hover), var(--tint-slab));
+  --kind-wash-pressed: color-mix(in oklab, var(--kind) var(--tint-wash-pressed), var(--tint-slab));
+  --kind-well-lg: color-mix(in oklab, var(--kind-well) var(--tint-well-lg-share), var(--tint-well-neutral));
+}
+
+/* A unit names its kind once; everything inside reads `--kind` (the hue) and `--kind-well` (its quiet fill). */
+[data-direction="d2-tint"] [data-kind="document"] { --kind: var(--tint-kind-document); --kind-well: var(--tint-well-document); }
+[data-direction="d2-tint"] [data-kind="pdf"] { --kind: var(--tint-kind-pdf); --kind-well: var(--tint-well-pdf); }
+[data-direction="d2-tint"] [data-kind="slides"] { --kind: var(--tint-kind-slides); --kind-well: var(--tint-well-slides); }
+[data-direction="d2-tint"] [data-kind="sheet"] { --kind: var(--tint-kind-sheet); --kind-well: var(--tint-well-sheet); }
+[data-direction="d2-tint"] [data-kind="image"],
+[data-direction="d2-tint"] [data-kind="video"] { --kind: var(--tint-kind-media); --kind-well: var(--tint-well-media); }
+[data-direction="d2-tint"] [data-kind="archive"] { --kind: var(--tint-kind-archive); --kind-well: var(--tint-well-archive); --kind-ink: var(--tint-on-kind-dark); }
+[data-direction="d2-tint"] [data-kind="code"] { --kind: var(--tint-kind-code); --kind-well: var(--tint-well-code); }
+[data-direction="d2-tint"] [data-kind="link"] { --kind: var(--tint-kind-link); --kind-well: var(--tint-well-link); }
+[data-direction="d2-tint"] [data-kind="file"] { --kind: var(--tint-kind-file); --kind-well: var(--tint-well-file); }

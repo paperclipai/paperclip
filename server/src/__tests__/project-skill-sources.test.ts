@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { applyPendingMigrations } from '@paperclipai/db';
 import { reserveInitialSkillWork } from '../services/skill-source-import-budget.js';
 import { admitDeferredSkillImports, lockSkillImportQueue, MAX_COMPANY_PENDING_SKILL_IMPORTS, MAX_PROJECT_PENDING_SKILL_IMPORTS, SKILL_IMPORT_CAPACITY_WAIT } from '../services/skill-source-import-queue.js';
 import { randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { activityLog, agents, authUsers, companies, companyMemberships, companySkillSources, companySkillImportBudgets, companySkills, createDb, projects,
+import { activityLog, agents, authUsers, companies, companyMemberships, companySkillSources, companySkillImportBudgets, companySkills, companySkillVersions, createDb, projects,
   projectWorkspaces, projectSkillSources, projectAccessMembers } from '@paperclipai/db';
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from './helpers/embedded-postgres.js';
 import { githubFixture } from './helpers/github-skills.js';
@@ -14,12 +16,14 @@ import { enqueueProjectSkillSource, detachProjectSkillSource, projectSkillSetupI
 import { adoptProjectSkillRepository, projectSkillRepositories, skillSourceSyncService } from '../services/skill-source-sync.js';
 import { skillSourceService, type SkillSourceContext } from '../services/skill-sources.js';
 import { companySkillService } from '../services/company-skills.js';
+import { skillPackagePaths } from '../services/skill-package-store.js';
 import { projectService } from '../services/projects.js';
 import { skillAccessService, withSkillActor } from '../services/skill-access.js';
 import type { AuthorizationActor } from '../services/authorization.js';
 import { forbidden, unprocessable } from '../errors.js';
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_PROJECT_SKILLS_TEST_DATABASE_URL');
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)('automatic project skill sources', () => {
   let testDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -37,12 +41,47 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       return fixture;
     }, authorize: async () => {}, audit: async () => {} };
   beforeAll(async () => {
-    testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
-    db = createDb(testDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
+    db = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 4 });
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-project-skills-home-'));
     process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Project skills', issuePrefix: 'PSK' });
   }, 30000);
+  it('rechecks the locked source ref when branch repair races with project attachment', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Branch repair race', issuePrefix: 'RCE' });
+    const content = { 'race/SKILL.md': md('race') };
+    const sourceContext = { ...context, read: () => githubFixture(content) };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'configured-branch',
+      commitSha: 'a'.repeat(40), selectedPaths: ['race/SKILL.md'] }, sourceContext);
+    const [project] = await db.insert(projects).values({ companyId, name: 'Configured branch' }).returning();
+    const [row] = await db.insert(projectWorkspaces).values({ companyId, projectId: project!.id, name: 'Repository',
+      repoUrl: created.source.repositoryUrl, defaultRef: 'configured-branch' }).returning();
+    await enqueueProjectSkillSource(db, row!, { refreshUserId: null, refreshAgentId: null, refreshLocalTrusted: true, connectionId: null, refreshGrantId: null });
+    let importChecks = 0;
+    const worker = skillSourceSyncService(db, { context: async () => ({ ...sourceContext, authorize: async action => {
+      // The second authorization occurs after matching the existing source,
+      // before the worker locks it for attachment.
+      if (action === 'skills.import' && ++importChecks === 2) await service.settings(companyId, created.source.id,
+        { revision: created.source.revision, trackingRef: 'HEAD' }, sourceContext);
+    } }) });
+    try {
+      await worker.tick();
+      const [blocked] = await db.select().from(projectSkillSources).where(eq(projectSkillSources.workspaceId, row!.id));
+      expect(blocked!.sourceId).toBeNull();
+      expect(blocked!.status).toBe('error');
+      expect(blocked!.lastError).toContain('branch changed');
+      await worker.tick(new Date(Date.now() + 6 * 60_000));
+      const [attached] = await db.select().from(projectSkillSources).where(eq(projectSkillSources.workspaceId, row!.id));
+      expect(attached!.sourceId).not.toBe(created.source.id);
+      expect((await service.detail(companyId, attached!.sourceId!)).trackingRef).toBe('configured-branch');
+    } finally {
+      await worker.stop();
+      await db.update(companies).set({ status: 'archived' }).where(eq(companies.id, companyId));
+    }
+  });
   it('requires explicit repair before an agent-created repository can search a person’s GitHub grants', async () => {
     const row = await workspace('agent-repair', 'open');
     const binding = await enqueueProjectSkillSource(db, row);
@@ -59,6 +98,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
   });
   afterAll(async () => {
     if (oldHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = oldHome;
+    await db?.$client.end({ timeout: 1 });
     await testDb?.cleanup();
     if (home) await fs.rm(home, { recursive: true, force: true });
   });
@@ -407,6 +447,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const source = await skillSourceService(db).detail(companyId, binding!.sourceId!);
     const skillId = source.entries[0]!.skillId!;
     let privateSnapshotPath = '';
+    let privatePackagePath = '';
     const privateDerivatives: string[] = [];
     for (const user of ['alice', 'bob']) {
       await db.insert(authUsers).values({ id: user, name: user, email: `${user}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -420,6 +461,16 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       const [runtime] = await companySkillService(db).listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill.key]) });
       privateSnapshotPath = runtime!.source;
       await expect(companySkillService(db).importFromSource(companyId, runtime!.source)).rejects.toThrow(/Project-derived skill/);
+      const [version] = await db.select({ packageId: companySkillVersions.packageSnapshotId })
+        .from(companySkillVersions).where(eq(companySkillVersions.id, skill.currentVersionId!));
+      expect(version?.packageId).toBeTruthy();
+      privatePackagePath = skillPackagePaths(companyId, version!.packageId!).directory;
+      expect((await fs.stat(privatePackagePath)).isDirectory()).toBe(true);
+      for (const candidate of [privatePackagePath, path.join(privatePackagePath, 'private'), path.dirname(privatePackagePath)]) {
+        await expect(companySkillService(db).importFromSource(companyId, candidate)).rejects.toMatchObject({
+          status: 422, details: { code: 'skill_package_cache_import_denied' },
+        });
+      }
       const fork = await companySkillService(db).forkSkill(companyId, skillId, { slug: 'private-copy' });
       expect(fork.skill.accessSourceId).not.toBe(source.id);
       expect(fork.skill.accessSourceId).toBeTruthy();
@@ -432,7 +483,13 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       await expect(companySkillService(db).createLocalSkill(companyId, { name: 'Unsafe publication', forkedFromSkillId: skillId, sharingScope: 'public_link' })).rejects.toThrow(/public link/);
     });
     await withSkillActor(actor('bob'), async () => {
+      const branchRead = vi.fn(context.read(null));
+      await expect(skillSourceService(db).branches(companyId, source.id, {}, { ...context, read: () => branchRead })).rejects.toThrow(/not found/);
+      expect(branchRead).not.toHaveBeenCalled();
       await expect(companySkillService(db).importFromSource(companyId, privateSnapshotPath)).rejects.toThrow(/not found/);
+      await expect(companySkillService(db).importFromSource(companyId, privatePackagePath)).rejects.toMatchObject({
+        status: 422, details: { code: 'skill_package_cache_import_denied' },
+      });
       expect(await companySkillService(db).getById(companyId, skillId)).toBeNull();
       expect(await companySkillService(db).readFile(companyId, skillId, 'SKILL.md')).toBeNull();
       expect((await skillSourceService(db).list(companyId)).some(item => item.id === source.id)).toBe(false);
@@ -453,6 +510,9 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     });
     for (const denied of [agentActor(reader!.id, 'bob'), agentActor(outsider!.id, 'alice'), { ...agentActor(reader!.id, 'alice'), companyId: randomUUID() }]) {
       await withSkillActor(denied, async () => {
+        const branchRead = vi.fn(context.read(null));
+        await expect(skillSourceService(db).branches(companyId, source.id, {}, { ...context, read: () => branchRead })).rejects.toThrow(/not found/);
+        expect(branchRead).not.toHaveBeenCalled();
         expect(await companySkillService(db).readFile(companyId, skillId, 'SKILL.md')).toBeNull();
         expect((await companySkillService(db).listRuntimeSkillEntries(companyId)).some(entry => entry.key.includes('private'))).toBe(false);
       });
@@ -516,7 +576,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       expect(await skills.getById(companyId, fork.skill.id)).not.toBeNull();
       let retainedVersionId = original.currentVersionId;
       if (choice === 'copy') {
-        expect(await skills.getById(companyId, original.id)).toMatchObject({ sourceType: 'local_path', accessSourceId: source.id });
+        expect(await skills.getById(companyId, original.id)).toMatchObject({ sourceType: 'managed', sourceLocator: null, accessSourceId: source.id });
         expect((await skills.readFile(companyId, original.id, '.paperclip-repository/private/SKILL.md'))?.content).toBe(md('retained private workflow'));
         expect((await skills.readFile(companyId, original.id, 'SKILL.md'))?.content).toContain('.paperclip-repository/private/SKILL.md');
         await skills.updateFile(companyId, original.id, 'SKILL.md', md('Private copy edits') + '\nConfidential original-project notes.\n');
@@ -545,7 +605,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       expect(restored.lastError).toBeNull();
       expect(restored.entries.filter(entry => entry.skillId)).toHaveLength(1);
       expect(restored.entries[0]!.skillId).not.toBe(original.id);
-      if (choice === 'copy') expect(await skills.getById(companyId, original.id)).toMatchObject({ key: original.key, sourceType: 'local_path', currentVersionId: retainedVersionId });
+      if (choice === 'copy') expect(await skills.getById(companyId, original.id)).toMatchObject({ key: original.key, sourceType: 'managed', currentVersionId: retainedVersionId });
       const readerId = randomUUID();
       await db.insert(authUsers).values({ id: readerId, name: 'Open project reader', email: `${readerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
       await db.insert(companyMemberships).values({ companyId, principalType: 'user', principalId: readerId, membershipRole: 'member', status: 'active' });
@@ -604,9 +664,10 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const sourceId = ready!.sourceId!;
     const service = skillSourceService(db);
     const original = await service.detail(companyId, sourceId);
-    const failure: SkillSourceContext = { ...context, read: () => (async () => {
+    const rateLimited = async () => {
       throw unprocessable('GitHub request limit reached.', { retryAfterMs: 7_200_000 });
-    }) as ReturnType<SkillSourceContext['read']> };
+    };
+    const failure: SkillSourceContext = { ...context, read: () => Object.assign(rateLimited, { openSnapshot: rateLimited }) };
     const failedAt = new Date();
     await db.update(companySkillSources).set({ nextSyncAt: failedAt }).where(eq(companySkillSources.id, sourceId));
     await skillSourceSyncService(db, { context: async () => failure }).tick(failedAt);
@@ -749,7 +810,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       return fixture;
     } };
     const result = await service.refresh(companyId, original.id, growing);
-    expect(result.source.packageMode).toBe('skills');
+    expect(result.source.packageMode).toBe('repository');
     expect(result.warnings.join(' ')).toContain('repository exceeds');
     expect(result.source.entries[0]!.skillId).toBe(skillId);
     expect(result.updated).toHaveLength(1);

@@ -1,5 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { environmentLeases, type Db } from "@paperclipai/db";
+import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
+
+type Lease = typeof environmentLeases.$inferSelect;
 
 type LeaseIdentity = {
   id: string; companyId: string; heartbeatRunId: string | null;
@@ -34,17 +37,54 @@ export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
     remoteTerminationReceipt(lease, receipt));
 }
 
+/** Workspace recovery saved this run's files, re-stopped its sandbox, and then
+ * queued the stopped sandbox for destroy. The destroy is resource cleanup: the
+ * stop receipt it carried forward still proves no provider can run there. */
+export function hasRecoveredCleanupStopReceipt(lease: LeaseIdentity & {
+  releasedAt: unknown; status: string; metadata: Record<string, unknown> | null;
+}): boolean {
+  const cleanup = lease.metadata?.workspaceRecoveryCleanup as Record<string, unknown> | undefined;
+  if (!cleanup || cleanup.runId !== lease.heartbeatRunId || !lease.releasedAt ||
+      !["pending_cleanup", "released", "expired", "failed"].includes(lease.status)) return false;
+  return hasRemoteTerminationReceipt({ ...lease, status: "released", cleanupStatus: "success",
+    metadata: { remoteExecutionTermination: cleanup.stopReceipt } });
+}
+
 export function remoteLeaseCleanupScope(lease: Pick<LeaseIdentity, "provider" | "providerLeaseId">) {
   return lease.provider && lease.provider !== "local" && lease.providerLeaseId
     ? JSON.stringify([lease.provider, lease.providerLeaseId]) : undefined;
+}
+
+export async function resolveRemoteTerminationLease(db: Db, lease: Lease): Promise<Lease> {
+  if (hasRemoteTerminationReceipt(lease) || lease.status !== "expired" ||
+      lease.leasePolicy !== "reuse_by_environment" || !lease.provider || !lease.providerLeaseId) return lease;
+  const history = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.provider, lease.provider), eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
+  ));
+  const current = history.find(row => row.id === lease.id);
+  if (!current || current.companyId !== lease.companyId || current.heartbeatRunId !== lease.heartbeatRunId) return lease;
+  const tips = history.filter(row => !Object.hasOwn(row.metadata ?? {}, "reusableLeaseSuccessor"));
+  if (tips.length !== 1) return current;
+  const tip = tips[0]!;
+  const receipt = tip.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
+  if (!hasRemoteTerminationReceipt(tip) || receipt?.state !== "destroyed") return current;
+  const predecessors = retiredReusableLeasePredecessors(tip, history.filter(row => row.id !== tip.id));
+  if (!predecessors?.some(row => row.id === current.id)) return current;
+  const termination = remoteTerminationReceipt(current, { providerLeaseId: current.providerLeaseId, state: "destroyed" });
+  if (!termination) return current;
+  return { ...current, metadata: { ...current.metadata, remoteExecutionTermination: {
+    ...termination, confirmedAt: receipt.confirmedAt,
+  } } };
 }
 
 export async function stoppedRemoteCleanupScopes(db: Db, companyId: string, runId: string) {
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
   ));
-  if (leases.length === 0 || !leases.every(hasRemoteTerminationReceipt)) return null;
-  return [...new Set(leases.map(lease => remoteLeaseCleanupScope(lease)!))];
+  if (leases.length === 0) return null;
+  const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
+  if (!resolved.every(hasRemoteTerminationReceipt)) return null;
+  return [...new Set(resolved.map(lease => remoteLeaseCleanupScope(lease)!))];
 }
 
 export async function remoteExecutionHasStopped(db: Db, companyId: string, runId: string) {

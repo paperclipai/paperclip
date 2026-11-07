@@ -1,3 +1,5 @@
+import { notifyStrandedAgentStatus } from "../../live-run-recovery-notifications.js";
+import { notifyChatInboundWakeNotices } from "../../chat-inbound-wake-notice-notifications.js";
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 
 import { dueChatAction, PROVIDER_EFFECT_STALE_MS } from "../../chat-action-work.js";
@@ -45,7 +47,7 @@ import {
 import { projectSafeChatPublication } from "../../chat-publication-projection.js";
 
 import {
-  type SlackSessionStop,
+  parseSlackSessionStop, type SlackSessionStop,
 } from "../../chat-slack-sessions.js";
 
 import {
@@ -121,6 +123,8 @@ export function slackSessionStopPayload(
   };
 }
 type SlackSessionStopOptions = {
+  scheduleMessageProcessing: (task: () => Promise<void>) => void;
+  readonly deferWebhookProcessing?: boolean;
   runtimeCallbackEndpoint: (tx: DbTransaction, endpointId: string, context: LifecycleRuntimeFence, statuses: EndpointRow["status"][]) => Promise<EndpointRow | null>;
   lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; userId: string | null }>;
   nonDirectDestinationAllowed: (endpoint: EndpointRow, resource: typeof chatEndpointResources.$inferSelect | null | undefined) => boolean;
@@ -582,6 +586,8 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
           ["queued", "deferred_issue_execution"].includes(wakeup.status) &&
           !issue.executionRunId
         ) {
+          await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: wakeup.agentId });
+          await notifyChatInboundWakeNotices(tx, { companyId: current.companyId, issueId: issue.id });
           await tx
             .update(agentWakeupRequests)
             .set({
@@ -854,5 +860,27 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
     for (const action of actions) await processSlackSessionStop(action.id);
     return actions.length;
   }
-  return { stageSlackSessionStop, processSlackSessionStop, processPendingSlackSessionStops };
+  async function handleSlackSessionStopPayload(endpoint: EndpointRow, lifecyclePayload: unknown, runtimeContext: RuntimeContext): Promise<void> {
+        const stop = parseSlackSessionStop(
+          lifecyclePayload,
+          endpoint.providerAccountId,
+        );
+        if (stop) {
+          const actionId = await stageSlackSessionStop(
+            endpoint,
+            stop,
+            runtimeContext,
+          );
+          if (actionId) {
+            if (options.deferWebhookProcessing === true) {
+              options.scheduleMessageProcessing(() =>
+                processSlackSessionStop(actionId),
+              );
+            } else {
+              await processSlackSessionStop(actionId);
+            }
+          }
+        }
+  }
+  return { stageSlackSessionStop, processSlackSessionStop, processPendingSlackSessionStops, handleSlackSessionStopPayload };
 }
