@@ -33,7 +33,9 @@ describe("Timeline with a broken stdout", () => {
       expect(timelineEchoBroken()).toBe(true);
       for (let index = 0; index < 5; index += 1) timeline.add("after", { index });
       expect(echo).toHaveBeenCalledTimes(1);
-      expect((await readFile(file, "utf8")).trim().split("\n")).toHaveLength(6);
+      const kinds = (await readFile(file, "utf8")).trim().split("\n").map(line => (JSON.parse(line) as { kind: string }).kind);
+      expect(kinds).toEqual(["before", "after", "harness_stdout_lost", "after", "after", "after", "after"]);
+      expect(timeline.entries.find(entry => entry.kind === "harness_stdout_lost")).toMatchObject({ error: "EPIPE write EPIPE" });
     } finally {
       if (previousQuiet === undefined) delete process.env.RESTART_CHAOS_QUIET; else process.env.RESTART_CHAOS_QUIET = previousQuiet;
     }
