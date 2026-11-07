@@ -286,15 +286,27 @@ it("archives only after confirmation, then drops the agent from the chat list", 
 });
 
 it("keeps an open chat readable by id after archiving its agent", async () => {
-  state.terminate.mockImplementation(async (id: string) => {
-    const archived = { ...roster.find(agent => agent.id === id)!, status: "terminated" };
-    client.setQueryData(queryKeys.agents.list("company-a"), roster.map(agent => agent.id === id ? archived : agent));
+  // The id differs from the urlKey, so the archive really changes the route.
+  const alice = { ...roster[0], id: "agent-alice" } as Agent;
+  const archived = { ...alice, status: "terminated" } as Agent;
+  client.setQueryData(queryKeys.agents.list("company-a"), [alice, roster[1]]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [{ ...chat("alice"), conversationAgentId: alice.id }]);
+  state.terminate.mockImplementation(async () => {
+    // The live roster excludes terminated agents.
+    client.setQueryData(queryKeys.agents.list("company-a"), [roster[1]]);
     return archived;
   });
+  state.getAgent.mockResolvedValue(archived);
   await render();
   await openArchiveDialog("alice");
   await act(async () => dialogButton("Archive agent").click());
-  await vi.waitFor(() => expect(state.navigate).toHaveBeenCalledWith("/chats/alice", { replace: true }));
+  await vi.waitFor(() => expect(state.navigate).toHaveBeenCalledWith("/chats/agent-alice", { replace: true }));
+  state.pathname = "/A/chats/agent-alice";
+  await render();
+  await vi.waitFor(() => expect(container.querySelector('a[href="/chats/agent-alice"]')).not.toBeNull());
+  expect(state.getAgent).toHaveBeenCalledWith("agent-alice", "company-a");
+  expect(container.querySelector('a[href="/chats/alice"]')).toBeNull();
+  expect(container.querySelector('a[href="/chats/bob"]')).not.toBeNull();
 });
 
 it("reports a failed archive and keeps the agent listed", async () => {
