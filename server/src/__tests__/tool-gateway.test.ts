@@ -1221,9 +1221,16 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
           const flushed = res.write(chunk);
           chunksWritten += 1;
           if (!flushed) {
+            // Remove both listeners when either event fires, so close
+            // listeners do not pile up while drain wins.
             await new Promise<void>((resolve) => {
-              res.once("drain", resolve);
-              res.once("close", resolve);
+              const settle = () => {
+                res.off("drain", settle);
+                res.off("close", settle);
+                resolve();
+              };
+              res.once("drain", settle);
+              res.once("close", settle);
             });
           }
         }
