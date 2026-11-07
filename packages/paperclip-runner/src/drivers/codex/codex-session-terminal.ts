@@ -131,6 +131,23 @@ export function settleRestoreLostTurnWithHeldResult(
   return { ...turn, status: "completed", error: null };
 }
 
+/**
+ * A replay of an already committed terminal matches when either the terminal
+ * as reported or its settled form matches. A checkpoint from before the
+ * restart-loss rule can hold the reported failure with the same held result;
+ * that is the same terminal, not a conflicting one.
+ */
+export function settledTerminalReplayConflict(
+  state: CodexSessionState,
+  reported: Record<string, unknown>,
+  settled: Record<string, unknown>,
+  expectedFingerprint: string,
+): TerminalReplayConflict | null {
+  const conflict = terminalReplayConflict(state, settled, expectedFingerprint);
+  if (conflict === null || settled === reported) return conflict;
+  return terminalReplayConflict(state, reported, expectedFingerprint) === null ? null : conflict;
+}
+
 export function mapTerminalTurn(
   state: CodexSessionState,
     turn: Record<string, unknown>,
@@ -138,11 +155,12 @@ export function mapTerminalTurn(
     reconciling = false,
   ): void {
     const turnId = text(turn.id, fallbackTurnId || state.activeTurnId || "");
+    const reported = turn;
     turn = settleRestoreLostTurnWithHeldResult(state, turn, turnId);
     const status = text(turn.status, "completed");
     const previous = state.terminalTurns.get(turnId);
     if (previous !== undefined) {
-      const conflict = terminalReplayConflict(state, turn, previous);
+      const conflict = settledTerminalReplayConflict(state, reported, turn, previous);
       if (conflict !== null) {
         if (reconciling) {
           throw new HarnessReconciliationError(

@@ -53,7 +53,7 @@ import { handleServerRequest } from "./codex-session-server-requests.js";
 import {
   mapTerminalTurn,
   settleRestoreLostTurnWithHeldResult,
-  terminalReplayConflict,
+  settledTerminalReplayConflict,
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
@@ -846,7 +846,7 @@ export class CodexHarnessSession
           `previously terminal turn ${turnId} is no longer terminal in thread/read`,
         );
       }
-      const conflict = terminalReplayConflict(this, observed, fingerprint);
+      const conflict = settledTerminalReplayConflict(this, reported, observed, fingerprint);
       if (conflict !== null) {
         throw new HarnessReconciliationError(
           `previously terminal turn ${turnId} ${conflict.message}`,
