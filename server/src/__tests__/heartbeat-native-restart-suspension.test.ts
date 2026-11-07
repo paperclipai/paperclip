@@ -1,3 +1,6 @@
+import * as completionModule from "../services/heartbeat/run-completion.js";
+import { createAgentIdentityRedactor } from "../services/agent-identity-redaction.js";
+import { releaseAbandonedNativeOwners } from "../services/native-runtime/native-failed-run-owner-release.js";
 import { nativeControllerAuthorityDigest } from "../services/native-runtime/native-runner-ownership.js";
 import { cancelHeartbeatNativeRun } from "../services/heartbeat/run-control.js";
 import { claimCancellationRequest } from "../services/native-runtime/native-cancellation-request.js";
@@ -677,7 +680,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         eq(issueRecoveryActions.status, "active")));
       const authority = action?.evidence.controllerAuthority;
       if (!authority || typeof authority !== "object" || Array.isArray(authority)
-        || typeof authority.digest !== "string") throw new Error("Expected exact server-owned controller authority");
+        || !("digest" in authority) || typeof authority.digest !== "string") throw new Error("Expected exact server-owned controller authority");
       return { ...f, action, digest: authority.digest, userId: source.responsibleUserId };
     }
     function boardRoutes(f: Awaited<ReturnType<typeof namespaceHold>>, actor?: Express.Request["actor"]) {
@@ -859,8 +862,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       return factory;
     }
 
-    it("records original-host containment then completes one useful successor only after a new ordinary Retry", async () => {
-      const f = await namespaceHold("CLAIM-CONTAINMENT-ORDINARY-RETRY");
+    async function completeContainedRetry(f: Awaited<ReturnType<typeof namespaceHold>>) {
       const [before] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       const oldClick = await requestTaskRetry({ db: f.db, companyId: fixture.current.companyId, issueId: f.issueId,
         actorId: f.userId, actorSource: "session", observedRunId: f.runId, idempotencyKey: randomUUID() });
@@ -889,7 +891,9 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         const [old] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, oldClick.requestId!));
         // A Retry while the source is running already coalesced into that
         // accepted run. It is not an unadmitted receipt and must stay history.
-        expect(old).toMatchObject({ status: "coalesced", runId: f.runId });
+        expect(old).toMatchObject(before.status === "running"
+          ? { status: "coalesced", runId: f.runId }
+          : { status: "skipped", runId: null, error: "controller_containment_requires_new_retry" });
         expect(opened).toEqual([]);
         expect(await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
         const retried = await request(app).post(`/api/issues/${f.issueId}/retry`).send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
@@ -914,6 +918,65 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         factory.mockRestore();
         for (const service of services) await service.drainActiveRunExecutions();
       }
+    }
+
+    it("records original-host containment then completes one useful successor only after a new ordinary Retry", async () => {
+      await completeContainedRetry(await namespaceHold("CLAIM-CONTAINMENT-ORDINARY-RETRY"));
+    }, 90_000);
+
+    async function failDuringNormalPreparation(f: Awaited<ReturnType<typeof seedClaim>>) {
+      const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const actualCompletion = completionModule.createHeartbeatRunCompletion;
+      const captured: { owner: ReturnType<typeof actualCompletion> | undefined } = { owner: undefined };
+      const capture = vi.spyOn(completionModule, "createHeartbeatRunCompletion").mockImplementation((db, dependencies) => {
+        captured.owner = actualCompletion(db, dependencies); return captured.owner;
+      });
+      const failureService = heartbeatService(f.db);
+      capture.mockRestore();
+      try {
+        const completion = captured.owner;
+        if (!completion) throw new Error("Expected the normal heartbeat completion owner");
+        await completion.failRunSetup({ run: source, runId: source.id,
+          outerErr: new Error("Controlled pre-provider workspace preparation failure"),
+          signal: new AbortController().signal, providerDispatchStarted: false,
+          identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
+        const [failed] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        expect(failed.status).toBe("failed");
+        expect(failed.finishedAt).not.toBeNull();
+        expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
+        expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
+      } finally { capture.mockRestore(); await failureService.drainActiveRunExecutions(); }
+    }
+
+    it("recovers a normal setup failure with cleared execution pointer through containment then a new useful Retry", async () => {
+      const f = await seedClaim("CLAIM-FAILED-CLEARED-RETRY", "expired", "foreign-process-space");
+      const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
+      await f.db.update(issues).set({ responsibleUserId: source.responsibleUserId }).where(eq(issues.id, f.issueId));
+      await failDuringNormalPreparation(f);
+      expect(await releaseAbandonedNativeOwners(f.db)).toBe(0);
+      const [action] = await f.db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
+        eq(issueRecoveryActions.status, "active")));
+      const authority = action?.evidence.controllerAuthority;
+      if (!authority || typeof authority !== "object" || Array.isArray(authority) || !("digest" in authority) || typeof authority.digest !== "string")
+        throw new Error("Normal failed-owner inspection must publish exact containment authority");
+      await completeContainedRetry({ ...f, action, digest: authority.digest, userId: source.responsibleUserId });
+    }, 90_000);
+
+    it("rejects cleared-pointer containment when a newer coordinator binds the issue without a nativeIssueId column", async () => {
+      const f = await namespaceHold("CLAIM-CONTAINMENT-NEWER-COORDINATOR");
+      await failDuringNormalPreparation(f);
+      const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const newerId = randomUUID();
+      await f.db.insert(heartbeatRuns).values({ id: newerId, companyId: fixture.current.companyId,
+        agentId: fixture.current.agentId, status: "queued", runtimeMode: "native", contextSnapshot: {}, nativeIssueId: null });
+      await f.db.insert(nativeRunFinalizations).values({ runId: newerId, companyId: fixture.current.companyId,
+        issueId: f.issueId, phase: "observed", attempt: 0 });
+      const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(confirmation(f));
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+      expect((await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0].status).toBe("active");
+      expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
     }, 90_000);
 
     it("requires new Retry only for exact unadmitted receipts and keeps other accepted work", async () => {

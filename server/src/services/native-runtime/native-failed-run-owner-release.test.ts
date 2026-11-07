@@ -12,10 +12,12 @@ import {
   environmentLeases,
   heartbeatRuns,
   issues,
+  issueRecoveryActions,
   nativeRunFinalizations,
   subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { environmentService } from "../environments.js";
@@ -63,9 +65,10 @@ describe("failed native run owner release", () => {
     errorCode?: string;
     error?: string;
     coordinator: Partial<typeof nativeRunFinalizations.$inferInsert>;
+    runId?: string;
   }) {
     const issueId = randomUUID();
-    const runId = randomUUID();
+    const runId = input.runId ?? randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Resume the native run", status: "in_progress",
       assigneeAgentId: agentId, workMode: "standard" });
     await db.insert(heartbeatRuns).values({
@@ -195,9 +198,87 @@ describe("failed native run owner release", () => {
       expect(await releaseAbandonedNativeOwners(db)).toBe(0);
       expect(probes).toEqual([]);
       expect(await coordinator(runId)).toEqual(before);
+      const [attention] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, before.issueId));
+      expect(attention).toMatchObject({ cause: "native_restart_recovery_blocked", attemptCount: 0, wakePolicy: null, monitorPolicy: null,
+        evidence: { runId, reason: "controller_process_space_unverified" } });
+      for (let inspection = 0; inspection < 3; inspection++) {
+        expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+        expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+        expect(await executionControlSchedule(db).finalization()).toBeNull();
+      }
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, before.issueId))).toEqual([attention]);
       expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
         eq(activityLog.action, "native.failed_run_owner_released")))).toHaveLength(0);
     } finally { identity?.mockRestore(); probe.mockRestore(); }
+  });
+
+  it.each(["timed_out", "interrupted"] as const)("publishes the same quiet operator attention for an already %s owner", async status => {
+    const { runId, issueId } = await nativeRun({ status, coordinator: { leaseOwner: `foreign:${randomUUID()}`,
+      controllerBootId: randomUUID(), controllerHostHash: null, leaseExpiresAt: new Date(Date.now() + 60_000) } });
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({ ownerType: "board", cause: "native_restart_recovery_blocked", attemptCount: 0,
+      evidence: { runId, reason: "controller_process_space_unverified", controllerAuthority: { digest: expect.any(String) } } });
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
+  });
+
+  it("finishes bounded namespace inspection pages without polling surfaced owners or losing a local deadline", async () => {
+    const foreign = [];
+    for (let index = 0; index < 5; index++) foreign.push(await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } }));
+    const localDeadline = new Date(Date.now() + 600_000);
+    await nativeRun({ status: "failed", coordinator: { leaseOwner: `local:${randomUUID()}`, leaseExpiresAt: localDeadline } });
+    for (let page = 0; page < 2; page++) {
+      expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
+    }
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+    expect(rows).toHaveLength(foreign.length);
+    expect(rows.every(row => row.attemptCount === 0 && row.wakePolicy === null && row.monitorPolicy === null)).toBe(true);
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+  });
+
+  it("keeps a lower-sorting arrival durable when its notification coalesces between inspection pages", async () => {
+    for (let index = 1; index <= 4; index++) await nativeRun({ status: "failed",
+      runId: `ffffffff-ffff-4fff-8fff-${String(index).padStart(12, "0")}`, coordinator: {
+        leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    const lower = await nativeRun({ status: "failed", runId: "00000000-0000-4000-8000-000000000001", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    // Simulate one coalesced dirty signal by continuing the actual existing
+    // page, not resetting its cursor or creating a second artificial worker.
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).not.toBeNull();
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, lower.issueId))).toEqual([]);
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, lower.issueId))).toHaveLength(1);
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 5)).toBe(0);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+  });
+
+  it("surfaces a preserved namespace waiter when an unrelated action is actually resolved", async () => {
+    const { runId, issueId } = await nativeRun({ status: "failed", coordinator: {
+      leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } });
+    const service = issueRecoveryActionService(db);
+    const unrelated = await service.upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      cause: "independent-test-recovery", fingerprint: "independent-test-identity", ownerType: "board",
+      nextAction: "Resolve this independently owned action first.", wakePolicy: null, monitorPolicy: null, attemptCount: 0 });
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0].id).toBe(unrelated.id);
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+    expect(await committedWakes(DELIVERY_QUEUES.executionFinalization, () => service.resolveActiveForIssue({ companyId,
+      sourceIssueId: issueId, actionId: unrelated.id, status: "resolved", outcome: "restored" }))).toBeGreaterThan(0);
+    expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+    const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(rows).toHaveLength(2);
+    expect(rows.find(row => row.id === unrelated.id)).toMatchObject({ status: "resolved", fingerprint: "independent-test-identity" });
+    expect(rows.find(row => row.id !== unrelated.id)).toMatchObject({ attemptCount: 0,
+      evidence: { runId, reason: "controller_process_space_unverified" } });
+    expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
   });
 
   it("keeps an unexpired owner blocking the stop check and schedules its expiry", async () => {

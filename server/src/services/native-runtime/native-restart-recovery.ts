@@ -815,6 +815,47 @@ function appendBoundedRecoveryHistory(entry: Record<string, unknown>) {
   )`;
 }
 
+/** Shared by restart inspection and failed-owner cleanup under their existing
+ * issue/coordinator/run locks. Publishing attention never grants a new turn. */
+export async function surfaceNativeControllerNamespaceAttention(db: Db, input: {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId">;
+  coordinator: typeof nativeRunFinalizations.$inferSelect;
+  expiryEpoch: string | null;
+  remoteProcess: boolean;
+}): Promise<void> {
+  const reason = input.remoteProcess ? "remote_controller_process_space_unverified" : "controller_process_space_unverified";
+  const attention = issueRecoveryActionService(db);
+  const digest = nativeControllerAuthorityDigest(input.coordinator, input.expiryEpoch);
+  const fingerprint = `native-controller-space:${input.run.id}:${digest}`;
+  const [existing] = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.run.companyId), eq(issueRecoveryActions.sourceIssueId, input.coordinator.issueId),
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+  )).for("update").limit(1);
+  // One incident per exact authority. A repeat neither spends a retry
+  // attempt nor emits a new wake. Renewed/replaced authority gets a new
+  // incident, preserving the prior confirmation/history. An unrelated
+  // active recovery owner is never overwritten by this observation.
+  const sameSource = existing?.cause === "native_restart_recovery_blocked"
+    && existing.evidence.runId === input.run.id
+    && ["controller_process_space_unverified", "remote_controller_process_space_unverified"].includes(String(existing.evidence.reason));
+  if (!existing || (sameSource && existing.fingerprint !== fingerprint)) {
+    await attention.upsertSourceScoped({
+      companyId: input.run.companyId, sourceIssueId: input.coordinator.issueId,
+      kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: input.run.agentId,
+      cause: "native_restart_recovery_blocked", fingerprint,
+      evidence: { runId: input.run.id, reason, executorStopEvidence: "unverified",
+        ...(!input.remoteProcess ? { controllerAuthority: { schema: "paperclip.native-controller-authority.v1",
+          digest, leaseExpiresAt: input.coordinator.leaseExpiresAt!.toISOString() } } : {}) },
+      nextAction: input.remoteProcess
+        ? "Use the task's ordinary Stop action and its environment provider's stop/cleanup recovery. Wait for that exact controller/provider acknowledgement. Local PID checks and local containment confirmation cannot authorize remote recovery."
+        : "Stop the original controller and provider on their original host. After the saved lease expires, a board operator must record both stops and review action outcomes. Recording containment does not retry the task.",
+      createOnly: !existing, supersedeOnIdentityChange: true,
+      attemptCount: 0, maxAttempts: null, timeoutAt: null, lastAttemptAt: null,
+      wakePolicy: null, monitorPolicy: null,
+    });
+  }
+}
+
 export async function claimNativeRestartRecoveries(input: {
   db: Db;
   controller?: NativeControllerIdentity;
@@ -1117,36 +1158,9 @@ export async function claimNativeRestartRecoveries(input: {
         });
       if (!takeover.allowed) {
         if (processSpaceUnverified && !nonExecutionOwner) {
-          const attention = issueRecoveryActionService(tx as unknown as Db);
-          const digest = nativeControllerAuthorityDigest(row.coordinator, row.controllerLeaseExpiryEpoch);
-          const fingerprint = `native-controller-space:${row.run.id}:${digest}`;
-          const [existing] = await tx.select().from(issueRecoveryActions).where(and(
-            eq(issueRecoveryActions.companyId, row.run.companyId), eq(issueRecoveryActions.sourceIssueId, row.coordinator.issueId),
-            inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          )).for("update").limit(1);
-          // One incident per exact authority. A repeat neither spends a retry
-          // attempt nor emits a new wake. Renewed/replaced authority gets a new
-          // incident, preserving the prior confirmation/history. An unrelated
-          // active recovery owner is never overwritten by this observation.
-          const sameSource = existing?.cause === "native_restart_recovery_blocked"
-            && existing.evidence.runId === row.run.id
-            && ["controller_process_space_unverified", "remote_controller_process_space_unverified"].includes(String(existing.evidence.reason));
-          if (!existing || (sameSource && existing.fingerprint !== fingerprint)) {
-            await attention.upsertSourceScoped({
-              companyId: row.run.companyId, sourceIssueId: row.coordinator.issueId,
-              kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: row.run.agentId,
-              cause: "native_restart_recovery_blocked", fingerprint,
-              evidence: { runId: row.run.id, reason: takeover.reason, executorStopEvidence: "unverified",
-                ...(!remoteProcess ? { controllerAuthority: { schema: "paperclip.native-controller-authority.v1",
-                  digest, leaseExpiresAt: row.coordinator.leaseExpiresAt!.toISOString() } } : {}) },
-              nextAction: remoteProcess
-                ? "Use the task's ordinary Stop action and its environment provider's stop/cleanup recovery. Wait for that exact controller/provider acknowledgement. Local PID checks and local containment confirmation cannot authorize remote recovery."
-                : "Stop the original controller and provider on their original host. After the saved lease expires, a board operator must record both stops and review action outcomes. Recording containment does not retry the task.",
-              createOnly: !existing, supersedeOnIdentityChange: true,
-              attemptCount: 0, maxAttempts: null, timeoutAt: null, lastAttemptAt: null,
-              wakePolicy: null, monitorPolicy: null,
-            });
-          }
+          await surfaceNativeControllerNamespaceAttention(tx as unknown as Db, {
+            run: row.run, coordinator: row.coordinator, expiryEpoch: row.controllerLeaseExpiryEpoch, remoteProcess,
+          });
         }
         const previous = row.coordinator.recoveryHistory.at(-1);
         const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
