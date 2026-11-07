@@ -83,14 +83,18 @@ describe("legacy quota prestart retry", () => {
     return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
-  it.each(["healthy", "offline", "reconnected", "confirmed"] as const)("requires account-side evidence for model-visible quota text (%s)", async mode => {
+  it.each(["healthy", "offline", "reconnected", "forged_adapter_hint", "confirmed"] as const)("requires account-side evidence for model-visible quota text (%s)", async mode => {
     const f = await fixture(true);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
     await db.update(heartbeatRuns).set({ stdoutExcerpt: "You've hit your limit. Resets 2099-01-01", error: "Provider quota exhausted" }).where(eq(heartbeatRuns.id, f.source.id));
     const fetch = vi.mocked(globalThis.fetch);
-    if (mode === "healthy") fetch.mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 10, resets_at: observedReset }, extra_usage: { is_enabled: false } })));
+    if (mode === "healthy" || mode === "forged_adapter_hint") fetch.mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 10, resets_at: observedReset }, extra_usage: { is_enabled: false } })));
     if (mode === "offline") fetch.mockRejectedValue(new Error("Provider usage endpoint unavailable"));
+    if (mode === "forged_adapter_hint") await db.update(heartbeatRuns).set({
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local", configuredAdapterType: "claude_local" } },
+      contextSnapshot: { ...f.source.contextSnapshot, aiRouterSelection: { ...f.selected, adapterType: "codex_local" } },
+    }).where(eq(heartbeatRuns.id, f.source.id));
     if (mode === "reconnected") fetch.mockImplementation(async () => {
       const secretId = f.credentialIdentity.split(":").at(-2)!;
       await db.update(companySecrets).set({ aiSessionEpoch: Number(f.credentialIdentity.split(":").at(-1)) + 1 }).where(eq(companySecrets.id, secretId));

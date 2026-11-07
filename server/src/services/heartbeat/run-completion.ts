@@ -105,7 +105,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
   const legacyClaudeQuota = source && source.run.runtimeMode !== "native" && (input.failureKind ?? "quota") === "quota" &&
-    (parseObject(source.run.contextSnapshot?.aiRouterSelection).adapterType ?? parseObject(source.run.runnerProfileJson?.adapterDispatch).adapterType ?? source.adapterType) === "claude_local";
+    (parseObject(source.run.runnerProfileJson?.adapterDispatch).adapterType ?? source.adapterType) === "claude_local";
   const proofScope = source ? { companyId: input.companyId, agentId: input.agentId, userId: source.run.responsibleUserId,
     selection: parseObject(source.run.contextSnapshot?.aiRouterSelection) as unknown as AiConnectionRouterSelection,
     credentialIdentity: input.credentialIdentity } : null;
