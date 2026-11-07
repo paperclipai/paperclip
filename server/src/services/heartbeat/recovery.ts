@@ -33,9 +33,7 @@ import {
   liveLegacyControllerExpiresAt,
   revokeExpiredLegacyControllerWithState,
 } from "../legacy-controller-lease.js";
-import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../remote-execution-termination.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { nativeSessionProviderEvidence } from "../native-runtime/native-session-resume.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
 import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
@@ -2166,62 +2164,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     onError?: (error: unknown) => void;
   };
 
-  /**
-   * A due remote same-run retry reattaches to its original sandbox runner. That
-   * is only meaningful while the runner could still hold provider work. When
-   * the failed attempt settled before any provider work, and its sandbox was
-   * not retained (the run's disposition is `destroy`, or every remote lease has
-   * an exact termination receipt), reattachment can only fail with
-   * `native_remote_recovery_lease_mismatch` and block the task. Retire the
-   * remote process identity instead so the plain same-run resume (the path a
-   * retry with no recorded runner process takes) prepares the run again.
-   *
-   * Every fact is read from durable state and must be explicit. Rows written
-   * by a release that did not record `providerEventsExist` or the run's
-   * resource disposition keep the reattachment path, as do runs with provider
-   * events: their outcome may be ambiguous, so they never get a fresh executor.
-   */
-  async function retireUnusedRemoteRunnerIdentity(candidate: HeartbeatRun): Promise<boolean> {
-    return db.transaction(async transaction => {
-      const tx = transaction as unknown as Db;
-      const [run] = await tx.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, candidate.id),
-      )).for("update").limit(1);
-      if (!run || run.runtimeMode !== "native" || isNativeRunnerOwnershipHeld(run) ||
-          !["running", "failed"].includes(run.status) ||
-          run.processPid !== candidate.processPid || run.processGroupId !== candidate.processGroupId ||
-          (run.processStartedAt?.getTime() ?? null) !== (candidate.processStartedAt?.getTime() ?? null)) return false;
-      const [coordinator] = await tx.select().from(nativeRunFinalizations)
-        .where(eq(nativeRunFinalizations.runId, run.id)).for("update").limit(1);
-      if (!coordinator || coordinator.phase !== "retryable_failure" || coordinator.resultId !== null) return false;
-      const detail = parseObject(coordinator.failureDetail);
-      if (detail.providerEventsExist !== false || detail.recoveryMode === "ambiguous_state") return false;
-      if ((await nativeSessionProviderEvidence(tx, [run.id])).has(run.id)) return false;
-      const profile = parseObject(run.runnerProfileJson);
-      const leases = await tx.select().from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      ));
-      const remoteLeases = leases.filter(lease => lease.provider !== "local");
-      const basis = profile.nativeResourceDisposition === "destroy" ? "resource_disposition_destroy"
-        : remoteLeases.length > 0 && remoteLeases.every(hasRemoteTerminationReceipt) ? "sandbox_terminated" : null;
-      if (!basis) return false;
-      await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId });
-      await tx.update(heartbeatRuns).set({
-        processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
-      }).where(eq(heartbeatRuns.id, run.id));
-      await appendHeartbeatRunEvent(tx, {
-        companyId: run.companyId, runId: run.id, agentId: run.agentId,
-        eventType: "lifecycle", stream: "system", level: "info",
-        message: "Resuming this run without reattachment: the failed attempt did no provider work and its sandbox was not retained.",
-        payload: { reason: "remote_runner_unused", basis, processPid: run.processPid, processGroupId: run.processGroupId },
-      });
-      return true;
-    }).catch(error => {
-      logger.warn({ err: error, runId: candidate.id }, "failed to retire an unused remote runner identity");
-      return false;
-    });
-  }
-
   async function resumeRetryableNativeProcessSessions(scope: RecoveryScope = {}, beforeDispatch?: () => Promise<void>) {
     const now = new Date();
     // Retryable runs can retain process identifiers from the failed attempt.
@@ -2260,8 +2202,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
         const profile = parseObject(run.runnerProfileJson);
         if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) {
-          if (await retireUnusedRemoteRunnerIdentity(run)) claimableNativeRunIds.add(run.id);
-          else remoteRetryRunIds.push(run.id);
+          remoteRetryRunIds.push(run.id);
         } else {
           const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
             eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
