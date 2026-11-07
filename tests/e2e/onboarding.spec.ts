@@ -135,7 +135,7 @@ test.describe("Onboarding wizard", () => {
     expect(nextSetup).toMatchObject({ name: "Atlas", pauseReason: "setup", metadata: { setupAdapterPending: true } });
     await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
-    await page.getByRole("main").getByRole("link", { name: /^Atlas / }).click();
+    await page.getByRole("main").getByRole("link", { name: /\bAtlas\b/ }).click();
     await expect(page.getByRole("button", { name: "Run now", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Finish setup", exact: true })).toHaveCount(1);

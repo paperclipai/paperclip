@@ -370,7 +370,8 @@ export function Agents() {
     return (
       <EntityRow
         key={agent.id}
-        title={agent.name}
+        // Match the agent page header: job title (or role) first, name below.
+        title={agent.title || (roleLabels[agent.role] ?? agent.role)}
         titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
         // Fixed (truncating) title width at xl so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
@@ -380,7 +381,7 @@ export function Agents() {
         titleClassName="flex-1"
         titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
         subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
+        subtitle={agent.name}
         to={agentUrl(agent)}
         className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
@@ -566,11 +567,8 @@ function OrgTreeNode({
               cluster wraps to a second line under pressure instead of starving
               the name at narrow widths. */}
           <div className="min-w-(--sz-7rem) truncate">
-            <span className="text-sm font-medium">{node.name}</span>
-            <span className="text-xs text-muted-foreground ml-2">
-              {roleLabels[node.role] ?? node.role}
-              {agent?.title ? ` - ${agent.title}` : ""}
-            </span>
+            <span className="text-sm font-medium">{agent?.title || (roleLabels[node.role] ?? node.role)}</span>
+            <span className="text-xs text-muted-foreground ml-2">{node.name}</span>
           </div>
           {builtInState && showBuiltInLifecycle && (
             <div className="flex items-center gap-1.5 shrink-0">

@@ -544,11 +544,11 @@ describe("Agents", () => {
 
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
-    const name = row?.querySelector("span[title='Paperclip Engineer With A Much Longer Display Name']");
+    const heading = row?.querySelector("span[title='Software Engineer With A Much Longer Specialty Title']");
     const subtitle = Array.from(row?.querySelectorAll("p") ?? []).find((node) =>
-      node.textContent?.includes("Software Engineer With A Much Longer Specialty Title"),
+      node.textContent === "Paperclip Engineer With A Much Longer Display Name",
     );
-    expect(name?.classList.contains("truncate")).toBe(true);
+    expect(heading?.classList.contains("truncate")).toBe(true);
     expect(subtitle).toBeDefined();
     expect(subtitle?.classList.contains("truncate")).toBe(true);
     const actions = row?.querySelector('button[aria-label="Open actions for Paperclip Engineer With A Much Longer Display Name"]');
@@ -559,6 +559,39 @@ describe("Agents", () => {
     expect(row?.textContent).not.toContain("Pause");
   });
 
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("orders the job title before the name in %s list rows, like the agent page header", async (_mode, AgentList) => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "titled", name: "Ada", role: "engineer", title: "Connector engineer", urlKey: "ada" }),
+      makeAgent({ id: "untitled", name: "Grace", role: "designer", title: null, urlKey: "grace" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider><ToastProvider>
+            <AgentList />
+          </ToastProvider></TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => { listToggle?.click(); });
+    await flushReact();
+
+    const titled = findAgentRow(container, "Ada");
+    expect(titled?.querySelector("span[title]")?.textContent).toBe("Connector engineer");
+    expect(titled?.querySelector("p")?.textContent).toBe("Ada");
+
+    const untitled = findAgentRow(container, "Grace");
+    expect(untitled?.querySelector("span[title]")?.textContent).toBe("Designer");
+    expect(untitled?.querySelector("p")?.textContent).toBe("Grace");
+  });
 
   it("shows effective environment and sandbox provider beside agents", async () => {
     mockAgentsApi.list.mockResolvedValue([
