@@ -23,6 +23,8 @@ import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { workspaceOperationService } from "../services/workspace-operations.js";
 import { environmentService } from "../services/environments.js";
+import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -662,7 +664,7 @@ describe("committed native run projection lifecycle", () => {
       await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
       busyRunId = undefined;
     });
-    async function deferredComment(binding: Awaited<ReturnType<typeof seed>>) {
+    async function deferredComment(binding: Awaited<ReturnType<typeof seed>>, bodies = ["Also include the FOLLOWUP line."]) {
       await db.insert(authUsers).values({ id: commenter, name: "Commenter", email: `${commenter}@example.test`,
         createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: commenter,
@@ -672,22 +674,37 @@ describe("committed native run projection lifecycle", () => {
       await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
       [{ id: busyRunId }] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running",
         contextSnapshot: { issueId: randomUUID() } }).returning({ id: heartbeatRuns.id });
-      const [comment] = await db.insert(issueComments).values({ companyId, issueId: binding.issueId,
-        authorUserId: commenter, body: "Also include the FOLLOWUP line." }).returning();
+      const comments = await db.insert(issueComments).values(bodies.map(body => ({ companyId, issueId: binding.issueId,
+        authorUserId: commenter, body }))).returning();
+      const ids = comments.map(comment => comment.id), latest = ids[ids.length - 1];
       // The durable receipt the comment route writes while the run is active.
       const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
         triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
         requestedByActorType: "user", requestedByActorId: commenter,
-        payload: { issueId: binding.issueId, commentId: comment.id, _paperclipWakeContext: {
-          issueId: binding.issueId, taskId: binding.issueId, commentId: comment.id, wakeCommentId: comment.id,
-          wakeCommentIds: [comment.id], wakeReason: "issue_commented", source: "issue.comment" } },
+        payload: { issueId: binding.issueId, commentId: latest, _paperclipWakeContext: {
+          issueId: binding.issueId, taskId: binding.issueId, commentId: latest, wakeCommentId: latest,
+          wakeCommentIds: ids, wakeReason: "issue_commented", source: "issue.comment" } },
       }).returning();
       // The killed executor never reached its cleanup, so its local lease is still active.
       const environmentId = (await db.select({ id: environments.id }).from(environments).where(eq(environments.driver, "local")))[0]?.id
         ?? (await db.insert(environments).values({ name: "Local", driver: "local" }).returning())[0].id;
       const lease = await environmentService(db).acquireLease({ companyId, environmentId, heartbeatRunId: binding.runId,
         issueId: binding.issueId, leasePolicy: "ephemeral", provider: "local" });
-      return { comment, wake, lease };
+      return { comment: comments[0], comments, wake, lease };
+    }
+    // The durable writes of an acknowledged same-turn steer (the queued-comment
+    // steer route): the message leaves the saved queue and the live run records
+    // that its turn received it.
+    async function steer(binding: Awaited<ReturnType<typeof seed>>, wakeId: string, commentId: string) {
+      const wake = await readWake(wakeId);
+      const remaining = (wake.payload as { _paperclipWakeContext: { wakeCommentIds: string[] } })
+        ._paperclipWakeContext.wakeCommentIds.filter(id => id !== commentId);
+      await db.update(agentWakeupRequests).set({ payload: withQueuedCommentIdsInWakePayload(wake.payload, remaining) })
+        .where(eq(agentWakeupRequests.id, wakeId));
+      const run = await read(binding.runId);
+      await db.update(heartbeatRuns).set({ resultJson: { ...(run.resultJson ?? {}), queuedSteeringAcknowledgements: {
+        [commentId]: { status: "acknowledged", queueId: wakeId, turnId: "steered-turn", acknowledgedAt: new Date().toISOString() } } } })
+        .where(eq(heartbeatRuns.id, binding.runId));
     }
     async function startRecovered() {
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
@@ -725,6 +742,60 @@ describe("committed native run projection lifecycle", () => {
       await coordinator!.stop(); await startRecovered(); await flush();
       await heartbeatService(db).resumeQueuedRuns();
       expect((await followUps(binding.issueId, binding.runId)).map(run => run.id)).toEqual([followUp.id]);
+    });
+
+    it("does not wake again for a comment the recovered run already received as a steer", async () => {
+      const binding = await seed(true);
+      const { comments: [steered, saved], wake } = await deferredComment(binding,
+        ["Steer this into the live turn.", "Also include the FOLLOWUP line."]);
+      await steer(binding, wake.id, steered.id);
+      await complete(binding, "control_plane"); await barrier(binding);
+      await startRecovered(); await flush();
+      await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+      await flush();
+      const [followUp, ...extra] = await followUps(binding.issueId, binding.runId);
+      expect(extra).toEqual([]);
+      expect(followUp.contextSnapshot?.wakeCommentIds).toEqual([saved.id]);
+      expect((await read(binding.runId)).resultJson?.queuedSteeringAcknowledgements).toMatchObject({
+        [steered.id]: { status: "acknowledged" } });
+    });
+
+    it("cancels the saved queue and starts no follow-up when its only comment was steered", async () => {
+      const binding = await seed(true);
+      const { comment, wake } = await deferredComment(binding);
+      // The steer route cancels a queue whose final message was delivered.
+      await steer(binding, wake.id, comment.id);
+      await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+        .where(eq(agentWakeupRequests.id, wake.id));
+      await complete(binding, "control_plane"); await barrier(binding);
+      await startRecovered(); await flush();
+      await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+      await flush(); await heartbeatService(db).resumeQueuedRuns();
+      expect((await read(binding.runId)).status).toBe("succeeded");
+      expect(await followUps(binding.issueId, binding.runId)).toEqual([]);
+      expect(await readWake(wake.id)).toMatchObject({ status: "cancelled", runId: null });
+    });
+
+    it("joins a Retry click to the promoted follow-up instead of consuming the comment twice", async () => {
+      const binding = await seed(true);
+      const { comment, wake } = await deferredComment(binding);
+      await complete(binding, "control_plane"); await barrier(binding);
+      await startRecovered(); await flush();
+      await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+      await flush();
+      const [followUp] = await followUps(binding.issueId, binding.runId);
+      expect(followUp).toMatchObject({ id: (await readWake(wake.id)).runId, status: "queued" });
+      // A click that observed the recovered source is stale; one that observed
+      // the follow-up joins it. Neither admits another run with the comment.
+      expect(await requestTaskRetry({ db, companyId, issueId: binding.issueId, actorId: commenter,
+        idempotencyKey: randomUUID(), observedRunId: binding.runId })).toMatchObject({ accepted: false, stale: true });
+      expect(await requestTaskRetry({ db, companyId, issueId: binding.issueId, actorId: commenter,
+        idempotencyKey: randomUUID(), observedRunId: followUp.id })).toMatchObject({ accepted: true });
+      await flush(); await heartbeatService(db).resumeQueuedRuns();
+      const runs = await followUps(binding.issueId, binding.runId);
+      expect(runs.map(run => run.id)).toEqual([followUp.id]);
+      expect(runs.filter(run => (run.contextSnapshot?.wakeCommentIds as string[] | undefined)?.includes(comment.id)))
+        .toHaveLength(1);
     });
   });
 });
