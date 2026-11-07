@@ -222,6 +222,23 @@ copyback children after an abrupt parent death before the success barrier. It su
 automatic provider wake. This is an intentional limit: elapsed time or a missing
 database connection never proves the old copyback process stopped.
 
+**Same-host restart (automatic).** A control-plane restart that kills the
+controller mid-copyback leaves a receipt whose owner can never confirm its own
+stop. Each receipt records the controller's process group (`processGroupId`).
+Copyback children (tar and Git) are spawned without `detached`, so they keep that
+group after their parent dies. A successor on the same host releases the
+receipt itself only when all of these hold: the receipt names another
+controller boot, the recorded PID is dead or recycled (process start time), and
+the recorded process group is empty, or its only remaining members predate the
+old controller or belong to the successor's own process tree. It logs
+`issue.workspace_owner_stop_verified` with that local proof, marks the recovery
+`resuming`, and the ordinary finalizer resumes copyback from the accepted
+result with no provider turn. A still-live group member keeps the fence and is
+rechecked automatically (`local_stop_pending`). A receipt without a process
+group, from another host, or on a platform without `ps` still needs the board
+confirmation below. The copyback advisory lock and the coordinator lease are
+unchanged.
+
 An instance operator must first verify through the deployment platform that the
 exact prior controller **and its copyback subprocesses** have stopped. Retain the
 sandbox, accepted native result, and workspace descriptor. Do not run a new
@@ -229,7 +246,11 @@ provider turn, delete workspace contents, or relax archive confinement.
 
 For legacy receipts, an authorized company owner, company administrator or
 instance administrator records independently verified platform evidence through
-the operator API. The task has no shutdown form or resume control. The API is
+the operator API. The task shows this as its one action: its interruption is
+`waiting_for_user` with `userAction: "confirm_owner_stop"`, and the chat offers
+**Confirm the previous server stopped**, which asks for the stop evidence and
+calls the same API. The control is shown only to roles that hold
+`runtime:confirm_owner_stop`. The API is
 `POST /api/issues/:id/recovery-actions/resume-workspace-finalization` with:
 
 ```json

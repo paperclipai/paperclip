@@ -17,13 +17,14 @@ import type {
   PersistedNativeSession,
 } from "./contracts/native-session-backend.js";
 import {
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
   nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
-import { PROVIDER_STATE_INCOMPATIBLE } from "./contracts/harness-driver.js";
+import { PROVIDER_ATTACH_REFUSED, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "./contracts/harness-driver.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -6280,6 +6281,71 @@ describe("executeNativeSession recovery", () => {
       expect(openSession).not.toHaveBeenCalled();
       expect(openReplacementSession).not.toHaveBeenCalled();
     }
+  });
+
+  it("never replaces a session after a deterministic, non-destructive recovery refusal", async () => {
+    const outcomes = [
+      { failureClass: PROVIDER_ATTACH_REFUSED, reason: "run.attach cannot change protected launch arguments",
+        expected: NativeProviderStateIncompatibleError },
+      { failureClass: PROVIDER_SIDE_EFFECT_PENDING, reason: "native_runner_source_semantic_reconciliation_required",
+        expected: NativeProviderSideEffectPendingError },
+    ] as const;
+    for (const outcome of outcomes) {
+      const checkpoint: PersistedNativeSession = {
+        backendKind: "mock", sessionId: "driver-refused", identity,
+        providerSessionId: "provider-refused", providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+        cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], lineage: [],
+      };
+      const openRun = vi.fn(async () => undefined);
+      const openSession = vi.fn();
+      const openReplacementSession = vi.fn();
+      const backend: NativeSessionBackend = {
+        descriptor: async () => ({ kind: "mock", name: "refused", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
+        openSession, openReplacementSession,
+        recoverSession: async () => ({ recovered: false, reason: outcome.reason, failureClass: outcome.failureClass }),
+      };
+      const port: ControlPlanePort = {
+        openRun, appendEvent: vi.fn(), completeRun: vi.fn(),
+        loadSessionCheckpoint: async () => structuredClone(checkpoint),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+      };
+      const failure = await executeNativeSession({
+        input, backend, controlPlane: port,
+        runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      }).catch((error: unknown) => error);
+      expect(failure, outcome.failureClass).toBeInstanceOf(outcome.expected);
+      expect((failure as Error).message).toBe(`native_session_recovery_failed: ${outcome.reason}`);
+      expect(openReplacementSession, outcome.failureClass).not.toHaveBeenCalled();
+      expect(openSession, outcome.failureClass).not.toHaveBeenCalled();
+      expect(openRun, outcome.failureClass).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still replaces a session after an unclassified resume failure when the checkpoint allows it", async () => {
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-transient", identity,
+      providerSessionId: "provider-transient", providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+      cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    const replacementAttempted = new Error("replacement attempted");
+    const openReplacementSession = vi.fn(async () => { throw replacementAttempted; });
+    const backend: NativeSessionBackend = {
+      descriptor: async () => ({ kind: "mock", name: "transient", version: "1",
+        capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true } }),
+      openSession: vi.fn(), openReplacementSession,
+      recoverSession: async () => ({ recovered: false, reason: "runnerd transport closed while waiting for run.attach" }),
+    };
+    const port: ControlPlanePort = {
+      openRun: vi.fn(async () => undefined), appendEvent: vi.fn(), completeRun: vi.fn(),
+      loadSessionCheckpoint: async () => structuredClone(checkpoint),
+      replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    })).rejects.toBe(replacementAttempted);
+    expect(openReplacementSession).toHaveBeenCalledOnce();
   });
 
   it("bounds paginated recovery replay with one signal and observes a late rejection", async () => {

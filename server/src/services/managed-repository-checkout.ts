@@ -15,6 +15,29 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+type ManagedRepositoryPreparationFailure = { code: string | number | null; timedOut: boolean };
+const preparationFailures = new WeakMap<Error, ManagedRepositoryPreparationFailure>();
+
+export function readManagedRepositoryPreparationFailure(error: unknown): ManagedRepositoryPreparationFailure | null {
+  const failure = error instanceof Error ? preparationFailures.get(error) : undefined;
+  return failure ? { ...failure } : null;
+}
+
+function managedRepositoryPreparationError(message: string, error: unknown): Error {
+  const wrapped = new Error(message);
+  const retained = readManagedRepositoryPreparationFailure(error);
+  if (retained) preparationFailures.set(wrapped, retained);
+  else if (error instanceof Error) {
+    const details = error as Error & { code?: unknown; killed?: unknown };
+    const code = typeof details.code === "number" && Number.isSafeInteger(details.code) ? details.code
+      : typeof details.code === "string" && /^(?:E[A-Z0-9_]{1,63}|ABORT_ERR)$/.test(details.code) ? details.code : null;
+    const timedOut = code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && (details.killed === true || code === "ETIMEDOUT"
+      || error.name === "AbortError" || error.name === "TimeoutError");
+    if (code !== null || timedOut) preparationFailures.set(wrapped, { code, timedOut });
+  }
+  return wrapped;
+}
+
 async function copyManagedGitObjects(cwd: string, repoUrl: string, source: { cwd: string; commits: readonly string[] }) {
   const git = (directory: string, args: string[]) => execFile("git", ["-C", directory, ...args], {
     env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0" },
@@ -202,7 +225,7 @@ export async function materializeManagedProjectWorkspace(
     if (error instanceof RepositoryRefNotFoundError) throw new RepositoryRefNotFoundError(message, error.requestedRef);
     const connectionFailure = readGitConnectionFailure(error);
     if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
-    throw new Error(message);
+    throw managedRepositoryPreparationError(message, error);
   }
 
   try {
@@ -216,8 +239,9 @@ export async function materializeManagedProjectWorkspace(
     }
     const reason =
       renameError instanceof Error ? renameError.message : String(renameError);
-    throw new Error(
+    throw managedRepositoryPreparationError(
       `Failed to move managed checkout into place at "${cwd}": ${reason}`,
+      renameError,
     );
   }
   return { cwd, warning: null };
