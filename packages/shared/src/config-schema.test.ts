@@ -259,6 +259,9 @@ describe("paperclip config schema", () => {
     const serverBindOpt = serverSection?.options.find((opt) => opt.key === "server.bind");
     expect(serverBindOpt?.default).toBeUndefined();
     expect(serverBindOpt?.description).toContain("server.host");
+    const serverAllowedHostnamesOpt = serverSection?.options.find((opt) => opt.key === "server.allowedHostnames");
+    expect(serverAllowedHostnamesOpt?.default).toEqual([]);
+    expect(formatSectionOptions(serverSection!)).toContain("server.allowedHostnames: string[] (default: [])");
     const allFormatted = formatAllConfigOptions();
     expect(allFormatted).toContain("Section: database");
     expect(allFormatted).toContain("Section: server");
