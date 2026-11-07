@@ -101,6 +101,23 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   async function stored(workspaceId: string) {
     return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0];
   }
+  it("imports an ordinary managed directory without capturing its enclosing host repository", async () => {
+    await git(home, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(home, "host-only.txt"), "outside the workspace\n");
+    await git(home, "add", "host-only.txt"); await git(home, "commit", "-qm", "Enclosing host repository");
+    const head = await git(home, "rev-parse", "HEAD"), f = await fixture();
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    const authority = readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)!;
+    const reference = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(home, "ordinary.pcws"), targetDir = path.join(home, "ordinary-restored");
+    await loadWorkspaceSnapshotArchive({ storage, reference: reference!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: reference!.manifestDigest });
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+    expect(await fs.lstat(path.join(targetDir, ".git")).catch(() => null)).toBeNull();
+    expect(await fs.lstat(path.join(targetDir, "host-only.txt")).catch(() => null)).toBeNull();
+    expect(await git(home, "rev-parse", "HEAD")).toBe(head);
+  });
   it.each([false, true])("does not admit a Git fragment as an ordinary migration source (objects: %s)", async objects => {
     const f = await fixture(), info = path.join(f.cwd, ".git", "info");
     await fs.mkdir(info, { recursive: true });
@@ -599,6 +616,19 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
 
+  it.each(["missing", "deleted"] as const)("rejects a Git parent with %s imported-child snapshot coverage", async state => {
+    const f = await gitFixture();
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: f.child.id, apply: true });
+    const authority = readRemoteWorkspaceAuthority((await stored(f.child.id)).metadata)!;
+    if (state === "missing") await db.delete(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+    else await db.update(executionWorkspaceSnapshots).set({ status: "deleted" }).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["overlapping_workspace_requires_maintenance"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
+    expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
+    expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId))).toEqual([]);
+    expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
   it.each([false, true])("requires exact imported-child coverage for an online shared Git parent (%s)", async changed => {
     const f = await gitFixture();
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,

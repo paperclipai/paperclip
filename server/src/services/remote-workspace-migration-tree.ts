@@ -54,6 +54,7 @@ export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
 export type WorkspaceSourceScope = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
   physicalRoots?: string[]; gitSourceRoots?: string[]; settledPreparedWorkspaceIds?: string[]; settledRecoveryIssueIds?: string[]; settledFinalizationRunIds?: string[];
+  importedChildren?: Array<{ operationId: string; sourcePath: string }>;
 };
 
 export async function requiresOnlineOrdinarySource(workspace: Workspace): Promise<boolean> {
@@ -75,7 +76,7 @@ export async function requiresOnlineOrdinarySource(workspace: Workspace): Promis
   return false;
 }
 
-export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<WorkspaceSourceScope | null> {
+export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspace): Promise<Omit<WorkspaceSourceScope, "importedChildren"> | null> {
   if (!workspace.cwd || workspace.providerType !== "local_fs" || workspace.repoUrl || workspace.branchName) return null;
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
@@ -232,13 +233,17 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
       if (!onlineSource?.workspaceIds.includes(row.id) && overlaps(root, physical)) return ["overlapping_workspace_requires_maintenance"];
     }
   }
-  if (onlineSource?.gitSourceRoots) return [];
-  const migrated = await db.select({ cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
+  const migrated = await db.select({ id: workspaceOperations.id, cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.phase, "remote_workspace_migration"),
     eq(workspaceOperations.status, "succeeded"), ne(workspaceOperations.executionWorkspaceId, workspace.id),
   ));
-  for (const row of migrated) if (row.cwd && (await physicalPath(row.cwd)).startsWith(`${root}/.paperclip/worktrees/`))
-    return ["overlapping_workspace_requires_maintenance"];
+  for (const row of migrated) {
+    if (!row.cwd) continue;
+    const sourcePath = await physicalPath(row.cwd);
+    if (sourcePath.startsWith(`${root}/.paperclip/worktrees/`)
+      && !(onlineSource?.gitSourceRoots && onlineSource.importedChildren?.some(child => child.operationId === row.id && child.sourcePath === sourcePath)))
+      return ["overlapping_workspace_requires_maintenance"];
+  }
   return [];
 }
 

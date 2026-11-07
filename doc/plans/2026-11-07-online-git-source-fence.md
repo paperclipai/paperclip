@@ -52,6 +52,17 @@ history normalization, Git/fsck checks, manifest ordering, and byte format. Its
 self-contained remote function checks that every Git store belongs to the held
 physical source roots. It preserves the original source files.
 
+Ordinary capture does not read an enclosing host repository outside its root.
+Its canonical ordinary proof remains valid there. Any `.git` marker at the
+selected root still requires Git admission. A completed nested operation stays
+in the parent layout guard unless the derived child proof covers that exact
+operation and physical path. Missing or revoked snapshot coverage cannot turn
+the leftover child into an ordinary parent directory.
+
+Receipt path scans retain canonical resolution for aliases. A lexical SQL prefix
+could hide a child reached through a symlinked ancestor. The finite receipt bound
+remains in force; query optimization must preserve that alias coverage.
+
 Imported child paths come from the same exact completed migration/snapshot
 selector used by nested source verification. Their physical Git owners remain
 in the parent fence after their database rows become remote. The selector bounds

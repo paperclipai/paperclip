@@ -70,15 +70,14 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const cwd = workspace.cwd ?? workspace.providerRef;
   if (!cwd || !path.isAbsolute(cwd) || !["local_fs", "git_worktree"].includes(workspace.providerType)) return null;
   const ordinary = await inspectOnlineOrdinarySource(db, workspace);
-  let selected: Identities;
-  try { selected = await workspaceSourceIdentities(workspace.companyId, cwd); } catch { return null; }
-  if (ordinary && !selected.git) {
+  if (ordinary) {
     const marker = await fs.lstat(path.join(ordinary.root, ".git")).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error; return null;
     });
-    if (marker) return null;
-    return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
+    if (!marker) return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
   }
+  let selected: Identities;
+  try { selected = await workspaceSourceIdentities(workspace.companyId, cwd); } catch { return null; }
   if (!selected.git || selected.git.root !== await physicalPath(cwd) || selected.unownedPaths.length || !workspace.sourceIssueId
     || workspace.cwd && workspace.providerRef && workspace.cwd !== workspace.providerRef) return null;
   const head = await fs.lstat(path.join(selected.git.gitDirectory.path, "HEAD")).catch((error: NodeJS.ErrnoException) => {
