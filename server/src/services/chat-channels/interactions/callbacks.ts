@@ -993,6 +993,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       await options.questionFormOpenAuthorizationBarrier?.();
       let providerAttempted = false;
       let attemptActionId: string | null = null;
+      const cloudForm = event.provider === "slack" ? slackFormOpenContext() : undefined;
       try {
         const attemptProviderActionId = event.event.triggerId
           ? `question_form_open_attempt:${createHash("sha256")
@@ -1005,7 +1006,6 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               )
               .digest("hex")}`
           : null;
-        const cloudForm = event.provider === "slack" ? slackFormOpenContext() : undefined;
         const runPreflight = (lease?: CredentialMutationLeaseGuard) => db.transaction(async (tx) => {
           await requireCurrentExternalActionAuthorization(tx, {
             conversationId: conversation.id,
