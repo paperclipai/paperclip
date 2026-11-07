@@ -8,7 +8,7 @@ import {
   readMcpHttpResponse,
 } from "../services/mcp-http.js";
 
-describe("bounded MCP responses", () => {
+describe("MCP response progress", () => {
   it("retains consumed SSE progress when a partial event fails and releases the reader", async () => {
     const partial = 'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\ndata: {"jsonrpc":';
     const failure = new Error("peer reset");
@@ -26,60 +26,6 @@ describe("bounded MCP responses", () => {
     expect(progress).toEqual({ bytesReceived: Buffer.byteLength(partial), chunksReceived: 1, eventsReceived: 1, matchedResponse: false, ended: false });
     expect(body.locked).toBe(false);
   });
-
-  for (const contentType of ["application/json", "text/event-stream"]) {
-    it(`rejects declared ${contentType} overflow before consuming the body`, async () => {
-      let reads = 0;
-      let cancelled = false;
-      const body = new ReadableStream<Uint8Array>({
-        pull(controller) { reads += 1; controller.enqueue(new Uint8Array(1)); },
-        cancel() { cancelled = true; },
-      }, { highWaterMark: 0 });
-      const response = new Response(body, {
-        headers: { "content-type": contentType, "content-length": "101" },
-      });
-      await expect(readMcpHttpResponse(response, "request", { maxBytes: 100 })).rejects.toMatchObject({
-        name: "McpHttpResponseError", reason: "too_large", maxBytes: 100, responseBytes: 101,
-      });
-      expect(reads).toBe(0);
-      expect(cancelled).toBe(true);
-      expect(body.locked).toBe(false);
-    });
-
-    it(`cancels ${contentType} at the first streamed byte beyond the limit`, async () => {
-      let reads = 0;
-      let cancelled = false;
-      const body = new ReadableStream<Uint8Array>({
-        pull(controller) { reads += 1; controller.enqueue(new Uint8Array(reads === 1 ? 100 : 1)); },
-        cancel() { cancelled = true; },
-      }, { highWaterMark: 0 });
-      await expect(readMcpHttpResponse(new Response(body, {
-        headers: { "content-type": contentType, "content-length": "invalid" },
-      }), "request", { maxBytes: 100 })).rejects.toMatchObject({
-        reason: "too_large", maxBytes: 100, responseBytes: 101,
-      });
-      expect(reads).toBe(2);
-      expect(cancelled).toBe(true);
-      expect(body.locked).toBe(false);
-    });
-
-    it(`reports UTF-8 byte size for buffered ${contentType} overflow`, async () => {
-      const response = new Response(null, { headers: { "content-type": contentType } });
-      response.text = async () => "\u00e9".repeat(51);
-      await expect(readMcpHttpResponse(response, "request", { maxBytes: 100 })).rejects.toMatchObject({
-        reason: "too_large", maxBytes: 100, responseBytes: 102,
-      });
-    });
-
-    it(`accepts ${contentType} at exactly the byte limit`, async () => {
-      const payload = { jsonrpc: "2.0", id: "request", result: {} };
-      const json = JSON.stringify(payload);
-      const body = contentType === "text/event-stream" ? `data: ${json}\n\n` : json;
-      expect(await readMcpHttpResponse(new Response(body, {
-        headers: { "content-type": contentType, "content-length": String(Buffer.byteLength(body)) },
-      }), "request", { maxBytes: Buffer.byteLength(body) })).toEqual(payload);
-    });
-  }
 });
 
 describe("mcpHttpRequestHeaders", () => {

@@ -238,7 +238,7 @@ export async function readMcpHttpResponse(
       progress.bytesReceived = bytes;
       if (value) progress.chunksReceived += 1;
       progress.ended = done;
-      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit", { maxBytes, responseBytes: bytes });
+      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.

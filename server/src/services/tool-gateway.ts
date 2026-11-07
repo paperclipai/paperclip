@@ -6666,7 +6666,6 @@ export function createToolGatewayService(
       }
       if (error instanceof McpHttpResponseError) {
         execution.failureKind = "protocol_failure";
-        if (execution.response && error.responseBytes != null) execution.response.bodySizeBytes = error.responseBytes;
         const failure = error.reason === "too_large" ? responseTooLargeError()
           : error.reason === "malformed_response" ? malformedRemoteMcpResponse()
           : new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "mcp_remote_invalid_json");
