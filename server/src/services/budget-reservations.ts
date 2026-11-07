@@ -54,12 +54,16 @@ export async function recheckRunBudgetReservationInTransaction(
   }
   if (stopRecovery) return null;
   const { block, policies, observations } = await budgetServiceInTransaction(tx, publications)
-    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id });
+    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id,
+      admittedRecovery: Boolean(recoveryLeaseOwner) });
   if (block) return block.reason;
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
   if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
     return "Agent is paused or its lifecycle is not ready for new work";
+  // An owned recovery reuses the hold reserveRunBudget already admitted;
+  // other runs' holds filling the budget must not refuse it.
+  if (recoveryLeaseOwner) return null;
   for (const [index, policy] of policies.entries()) {
     const observed = observations[index];
     // This operation's hold is already included in exposure. Do not propose it
@@ -102,7 +106,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
         // Recovery has already made this run queued/running, so its own pending
         // accounting is excluded. Current overruns, other unfinished runs and
         // scope pauses still apply before any more paid work starts.
-        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId });
+        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId, admittedRecovery: true });
         if (block) return { admissionBlockReason: block.reason };
         const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
           .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));

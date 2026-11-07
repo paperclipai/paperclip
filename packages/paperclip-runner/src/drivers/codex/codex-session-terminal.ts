@@ -101,6 +101,53 @@ function finalize(
     state.terminal = true;
   }
 
+/**
+ * ACPX closes, rather than restores, a turn that a restart interrupted after
+ * the runner had recorded its accepted semantic result.
+ */
+const ACPX_RESTART_CLOSED_TURN_CODE = "acpx_active_turn_recovery_closed";
+
+/**
+ * The restored runner reports a turn lost on restore when it cannot prove the
+ * turn's outcome itself, and ACPX closes the turn when its runner already
+ * recorded the accepted result. In both cases a restart lost only the provider
+ * turn. When Paperclip already holds the semantic result this exact turn
+ * proposed, that result is the turn's outcome: the turn settles as completed
+ * instead of failing the run and rerunning finished work. Live notifications
+ * and recovery reads use the same rule. Any other terminal, or a lost turn
+ * without a held result, is returned unchanged.
+ */
+export function settleRestoreLostTurnWithHeldResult(
+  state: CodexSessionState,
+  turn: Record<string, unknown>,
+  turnId = text(turn.id),
+): Record<string, unknown> {
+  const restartLost = isNativeRestartInterruption(turn.error) ||
+    record(turn.error).code === ACPX_RESTART_CLOSED_TURN_CODE;
+  if (text(turn.status) !== "failed" || !restartLost ||
+      state.result === null || turnId.length === 0 || state.resultTurnId !== turnId) {
+    return turn;
+  }
+  return { ...turn, status: "completed", error: null };
+}
+
+/**
+ * A replay of an already committed terminal matches when either the terminal
+ * as reported or its settled form matches. A checkpoint from before the
+ * restart-loss rule can hold the reported failure with the same held result;
+ * that is the same terminal, not a conflicting one.
+ */
+export function settledTerminalReplayConflict(
+  state: CodexSessionState,
+  reported: Record<string, unknown>,
+  settled: Record<string, unknown>,
+  expectedFingerprint: string,
+): TerminalReplayConflict | null {
+  const conflict = terminalReplayConflict(state, settled, expectedFingerprint);
+  if (conflict === null || settled === reported) return conflict;
+  return terminalReplayConflict(state, reported, expectedFingerprint) === null ? null : conflict;
+}
+
 export function mapTerminalTurn(
   state: CodexSessionState,
     turn: Record<string, unknown>,
@@ -108,10 +155,12 @@ export function mapTerminalTurn(
     reconciling = false,
   ): void {
     const turnId = text(turn.id, fallbackTurnId || state.activeTurnId || "");
+    const reported = turn;
+    turn = settleRestoreLostTurnWithHeldResult(state, turn, turnId);
     const status = text(turn.status, "completed");
     const previous = state.terminalTurns.get(turnId);
     if (previous !== undefined) {
-      const conflict = terminalReplayConflict(state, turn, previous);
+      const conflict = settledTerminalReplayConflict(state, reported, turn, previous);
       if (conflict !== null) {
         if (reconciling) {
           throw new HarnessReconciliationError(
