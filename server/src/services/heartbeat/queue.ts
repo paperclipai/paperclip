@@ -36,7 +36,7 @@ import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, isWithinActiveHours } from "@paperclipai/shared";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
@@ -2784,6 +2784,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled", {}, { enabled: false });
+      return null;
+    }
+    // The scheduler checks the window before it claims a tick, but the wakeup
+    // route also accepts source "timer" and has to honor the same window.
+    if (source === "timer" && policy.activeHours === "invalid") {
+      await writeSkippedRequest("heartbeat.activeHours.invalid");
+      return null;
+    }
+    if (
+      source === "timer" &&
+      policy.activeHours !== "invalid" &&
+      !isWithinActiveHours(policy.activeHours, opts.timerEvaluatedAt ?? new Date())
+    ) {
+      await writeSkippedRequest("heartbeat.activeHours.outside");
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {

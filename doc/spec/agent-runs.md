@@ -395,6 +395,11 @@ Agent-level control-plane settings (not adapter-specific):
   "heartbeat": {
     "enabled": true,
     "intervalSec": 300,
+    "activeHours": {
+      "start": "09:00",
+      "end": "18:00",
+      "timezone": "America/New_York"
+    },
     "wakeOnAssignment": true,
     "wakeOnOnDemand": true,
     "wakeOnAutomation": true,
@@ -403,10 +408,13 @@ Agent-level control-plane settings (not adapter-specific):
 }
 ```
 
+`activeHours` is optional. Omit it (or set it `null`) and timer scheduling is unchanged. When set, `source=timer` wakes enqueue only while `now` is inside the window in the given IANA timezone. Overnight windows (`start` after `end`) wrap midnight. Comment, assignment, approval, monitor, recovery, and on-demand wakes ignore the window.
+
 Defaults:
 
 - `enabled: true`
 - `intervalSec: null` (no timer until explicitly set) or product default `300` if desired globally
+- `activeHours: null` (no wall-clock window)
 - `wakeOnAssignment: true`
 - `wakeOnOnDemand: true`
 - `wakeOnAutomation: true`
