@@ -2641,6 +2641,16 @@ waits for that start, like a terminal, instead of failing the new turn. If this
 session's own protocol failure ends a pending turn start, the run reports
 `codex_turn_start_protocol_failure` with the cause instead of a runner exit.
 
+The continuation tells the agent to finish in that turn, not to end it while
+waiting for a background command or a notification, and to report one
+`paperclip_finish` or `paperclip_block`. The continuation only borrows the
+one-shot disposition marker so a crash can adopt its accepted turn. If the
+continuation completes without a semantic result, the driver returns the marker
+and the same attempt sends one disposition request. That request does not use
+another provider attempt, so restarts the run already survived cannot block it.
+A disposition request that also ends without a result consumes the marker and
+fails closed as before.
+
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
 When that deadline fails a native run with a prepared workspace, the same
