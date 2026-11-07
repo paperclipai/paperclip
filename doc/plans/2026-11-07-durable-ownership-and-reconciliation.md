@@ -101,6 +101,29 @@ Restart recovery latency, from `ready` to the recovered run's next provider even
 
 These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
 
+### Phase 1 report-only data: local chaos waves (2026-11-07)
+
+Three local waves (`tests/restart-chaos`, `--env local`, one adapter each, 6 tasks, faults K1 and K2, seed 62) ran on the Phase 1 stack at `9fe186de36`. All 18 tasks passed R1–R6 and crossed a restart. The ownership report ran 13 passes per wave and saw at most 19–23 in-progress records at once.
+
+| Kind | Owner verdicts (record-passes, three waves) |
+|---|---|
+| `environment_run_lease_active` | alive 196 |
+| `issue_execution_lock` | alive 80 |
+| `issue_checkout_lock` | alive 80 |
+| `wake_request_claimed` | alive 80 |
+| `native_restart_recovery_claim` | alive 64 (re-stamped by the new boot) |
+| `native_executor_claim` | alive 16 |
+| `run_accounting_debt` | unprovable 4 (no owner stamp; transient) |
+
+Invariant violations: **0** for every rule and kind (I1, I2, I3, I4 and I7). No owner was ever proven gone, so I2 never fired.
+
+What the data does and does not show:
+
+- The existing per-subsystem paths settle dead-owner records within about 1 s of `ready`, before the first report pass. A pass every 30 s, triggered by work signals, does not catch those short windows. The crash-point suite (Phase 5) is the tool for them; the report measures records that stay stuck.
+- These waves exercise only the run-lifecycle kinds. Remote, workspace and accounting kinds need Daytona waves, K4 and K6 faults, and longer storms. The overnight campaign's failures came mostly from those.
+- `native_run_finalizations` and `heartbeat_runs` record no host or PID space, so a foreign-boot owner there can only be `unprovable`. Phase 2 must stamp `processSpace` on those writes before any kind can settle by proof.
+- Restart-crossing dispatches exceeded the TTFT and boot budgets because those metrics spanned the outage. The budget check now judges such dispatches only on restart-recovery latency.
+
 ## Relationship to the zero-downtime upgrade work
 
 Separate work moves the control plane toward zero-downtime upgrades on an ephemeral filesystem. PostgreSQL holds execution authority and durable protocol state. Object storage holds workspace archives, provider checkpoints, logs, traces and skill assets. Replacement servers reuse stable encryption and signing secrets. Most of the foundations are on master; #19830 is still open. Entry points:
