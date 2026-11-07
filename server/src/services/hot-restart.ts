@@ -165,6 +165,7 @@ function runProcessCommand(command: string, args: string[]) {
         encoding: "utf8",
         timeout: 1_500,
         windowsHide: true,
+        ...(command === "ps" ? { env: { ...process.env, LC_ALL: "C" } } : {}),
       },
       (error, stdout) => {
         if (error) reject(error);
