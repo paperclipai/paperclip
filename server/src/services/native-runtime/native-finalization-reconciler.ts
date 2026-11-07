@@ -13,7 +13,14 @@ import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "../delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import {
+  createOwnershipReportState,
+  ownershipReportFingerprint,
+  runOwnershipReconciliationPass,
+  type OwnershipReport,
+} from "../recovery/ownership-invariant-report.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -767,4 +774,62 @@ async function reconcileNativeFinalizationsPass(
     }
   }
   return results;
+}
+
+/** Interval between report passes while in-progress records keep changing. */
+export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * The ownership reconciliation pass of this reconciler (plan section C,
+ * Phase 1). It is report-only: it classifies the owner of every registered
+ * in-progress record and records invariant violations, and never settles.
+ *
+ * Trigger and quiet condition (rules/sleep-aware-background-work.mdc):
+ * - one pass when the worker registers at startup, from durable truth;
+ * - a pass after any settled `active-execution-recovery` signal, which run
+ *   lifecycle, controller renewal and process-evidence writes already emit,
+ *   coalesced to at most one pass per 30 s;
+ * - a 30 s follow-up only while the last pass saw in-progress records whose
+ *   set changed, or owners proven gone that need a second pass for rule I2.
+ * A pass that finds nothing in progress, or the same stuck set twice, sets no
+ * deadline: an idle instance runs no SQL here. The pass runs in the shared
+ * scheduler only, never on the path before `turn.start`.
+ */
+export function registerOwnershipReconciliationWork(
+  db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  canRun: () => boolean,
+  options: { onReport?: (report: OwnershipReport) => void } = {},
+) {
+  const state = createOwnershipReportState();
+  let nextRunAt: number | null = null;
+  let lastFingerprint: string | null = null;
+  let lastReport: OwnershipReport | null = null;
+  const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
+    retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
+    coalesceMs: OWNERSHIP_REPORT_INTERVAL_MS,
+    pausePassiveMaintenance: true,
+    run: async () => {
+      if (!canRun()) return;
+      const report = await runOwnershipReconciliationPass(db, { state });
+      const fingerprint = ownershipReportFingerprint(report);
+      const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
+      nextRunAt = changing || state.goneLastPass.size > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      lastFingerprint = fingerprint;
+      lastReport = report;
+      options.onReport?.(report);
+    },
+    hasPending: async () => false,
+    nextRunAt: () => nextRunAt,
+  });
+  const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.activeExecutionRecovery, () => worker.wake());
+  return {
+    ready: worker.ready,
+    wake: worker.wake,
+    lastReport: () => lastReport,
+    async stop() {
+      unsubscribe();
+      await worker.stop();
+    },
+  };
 }
