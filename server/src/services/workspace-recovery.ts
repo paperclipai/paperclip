@@ -164,8 +164,10 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const initial = await loadSystemRecovery(db, input);
   // A hold whose files a sibling saved, or whose source is refused permanently
   // (including holds saved by older releases), settles without a person.
-  if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)
-    && await settleExhaustedRetainedHold(input, initial)) return;
+  // An adoptable native source keeps its retention path; only the sibling
+  // settlement applies to it.
+  if (initial?.state === "exhausted"
+    && await settleExhaustedRetainedHold(input, initial, { fallback: !canAdoptNativeSourceRetention(initial) })) return;
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
     // board confirmation in its handoff can release it (RC-50 wave databases).

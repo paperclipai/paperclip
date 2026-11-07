@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
@@ -11,6 +11,7 @@ import {
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease, type ExecutionReconciliation } from "@paperclipai/shared";
 import { createTarballFromDirectory } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { logger } from "../middleware/logger.js";
+import { assertWorkspaceFilePathAllowed } from "./workspace-file-resources.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { getStorageService } from "../storage/index.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -67,7 +68,7 @@ export function isUnverifiableSourceFailure(failure: SystemRecoveryState["failur
 export function retainedSourceFallbackNote(input: { runId: string; snapshotId: string | null; quarantine: Quarantine }) {
   const from = input.snapshotId ? `the last saved version of the workspace (snapshot ${input.snapshotId})` : "the workspace's original source";
   const files = input.quarantine.state === "captured"
-    ? `They are attached to this task as ${input.quarantine.filename} (attachment ${input.quarantine.attachmentId}). Inspect them and re-apply anything still needed deliberately.`
+    ? `They are attached to this task as ${input.quarantine.filename} (attachment ${input.quarantine.attachmentId}), without secrets, repository metadata or dependency directories. Inspect them and re-apply anything still needed deliberately.`
     : "They could not be read, so they are not available.";
   return `Paperclip could not verify the unsaved file changes of run ${input.runId}, so they were not applied. `
     + `This task continues from ${from}. ${files} Check which work from that run needs redoing. `
@@ -169,6 +170,18 @@ async function inspectFallback(db: Db, input: Source, lock: boolean, requireStop
   return { kind: "eligible" as const, issue, coordinator, run, action, system, reference, workspace, authority };
 }
 
+/** The attachment follows the workspace file policy: secrets (such as `.env`
+ * and keys), repository metadata and dependency or build directories are omitted. */
+async function omitDeniedWorkspaceFiles(root: string, relative = "") {
+  for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    let allowed = true;
+    try { assertWorkspaceFilePathAllowed(child); } catch { allowed = false; }
+    if (!allowed) await rm(path.join(root, child), { recursive: true, force: true });
+    else if (entry.isDirectory() && !entry.isSymbolicLink()) await omitDeniedWorkspaceFiles(root, child);
+  }
+}
+
 function unreadable(reason: string): Quarantine {
   return { state: "unreadable", reason: /^[a-z][a-z0-9_]{0,47}$/.test(reason) ? reason : "operation_failed" };
 }
@@ -206,6 +219,7 @@ async function quarantineRetainedRoot(db: Db, input: Source & { environmentRunti
       try {
         await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir: files, expectedManifestDigest: captured.manifestDigest });
       } finally { await captured.cleanup(); }
+      await omitDeniedWorkspaceFiles(files);
       await createTarballFromDirectory({ localDir: files, archivePath: tarball });
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
@@ -321,8 +335,25 @@ export async function continueFromLastSavedWorkspace(input: Source & {
       epoch: abandoned.authority.epoch, snapshotId: reference.snapshotId, quarantine };
     const decision: ExecutionReconciliation = { runId: run.id, providerStopped: true, actionOutcome: "completed",
       outcomeEvidence: retainedSourceFallbackNote({ runId: run.id, snapshotId: reference.snapshotId, quarantine }),
+      // The workspace repair that a restore failure requires before continuing:
+      // the unverified epoch is abandoned and the next writer restores the last
+      // committed save into a new root.
+      workspaceRepairEvidence: `Paperclip abandoned unverified workspace epoch ${reference.epoch} of run ${run.id}; `
+        + `the continuation restores ${reference.snapshotId ? `committed snapshot ${reference.snapshotId}` : "the workspace source"} into a new root.`,
       retainedSourceFallback: fallback };
     const now = new Date();
+    // A Blocked status belongs to this hold only while its own receipt (or, for
+    // holds saved before receipts existed, a block set by this run's terminal
+    // failure that nothing changed since) still names it. Otherwise a newer
+    // decision owns the block: it is kept and no continuation is started.
+    const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
+    const blockedAt = issue.blockedTransitionAt?.getTime();
+    const ownsBlock = issue.status === "blocked" && (block.success
+      ? block.data.issueId === issue.id && block.data.runId === run.id
+        && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
+      : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
+        && blockedAt >= run.finishedAt!.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
+    const dispatchable = issue.status !== "blocked" || ownsBlock;
     const userText = quarantine.state === "captured"
       ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."
       : "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.";
@@ -331,7 +362,7 @@ export async function continueFromLastSavedWorkspace(input: Source & {
       workspaceRecovery: { ...(readWorkspaceRecovery(action.evidence) ?? {}), message: userText, retryable: false },
       executionReconciliation: { ...decision, actorId: "workspace-recovery", recordedAt: now.toISOString() },
       // Saved user input continues the task through normal admission.
-      continuationDelivery: waitingInput ? "not_requested" : "pending" };
+      continuationDelivery: waitingInput || !dispatchable ? "not_requested" : "pending" };
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
       ownerType: "system", ownerAgentId: null, ownerUserId: null, returnOwnerAgentId: action.returnOwnerAgentId ?? run.agentId,
       resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME, nextAction: userText, wakePolicy: null, monitorPolicy: null, evidence,
@@ -340,11 +371,7 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     await tx.update(nativeRunFinalizations).set({ failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
       || ${JSON.stringify({ replacementDenied: RETAINED_SOURCE_FALLBACK_OUTCOME })}::jsonb` }).where(and(
       eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id)));
-    // Restore the status only while this hold's own Blocked receipt still owns
-    // it. A later status decision, or a block without a receipt, is preserved.
-    const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
-    if (issue.status === "blocked" && block.success && block.data.issueId === issue.id && block.data.runId === run.id
-      && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId) {
+    if (ownsBlock) {
       await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
         blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
     }
@@ -394,10 +421,16 @@ export async function recordRetainedSourceFallbackDeferral(db: Db, input: Source
  * recovery attempt. Returns whether the hold is settled.
  */
 export async function settleExhaustedRetainedHold(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService },
-  state: SystemRecoveryState) {
+  state: SystemRecoveryState, options: { fallback: boolean } = { fallback: true }) {
   const { db } = input;
-  if (await settleSiblingRecoveredHold(db, input)) return true;
-  if (!isUnverifiableSourceFailure(state.failure)) return false;
+  const sibling = await settleSiblingRecoveredHold(db, input);
+  if (sibling === "settled") return true;
+  if (!options.fallback || !isUnverifiableSourceFailure(state.failure)) {
+    // A sibling marked recovered without a receipt that still verifies cannot
+    // settle this hold. Record it so discovery does not select it again.
+    if (sibling === "unverified") await recordRetainedSourceFallbackDeferral(db, input, "sibling_receipt_unverified");
+    return false;
+  }
   let reason: string;
   try {
     const owned = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
@@ -431,11 +464,17 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
     const system = readSystemRecovery(action.evidence);
     if (!["active", "escalated"].includes(action.status) || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
     const receiptId = await verifiedWorkspaceRepairReceipt(tx as unknown as Db, run);
-    if (!receiptId) return null;
-    const [receipt] = await tx.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
-      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, receiptId)));
+    const [receipt] = receiptId ? await tx.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, receiptId))) : [];
     const siblingActionId = receipt?.metadata?.recoveryActionId;
-    if (typeof siblingActionId !== "string" || siblingActionId === action.id) return null;
+    if (!receiptId || typeof siblingActionId !== "string" || siblingActionId === action.id) {
+      const [recoveredSibling] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+        ne(issueRecoveryActions.id, action.id), sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+        sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'`,
+        sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`)).limit(1);
+      return recoveredSibling ? "unverified" as const : null;
+    }
     const now = new Date();
     const prior = readWorkspaceRecovery(action.evidence);
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
@@ -453,8 +492,9 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
       details: { recoveryActionId: action.id, recoveredByRecoveryActionId: siblingActionId, receiptId,
         summary: "Saved work recovered by another recovery of the same run." } });
   });
+  if (settled === "unverified") return "unverified" as const;
   if (settled && settled !== "already") {
     try { publishActivity(settled.publication); } catch { logger.warn({ runId: input.runId }, "Recovery activity delivery deferred"); }
   }
-  return Boolean(settled);
+  return settled ? "settled" as const : "none" as const;
 }

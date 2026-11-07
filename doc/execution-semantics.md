@@ -2275,15 +2275,20 @@ workspace save, with the named outcome
 `retained_source_unverifiable_continued_from_last_saved`. The unverified files
 are never applied. When the retained root can still be read, the worker copies it
 without writing to the sandbox and attaches the copy to the task as unverified
-files of that run. Otherwise it records why the root could not be read. In one
+files of that run. The copy follows the workspace file policy: secrets,
+repository metadata and dependency directories are omitted. Otherwise it records why the root could not be read. In one
 transaction the worker then abandons the unverified remote workspace epoch:
 the writer and dirty flag are cleared, the last save is kept, the location and
 published root are dropped and the epoch advances. The next writer therefore
 restores the last save into a new directory and never reuses the old root. The
-same transaction resolves the hold and denies native replacement. It restores a
-Blocked task to `todo` only while the hold's own Blocked receipt still owns the
-status. If no user input is waiting, one continuation is then delivered through
-the reconciled execution path. Its recovery outcome tells the agent which
+same transaction resolves the hold and denies native replacement. A Blocked
+task belongs to the hold only while the hold's own Blocked receipt still owns
+the status, or, for holds saved before receipts existed, while the block was set
+by the run's terminal failure and no status decision followed. Only then is the
+task restored to `todo`; otherwise the newer block is kept and no continuation is
+started. If no user input is waiting, one continuation is delivered through the
+reconciled execution path; the decision carries the workspace repair evidence
+that a restore failure requires. Its recovery outcome tells the agent which
 changes were not applied and where the attached copy is. Every allocation of
 the source run must carry a provider stop receipt; the worker obtains a missing
 one through the same stop-only cleanup as normal recovery, but never stops a

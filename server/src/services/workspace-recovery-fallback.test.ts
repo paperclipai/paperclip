@@ -56,6 +56,12 @@ describe("retained source fallback", () => {
     // The published root a later preparation would otherwise reuse.
     await db.update(executionWorkspaces).set({ providerRef: f.remote }).where(eq(executionWorkspaces.id, f.workspaceId));
     await writeFile(path.join(f.remote, "unverified.txt"), "unsaved work\n");
+    await writeFile(path.join(f.remote, ".env"), "TOKEN=secret\n");
+    await writeFile(path.join(f.remote, "id_rsa"), "private key\n");
+    // The run's terminal failure blocked the task (older releases kept no receipt).
+    const finished = (await run(f.runId)).finishedAt!;
+    await db.update(issues).set({ blockedTransitionAt: new Date(finished.getTime() + 100) }).where(eq(issues.id, f.issueId));
+    await db.update(issueRecoveryActions).set({ createdAt: finished }).where(eq(issueRecoveryActions.id, f.actionId));
     const [parent] = await db.insert(issues).values({ companyId: f.companyId, title: "Parent task" }).returning();
     await db.update(issues).set({ parentId: parent.id }).where(eq(issues.id, f.issueId));
     await db.insert(environmentLeases).values({ companyId: f.companyId, environmentId: lease.environmentId, issueId: parent.id,
@@ -135,6 +141,8 @@ describe("retained source fallback", () => {
       const listing = await new Promise<string>((resolve, reject) => execFile("tar", ["-tf", path.join(scratch, "files.tar")],
         (error, stdout) => error ? reject(error) : resolve(stdout)));
       expect(listing).toContain("unverified.txt");
+      // The workspace file policy applies: secrets are never attached.
+      expect(listing).not.toMatch(/\.env|id_rsa/);
     } finally { await rm(scratch, { recursive: true, force: true }); }
 
     // The unverified epoch is abandoned: no writer, not dirty, the last save kept, no location.
@@ -146,8 +154,8 @@ describe("retained source fallback", () => {
 
     // Every gate is settled: the task hold, the repair flag and the saved-work wait.
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
-    // Only a Blocked status this hold owns is restored; an unproven block is kept.
-    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe(saved === "fresh" ? "todo" : "blocked");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("todo");
+    expect(String(decision.workspaceRepairEvidence).length).toBeGreaterThanOrEqual(20);
     expect(await continuationBlock(f)).not.toEqual(expect.arrayContaining(["saved_work_recovery_failed"]));
     expect(await continuationBlock(f)).not.toEqual(expect.arrayContaining(["workspace_repair_required"]));
 
@@ -187,6 +195,19 @@ describe("retained source fallback", () => {
     expect(await readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("finished work\n");
     await expect(readFile(path.join(prepared.remoteRoot, "unverified.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(path.join(f.remote, "unverified.txt"), "utf8")).toBe("unsaved work\n");
+  }, 60_000);
+
+  it("keeps a newer Blocked decision and starts no continuation, while settling the file hold", async () => {
+    const f = await unverifiableRetainedSource();
+    await db.update(issues).set({ blockedTransitionAt: new Date(Date.now() + 120_000) }).where(eq(issues.id, f.issueId));
+    await recoverRetainedWorkspace(f.input);
+    const settled = await action(f.actionId);
+    expect(settled).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+    expect(settled.evidence.continuationDelivery).toBe("not_requested");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
+    const wake = vi.fn(async () => ({ id: randomUUID() }));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake.mock.calls.filter(call => (call as unknown[])[0] === settled.returnOwnerAgentId)).toHaveLength(0);
   }, 60_000);
 
   it("still continues when the retained root cannot be read, recording why", async () => {
@@ -347,5 +368,35 @@ describe("retained source fallback", () => {
     const live = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
       inArray(issueRecoveryActions.status, ["active", "escalated"])));
     expect(live).toHaveLength(0);
+  }, 60_000);
+
+  it("stops discovering a stale hold whose sibling receipt no longer verifies", async () => {
+    const f = await acceptedRemoteExport();
+    await recoverRetainedWorkspace(f.input);
+    await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueRecoveryActions.id, f.actionId));
+    // A later writer advanced the workspace: the sibling's receipt no longer verifies.
+    const ws = await workspace(f.workspaceId);
+    await db.update(executionWorkspaces).set({ metadata: { ...ws.metadata, remoteWorkspace: {
+      ...readRemoteWorkspaceAuthority(ws.metadata)!, dirty: true, writerRunId: randomUUID() } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+    const staleId = randomUUID(), now = Date.now();
+    await db.insert(issueRecoveryActions).values({ id: staleId, companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted",
+      fingerprint: randomUUID(), nextAction: "Stale",
+      evidence: { runId: f.runId,
+        systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, sourceRunId: f.runId, revision: 3,
+          generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
+          attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
+          failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "c".repeat(64) },
+          preservationOperationIds: [], freshAttemptRunId: null },
+        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "restoring_files",
+          attempt: 6, attemptLimit: 6, retryable: true, requestIds: [] } } });
+    const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
+    expect(await ids()).toContain(staleId);
+    await recoverRetainedWorkspace({ ...f.input, actionId: staleId });
+    const stale = await action(staleId);
+    expect(stale.status).toBe("active");
+    expect(stale.evidence.retainedSourceFallbackCheck).toMatchObject({ reason: "sibling_receipt_unverified", nextCheckAt: null });
+    expect(await ids()).not.toContain(staleId);
   }, 60_000);
 });
