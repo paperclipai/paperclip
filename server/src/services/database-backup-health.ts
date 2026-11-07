@@ -1,10 +1,11 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
   | "database_backup_last_failure"
   | "database_backup_missing"
+  | "database_backup_invalid"
   | "database_backup_stale";
 
 export type DatabaseBackupHealthWarning = {
@@ -102,6 +103,20 @@ function findLatestBackup(backupDir: string, nowMs: number) {
   };
 }
 
+function hasNonemptyGzipPayload(filePath: string, size: number): boolean {
+  if (size < 20) return false;
+  const fd = openSync(filePath, "r");
+  try {
+    const magic = Buffer.alloc(2);
+    const length = Buffer.alloc(4);
+    if (readSync(fd, magic, 0, 2, 0) !== 2 || magic[0] !== 0x1f || magic[1] !== 0x8b) return false;
+    if (readSync(fd, length, 0, 4, size - 4) !== 4) return false;
+    return length.readUInt32LE(0) !== 0;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
 ): DatabaseBackupHealthStatus {
@@ -121,11 +136,19 @@ export function inspectDatabaseBackupHealth(
         code: "database_backup_missing",
         message: `No .sql.gz database backups found in ${opts.backupDir}.`,
       });
-    } else if (latestBackup.ageHours > maxAgeHours) {
-      warnings.push({
-        code: "database_backup_stale",
-        message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
-      });
+    } else {
+      if (!hasNonemptyGzipPayload(latestBackup.path, latestBackup.sizeBytes)) {
+        warnings.push({
+          code: "database_backup_invalid",
+          message: `Latest database backup has no gzip payload or is not a gzip archive: ${latestBackup.path}.`,
+        });
+      }
+      if (latestBackup.ageHours > maxAgeHours) {
+        warnings.push({
+          code: "database_backup_stale",
+          message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+        });
+      }
     }
 
     if (lastFailure) {
