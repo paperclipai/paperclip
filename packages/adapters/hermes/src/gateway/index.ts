@@ -47,6 +47,7 @@ Optional fields:
 Runtime mapping:
 - Creates runs with POST /v1/runs.
 - Sends Idempotency-Key equal to the Paperclip run id for correlation only; Hermes v0.16.0 did not dedupe duplicate creates.
+- Retries POST /v1/runs up to 3 times with jittered backoff (about 2s, 8s, and 30s, plus a bounded Retry-After) when the gateway rejects the create with its own rate-limit error (HTTP 429 with error code rate_limit_exceeded). The gateway emits that 429 before it creates a run, so a retry cannot start a duplicate run. Other 429 responses, for example from a reverse proxy, are not retried: the run fails with the 429 intact and the platform's transient retry scheduling handles it.
 - Streams GET /v1/runs/{run_id}/events and polls GET /v1/runs/{run_id} as fallback.
 - Calls POST /v1/runs/{run_id}/stop on timeout.
 
