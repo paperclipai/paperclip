@@ -618,35 +618,35 @@ export async function createFollowUpIssue(
     || (entityType !== ENTITY_TYPES.request && entityType !== ENTITY_TYPES.supportTicket)) {
     throw new Error("Follow-up issues can be created only for CRM requests and support tickets");
   }
-  const record = await findEntity(ctx, companyId, entityType, externalId);
-  if (!record) throw new Error("ArchLead record not found");
-  const linkedId = stringField(record.data.paperclipIssueId, 100);
-  if (linkedId) {
-    const linked = await ctx.issues.get(linkedId, companyId);
-    if (linked) return { issueId: linked.id, title: linked.title, status: linked.status };
-  }
+  return withEntityLock(`${companyId}:${entityType}:${externalId}`, async () => {
+    const record = await findEntity(ctx, companyId, entityType, externalId);
+    if (!record) throw new Error("ArchLead record not found");
+    const linkedId = stringField(record.data.paperclipIssueId, 100);
+    if (linkedId) {
+      const linked = await ctx.issues.get(linkedId, companyId);
+      if (linked) return { issueId: linked.id, title: linked.title, status: linked.status };
+    }
 
-  const originId = `${entityType}:${externalId}`;
-  const existingIssues = await ctx.issues.list({ companyId, originKind: FOLLOW_UP_ORIGIN, originId, limit: 1 });
-  const issue = existingIssues[0] ?? await ctx.issues.create({
-    companyId,
-    title: `${entityType === ENTITY_TYPES.request ? "CRM follow-up" : "Support follow-up"}: ${record.title ?? "ArchLead record"}`.slice(0, 240),
-    description: [
-      `ArchLead record type: ${entityType}`,
-      `ArchLead record ID: ${externalId}`,
-      `Company: ${String(record.data.business ?? record.data.email ?? "Not specified")}`,
-      `Contact: ${String(record.data.contactName ?? record.data.name ?? "Not specified")}`,
-      `Email: ${String(record.data.email ?? "Not specified")}`,
-      "",
-      String(record.data.message ?? record.data.resolution ?? "Review the linked ArchLead Operations record."),
-    ].join("\n"),
-    status: "todo",
-    priority: entityType === ENTITY_TYPES.supportTicket && record.data.priority === "high" ? "high" : "medium",
-    originKind: FOLLOW_UP_ORIGIN,
-    originId,
-  });
+    const originId = `${entityType}:${externalId}`;
+    const existingIssues = await ctx.issues.list({ companyId, originKind: FOLLOW_UP_ORIGIN, originId, limit: 1 });
+    const issue = existingIssues[0] ?? await ctx.issues.create({
+      companyId,
+      title: `${entityType === ENTITY_TYPES.request ? "CRM follow-up" : "Support follow-up"}: ${record.title ?? "ArchLead record"}`.slice(0, 240),
+      description: [
+        `ArchLead record type: ${entityType}`,
+        `ArchLead record ID: ${externalId}`,
+        `Company: ${String(record.data.business ?? record.data.email ?? "Not specified")}`,
+        `Contact: ${String(record.data.contactName ?? record.data.name ?? "Not specified")}`,
+        `Email: ${String(record.data.email ?? "Not specified")}`,
+        "",
+        String(record.data.message ?? record.data.resolution ?? "Review the linked ArchLead Operations record."),
+      ].join("\n"),
+      status: "todo",
+      priority: entityType === ENTITY_TYPES.supportTicket && record.data.priority === "high" ? "high" : "medium",
+      originKind: FOLLOW_UP_ORIGIN,
+      originId,
+    });
 
-  await withEntityLock(`${companyId}:${entityType}:${externalId}`, async () => {
     const latest = await findEntity(ctx, companyId, entityType, externalId);
     await upsertEntity(
       ctx,
@@ -660,12 +660,12 @@ export async function createFollowUpIssue(
         paperclipIssueId: issue.id,
       },
     );
+    await logMutation(ctx, companyId, "issue", issue.id, "Created or linked an ArchLead follow-up task", {
+      recordType: entityType,
+      recordExternalId: externalId,
+    });
+    return { issueId: issue.id, title: issue.title, status: issue.status };
   });
-  await logMutation(ctx, companyId, "issue", issue.id, "Created or linked an ArchLead follow-up task", {
-    recordType: entityType,
-    recordExternalId: externalId,
-  });
-  return { issueId: issue.id, title: issue.title, status: issue.status };
 }
 
 export async function listOverview(

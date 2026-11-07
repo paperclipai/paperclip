@@ -637,17 +637,25 @@ describe("ArchLead Operations plugin", () => {
       { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
     );
 
-    const first = await harness.performAction<{ issueId: string }>(
+    const [parallelFirst, parallelSecond] = await Promise.all([
+      harness.performAction<{ issueId: string }>(
+        "create-follow-up-issue",
+        { companyId: COMPANY_ID, entityType: ENTITY_TYPES.request, externalId: "task-request" },
+        { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
+      ),
+      harness.performAction<{ issueId: string }>(
+        "create-follow-up-issue",
+        { companyId: COMPANY_ID, entityType: ENTITY_TYPES.request, externalId: "task-request" },
+        { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
+      ),
+    ]);
+    expect(parallelFirst.issueId).toBe(parallelSecond.issueId);
+    const third = await harness.performAction<{ issueId: string }>(
       "create-follow-up-issue",
       { companyId: COMPANY_ID, entityType: ENTITY_TYPES.request, externalId: "task-request" },
       { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
     );
-    const second = await harness.performAction<{ issueId: string }>(
-      "create-follow-up-issue",
-      { companyId: COMPANY_ID, entityType: ENTITY_TYPES.request, externalId: "task-request" },
-      { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
-    );
-    expect(first.issueId).toBe(second.issueId);
+    expect(third.issueId).toBe(parallelFirst.issueId);
   });
 
   it("uses the supplied company scope for UI data and rejects invalid company identifiers", async () => {
