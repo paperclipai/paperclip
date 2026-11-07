@@ -980,6 +980,7 @@ export function recoveryService(
     companyId: string,
     issueId: string,
     agentId: string,
+    skipUnstartedHandoffs = false,
   ): Promise<LatestIssueRun> {
     return db
       .select({
@@ -1001,6 +1002,17 @@ export function recoveryService(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          skipUnstartedHandoffs
+            ? not(sql`(
+                ${heartbeatRuns.status} = 'cancelled'
+                and ${heartbeatRuns.startedAt} is null
+                and (
+                  coalesce(${heartbeatRuns.contextSnapshot} ->> 'wakeReason', '') = ${FINISH_SUCCESSFUL_RUN_HANDOFF_REASON}
+                  or coalesce(${heartbeatRuns.contextSnapshot} ->> 'handoffReason', '') = ${SUCCESSFUL_RUN_MISSING_STATE_REASON}
+                  or coalesce(${heartbeatRuns.contextSnapshot} -> 'handoffRequired', 'false'::jsonb) = 'true'::jsonb
+                )
+              )`)
+            : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -4630,6 +4642,20 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const ignoredHandoffEvidence = Boolean(
+        successfulRunHandoffRecoveryEvidence(latestRun) &&
+        (latestRun?.agentId !== agentId ||
+          (latestRun?.status === "cancelled" && !latestRun.startedAt)),
+      );
+      if (ignoredHandoffEvidence) {
+        if (isPluginManagedIssueLifecycle(issue) || await hasPersistedDurableWaitPath(issue, latestRun)) {
+          result.skipped += 1;
+          continue;
+        }
+        // Classify and resume only the current execution owner's own history.
+        // No eligible history means a fresh continuation, not a permanent skip.
+        latestRun = await getLatestIssueRunForAgent(issue.companyId, issue.id, agentId, true);
+      }
       // Terminal run/wake rows survive a restart even if finalization never
       // reached the escalation transaction. Retry that idempotent disposition
       // before the participant-only review branch can skip pathless reviews.
@@ -4783,6 +4809,7 @@ export function recoveryService(
               issue.companyId,
               issue.id,
               participantAgentId,
+              ignoredHandoffEvidence,
             )
           : null;
       const executionRecoverySource =
@@ -5464,7 +5491,7 @@ export function recoveryService(
         continue;
       }
 
-      if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+      if (!latestRun && !ignoredHandoffEvidence && !issue.checkoutRunId && !issue.executionRunId) {
         result.skipped += 1;
         continue;
       }
@@ -5722,7 +5749,7 @@ export function recoveryService(
         reason: "issue_continuation_needed",
         retryReason: "issue_continuation_needed",
         source: "issue.continuation_recovery",
-        retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
+        retryOfRunId: latestRun?.id ?? (ignoredHandoffEvidence ? null : issue.checkoutRunId) ?? null,
         outcome: recoveryOutcome,
       });
       if (queued) {
