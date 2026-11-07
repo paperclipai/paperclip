@@ -642,6 +642,31 @@ Use it for:
 
 Do not treat `parentId` as execution dependency by itself.
 
+A child never shares its parent's execution workspace. Every new child task,
+from every creation path, gets its own workspace on its first run, realized from
+the project base (the project workspace or base branch) exactly as a top-level
+task in that project would be. It never starts from the parent's checkout,
+branch, saved snapshot, or unmerged changes. The child keeps the parent's
+company, project, goal, privacy, and workspace strategy (mode, environment,
+runtime, branch template, base ref). It does not keep a pinned existing branch,
+a `reuse_existing` preference, or the workspace id. No route can bind a task to
+a workspace that an ancestor created or is bound to: an explicit
+`executionWorkspaceId` naming one is dropped at create, and
+`inheritExecutionWorkspaceFromIssueId` copies only the source issue's project and
+strategy. The deprecated internal `executionWorkspaceInheritanceMode` is ignored.
+This keeps a parent and its child from writing into one folder at the same time,
+which made the waking parent wait with `workspace_busy` and crossed sandbox lease
+ownership from the parent into the child.
+
+Older releases bound children to the parent's realized workspace by default.
+Such a child moves on its next normal admission: when it starts a new run and no
+earlier run of the child is still running, finalizing, or under workspace
+recovery, the server clears the child's binding (keeping its project workspace
+and strategy) and the run realizes the child's own workspace. A running child
+finishes its current run in the shared workspace first, and a process-loss retry
+or a Retry that keeps the current workspace also finishes there. The parent keeps
+its workspace, and no files in it are moved or removed. Nobody is asked to act.
+
 ### Blockers (`blockedByIssueIds`)
 
 This is dependency semantics.
@@ -1250,8 +1275,8 @@ recovery names this failure for the statuses it scans; for other statuses, such 
 a `blocked` task woken by a reply, the failure path records the action directly.
 
 A retained sandbox can still hold a workspace's earlier root after the workspace
-moved to another allocation, for example when child tasks inherit a parent's
-workspace and save newer work on their own sandboxes. When the parent wakes on its
+moved to another allocation, for example when child tasks that an older release
+bound to a parent's workspace saved newer work on their own sandboxes. When the parent wakes on its
 retained sandbox, the restore may replace that occupied root only when the server
 proves it is the workspace's own earlier allocation on this sandbox: the last
 recorded use of that root on this sandbox is an earlier epoch that ended in a

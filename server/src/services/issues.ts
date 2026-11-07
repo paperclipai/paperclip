@@ -191,6 +191,11 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  buildIndependentTaskWorkspaceSettings,
+  isAncestorExecutionWorkspace,
+  loadAncestorIssueIds,
+} from "./task-workspace-lineage.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
 import { authorizeChatConversationForBoundRun } from "./native-runtime/chat-attachment-reuse.js";
@@ -536,59 +541,6 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
-}
-
-// Accepted-plan children are not realized yet, so carry only unresolved
-// workspace intent and let the first child run render/persist its own branch.
-function buildPreRealizationExecutionWorkspaceSettings(
-  raw: unknown,
-): Record<string, unknown> | null {
-  const settings = parseIssueExecutionWorkspaceSettings(raw, {
-    includeEnvironmentId: true,
-  });
-  if (!settings) return null;
-  const mode =
-    settings.mode &&
-    settings.mode !== "inherit" &&
-    settings.mode !== "reuse_existing"
-      ? settings.mode
-      : null;
-  const next: Record<string, unknown> = {};
-  if (mode) next.mode = mode;
-  if (settings.environmentId !== undefined)
-    next.environmentId = settings.environmentId;
-  if (settings.workspaceRuntime)
-    next.workspaceRuntime = settings.workspaceRuntime;
-  if (settings.workspaceStrategy) {
-    next.workspaceStrategy = {
-      type: settings.workspaceStrategy.type,
-      ...(settings.workspaceStrategy.baseRef
-        ? { baseRef: settings.workspaceStrategy.baseRef }
-        : {}),
-      ...(settings.workspaceStrategy.branchTemplate
-        ? { branchTemplate: settings.workspaceStrategy.branchTemplate }
-        : {}),
-      ...(settings.workspaceStrategy.existingBranch
-        ? { existingBranch: settings.workspaceStrategy.existingBranch }
-        : {}),
-      ...(settings.workspaceStrategy.worktreeParentDir
-        ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir }
-        : {}),
-      ...(settings.workspaceStrategy.provisionCommand
-        ? { provisionCommand: settings.workspaceStrategy.provisionCommand }
-        : {}),
-      ...(settings.workspaceStrategy.runtimeProvisionCommand
-        ? {
-            runtimeProvisionCommand:
-              settings.workspaceStrategy.runtimeProvisionCommand,
-          }
-        : {}),
-      ...(settings.workspaceStrategy.teardownCommand
-        ? { teardownCommand: settings.workspaceStrategy.teardownCommand }
-        : {}),
-    };
-  }
-  return Object.keys(next).length > 0 ? next : null;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -9760,14 +9712,14 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
-        executionWorkspaceInheritanceMode = "linkage",
+        // Deprecated and ignored: a child never reuses its parent's realized
+        // workspace, so every mode behaves like the old "strategy_only".
+        executionWorkspaceInheritanceMode: _deprecatedInheritanceMode,
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
 
-      const inheritStrategyOnly =
-        executionWorkspaceInheritanceMode === "strategy_only";
       // A child may target another project. Parent workspace identity is only
       // valid inside the parent's project, so do not forward it across that
       // boundary; create() then resolves the target project's own workspaces.
@@ -9778,9 +9730,10 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
         issueData.executionWorkspaceSettings !== undefined;
+      // The child keeps the parent's workspace strategy, never its files.
       const inheritedPreRealizationWorkspaceSettings =
-        inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
-          ? buildPreRealizationExecutionWorkspaceSettings(
+        !hasExplicitExecutionWorkspaceOverride
+          ? buildIndependentTaskWorkspaceSettings(
               parent.executionWorkspaceSettings,
             )
           : null;
@@ -9791,7 +9744,7 @@ export function issueService(db: Db) {
         projectWorkspaceId:
           issueData.projectWorkspaceId !== undefined
             ? issueData.projectWorkspaceId
-            : (inheritStrategyOnly && childInheritsParentProject
+            : (childInheritsParentProject
                 ? parent.projectWorkspaceId
                 : undefined),
         goalId: issueData.goalId ?? parent.goalId,
@@ -9814,9 +9767,7 @@ export function issueService(db: Db) {
                 inheritedPreRealizationWorkspaceSettings,
             }
           : {}),
-        ...(inheritStrategyOnly
-          ? { skipExecutionWorkspaceInheritance: true }
-          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
+        skipExecutionWorkspaceInheritance: true,
       });
 
       if (blockParentUntilDone) {
@@ -10065,7 +10016,6 @@ export function issueService(db: Db) {
             tx as unknown as Db,
           ).createChild(sourceIssue.id, {
             ...nextChildInput,
-            executionWorkspaceInheritanceMode: "strategy_only",
             onDeduplicated: reason => {
               childReused = true;
               nextChildInput.onDeduplicated?.(reason);
@@ -10476,36 +10426,20 @@ export function issueService(db: Db) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
             inheritedWorkspaceSelection = true;
           }
+          // The source's realized workspace (its checkout, branch, saved
+          // snapshot and unmerged changes) is never shared. A parent and its
+          // child, or a source task and its follow-up, can run at the same
+          // time, and two writers in one folder lose each other's files. The
+          // new task keeps only the source's workspace strategy and realizes
+          // its own workspace from the project base on its first run.
           if (
             inheritsSourceProject &&
             !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
+            executionWorkspaceSettings == null
           ) {
-            const sourceWorkspace = await tx
-              .select({
-                id: executionWorkspaces.id,
-                mode: executionWorkspaces.mode,
-              })
-              .from(executionWorkspaces)
-              .where(
-                eq(
-                  executionWorkspaces.id,
-                  workspaceSource.executionWorkspaceId,
-                ),
-              )
-              .then((rows) => rows[0] ?? null);
-            if (sourceWorkspace) {
-              executionWorkspaceId = sourceWorkspace.id;
-              inheritedWorkspaceSelection = true;
-              executionWorkspacePreference = "reuse_existing";
-              executionWorkspaceSettings = {
-                ...((workspaceSource.executionWorkspaceSettings as
-                  Record<string, unknown> | null | undefined) ?? {}),
-                mode: issueExecutionWorkspaceModeForPersistedWorkspace(
-                  sourceWorkspace.mode,
-                ),
-              };
-            }
+            executionWorkspaceSettings = buildIndependentTaskWorkspaceSettings(
+              workspaceSource.executionWorkspaceSettings,
+            );
           }
         }
         const workspaceActor: AuthorizationActor = workspaceSelectionActor ?? (issueData.createdByUserId
@@ -10524,6 +10458,22 @@ export function issueService(db: Db) {
           executionWorkspacePreference = projection.executionWorkspacePreference;
           executionWorkspaceSettings = projection.executionWorkspaceSettings;
           workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
+        }
+        // No route may bind a new subtask to an ancestor's workspace, including
+        // an explicit id copied from the parent (older clients and skills did
+        // this). Drop it and keep only the ancestor's strategy, so the subtask
+        // realizes its own workspace from the project base.
+        if (executionWorkspaceId && (requestedParentId || issueData.parentId)) {
+          const ancestorIssueIds = [...new Set([
+            ...(await loadAncestorIssueIds(tx, companyId, requestedParentId)),
+            ...(await loadAncestorIssueIds(tx, companyId, issueData.parentId)),
+          ])];
+          if (await isAncestorExecutionWorkspace(tx, { companyId, executionWorkspaceId, ancestorIssueIds })) {
+            executionWorkspaceId = null;
+            executionWorkspacePreference = null;
+            executionWorkspaceSettings = buildIndependentTaskWorkspaceSettings(executionWorkspaceSettings);
+            if (workspaceIntent?.selection.kind === "existing") workspaceIntent = null;
+          }
         }
         if (executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);

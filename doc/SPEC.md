@@ -846,7 +846,7 @@ A company may configure a shared decision model for optional Paperclip features.
 
 Organizational projects, task files, personal agent home, and provider home are separate concepts. App and chat tasks share one workspace policy: preserve a binding or explicit configured folder, otherwise allocate a stable task directory. A repository is optional and can be prepared without creating a project. Optional connection and destination defaults feed the same task policy; they do not grant permissions or relocate existing conversations.
 
-Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
+Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. A subtask never shares its parent's workspace: it keeps the parent's project and workspace strategy and gets its own workspace from the project base, so a parent and child never write into one folder. Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
 
 ### Fast responses
 

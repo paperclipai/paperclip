@@ -8,9 +8,7 @@ type SubIssueDefaultSource = Pick<
   | "projectId"
   | "projectWorkspaceId"
   | "goalId"
-  | "executionWorkspaceId"
   | "executionWorkspacePreference"
-  | "currentExecutionWorkspace"
   | "assigneeAgentId"
   | "assigneeUserId"
 >;
@@ -23,12 +21,6 @@ export function buildSubIssueDefaultsForViewer(
   issue: SubIssueDefaultSource,
   currentUserId?: string | null,
 ) {
-  const parentExecutionWorkspaceLabel =
-    issue.currentExecutionWorkspace?.name
-    ?? issue.currentExecutionWorkspace?.branchName
-    ?? issue.currentExecutionWorkspace?.cwd
-    ?? issue.executionWorkspaceId
-    ?? null;
   const shouldInheritUserAssignee = Boolean(issue.assigneeUserId && issue.assigneeUserId !== currentUserId);
   const inheritedAssigneeUserId = shouldInheritUserAssignee ? issue.assigneeUserId ?? undefined : undefined;
 
@@ -39,13 +31,11 @@ export function buildSubIssueDefaultsForViewer(
     ...(issue.projectId ? { projectId: issue.projectId } : {}),
     ...(issue.projectWorkspaceId ? { projectWorkspaceId: issue.projectWorkspaceId } : {}),
     ...(issue.goalId ? { goalId: issue.goalId } : {}),
-    ...(issue.executionWorkspaceId ? { executionWorkspaceId: issue.executionWorkspaceId } : {}),
-    ...(issue.executionWorkspaceId
-      ? { executionWorkspaceMode: "reuse_existing" }
-      : issue.executionWorkspacePreference
-        ? { executionWorkspaceMode: issue.executionWorkspacePreference }
-        : {}),
-    ...(parentExecutionWorkspaceLabel ? { parentExecutionWorkspaceLabel } : {}),
+    // A sub-task always gets its own workspace from the project base. It keeps
+    // the parent's workspace mode, never the parent's workspace or files.
+    ...(issue.executionWorkspacePreference && issue.executionWorkspacePreference !== "reuse_existing"
+      ? { executionWorkspaceMode: issue.executionWorkspacePreference }
+      : {}),
     ...(issue.assigneeAgentId ? { assigneeAgentId: issue.assigneeAgentId } : {}),
     ...(inheritedAssigneeUserId ? { assigneeUserId: inheritedAssigneeUserId } : {}),
   };
