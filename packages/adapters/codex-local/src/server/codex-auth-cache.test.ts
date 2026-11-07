@@ -1,8 +1,7 @@
-import { promises as fs } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   assertAccountHomeCacheDirStillValid,
@@ -50,67 +49,6 @@ describe("codex auth cache store", () => {
       PAPERCLIP_INSTANCE_ID: "default",
       ...extra,
     };
-  }
-
-  async function expectSerializedLock(
-    lock: typeof withCodexAccountHomePromotionLock,
-  ): Promise<void> {
-    const home = await makeInstanceRoot();
-    const env = envFor(home);
-    const events: string[] = [];
-    let entered!: () => void;
-    const firstEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let release!: () => void;
-    const firstGate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let contended!: () => void;
-    const secondContended = new Promise<"contended">((resolve) => {
-      contended = () => resolve("contended");
-    });
-    const realMkdir = fs.mkdir;
-    const mkdirSpy = vi.spyOn(fs, "mkdir").mockImplementation(async (target, options) => {
-      try {
-        return await realMkdir(target, options);
-      } catch (error) {
-        if (
-          options === undefined && typeof target === "string" &&
-          target.startsWith(home + path.sep) &&
-          (error as NodeJS.ErrnoException).code === "EEXIST"
-        ) {
-          contended();
-        }
-        throw error;
-      }
-    });
-    const operations: Promise<string>[] = [];
-    try {
-      const firstCall = lock(env, "company-shared", async () => {
-        events.push("first-enter");
-        entered();
-        await firstGate;
-        events.push("first-exit");
-        return "first";
-      });
-      operations.push(firstCall);
-      await Promise.race([firstEntered, firstCall]);
-      const secondCall = lock(env, "company-shared", async () => {
-        events.push("second-enter");
-        events.push("second-exit");
-        return "second";
-      });
-      operations.push(secondCall);
-      expect(await Promise.race([secondContended, secondCall])).toBe("contended");
-      expect(events).toEqual(["first-enter"]);
-    } finally {
-      release();
-      await Promise.allSettled(operations);
-      mkdirSpy.mockRestore();
-    }
-    expect(await Promise.all(operations)).toEqual(["first", "second"]);
-    expect(events).toEqual(["first-enter", "first-exit", "second-enter", "second-exit"]);
   }
 
   function subscriptionAuth(input: { accountId: string; lastRefresh?: string; marker?: string }): string {
@@ -443,7 +381,39 @@ describe("codex auth cache store", () => {
       // binding its own secret to that same directory. This proves the lock
       // itself enforces that: two concurrent callers for one company never run
       // their callbacks at the same time, whichever caller goes first.
-      await expectSerializedLock(withCodexAccountHomePromotionLock);
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseFirstCaller!: () => void;
+      const firstCallerGate = new Promise<void>((resolve) => {
+        releaseFirstCaller = resolve;
+      });
+
+      const firstCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
+        events.push("first-enter");
+        await firstCallerGate;
+        events.push("first-exit");
+        return "first";
+      });
+      // Give the first caller a chance to acquire the lock and enter its
+      // callback before the second caller starts racing for the same lock.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const secondCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
+        events.push("second-enter");
+        events.push("second-exit");
+        return "second";
+      });
+      // The second caller must stay blocked on the lock while the first
+      // caller still holds it: it must never log `second-enter` before the
+      // first caller's `first-exit`.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events).toEqual(["first-enter"]);
+
+      releaseFirstCaller();
+      const [first, second] = await Promise.all([firstCall, secondCall]);
+      expect(first).toBe("first");
+      expect(second).toBe("second");
+      expect(events).toEqual(["first-enter", "first-exit", "second-enter", "second-exit"]);
     });
 
     it("withCodexAccountHomePromotionLock keeps two different companies independent", async () => {
@@ -485,7 +455,39 @@ describe("codex auth cache store", () => {
       // scan holds it for the whole of its final check-and-delete step. This
       // proves the lock itself enforces mutual exclusion between any two
       // holders for one company, whichever caller goes first.
-      await expectSerializedLock(withAccountHomeSecretMutationLock);
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseFirstCaller!: () => void;
+      const firstCallerGate = new Promise<void>((resolve) => {
+        releaseFirstCaller = resolve;
+      });
+
+      const entered = deferredSignal();
+      const firstCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
+        events.push("first-enter");
+        entered.resolve();
+        await firstCallerGate;
+        events.push("first-exit");
+        return "first";
+      });
+      await entered.promise;
+      const secondCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
+        events.push("second-enter");
+        events.push("second-exit");
+        return "second";
+      });
+      // The second caller must stay blocked on the lock while the first
+      // caller still holds it: it must never log `second-enter` before the
+      // first caller's `first-exit`.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events).toEqual(["first-enter"]);
+
+      releaseFirstCaller();
+      const [first, second] = await Promise.all([firstCall, secondCall]);
+      expect(first).toBe("first");
+      expect(second).toBe("second");
+      expect(events).toEqual(["first-enter", "first-exit", "second-enter", "second-exit"]);
     });
 
     it("withAccountHomeSecretMutationLock keeps two different companies independent", async () => {
