@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { i18n, t } from "@/i18n";
 import { ApiError, apiErrorFromResponse } from "../api/api-error";
+import { describeError } from "../api/errors";
 import { describeUiError, localizeUiError } from "../lib/localized-ui-error";
 import { ToastProvider, useToastState, type ToastItem } from "../context/ToastContext";
 import { ToastViewport } from "../components/ToastViewport";
@@ -93,9 +94,16 @@ describe.each([["standard", RoutineDetail], ["production", ProductionRoutineDeta
       const item = stored[0]; const node = host.querySelector("li"); const before = node?.textContent;
       expect(node?.textContent).toContain(t(`work:copy.${title}`));
       expect(item.presentation?.error?.cause).toBe(cause);
+      const storedCopy = {
+        title: t(`work:copy.${title}`),
+        body: describeError(cause, { action: t(`work:copy.${action}`) }).body,
+        tone: "error",
+      };
+      expect(item).toMatchObject(storedCopy);
       const calls = harness.operation.mock.calls.slice();
       await act(async () => { vi.advanceTimersByTime(1000); await i18n.changeLanguage("zh-CN"); });
       expect(host.querySelector("li")).toBe(node); expect(stored[0]).toBe(item);
+      expect(stored[0]).toMatchObject(storedCopy);
       expect(node?.textContent).toContain(t(`work:copy.${title}`));
       expect(node?.textContent).toContain(describeUiError(cause, { key: `work:copy.${action}` }).body);
       expect(node?.textContent).not.toBe(before);
@@ -103,6 +111,12 @@ describe.each([["standard", RoutineDetail], ["production", ProductionRoutineDeta
       await act(async () => { await i18n.changeLanguage("en"); });
       expect(node?.textContent).toBe(before); expect(Object.getOwnPropertyDescriptors(cause)).toEqual(original);
       expect(harness.operation.mock.calls).toEqual(calls); expect(harness.operation).toHaveBeenCalledTimes(1);
+      // A second identical failure still dedupes after the locale round trip,
+      // without replacing the item or extending its original lifetime.
+      await act(async () => { await harness.mutations[index].mutateAsync(input).catch(() => {}); });
+      expect(harness.operation).toHaveBeenCalledTimes(2);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toBe(item);
       await act(async () => { vi.advanceTimersByTime(item.ttlMs - 1000); });
       expect(stored).toHaveLength(0);
     });
@@ -112,12 +126,19 @@ describe.each([["standard", RoutineDetail], ["production", ProductionRoutineDeta
     harness.operation.mockRejectedValue(new ApiError("Raw revision conflict", 409, { revisionId: "raw-revision" }));
     await act(async () => { await harness.mutations[1].mutateAsync().catch(() => {}); });
     const item = stored[0]; const node = host.querySelector("li"); const before = node?.textContent;
-    expect(item.tone).toBe("warn");
+    const storedCopy = {
+      title: t("work:copy.routineChanged_cd400e"),
+      body: t("work:copy.someoneElseUpdatedThisRoutineReloadToSeeThe_be054f"),
+      tone: "warn",
+    };
+    expect(item).toMatchObject(storedCopy);
+    expect(item.presentation?.error).toBeUndefined();
     await act(async () => { await i18n.changeLanguage("zh-CN"); });
     expect(node?.textContent).toContain(t("work:copy.routineChanged_cd400e"));
     expect(node?.textContent).toContain(t("work:copy.someoneElseUpdatedThisRoutineReloadToSeeThe_be054f"));
     expect(node?.textContent).not.toContain("Raw revision conflict"); expect(node?.textContent).not.toBe(before);
     expect(stored[0]).toBe(item); expect(host.querySelector("li")).toBe(node);
+    expect(stored[0]).toMatchObject(storedCopy);
     await act(async () => { await i18n.changeLanguage("en"); });
     expect(node?.textContent).toBe(before); expect(harness.operation).toHaveBeenCalledTimes(1);
   });
