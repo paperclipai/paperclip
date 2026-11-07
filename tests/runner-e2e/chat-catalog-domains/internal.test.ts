@@ -72,7 +72,7 @@ function valid(scenario: string): InternalObservation {
       const first = { id: "interrupted", companyId: "company", agentId: "morgan", status: "cancelled", contextSnapshot: { issueId: "task" } };
       const later = { id: "continuation", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" } };
       Object.assign(o.state, { worker: { id: "morgan" }, interruptedRun: first, continuationRun: later, interruptedTask: { ...o.tasks[0], executionRunId: "interrupted" }, gateCalls: [{ authorized: true, operation: "read_website_brief" }] });
-      Object.assign(o, { currentTask: o.tasks[0], agentRunReadStatuses: [200, 200] }); o.runs.push(first, later); o.links.push("/ACORN/agents/morgan/runs/interrupted", "/ACORN/agents/morgan/runs/continuation");
+      Object.assign(o, { currentTask: o.tasks[0], agentRunReadStatuses: [200, 200], runHistoryRead: true }); o.runs.push(first, later); o.links.push("/ACORN/agents/morgan/runs/interrupted", "/ACORN/agents/morgan/runs/continuation");
       o.reply = "Morgan interrupted was cancelled.\nMorgan continuation succeeded."; break;
     }
     case "activity.agent-feedback": {
