@@ -422,6 +422,68 @@ describe("native workspace finalization recovery", () => {
     expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, seeded.runId))).toHaveLength(2);
   });
 
+  // RC-64: a crash loop killed the controller mid-finalize. Its attempt stayed
+  // `running` after a later owner finalized the same run.
+  async function seedOrphanedFinalize(title: string) {
+    const cwd = path.join(workspaceRoot, `orphan-${randomUUID()}`);
+    await fs.mkdir(cwd);
+    const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title });
+    const startedAt = new Date(Date.now() - 60_000);
+    const [orphan] = await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, phase: "workspace_finalize", status: "running", cwd, startedAt,
+      createdAt: startedAt, updatedAt: startedAt,
+      metadata: { owningService: "native_workspace_finalizer", observation: "workspace_directory", resumedFromOperationId: null },
+    }).returning();
+    return { ...seeded, orphan, cwd };
+  }
+
+  it("settles a crashed controller's running finalize once a later attempt completes", async () => {
+    const seeded = await seedOrphanedFinalize("Crash-loop interrupted finalize");
+    const operation = await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId });
+    expect(operation).toMatchObject({ status: "succeeded", metadata: expect.objectContaining({ resumedFromOperationId: seeded.orphan.id }) });
+    const [orphan] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, seeded.orphan.id));
+    expect(orphan).toMatchObject({ status: "failed", finishedAt: expect.any(Date) });
+    expect(orphan.metadata).toMatchObject({ owningService: "native_workspace_finalizer",
+      supersededFinalization: { reason: "superseded_workspace_finalization", supersedingOperationId: operation!.id,
+        supersedingStatus: "succeeded", previousStatus: "running" } });
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, seeded.runId),
+      eq(workspaceOperations.status, "running")))).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, seeded.orphan.id),
+      eq(activityLog.action, "workspace_operation.reconciled")))).toHaveLength(1);
+  });
+
+  it("settles an orphaned running finalize left before an already succeeded attempt", async () => {
+    const seeded = await seedOrphanedFinalize("Orphan before stored success");
+    const [success] = await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
+      metadata: { owningService: "native_workspace_finalizer", resumedFromOperationId: seeded.orphan.id } }).returning();
+    const operation = await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId });
+    expect(operation?.id).toBe(success.id);
+    const [orphan] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, seeded.orphan.id));
+    expect(orphan.status).toBe("failed");
+    expect(orphan.metadata).toMatchObject({ supersededFinalization: { supersedingOperationId: success.id } });
+  });
+
+  it("leaves a running finalize alone while another controller owns the run", async () => {
+    const seeded = await seedOrphanedFinalize("Live owner keeps its attempt");
+    const result = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId },
+      () => resumeNativeWorkspaceFinalization({ db, runId: seeded.runId }));
+    expect(result).toEqual({ acquired: true, value: null });
+    const [orphan] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, seeded.orphan.id));
+    expect(orphan.status).toBe("running");
+  });
+
+  it("does not settle a running finalize recorded by another service", async () => {
+    const seeded = await seedOrphanedFinalize("Foreign running finalize");
+    await db.update(workspaceOperations).set({ metadata: { owningService: "heartbeat" } })
+      .where(eq(workspaceOperations.id, seeded.orphan.id));
+    const [success] = await db.insert(workspaceOperations).values({ companyId, heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date() }).returning();
+    expect((await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId }))?.id).toBe(success.id);
+    const [orphan] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, seeded.orphan.id));
+    expect(orphan.status).toBe("running");
+  });
+
   it.each(["terminal_failure", "retryable_failure"] as const)(
     "rechecks %s admission before a delayed recovery starts another export",
     async (phase) => {
