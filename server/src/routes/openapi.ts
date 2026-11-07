@@ -260,6 +260,7 @@ import {
   retryWorkspaceExportSchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -3442,6 +3443,9 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}",
   tags: ["status-cards"],
   summary: "Update, archive, or restore a status card",
+  description: "Archiving (archived: true) hides the card from the active list but keeps the card, its summary and its update history; it is not deleted. "
+    + "A person views and restores archived cards on the company's Status page (Show archived, then Restore); give them the returned href as a Markdown link. "
+    + "Restoring (archived: false) starts a fresh full summary for a card with a compiled query, so restored content is regenerated before it is current.",
   body: patchStatusCardSchema,
 });
 
@@ -11023,6 +11027,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Resume a saved native result after operator verification of the prior workspace owner's stop",
   body: resumeWorkspaceFinalizationSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-controller-stopped",
+  tags: ["issues"],
+  summary: "Confirm that a native run's previous server stopped when its host was not recorded",
+  body: confirmNativeControllerStoppedSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
