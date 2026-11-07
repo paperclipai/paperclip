@@ -926,9 +926,9 @@ describe("remote controller restart adoption", () => {
     });
     return target;
   };
-  it("resumes a scheduled retry whose runner exited after its previous attempt suspended it", async () => {
+  it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
-      runId: "run", normalizedSessionId: "session", providerAttempt: 2 })).resolves.toBeUndefined();
+      runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
@@ -936,7 +936,7 @@ describe("remote controller restart adoption", () => {
     ["a pending terminal delivery", { ...settledSuspension, pendingTerminalDelivery: { eventId: "event" } }, 2],
     ["a pending warm transition", { ...settledSuspension, warmTransition: { transitionId: "t" } }, 2],
     ["a runner that stopped mid-turn", { ...settledSuspension, lifecycle: "turn_active" }, 2],
-    ["an exhausted attempt budget", settledSuspension, 3],
+    ["an exhausted attempt budget", settledSuspension, 4],
   ] as const)("keeps reattachment fail-closed after %s", async (_case, state, providerAttempt) => {
     const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(state) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
@@ -953,6 +953,43 @@ describe("remote controller restart adoption", () => {
     const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension, afterExit) as never,
       identity, runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(caught => caught);
     expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+  });
+  it.each(["timeout", "command", "json", "transport", "shared-deadline"] as const)("labels a post-exit state read %s failure within the recovery deadline", async failure => {
+    vi.useFakeTimers();
+    try {
+      const { target, execute } = fixture(settledSuspension);
+      const original = execute.getMockImplementation()!;
+      const postExitTimeouts: number[] = [];
+      let exited = false;
+      execute.mockImplementation(async request => {
+        if (request.args[2] === "paperclip-runner-recovery-check") {
+          exited = true;
+          return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+        }
+        if (request.args[1].includes("base64")) {
+          if (!exited && failure === "shared-deadline") await new Promise(resolveWait => setTimeout(resolveWait, 25_000));
+          if (exited) {
+            postExitTimeouts.push(Number(Reflect.get(request, "timeoutMs")));
+            if (failure === "transport") throw new Error("private sandbox transport detail");
+            if (failure === "json") return { stdout: Buffer.from("not json").toString("base64"), stderr: "", exitCode: 0, timedOut: false };
+            return { stdout: "", stderr: "private command output", exitCode: failure === "command" ? 1 : 0,
+              timedOut: failure !== "command" };
+          }
+        }
+        return original(request);
+      });
+      const startedAt = Date.now();
+      const outcome = verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const diagnostic = readRemoteRunnerRecoveryError(await outcome);
+      expect(diagnostic).toEqual({ stage: "runner_state", reason: failure === "command" ? "state_read_failed"
+        : failure === "json" ? "state_invalid" : failure === "transport" ? "probe_transport_failed" : "probe_timeout" });
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(30_000);
+      expect(postExitTimeouts.length).toBeGreaterThan(0);
+      if (failure === "shared-deadline") expect(postExitTimeouts.every(timeout => timeout > 0 && timeout <= 5_000)).toBe(true);
+    } finally { vi.useRealTimers(); }
   });
   it.each([
     ["launches from", settledSuspension],

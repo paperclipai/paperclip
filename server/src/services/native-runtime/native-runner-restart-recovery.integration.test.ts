@@ -3,13 +3,15 @@ import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-r
 import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, QUALIFIED_ACPX_PROFILES } from "@paperclipai/paperclip-runner";
+import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "@paperclipai/paperclip-runner/live";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -63,6 +65,7 @@ import {
   restoreRemoteBootstrapCheckpointForRecovery,
   runnerdStateProvesIncompleteBootstrap,
   runnerdStateProvesNoRemoteProviderTurn,
+  verifyRemoteRunnerOrSettledExit,
 } from "./native-session-executor.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -120,6 +123,148 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   let agentId: typeof environment.current.agentId;
   let successor: typeof environment.current.successor;
   beforeAll(() => { ({ temporary, runtimeRoot, companyId, agentId, successor } = environment.current); });
+
+  realProcessIt.each([2, 3])("relaunches scheduled attempt %i after a fresh ACPX Runner rejects turn.start and closes cleanly", async providerAttempt => {
+    const root = await mkdtemp(join(tmpdir(), "fresh-runner-settled-retry-"));
+    const fault = join(root, "reject-turn"), journal = join(root, "sidecar-calls"), shim = join(root, "sidecar.cjs");
+    const binary = defaultCapabilityRunnerdBinary();
+    const fake = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
+    const digest = (bytes: string | Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const script = `const { spawn } = require("node:child_process");
+const { createInterface } = require("node:readline");
+const { existsSync, appendFileSync } = require("node:fs");
+const child = spawn(${JSON.stringify(fake)}, ["--mode", "source-reconcile", "--profile-digest", ${JSON.stringify(QUALIFIED_ACPX_PROFILES.claude.commandDigest)}, "--journal", ${JSON.stringify(journal)}, "--source-fault", ${JSON.stringify(fault)}]);
+child.stderr.pipe(process.stderr);
+createInterface({ input: child.stdout }).on("line", line => {
+  const response = JSON.parse(line);
+  if (response.result?.sidecarPid) response.result.sidecarPid = process.pid;
+  process.stdout.write(JSON.stringify(response) + "\\n");
+});
+createInterface({ input: process.stdin }).on("line", line => {
+  const request = JSON.parse(line);
+  if (request.command === "turn.start" && existsSync(${JSON.stringify(fault)})) {
+    appendFileSync(${JSON.stringify(journal)}, JSON.stringify(request) + "\\n");
+    process.stdout.write(JSON.stringify({ protocolVersion: request.protocolVersion, id: request.id, ok: false,
+      error: { code: "SESSION_RESUME_REQUIRED", message: "Resume the provider session again.", retryable: true } }) + "\\n");
+  } else child.stdin.write(line + "\\n");
+}).on("close", () => child.stdin.end());
+child.on("exit", code => process.exit(code ?? 1));
+process.on("SIGTERM", () => child.kill("SIGTERM"));
+`;
+    await writeFile(shim, script);
+    const nodeDigest = digest(await readFile(process.execPath));
+    const identity = { runId: "fresh-resume-run", normalizedSessionId: "checkpointed-session", runnerInstanceId: "fresh-runner",
+      environmentLeaseId: "same-lease", turnId: "same-turn", itemId: "same-item" };
+    const stateDirectory = join(root, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(identity.normalizedSessionId).digest("hex"));
+    const bundles: ReturnType<typeof createCapabilityRunnerdCodexTransport>[] = [];
+    const children: ReturnType<typeof spawn>[] = [];
+    const launches = vi.fn();
+    const create = (directory: string, resume?: CapabilityRunnerdCodexTransportOptions["resumeProviderSession"],
+      adoptExistingRunner?: CapabilityRunnerdCodexTransportOptions["adoptExistingRunner"]) => {
+      const bundle = createCapabilityRunnerdCodexTransport({
+        runnerBinary: binary, runnerArtifact: readRunnerdArtifactBinding(binary), stateDirectory: directory,
+        provider: "acpx", acpxAgent: "claude", prpIdentity: identity, resumeProviderSession: resume, adoptExistingRunner,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null }, closeGraceMs: 3_000,
+        controlPlaneRegistration: async authority => {
+          await authority.start();
+          return { connectUrl: authority.connectUrl, release: () => authority.stop() };
+        },
+        prepareLaunch: async input => ({ configurationId: "qualified-fixture", requirementsDigest: runnerLaunchRequirementsDigest(input),
+          provider: createRunnerProviderLaunch(input, { options: {}, root: directory, cwd: root, codexHome: root,
+            codexCommand: "", providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
+        runnerProcessLauncher: spec => {
+          launches(adoptExistingRunner);
+          const child = spawn(binary, [...spec.args, "--acpx-launch-authority-digest", digest("fixture authority"),
+            "--acpx-sidecar-command", process.execPath, "--acpx-sidecar-command-sha256", nodeDigest,
+            "--acpx-sidecar-script", shim, "--acpx-sidecar-script-sha256", digest(script)],
+          { env: { PATH: process.env.PATH, ...spec.environment }, stdio: ["ignore", "ignore", "pipe"], detached: true });
+          children.push(child);
+          let stderr = "";
+          child.stderr?.on("data", bytes => { stderr = (stderr + bytes).slice(-16_384); });
+          return { child, completion: new Promise((resolveExit, reject) => {
+            child.once("error", reject);
+            child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr }));
+          }) };
+        },
+      });
+      bundles.push(bundle);
+      return bundle;
+    };
+    const expectCompleted = async (bundle: ReturnType<typeof create>) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          (async () => {
+            for await (const event of bundle.transport.notifications()) if (event.method === "turn/completed") return;
+            throw new Error("Fixture turn ended without completion");
+          })(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Fixture turn completion timed out")), 5_000); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    };
+    try {
+      const seedDirectory = stateDirectory;
+      const seed = create(seedDirectory);
+      const opened = await seed.transport.request("thread/start", { cwd: root, model: "fixture-model", dynamicTools: [] });
+      const thread = opened.thread as { id: string; sessionId: string };
+      await seed.transport.request("turn/start", { input: [{ type: "text", text: "Save the provider checkpoint." }] });
+      await expectCompleted(seed);
+      await seed.transport.close();
+      const provider = JSON.parse(await readFile(join(seedDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      const resume = { driverSessionId: thread.id, providerSessionId: thread.sessionId, providerIdentity: provider.identity };
+      await writeFile(fault, "reject-turn-start");
+      const fresh = create(stateDirectory, resume);
+      await fresh.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
+      await fresh.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      expect(launches.mock.calls).toEqual([[undefined], [undefined]]);
+      const child = children.at(-1)!;
+      const pid = child.pid!;
+      expect(pid).not.toBe(children[0]!.pid);
+      let fingerprint = "linux:abcd-1234:100";
+      if (process.platform === "linux") {
+        const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+        fingerprint = `linux:${(await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()}:${stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19]}`;
+      }
+      await writeFile(join(stateDirectory, "runner", "runner-process.identity"),
+        `fixture_nonce\n${pid}\n${new Date().toISOString()}\n${identity.runnerInstanceId}\n${fingerprint}\n`);
+      await expect(fresh.transport.request("turn/start", { input: [{ type: "text", text: "Resume saved work." }] }))
+        .rejects.toThrow("classification=session_resume_required");
+      await fresh.transport.close();
+      await vi.waitFor(() => expect(child.exitCode).not.toBeNull(), { timeout: 5_000 });
+      const resumedControl = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(resumedControl.committedEvents).toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "session.resumed" })]));
+      const saved = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+      expect(saved).toMatchObject({ ...identity, lifecycle: "suspended", outbox: [] });
+      expect(saved.pendingTerminalDelivery ?? null).toBeNull();
+      expect(saved.pendingProviderCleanup ?? null).toBeNull();
+      expect(saved.warmTransition ?? null).toBeNull();
+      const runner = { execute: async (request: { command: string; args: string[]; timeoutMs?: number }) =>
+        new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolveResult => {
+          execFile(request.command, request.args, { timeout: request.timeoutMs }, (error, stdout, stderr) => resolveResult({
+            stdout, stderr, exitCode: error ? Number(error.code) : 0, timedOut: error?.killed ?? false,
+          }));
+        }) };
+      const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: root, runner,
+        sandboxLeaseAcquisition: { providerLeaseId: "same-sandbox", outcome: "resumed" as const } };
+      const adopted = await verifyRemoteRunnerOrSettledExit({
+        claim: { runId: identity.runId, remote: { providerLeaseId: "same-sandbox", remoteCwd: root } },
+        target: target as never, identity, runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, providerAttempt,
+      });
+      expect(adopted).toBeUndefined();
+      await rm(fault);
+      const retried = create(stateDirectory, resume, adopted);
+      await retried.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
+      await retried.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      expect(launches.mock.calls).toEqual([[undefined], [undefined], [undefined]]);
+      expect(retried.evidence().runnerPid).toBeGreaterThan(0);
+      expect(retried.evidence().runnerPid).not.toBe(pid);
+    } finally {
+      await Promise.allSettled(bundles.map(bundle => bundle.transport.close()));
+      for (const child of children) if (child.pid && child.exitCode === null && child.signalCode === null) await stopOwnedProcessGroup(child.pid, root);
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
 
   it.each(["issue", "run", "coordinator"] as const)("defers a busy %s row without blocking replacement startup", async kind => {
     const fixture = await seedRun(`OVERLAP-BUSY-${kind}`);

@@ -4431,6 +4431,10 @@ cleanup or warm transition, the retry launches a Runner from that state instead
 of adopting one. This matches a settled staged source. Any other exit stays
 fail-closed for reconciliation, and the provider attempt budget still bounds the
 retries.
+The final admitted provider attempt may use this path; attempts above the limit
+cannot. Process verification and the final state read share one recovery
+deadline. A timeout, command failure, transport failure or invalid saved JSON on
+that final read keeps its closed recovery stage and reason in the diagnostic.
 
 Reattachment keeps the complete durable PRP binding, including its turn and item
 attachment IDs. A healthy warm handoff can create new attachment IDs within the
