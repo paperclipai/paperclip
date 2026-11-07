@@ -3,7 +3,7 @@ import { heartbeatRunEvents, agents, approvals, costEvents, issueApprovals, envi
 import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import * as recoverySources from "./workspace-recovery-source.js";
 import { requestedRunCancellation } from "./run-cancellation.js";
-import { readSystemRecovery } from "./system-recovery-state.js";
+import { failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { getStorageService } from "../storage/index.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -284,10 +284,13 @@ describe("automatic retained workspace recovery", () => {
   // RC-50: a restart killed the controller that owned the saved-result copyback.
   // s13/t06: the kill landed 2 s after Retry. s12/t01: it landed during a later
   // attempt, after an earlier export failure had already spent one.
+  // "exhausted before upgrade": the wave databases, where earlier code already
+  // spent the whole budget on rechecks and recorded no hold.
   it.each([
-    { wave: "s13", spentAttempts: 0, expectedStrategy: "finalize_result" },
-    { wave: "s12", spentAttempts: 1, expectedStrategy: "continue" },
-  ])("lets an accepted Retry finish after a killed copyback owner instead of waiting forever ($wave)", async ({ spentAttempts, expectedStrategy }) => {
+    { wave: "s13", spentAttempts: 0, expectedStrategy: "finalize_result", exhaustedBeforeUpgrade: false },
+    { wave: "s12", spentAttempts: 1, expectedStrategy: "continue", exhaustedBeforeUpgrade: false },
+    { wave: "exhausted before upgrade", spentAttempts: 0, expectedStrategy: "finalize_result", exhaustedBeforeUpgrade: true },
+  ])("lets an accepted Retry finish after a killed copyback owner instead of waiting forever ($wave)", async ({ spentAttempts, expectedStrategy, exhaustedBeforeUpgrade }) => {
     const f = await acceptedRemoteExport();
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
@@ -306,16 +309,27 @@ describe("automatic retained workspace recovery", () => {
     const source = await run(f.runId);
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: dead } })
       .where(eq(heartbeatRuns.id, f.runId));
+    if (exhaustedBeforeUpgrade) {
+      const before = await action(f.actionId);
+      let spent = readSystemRecovery(before.evidence)!;
+      for (let attempt = 0; attempt < 6; attempt++) spent = failSystemRecovery(reserveSystemRecoveryAttempt({ ...spent, nextAttemptAt: null })!,
+        new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence"), { now: spent.firstFailureAt ?? Date.now() });
+      expect(spent.state).toBe("exhausted");
+      await db.update(issueRecoveryActions).set({ evidence: { ...before.evidence, systemRecovery: spent } })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+    }
     for (let pass = 0; pass < 8; pass++) {
       await recoverRetainedWorkspace(f.input);
       await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
-      await makeRetryDue(f.actionId);
+      if (!exhaustedBeforeUpgrade) await makeRetryDue(f.actionId);
     }
     expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(spentAttempts);
     // Rechecking an unverifiable owner is not an attempt and never ends in a stale "Retry recovery" handoff.
     const held = await action(f.actionId);
-    expect(readSystemRecovery(held.evidence)).toMatchObject({ state: "awaiting_evidence", attempts: spentAttempts,
-      failure: { code: "copyback_stop_unconfirmed" } });
+    expect(readSystemRecovery(held.evidence)).toMatchObject(exhaustedBeforeUpgrade
+      ? { state: "exhausted", attempts: 6, failure: { code: "copyback_stop_unconfirmed" } }
+      : { state: "awaiting_evidence", attempts: spentAttempts, failure: { code: "copyback_stop_unconfirmed" } });
+    if (exhaustedBeforeUpgrade) expect(held.nextAction).toContain("confirm that it stopped");
     expect(held.evidence.workspaceOwnerRecovery).toEqual({ state: "operator_required", owner: dead });
     // Retry names the one action that can progress it, instead of "finalizing" forever.
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0])

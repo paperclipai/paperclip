@@ -161,6 +161,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   await adoptSystemRecovery(db, input);
   const initial = await loadSystemRecovery(db, input);
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
+    // A budget spent before this hold existed still names its receipt, so the
+    // board confirmation in its handoff can release it (RC-50 wave databases).
+    if (initial.failure?.code === "copyback_stop_unconfirmed") await recordCopybackOwnerHold(db, input, initial.generationId);
     await handOffExhaustedSystemRecovery(db, input, initial);
     return;
   }
@@ -454,11 +457,16 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
 async function holdForUnverifiedCopybackOwner(db: Db, input: Source) {
   const current = await loadSystemRecovery(db, input);
   if (!current || current.state === "complete" || current.state === "exhausted") return;
+  const next = failSystemRecovery(current, new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence"));
+  if (!await updateSystemRecovery(db, input, current, next)) return;
+  await recordCopybackOwnerHold(db, input, next.generationId);
+}
+
+/** Bookkeeping only: names the exact receipt for the board. Grants no attempt. */
+async function recordCopybackOwnerHold(db: Db, input: Source, generationId: string) {
   const [source] = await db.select({ owner: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceFinalizationOwner'` })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const owner = source?.owner;
-  const next = failSystemRecovery(current, new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence"));
-  if (!await updateSystemRecovery(db, input, current, next)) return;
   if (!owner || typeof owner !== "object" || typeof (owner as { token?: unknown }).token !== "string") return;
   await db.update(issueRecoveryActions).set({
     // A confirmation names one receipt; a newer unverified owner needs its own.
@@ -467,7 +475,7 @@ async function holdForUnverifiedCopybackOwner(db: Db, input: Source) {
     updatedAt: new Date(),
   }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
     eq(issueRecoveryActions.sourceIssueId, input.issueId),
-    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${next.generationId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${generationId}`,
     sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`));
 }
 
