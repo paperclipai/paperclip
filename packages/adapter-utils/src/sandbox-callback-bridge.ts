@@ -27,6 +27,7 @@ import type { RunProcessResult } from "./server-utils.js";
 
 const DEFAULT_BRIDGE_TOKEN_BYTES = 24;
 const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
+const DEFAULT_BRIDGE_LIST_WAIT_MS = 5_000;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const MAX_BRIDGE_CONTROL_COMMAND_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
@@ -283,6 +284,11 @@ export interface SandboxCallbackBridgeDirectories {
   logFile: string;
 }
 
+export interface SandboxCallbackBridgeListOptions {
+  waitMs?: number;
+  pollIntervalMs?: number;
+}
+
 export interface SandboxCallbackBridgeQueueClient {
   makeDir(remotePath: string): Promise<void>;
   // Optional batched directory create. The built-in clients create every
@@ -290,7 +296,8 @@ export interface SandboxCallbackBridgeQueueClient {
   // omits it; the worker falls back to sequential `makeDir` calls, so an
   // external implementation stays compatible without a change.
   makeDirs?(remotePaths: string[]): Promise<void>;
-  listJsonFiles(remotePath: string): Promise<string[]>;
+  listJsonFiles(remotePath: string, options?: SandboxCallbackBridgeListOptions): Promise<string[]>;
+  supportsListWait?: boolean;
   fileSize?(remotePath: string): Promise<number>;
   readTextFile(remotePath: string, maxBytes?: number): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
@@ -648,6 +655,7 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
     requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, shellCommand));
 
   return {
+    supportsListWait: true,
     makeDir: async (remotePath) => {
       await runChecked(`mkdir ${remotePath}`, `mkdir -p ${shellQuote(remotePath)}`);
     },
@@ -658,19 +666,46 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const quoted = remotePaths.map((remotePath) => shellQuote(remotePath));
       await runChecked(`mkdir ${remotePaths.join(" ")}`, `mkdir -p ${quoted.join(" ")}`);
     },
-    listJsonFiles: async (remotePath) => {
+    listJsonFiles: async (remotePath, options = {}) => {
+      const listScript = [
+        `if [ -d ${shellQuote(remotePath)} ]; then`,
+        `  for file in ${shellQuote(remotePath)}/*.json; do`,
+        `    [ -f "$file" ] || continue`,
+        "    basename \"$file\"",
+        "  done",
+        "fi",
+      ];
+      const waitMs = typeof options.waitMs === "number" && Number.isFinite(options.waitMs) && options.waitMs > 0
+        ? Math.trunc(options.waitMs)
+        : 0;
+      const pollMs = normalizeTimeoutMs(options.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
+      const script = waitMs === 0
+        ? listScript
+        : [
+            "if sleep 0.001 2>/dev/null; then",
+            `  paperclip_step=${(pollMs / 1000).toFixed(3)}`,
+            `  paperclip_left=${Math.floor(waitMs / pollMs)}`,
+            "else",
+            "  paperclip_step=1",
+            `  paperclip_left=${Math.floor(waitMs / 1000)}`,
+            "fi",
+            "while :; do",
+            `  paperclip_listed=$(${listScript.join("\n")}`,
+            "  )",
+            "  if [ -n \"$paperclip_listed\" ]; then",
+            "    printf '%s\\n' \"$paperclip_listed\"",
+            "    break",
+            "  fi",
+            "  [ \"$paperclip_left\" -gt 0 ] || break",
+            "  paperclip_left=$(( paperclip_left - 1 ))",
+            "  sleep \"$paperclip_step\"",
+            "done",
+          ];
       const result = await runShell(
         input.runner,
         input.remoteCwd,
-        [
-          `if [ -d ${shellQuote(remotePath)} ]; then`,
-          `  for file in ${shellQuote(remotePath)}/*.json; do`,
-          `    [ -f "$file" ] || continue`,
-          "    basename \"$file\"",
-          "  done",
-          "fi",
-        ].join("\n"),
-        timeoutMs,
+        script.join("\n"),
+        timeoutMs + waitMs,
         shellCommand,
       );
       requireSuccessfulResult(`list ${remotePath}`, result);
@@ -816,6 +851,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   client: SandboxCallbackBridgeQueueClient;
   queueDir: string;
   pollIntervalMs?: number | null;
+  listWaitMs?: number | null;
   // Per-iteration timeout for one poll-loop client call (the `listJsonFiles`
   // poll and one `processRequestFile`). On timeout the loop `catch` runs
   // `failPendingRequests`. Defaults to DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS.
@@ -861,6 +897,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
   const watchdogTimeoutMs = normalizeTimeoutMs(input.watchdogTimeoutMs, DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS);
+  const listWaitMs = !input.client.supportsListWait || input.listWaitMs === 0
+    ? 0
+    : Math.min(
+        normalizeTimeoutMs(input.listWaitMs, DEFAULT_BRIDGE_LIST_WAIT_MS),
+        Math.floor(watchdogTimeoutMs / 2),
+      );
   const abortedHandlerGraceMs = normalizeTimeoutMs(
     input.abortedHandlerGraceMs,
     DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS,
@@ -888,6 +930,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   }
 
   let stopping = false;
+  let listWaitActive = false;
   let inFlight = 0;
   let settled = false;
   let stopDeadline = Number.POSITIVE_INFINITY;
@@ -1520,10 +1563,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let consecutivePollFailures = 0;
       while (true) {
         let fileNames: string[];
+        const waitMs = !stopping && inFlightRequestGuards.size === 0 ? listWaitMs : 0;
         try {
+          listWaitActive = waitMs > 0;
           fileNames = await withTimeout(
-            input.client.listJsonFiles(directories.requestsDir),
-            iterationTimeoutMs,
+            input.client.listJsonFiles(directories.requestsDir, { waitMs, pollIntervalMs }),
+            iterationTimeoutMs + waitMs,
             "Sandbox callback bridge list requests",
           );
           consecutivePollFailures = 0;
@@ -1546,6 +1591,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
           );
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
           continue;
+        } finally {
+          listWaitActive = false;
         }
         // A file whose attempt is still in flight (or waiting on its 504
         // backstop) is not actionable: `processRequestFile` would skip it via
@@ -1640,7 +1687,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
       stopping = true;
       const drainMs = normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);
       stopDeadline = Date.now() + drainMs;
-      if (!settled) {
+      if (listWaitActive) {
+        stopDeadline = Date.now();
+      } else if (!settled) {
         await Promise.race([
           settledPromise,
           new Promise<void>((resolve) => setTimeout(resolve, drainMs)),
