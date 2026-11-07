@@ -474,6 +474,22 @@ const support = await getEmbeddedPostgresTestSupport();
   // s7504 run bda81857 (ACPX Claude, K4): succeeded with a committed result,
   // a fenced receipt source, its provider process still recorded, and an
   // estimated 27.38-cent observation under the blocking policy.
+  // s7503 run 267936b9 (Claude C1, K6): succeeded after a restart with only
+  // provisional zero usage. Its live projection is a known zero, not null.
+  it("does not hold other work for the s7503 zero-token succeeded row shape", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ costStatus: "unpriced", costUsd: null, costUsdExact: null,
+        inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0,
+        pricingProvenance: { source: "unknown", version: "accounting-receipt/v1" },
+        budgetExposure: { sourceId: f.sourceId, sequence: 3, costCents: "0.0000000" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system", payload: { restartKind: "hard", runnerDisposition: "resume_dead_runner" } });
+    expect(await f.block()).toBeNull();
+  });
+
   it("does not hold other work for the s7504 succeeded row shape", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false });
     await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
