@@ -96,6 +96,9 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // PID space of processPid (controller-process-identity hostHash), or
+    // "remote" for a sandbox PID. Null on rows saved before it existed.
+    processHostHash: text("process_host_hash"),
     legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),

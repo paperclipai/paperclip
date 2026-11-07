@@ -925,6 +925,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                       ? meta.processGroupId
                       : null,
                   startedAt: meta.startedAt,
+                  // A sandbox runner's spawn metadata names a sandbox PID.
+                  targetKind: executionTarget?.kind ?? "local",
                 });
               },
               authToken: authToken ?? undefined,

@@ -303,6 +303,15 @@ describe("decideQueuedRunStaleness", () => {
       errorCode: "issue_not_in_progress",
     },
     {
+      name: "issue_not_in_progress (resolved-interaction continuation, unstarted answer on a non-todo task)",
+      overrides: {
+        isResolvedInteractionContinuation: true,
+        isUnstartedTaskQuestionAnswer: true,
+        issueStatus: "backlog",
+      } satisfies Partial<QueuedRunFacts>,
+      errorCode: "issue_not_in_progress",
+    },
+    {
       name: "issue_not_in_progress (max-turn continuation)",
       overrides: {
         retryReasonKind: "max_turn_continuation",
@@ -396,6 +405,15 @@ describe("decideQueuedRunStaleness", () => {
       isConnectionContinuation: false,
       issueStatus: "in_review",
       reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows an answer to a question no run asked to start a todo task that has never started", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      isResolvedInteractionContinuation: true,
+      isUnstartedTaskQuestionAnswer: true,
+      issueStatus: "todo",
     }, NOW)).toEqual({ stale: false });
   });
 
