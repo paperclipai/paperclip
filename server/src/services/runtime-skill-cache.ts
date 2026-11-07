@@ -3,6 +3,7 @@ import { constants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
+import { controllerProcessExited, currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
 
 const FORMAT = 1;
 const inFlight = new Map<string, Promise<string>>();
@@ -112,12 +113,50 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
   } catch { return false; }
 }
 
+/**
+ * True only when a lock holder's recorded server process has provably exited
+ * in this PID space. Lock age is never proof. A holder on another host or PID
+ * namespace, an unreadable space, or a lock written before holders recorded
+ * their process identity stays held.
+ */
+export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer): Promise<boolean> {
+  let holder: unknown;
+  try { holder = JSON.parse(lockContent.toString("utf8")); } catch { return false; }
+  const controller = readControllerProcess((holder as { controller?: unknown } | null)?.controller);
+  return controller !== null && await controllerProcessExited(controller);
+}
+
+/**
+ * Moves a lock whose holder exited out of the way. The rename takes whatever
+ * is at the lock path, so the moved inode is compared with the one proven
+ * stale. When another waiter replaced the lock first, the moved lock is
+ * linked back so its holder keeps ownership. Only a third acquirer inside that
+ * rename-to-link window could overlap it; the build it guards publishes by
+ * atomic rename and revalidates, so an overlap repeats work but cannot
+ * publish a partial revision.
+ */
+async function releaseExitedLock(lock: string, staleInode: number): Promise<void> {
+  const moved = `${lock}.released-${randomUUID()}`;
+  try { await fs.rename(lock, moved); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if ((await fs.lstat(moved)).ino !== staleInode) {
+    await fs.link(moved, lock).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+  }
+  await fs.unlink(moved).catch(() => {});
+}
+
 // Serialize builds and cleanup for one skill across processes as well as callers.
-// A hard link publishes complete lock ownership atomically; crashed owners are reported without stealing another publisher’s lock.
+// A hard link publishes complete lock ownership atomically. A lock whose holder
+// provably exited is released at once; any other holder is waited for.
 async function publishLocked<T>(root: string, fingerprint: string, action: () => Promise<T>): Promise<T> {
   const lock = path.join(root, `${fingerprint}.lock`);
   const owner = path.join(root, `.owner-${randomUUID()}`);
-  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname() }), { flag: "wx" });
+  // `pid` and `host` stay for older readers; `controller` is the proof input.
+  // The stamp does no I/O, so preparation adds no wait before the turn.
+  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname(),
+    controller: currentControllerProcessStamp() }), { flag: "wx" });
   let acquired = false;
   try {
     const deadline = Date.now() + 60_000;
@@ -125,21 +164,24 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
       try { await fs.link(owner, lock); acquired = true; }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const lockContent = await readRegularFile(lock).catch((readError: NodeJS.ErrnoException) => {
-          if (readError.code === "ENOENT") return null;
-          throw readError;
+        const handle = await fs.open(lock, constants.O_RDONLY | constants.O_NOFOLLOW).catch((openError: NodeJS.ErrnoException) => {
+          if (openError.code === "ENOENT") return null;
+          throw openError;
         });
-        if (!lockContent) continue;
-        const holder = JSON.parse(lockContent.toString("utf8"));
-        if (holder.host === os.hostname() && Number.isSafeInteger(holder.pid) && holder.pid > 0) {
-          try { process.kill(holder.pid, 0); }
-          catch (probeError) {
-            if ((probeError as NodeJS.ErrnoException).code === "ESRCH") {
-              throw new Error("Runtime skill cache publisher exited; remove its stale publication lock before retrying");
-            }
-          }
+        if (!handle) continue;
+        let stale: { content: Buffer; inode: number };
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile()) throw new Error("Unsafe runtime skill cache file");
+          stale = { content: await handle.readFile(), inode: stat.ino };
+        } finally { await handle.close(); }
+        if (await runtimeSkillCacheLockHolderExited(stale.content)) {
+          await releaseExitedLock(lock, stale.inode);
+          continue;
         }
-        if (Date.now() >= deadline) throw new Error("Runtime skill cache publisher is busy; retry preparation");
+        if (Date.now() >= deadline) {
+          throw new Error(`Runtime skill cache publisher is busy; retry preparation. If no server process holds ${lock}, remove it.`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
     }

@@ -6,7 +6,19 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySkill } from "@paperclipai/shared";
-import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
+import { once } from "node:events";
+import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheLockHolderExited, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
+import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
+
+/** A PID whose process has exited and been reaped. */
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  await once(child, "exit");
+  return child.pid!;
+}
+
+const lockStamp = (controller: Record<string, unknown>) =>
+  Buffer.from(JSON.stringify({ pid: controller.pid, host: os.hostname(), controller }));
 
 async function makeWritable(root: string): Promise<void> {
   const stat = await fs.lstat(root);
@@ -83,6 +95,31 @@ describe("runtime skill revision cache", () => {
     expect(first.source).toBe(second.source);
     expect(await fs.readdir(spec.root)).toEqual([spec.fingerprint]);
     expect(await launch()).toEqual({ source: first.source, reads: 0 });
+  });
+
+  it("releases a publication lock at once when its holder provably exited", async () => {
+    const spec = runtimeSkillCacheSpec(root, skill)!;
+    const namespace = path.dirname(spec.root);
+    await fs.mkdir(namespace, { recursive: true });
+    const pid = await exitedPid();
+    await fs.writeFile(path.join(namespace, `${skill.id}.lock`),
+      lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }));
+    const startedAt = Date.now();
+    const source = await resolveRuntimeSkillCache(spec, reader());
+    expect(source).toBe(path.join(spec.entry, "files"));
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect((await fs.readdir(namespace)).filter(name => name.includes(".lock"))).toEqual([]);
+  });
+
+  it("never treats age, another host, or a legacy holder as proof that a lock holder exited", async () => {
+    const pid = await exitedPid();
+    const here = { ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null };
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(here))).toBe(true);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...here, hostHash: "another-host" }))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(Buffer.from(JSON.stringify({ pid, host: os.hostname() })))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp({ ...here, pid: process.pid }))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(currentControllerProcessStamp()))).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(Buffer.from("not json"))).toBe(false);
   });
 
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {
