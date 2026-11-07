@@ -270,6 +270,31 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(runHost.mock.calls.filter(([a]) => a.lifecycleState === "verifying")).toHaveLength(2);
   });
 
+  it("retains a committed recheck when an expired attempt returns its earlier wait", async () => {
+    const { agent, work, complete, runHost } = await eventWaitFixture();
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(true); });
+    const store = createLifecycleStore(db, createAgentLifecycleEffects());
+    const owner = "expired-verification-owner";
+    // Use the store's normal clock input: the real claim is already expired when
+    // confirmation commits, without changing timers or waiting two minutes.
+    const claimed = await store.claim(agent.id, owner, new Date(Date.now() - 121_000));
+    if (!claimed) throw new Error("Expected a real verification claim");
+    expect(Date.parse(claimed.lifecycleOperation!.leaseUntil!)).toBeLessThan(Date.now());
+    await db.transaction(async tx => { expect(await recheck(tx, agent.id)).toBe(true); });
+    const afterConfirmation = await current(agent.id);
+    complete();
+    expect(await store.defer(claimed, owner, null, new Date(), { waitForSignal: true })).toBe(true);
+    const signalled = await current(agent.id);
+    expect(signalled.lifecycleOperation).not.toHaveProperty("waitingForSignal");
+    expect(afterConfirmation.lifecycleOperation).toMatchObject({ leaseOwner: owner, recheckRequested: true });
+    expect(signalled.lifecycleOperation).not.toHaveProperty("leaseOwner");
+    expect(signalled.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(await store.pending(100, new Date())).toContain(agent.id);
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle" });
+    expect(runHost.mock.calls.filter(([a]) => a.lifecycleState === "verifying")).toHaveLength(2);
+  });
+
   it("rolls back the recheck with its producer and coalesces redundant committed signals", async () => {
     const { agent, work, complete, runHost } = await eventWaitFixture();
     await expect(db.transaction(async tx => {
