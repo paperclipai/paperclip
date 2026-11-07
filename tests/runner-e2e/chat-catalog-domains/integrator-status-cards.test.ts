@@ -121,6 +121,19 @@ it("does not grade explanation wording, and does not need a link back to the car
   o.links = ["/ACORN/issues/source"];
   expect(gradeIntegratorCards(o).passed).toBe(true);
 });
+it("accepts a lead-requested refresh of its own stale card only when the original summary stays in history", () => {
+  const o = valid("status-cards.explain-card");
+  const refreshed = structuredClone(o); const card = refreshed.cards[0]!;
+  card.summaryBody = "No open launch blockers."; card.lastGeneratedAt = "2026-10-26T12:00:00Z";
+  refreshed.updates.card.push({ id: "refresh-update", kind: "full", status: "ok", runId: "refresh-run", generationIssueId: "refresh-task" });
+  refreshed.summaries.card.push({ id: "refresh-summary", body: card.summaryBody });
+  refreshed.runs.push({ id: "refresh-run", agentId: "morgan", status: "succeeded" });
+  expect(gradeIntegratorCards(refreshed).passed).toBe(false);
+  refreshed.activity.push({ id: "refresh", action: "status_card.refresh_requested", entityId: "card", agentId: "ceo" });
+  expect(gradeIntegratorCards(refreshed).passed).toBe(true);
+  const lostHistory = structuredClone(refreshed); lostHistory.summaries.card = lostHistory.summaries.card.filter(row => row.id !== "summary");
+  expect(gradeIntegratorCards(lostHistory).passed).toBe(false);
+});
 it("classifies live and unavailable task reads from runner tool output", () => {
   const event = (output: string, status = "completed") => ({ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_get_task", status, output } } } });
   const live = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", data: { id: "source", status: "done" } }) }));

@@ -5322,8 +5322,9 @@
       "run-observations.ts",
       "chat-scenarios/status-cards.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.status-card.explain.v2",
-    "expectedRunCount": 3,
+    "oracleVersion": "paperclip.chat-catalog.status-card.explain.v3",
+    "expectedRunCount": 5,
+    "minimumRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 720000,

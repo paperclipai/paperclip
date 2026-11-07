@@ -88,9 +88,13 @@ export function gradeIntegratorCards(value: unknown) {
       && /\brestor(?:e|ing|ation)\b/i.test(o.reply) && /\brefresh\b/i.test(o.reply), "Chat reports archive rather than deletion and explains restoration plus possible refresh.");
   } else if (o.scenarioId === "status-cards.explain-card") {
     const source = originals[0];
-    c.add("saved-observation-is-stale", !!before && !!card && !!source && card.summaryBody === before.summaryBody && card.lastGeneratedAt === before.lastGeneratedAt
-      && card.fingerprint?.[source.id]?.status === "blocked" && source.status === "done" && freshSummary(o, card), "The real previous generated blocker summary is retained while the actual source task is now done.");
-    const initial = cardsObservation(o.state.accessCheckpoint); const later = initial && o.reply.startsWith(initial.reply) ? o.reply.slice(initial.reply.length).trim() : "";
+    const initial = cardsObservation(o.state.accessCheckpoint);
+    // Refreshing its own stale card is a reasonable response to this question, provided the lead
+    // requested it through the product. The original blocker summary must survive in history either way.
+    const refreshedByLead = !!card && o.activity.some(event => event.action === "status_card.refresh_requested" && event.agentId === o.leadId && event.entityId === card.id);
+    c.add("saved-observation-is-stale", !!before && !!card && !!source && before.fingerprint?.[source.id]?.status === "blocked" && source.status === "done"
+      && !!o.summaries[card.id]?.some(row => row.body === before.summaryBody)
+      && (card.summaryBody === before.summaryBody && card.lastGeneratedAt === before.lastGeneratedAt || refreshedByLead) && freshSummary(o, card), "The real previous generated blocker summary is retained in history while the actual source task is now done; it changes only through a lead-requested refresh."); const later = initial && o.reply.startsWith(initial.reply) ? o.reply.slice(initial.reply.length).trim() : "";
     // The explanation's wording is model output, so it is not pattern-matched. These checks grade what the
     // agent read and linked; a reply that misstates a correctly read live status is not detected here.
     c.add("live-source-read-before-explaining", !!initial && !!source && o.sourceReads?.initialLive === true && hasLink(initial, "issues", source), "Before answering, the responding agent actually read the source task's live record and linked it for the person.");
@@ -232,21 +236,26 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none"),
   define("status-cards.archive-card", "ceo", { authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan"),
-  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
-      const first = await pollUntil({ label: "accessible source explanation before actual access change", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,
-        load: () => observeCards(ctx, state), accept: o => chatCatalogNativePhaseIsTimely(ctx) && (o.runs.length === 2 && o.runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting") });
+      // The lead may refresh its own stale card while answering; wait for that generation to settle
+      // before deleting the source so the access change cannot race the refresh.
+      const cardId = (state.card as StatusCard).id;
+      const first = await pollUntil({ label: "accessible source explanation before actual access change", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 360_000), intervalMs: 1000,
+        load: () => observeCards(ctx, state), accept: o => chatCatalogNativePhaseIsTimely(ctx) && o.runs.filter(run => run.agentId === o.leadId).length === 1
+          && o.runs.every(run => run.status === "succeeded") && !o.cards.find(row => row.id === cardId)?.generatingIssueId && ctx.issue()?.conversationState === "waiting" });
       state.accessCheckpoint = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-card-explanation-before-access-loss.json", state.accessCheckpoint);
       const source = (state.sourceTasks as Entity[])[0]!;
       await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${source.identifier ?? source.id}`, source.title!, resultHref(first, source.identifier ?? source.id, "issues") ?? resultHref(first, source.id, "issues"));
       await ctx.input.api.delete(`/api/issues/${source.id}`);
       const denial = await readAgentResource(ctx, `/api/issues/${source.id}`); state.sourceReadStatus = denial.status; state.accessPrincipalId = ctx.input.fixtures.agent.id; state.sourceUnavailable = true;
-      const retained = await ctx.input.api.get<StatusCard>(`/api/status-cards/${(state.card as StatusCard).id}`);
+      const answered = first.cards.find(row => row.id === cardId)!; const answeredSummaries = first.summaries[cardId];
+      const retained = await ctx.input.api.get<StatusCard>(`/api/status-cards/${cardId}`);
       const retainedSummaries = await ctx.input.api.get<StatusCardSummaryRevision[]>(`/api/status-cards/${retained.id}/summary-revisions`);
       await ctx.input.evidence("chat-card-current-source-unavailable-probe.json", { principalId: state.accessPrincipalId, sourceId: source.id, status: denial.status, kind: "source-deleted-unavailable", permissionDenialClaimed: false,
-        savedSummaryRetained: retained.summaryBody === (state.card as StatusCard).summaryBody, savedHistoryRetained: JSON.stringify(retainedSummaries) === JSON.stringify(state.originalSummaries) });
-      if (denial.status !== 404 || retained.summaryBody !== (state.card as StatusCard).summaryBody || JSON.stringify(retainedSummaries) !== JSON.stringify(state.originalSummaries)) throw new Error("Deleted source prerequisite did not retain card/history and actual principal404");
+        savedSummaryRetained: retained.summaryBody === answered.summaryBody, savedHistoryRetained: JSON.stringify(retainedSummaries) === JSON.stringify(answeredSummaries) });
+      if (denial.status !== 404 || retained.summaryBody !== answered.summaryBody || JSON.stringify(retainedSummaries) !== JSON.stringify(answeredSummaries)) throw new Error("Deleted source prerequisite did not retain card/history and actual principal404");
       const { sendChatMessage } = await import("../chat-flow.js"); await sendChatMessage(ctx.input.page, "That disposable source task was removed after your earlier answer. Can you still read and verify its current blocker details? Distinguish the older saved summary from what you can check now.", chatCatalogNativePhaseRemainingBudget(ctx));
     },
   }),
