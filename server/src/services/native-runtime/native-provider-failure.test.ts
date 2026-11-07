@@ -32,6 +32,22 @@ describe("native provider failure observation", () => {
     expect(observed.providerFailureForTerminal("other-turn", terminal)).toBeNull();
     expect(observed.providerFailureForTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
   });
+  it.each(["opencode", "codex"])("classifies an action-required model_unavailable failure from %s as a model rejection", kind => {
+    const observed = createNativeProviderFailureObservation({ kind });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn",
+      category: "model_unavailable", message: "vendor/private-model is not a valid model ID", retryability: "requires_action", httpStatus: 400 };
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure } } });
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
+    expect(JSON.stringify(result)).not.toContain("private-model");
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+  it.each(["transient", "unknown"])("does not treat a %s model_unavailable failure as a model rejection", retryability => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode" });
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn", category: "model_unavailable", message: "busy", retryability } } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
   it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
     const observed = createNativeProviderFailureObservation({ kind: "codex" });
     observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: "Private arbitrary response" } } });

@@ -1,8 +1,9 @@
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 
+// Shared by every provider whose selected model is rejected, so it names no specific connection.
 export const NATIVE_MODEL_REJECTION_MESSAGE =
-  "The selected model is not supported by the current ChatGPT connection. Choose a supported model or a compatible AI connection.";
+  "The selected model is not available through the current AI connection. Choose a supported model or a compatible AI connection.";
 
 export const NATIVE_PROVIDER_OVERLOADED_MESSAGE =
   "Selected model is at capacity. Please try a different model.";
@@ -266,7 +267,17 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
-      if (turnId !== rejectedTurnId) return null;
+      if (turnId !== rejectedTurnId) {
+        // A driver's closed category marks a rejected model for any provider. Only an
+        // action-required rejection qualifies; a transient one may succeed on retry.
+        const failure = providerFailures.get(turnId);
+        if (failure?.category !== "model_unavailable" || failure.retryability !== "requires_action") return null;
+        return {
+          errorCode: "native_provider_model_rejected" as const,
+          errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
+          diagnostic: failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category },
+        };
+      }
       return {
         errorCode: "native_provider_model_rejected" as const,
         errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
