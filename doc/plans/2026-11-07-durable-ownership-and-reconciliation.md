@@ -121,7 +121,7 @@ What the data does and does not show:
 
 - The existing per-subsystem paths settle dead-owner records within about 1 s of `ready`, before the first report pass. A pass every 30 s, triggered by work signals, does not catch those short windows. The crash-point suite (Phase 5) is the tool for them; the report measures records that stay stuck.
 - These waves exercise only the run-lifecycle kinds. Remote, workspace and accounting kinds need Daytona waves, K4 and K6 faults, and longer storms. The overnight campaign's failures came mostly from those.
-- `native_run_finalizations` and `heartbeat_runs` record no host or PID space, so a foreign-boot owner there can only be `unprovable`. Phase 2 must stamp `processSpace` on those writes before any kind can settle by proof.
+- Track 1 now stamps the PID space on `native_run_finalizations` (#19868) and `heartbeat_runs` (#19871), and the registry reads those stamps. Rows written before them stay `unprovable`. Phase 2 needs the same stamp on every kind it moves before that kind can settle by proof.
 - Restart-crossing dispatches exceeded the TTFT and boot budgets because those metrics spanned the outage. The budget check now judges such dispatches only on restart-recovery latency.
 
 ## Relationship to the zero-downtime upgrade work
