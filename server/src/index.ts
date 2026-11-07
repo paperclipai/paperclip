@@ -2021,6 +2021,7 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    accountingHeartbeat.setShutdownInProgress();
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     setStartupRecoveryPhase("draining");

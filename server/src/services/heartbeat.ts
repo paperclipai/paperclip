@@ -587,6 +587,7 @@ export { isNonAssigneeWorkspaceBusyRetry };
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
+let shutdownInProgress = false;
 // A legacy process adapter's signal exit can race the operator cancellation CAS while
 // its owned process group is still being joined. Keep that exit from becoming
 // a successful result (or a competing failure) before Stop settles. This is an
@@ -893,7 +894,6 @@ export function heartbeatService(
     resolveResponsibleUserIdForRun,
     resolveResponsibleUserIdForRunContext,
   } = createHeartbeatRunPreparation(db);
-  let shutdownInProgress = false;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -1873,13 +1873,15 @@ export function heartbeatService(
   ) {
     const attemptStartedAtMs = Date.now();
     let attestedQuestionResponseAtMs: number | null = null;
-    if ((await getSchedulingSuppression()).suppressed) {
+    const suppressed = (await getSchedulingSuppression()).suppressed;
+    const freshQueueClaim = !runOptions.nativeLeaseOwner && !runOptions.nativeRestartRecovery;
+    if (suppressed || (shutdownInProgress && freshQueueClaim)) {
       try {
         await releaseRunClaimedJustBeforeSuppression(runId);
       } catch (err) {
         logger.error(
           { err, runId },
-          "failed to release run claimed just before task-drain suppression; the run row stays running, and the orphan reaper finalizes it and releases the issue lock on its next cycle",
+          "failed to release run claimed just before admission stopped; the run row stays running, and the orphan reaper finalizes it and releases the issue lock on its next cycle",
         );
       }
       return;
@@ -4386,6 +4388,9 @@ export function heartbeatService(
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
     drainActiveRunExecutions,
+    setShutdownInProgress: (value = true) => {
+      shutdownInProgress = value;
+    },
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,

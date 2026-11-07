@@ -717,6 +717,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // Terminal rows do not mean their background finalizers have returned.
     // Drain tracked wakeups too: one can still create a run after the row poll.
     await heartbeatService(db).drainActiveRunExecutions();
+    heartbeatService(db).setShutdownInProgress(false);
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);

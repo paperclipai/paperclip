@@ -143,6 +143,7 @@ const {
   }));
   const heartbeatServiceMock = {
     drainActiveRunExecutions: vi.fn(async () => undefined),
+    setShutdownInProgress: vi.fn(),
     reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
@@ -1850,6 +1851,15 @@ describe("startServer feedback export wiring", () => {
       unsubscribe?.();
       timer.mockRestore();
     }
+  });
+
+  it.each(["SIGINT", "SIGTERM"] as const)("closes heartbeat admission synchronously when %s shutdown starts", async (signal) => {
+    heartbeatServiceMock.setShutdownInProgress.mockClear();
+    const server = await startServer();
+    await settleStartupHousekeeping();
+    const stopping = server.shutdown(signal);
+    expect(heartbeatServiceMock.setShutdownInProgress).toHaveBeenCalledOnce();
+    await stopping;
   });
 
   it("reports ready before startup housekeeping finishes and starts the scheduler after it", async () => {
