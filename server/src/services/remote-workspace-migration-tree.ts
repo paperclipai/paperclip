@@ -62,6 +62,12 @@ export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
   return active ? ["active_execution_requires_drain"] : [];
 }
 
+export type WorkspaceMigrationCohort = {
+  schema: "paperclip.remote-workspace-cohort.v1";
+  id: string; companyId: string; sourceProof: string;
+  members: Array<{ workspaceId: string; operationId: string }>;
+};
+
 export type WorkspaceSourceScope = {
   root: string; projectId: string | null; issueIds: string[]; workspaceIds: string[]; device: number; inode: number;
   physicalRoots?: string[]; gitSourceRoots?: string[]; settledPreparedWorkspaceIds?: string[]; settledRecoveryIssueIds?: string[]; settledFinalizationRunIds?: string[];
@@ -153,12 +159,16 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
 }
 
 export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, companyId: string,
-  source: WorkspaceSourceScope, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string): Promise<string[]> {
+  source: WorkspaceSourceScope, workspace: Pick<Workspace, "id" | "sourceIssueId">, operationId?: string, cohort?: WorkspaceMigrationCohort): Promise<string[]> {
   const workspaceIds = sql.join(source.workspaceIds.map(id => sql`${id}::uuid`), sql`, `);
   const issueIds = sql.join(source.issueIds.map(id => sql`${id}::uuid`), sql`, `);
   const settledWorkspaces = sql.join((source.settledPreparedWorkspaceIds?.length ? source.settledPreparedWorkspaceIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}`), sql`, `);
   const settledFinalizers = sql.join((source.settledFinalizationRunIds?.length ? source.settledFinalizationRunIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
   const settledRecoveries = sql.join((source.settledRecoveryIssueIds?.length ? source.settledRecoveryIssueIds : ["00000000-0000-0000-0000-000000000000"]).map(id => sql`${id}::uuid`), sql`, `);
+  const admitted = cohort ? sql`o.phase='remote_workspace_migration' and o.metadata->'cohortMigration'=${JSON.stringify(cohort)}::jsonb
+    and exists (select 1 from jsonb_to_recordset(${JSON.stringify(cohort.members)}::jsonb) as m("workspaceId" uuid,"operationId" uuid)
+      where m."workspaceId"=o.execution_workspace_id and m."operationId"=o.id)` : sql`false`;
+  const otherOperation = cohort ? sql`true` : sql`(${operationId ?? null}::uuid is null or o.id<>${operationId ?? null}::uuid)`;
   const rows = await db.execute<{ reason: string }>(sql`
     select 'active_execution' reason where exists (select 1 from heartbeat_runs r where r.company_id=${companyId}::uuid
       and r.status in ('queued','running') and (r.issue_id in (${issueIds}) or r.native_issue_id in (${issueIds})
@@ -167,8 +177,8 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
     union all select 'task_writer_bound' where exists (select 1 from issues i where i.company_id=${companyId}::uuid
       and i.id in (${issueIds}) and (i.execution_run_id is not null or i.checkout_run_id is not null))
     union all select 'workspace_operation_unresolved' where exists (select 1 from workspace_operations o where o.company_id=${companyId}::uuid
-      and o.execution_workspace_id in (${workspaceIds}) and (${operationId ?? null}::uuid is null or o.id<>${operationId ?? null}::uuid)
-      and (o.status in ('running','pending') or o.metadata->>'uncertain'='true'))
+      and o.execution_workspace_id in (${workspaceIds}) and ${otherOperation}
+      and not coalesce((${admitted}),false) and (o.status in ('running','pending') or o.metadata->>'uncertain'='true'))
     union all select 'workspace_runtime_owned' where exists (select 1 from execution_workspace_runtime_leases l where l.company_id=${companyId}::uuid
       and l.execution_workspace_id in (${workspaceIds}) and l.expires_at>clock_timestamp())
     union all select 'workspace_runtime_service_unsettled' where exists (select 1 from workspace_runtime_services s where s.company_id=${companyId}::uuid
