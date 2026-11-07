@@ -249,7 +249,6 @@
       "chat-catalog-domains/internal-activity.ts",
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/internal-work-timeline.ts",
-      "chat-catalog-domains/internal-timeline-narrative.ts",
       "chat-catalog-domains/internal-timeline-verifier.ts",
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts",
@@ -259,7 +258,7 @@
       "../../server/src/services/work-timeline.ts",
       "../../server/src/services/native-runtime/runner-api-catalog.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.work-timeline.v13",
+    "oracleVersion": "paperclip.chat-catalog.work-timeline.v14",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
