@@ -187,6 +187,8 @@ export const validatePrpStructuredRunResult =
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
 export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
+export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
+export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;

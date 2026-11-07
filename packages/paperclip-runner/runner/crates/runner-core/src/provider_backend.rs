@@ -23,7 +23,7 @@ use crate::durable::{
     validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
     CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig, DurableRunnerError,
     EventPriority, OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
-    PROVIDER_STATE_INCOMPATIBLE,
+    PROVIDER_ATTACH_REFUSED, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -3208,10 +3208,17 @@ impl CodexCommandExecutor {
             blockers.push("durable_active_goal");
         }
         if !blockers.is_empty() {
-            return Err(DurableRunnerError::invalid(format!(
+            let error = DurableRunnerError::invalid(format!(
                 "run.attach requires a settled Codex provider session: {}",
                 blockers.join(", ")
-            )));
+            ));
+            // A pending tool call is a side effect without a recorded result.
+            // The controller must not replace this session to get past it.
+            return Err(if blockers.contains(&"durable_pending_tool_calls") {
+                error.with_classification(PROVIDER_SIDE_EFFECT_PENDING)
+            } else {
+                error
+            });
         }
         let runtime_launch_args: Option<Vec<String>> = payload
             .get("runtimeLaunchArgs")
@@ -3260,7 +3267,8 @@ impl CodexCommandExecutor {
             if config != next_state.config {
                 return Err(DurableRunnerError::invalid(
                     "run.attach cannot change the durable Codex provider profile",
-                ));
+                )
+                .with_classification(PROVIDER_ATTACH_REFUSED));
             }
         }
         let runtime_launch_changed = if let Some(args) = runtime_launch_args {
@@ -3270,7 +3278,8 @@ impl CodexCommandExecutor {
             {
                 return Err(DurableRunnerError::invalid(
                     "run.attach cannot change protected launch arguments",
-                ));
+                )
+                .with_classification(PROVIDER_ATTACH_REFUSED));
             }
             let changed = args != next_state.config.args;
             next_state.config.args = args;

@@ -69,6 +69,7 @@ import type {
   HarnessRuntimeRequestResolution,
   PersistedHarnessProviderIdentity,
 } from "../contracts/harness-driver.js";
+import { NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
@@ -4637,12 +4638,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_runner_prp_run_rotation_unavailable");
     }
     if (retainingSource && this.#bridgedRuntimeInputs.size > 0) {
-      throw new Error("native_runner_source_runtime_reconciliation_required");
+      throw new NativeRunnerSourceReconciliationRequiredError("runtime");
     }
     if (this.#releaseEpisode) await this.#resumeReleasedRunner(input.runId);
     await this.#awaitWarmRunAttachmentReady();
     if (retainingSource && !core.semanticToolResultsSettled()) {
-      throw new Error("native_runner_source_semantic_reconciliation_required");
+      throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     }
     this.#assertStartupOpen();
     const currentRunGrant = input.currentRunGrant
@@ -6844,7 +6845,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (sourceAttachmentTarget) {
       await this.#awaitWarmRunAttachmentReady();
-      if (!core.semanticToolResultsSettled()) throw new Error("native_runner_source_semantic_reconciliation_required");
+      if (!core.semanticToolResultsSettled()) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
       if (runtimeContext !== null) writeFileSync(localRuntimeContextPath, `${JSON.stringify(runtimeContext)}\n`, { mode: 0o600 });
       await this.#attachRunWork(sourceAttachmentTarget);
       this.#sourceRecoveryIdentity = null;
@@ -6861,7 +6862,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
     if (this.#retainsSourceInputs() || (this.#authorityRunId() !== undefined && call.correlation.runId !== this.#authorityRunId())) return null;
-    if (this.#sourceRecoveryIdentity) throw new Error("native_runner_source_semantic_reconciliation_required");
+    if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
       return this.#handleSemanticToolInput(call);
     }
@@ -6874,7 +6875,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>
     >[0],
   ) {
-    if (this.#sourceRecoveryIdentity) throw new Error("native_runner_source_semantic_reconciliation_required");
+    if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     try {
       this.#throwIfFailed();
     } catch {

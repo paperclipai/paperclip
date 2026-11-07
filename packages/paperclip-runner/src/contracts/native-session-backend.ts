@@ -307,6 +307,17 @@ export class NativeProviderStateIncompatibleError extends Error {
   }
 }
 
+/** The saved provider session still owns a side-effecting call without a
+ * recorded result. A replacement session could repeat or lose that action, so
+ * the run stops for an operator and the saved state stays intact. */
+export class NativeProviderSideEffectPendingError extends Error {
+  readonly code = "native_provider_side_effect_pending";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderSideEffectPendingError";
+  }
+}
+
 /** A provider failed terminal is not a missing completion proposal. */
 export class NativeProviderTerminalFailure extends Error {
   readonly code = "native_provider_terminal_failed";
