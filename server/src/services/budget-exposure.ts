@@ -163,7 +163,9 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // restart, or lost a provider turn on restore. Its activity entry and
     // provenance remain the board's notice.
     const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
-    const restartDerived = (alias: string) => sql.raw(`(${alias}.usage_json ? 'accountingReceiptSourceFences'
+    // Every usage recorder binds an empty fence map; only a replaced receipt
+    // source (a non-empty map) is restart evidence.
+    const restartDerived = (alias: string) => sql.raw(`(coalesce(${alias}.usage_json->'accountingReceiptSourceFences', '{}'::jsonb) <> '{}'::jsonb
         or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
         or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
           and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'
