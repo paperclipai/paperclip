@@ -14,8 +14,8 @@ export function grade_goals(value: unknown) {
   const linkedTask = () => !!current && hasLink(o, "issues", current);
   switch (o.scenarioId) {
     case "goals.create-goal-tree": {
-      const companyGoals = o.goals.filter(row => row.level === "company" && /(?:1[,.]?000|1\s?k|thousand)\s+(?:(?:new|user|total|product)\s+){0,2}sign[- ]?ups?/i.test(`${row.title} ${row.description ?? ""}`));
-      const teamGoals = o.goals.filter(row => row.level === "team" && /\b(?:launch|launching)\b.*\bwebsite\b|\bwebsite\b.*\blaunch\b/i.test(`${row.title} ${row.description ?? ""}`));
+      const companyGoals = o.goals.filter(isSignupCompanyGoal);
+      const teamGoals = o.goals.filter(isWebsiteTeamGoal);
       c.add("one-requested-tree", o.goals.length === 2 && companyGoals.length === 1 && teamGoals.length === 1
         && teamGoals[0]?.parentId === companyGoals[0]?.id && companyGoals[0]?.parentId == null
         && o.goals.every(row => row.companyId === o.companyId), "The two saved goals have exact levels, a valid parent and company scope.");
@@ -30,7 +30,7 @@ export function grade_goals(value: unknown) {
       c.add("retry-reuses-first-tree", initialGoalTreeCreation(observation(o.state.firstCreation)) && Array.isArray(o.state.firstIds) && o.state.firstIds.length === 2
         && o.goals.every(row => (o.state.firstIds as string[]).includes(row.id))
         && o.humanQueries.filter(query => query === o.state.retryQuery).length === 2, "An explicit unchanged request reuses the initial goal tree.");
-      c.add("no-invented-progress", !/\b\d+\s*%\s*(?:complete|done|progress)|\balready\s+\d+\s+signups?/i.test(o.reply), "New goals do not claim fabricated progress metrics.");
+      c.add("no-invented-progress", !claimsInventedProgress(o.reply), "New goals do not claim fabricated progress metrics.");
       break;
     }
     case "goals.align-existing-work": {
@@ -209,11 +209,26 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 
 function initialGoalTreeCreation(o: InternalObservation | undefined): boolean {
   if (!o || o.goals.length !== 2 || o.goals.some(row => row.companyId !== o.companyId) || !validGoalOwners(o)) return false;
-  const root = o.goals.find(row => row.level === "company" && /(?:1[,.]?000|1\s?k|thousand)\s+(?:(?:new|user|total|product)\s+){0,2}sign[- ]?ups?/i.test(`${row.title} ${row.description ?? ""}`));
-  const team = o.goals.find(row => row.level === "team" && /\b(?:launch|launching)\b.*\bwebsite\b|\bwebsite\b.*\blaunch\b/i.test(`${row.title} ${row.description ?? ""}`));
+  const root = o.goals.find(isSignupCompanyGoal);
+  const team = o.goals.find(isWebsiteTeamGoal);
   return !!root && !!team && root.parentId == null && team.parentId === root.id
     && o.goals.every(goal => o.activity.some(row => row.action === "goal.created" && row.entityId === goal.id && row.agentId === o.leadId))
-    && !/\b\d+\s*%\s*(?:complete|done|progress)|\balready\s+\d+\s+signups?/i.test(o.reply);
+    && !claimsInventedProgress(o.reply);
+}
+
+// The saved goals are identified by their level and parent; their model-chosen
+// wording only has to carry the requested subject, never a particular phrasing.
+const goalText = (row: Entity) => `${row.title ?? ""} ${row.description ?? ""}`;
+function isSignupCompanyGoal(row: Entity): boolean {
+  const text = goalText(row);
+  return row.level === "company" && /\b(?:1[,.]?000|1\s?k|thousand)\b/i.test(text) && /\bsign(?:[- ]?ups?|ed[- ]up|ing[- ]up)\b|\bregist/i.test(text);
+}
+function isWebsiteTeamGoal(row: Entity): boolean {
+  return row.level === "team" && /\bweb\s?site\b|\bsite\b/i.test(goalText(row));
+}
+/** A positive progress figure for goals created moments ago is fabricated; 0% is truthful. */
+function claimsInventedProgress(reply: string): boolean {
+  return /(?<![\d.,])[1-9]\d*(?:[.,]\d+)?\s*%\s*(?:complete|done|progress|of the way)|\balready\s+(?:at\s+|reached\s+|have\s+)?[1-9][\d,]*\s+(?:sign[- ]?ups?|users|customers)/i.test(reply);
 }
 
 function validGoalOwners(o: InternalObservation): boolean {
@@ -255,7 +270,7 @@ export async function inspectGoalHierarchy(ctx: ChatCatalogContext, state: Recor
 }
 function createGoalTree(): ChatCatalogCase {
   const base = retryDefinition("goals.create-goal-tree", grade_goals, initialGoalTreeCreation, observeGoalPhases);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.goal-hierarchy.v2", observe: observeGoalPhases, async setup(ctx) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.goal-hierarchy.v3", observe: observeGoalPhases, async setup(ctx) {
     await ctx.input.api.patch(`/api/companies/${ctx.input.fixtures.company.id}`, { description: "Our mission is to grow product adoption and help new teams sign up." });
     return base.setup(ctx);
   }, async act(ctx, state) {

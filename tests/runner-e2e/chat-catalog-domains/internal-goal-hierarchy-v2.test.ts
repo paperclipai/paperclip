@@ -48,6 +48,36 @@ it.each(["wrong parent", "missing child", "foreign goal", "no saved state", "mis
   if (invalid === "duplicate retry") o.goals.push({ ...o.goals[1]!, id: "duplicate" });
   expect(grade_goals(o).passed).toBe(false);
 });
+function retitled(root: string, child: string, reply?: string) {
+  const o = valid();
+  for (const target of [o, o.state.firstCreation as InternalObservation]) {
+    target.goals[0]!.title = root; target.goals[1]!.title = child;
+    if (reply !== undefined) target.reply = reply;
+  }
+  return o;
+}
+it.each([
+  ["Reach 1,000 signups", "Launch the website"],
+  ["Reach 1000 customer signups", "Ship the website"],
+  ["Get 1,000 people signed up", "Go live with the new web site"],
+  ["Signups: 1,000", "Launch the company site"],
+])("accepts meaning-preserving goal wording %s / %s", (root, child) => {
+  expect(grade_goals(retitled(root, child)).passed).toBe(true);
+});
+it("accepts a truthful zero-progress note on newly created goals", () => {
+  expect(grade_goals(retitled("Reach 1,000 signups", "Launch the website", "Created both goals; progress is 0% complete so far.")).passed).toBe(true);
+});
+it.each([
+  ["Reach 100 signups", "Launch the website"],
+  ["Reach 10,000 signups", "Launch the website"],
+  ["Reach 1,000 signups", "Hire a designer"],
+  ["Grow revenue to 1,000 dollars", "Launch the website"],
+])("rejects goals whose saved subject is not the requested one: %s / %s", (root, child) => {
+  expect(grade_goals(retitled(root, child)).passed).toBe(false);
+});
+it.each(["We are already at 250 signups.", "The website goal is 40% complete."])("rejects invented progress: %s", reply => {
+  expect(grade_goals(retitled("Reach 1,000 signups", "Launch the website", reply)).passed).toBe(false);
+});
 it("does not allow a retry to repair an invalid first parent or first foreign owner", () => {
   for (const field of ["parentId", "ownerAgentId"] as const) {
     const o = valid(), first = o.state.firstCreation as InternalObservation;
