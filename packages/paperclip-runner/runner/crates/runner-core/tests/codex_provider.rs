@@ -4579,6 +4579,62 @@ fn drain_completed_turn(executor: &mut CodexCommandExecutor, label: &str) {
 }
 
 #[test]
+fn attach_with_a_pending_tool_call_is_classified_as_a_pending_side_effect() {
+    // A provider tool call without a recorded result is an external action in
+    // flight. The refusal carries a closed class so the controller never opens
+    // a replacement session over it.
+    let directory = temporary_directory("pending-side-effect-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids", "--emit-tool-call"]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("prepare the durable tool catalog");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the provider session");
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Call the tool."}),
+        ))
+        .expect("start the provider turn");
+    let deadline = event_deadline();
+    let mut input_seen = false;
+    while !input_seen && std::time::Instant::now() < deadline {
+        input_seen = poll_and_ack(&mut executor)
+            .expect("poll the semantic input")
+            .iter()
+            .any(|event| event.event_type == "semantic_tool.input");
+    }
+    assert!(input_seen, "the provider requests its tool");
+
+    let error = executor
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect_err("attachment must wait for the pending tool call");
+    assert!(
+        error.to_string().contains("durable_pending_tool_calls"),
+        "unexpected attach error: {error}"
+    );
+    assert_eq!(error.classification(), Some("provider_side_effect_pending"));
+
+    executor.shutdown().expect("stop the provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn saved_codex_thread_attaches_after_a_release_changes_its_feature_toggles() {
     // A thread saved by an earlier release keeps that release's feature
     // toggles. The next run's controller sends the current policy, which no
@@ -4633,6 +4689,9 @@ fn saved_codex_thread_attaches_after_a_release_changes_its_feature_toggles() {
         error.to_string().contains("protected launch arguments"),
         "unexpected attach error: {error}"
     );
+    // The refusal is a closed class, so the controller stops before opening a
+    // replacement session and keeps this saved state for an operator.
+    assert_eq!(error.classification(), Some("provider_attach_refused"));
 
     let attached = executor
         .execute(&command(

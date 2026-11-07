@@ -76,6 +76,7 @@ retrieval instructions. Reads and excerpts are bounded; the handoff has a
 reset boundaries, deleted messages, source quarantine, and secret redaction
 apply before model submission. Successful recovery does not fetch or replay the
 handoff.
+
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each

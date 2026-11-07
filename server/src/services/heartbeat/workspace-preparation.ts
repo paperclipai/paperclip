@@ -47,7 +47,7 @@ import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd } fro
 import { parseObject } from "../../adapters/utils.js";
 import { materializeNativeChatTaskRoot } from "../native-runtime/native-chat-workspace.js";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
-import { withWorkspaceSourceLocks } from "../workspace-source-lock.js";
+import { withIndependentWorkspaceSourceLocks } from "../workspace-source-lock.js";
 import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -171,9 +171,11 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
   const sourceIssueId = input.reuse.reusableExistingExecutionWorkspace?.sourceIssueId
     ?? input.reuse.existingExecutionWorkspace?.sourceIssueId ?? input.task.issueId;
   if (input.reuse.isDotRun || resolveProviderApiPlacement(input)) return prepareHeartbeatWorkspaceLocked(db, input);
-  if (!sourceIssueId) return withWorkspaceSourceLocks(db, { companyId: input.agent.companyId },
+  // A run can be dispatched from inside another operation's source scope, for
+  // example by a recovery timer. Its preparation owns its own locks.
+  if (!sourceIssueId) return withIndependentWorkspaceSourceLocks(db, { companyId: input.agent.companyId },
     () => prepareHeartbeatWorkspaceLocked(db, input));
-  return withWorkspaceSourceLocks(db, { companyId: input.agent.companyId,
+  return withIndependentWorkspaceSourceLocks(db, { companyId: input.agent.companyId,
     issueIds: [...new Set([sourceIssueId, input.task.issueId].filter((id): id is string => Boolean(id)))] }, async () => {
     const reuse = { ...input.reuse };
     for (const key of ["existingExecutionWorkspace", "reusableExistingExecutionWorkspace"] as const) {

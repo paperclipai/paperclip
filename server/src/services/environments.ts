@@ -4,7 +4,7 @@ import { notifyNativeEnvironmentSettlement } from "./native-environment-settleme
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
-import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
+import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { randomUUID } from "node:crypto";
 
@@ -1771,6 +1771,7 @@ export function environmentService(db: Db) {
           // Messages saved behind a finished run wait for its cleanup to
           // settle. Reconsider them through normal deferred admission.
           await notifyDeferredExecutionWork(tx, { companyId: previous.companyId });
+          if (previous.issueId) await notifyDeferredWakesForIssue(tx, { companyId: previous.companyId, issueId: previous.issueId });
         }
         if (previous.creationOperationId && previous.status === "pending_cleanup" && options?.cleanupStatus === "success" && status !== "pending_cleanup") {
           await tx.update(sandboxCreationOperations).set({ state: "resolved", updatedAt: now })
@@ -1905,12 +1906,15 @@ export function environmentService(db: Db) {
     ): Promise<EnvironmentLease[]> => {
       const now = new Date();
       const rows = await db.transaction(async tx => {
-        const [run] = await tx.select({ companyId: heartbeatRuns.companyId }).from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, heartbeatRunId)).limit(1);
+        const [run] = await tx.select({ companyId: heartbeatRuns.companyId,
+          issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')` })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, heartbeatRunId)).limit(1);
         if (run) {
           await notifyEnvironmentCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: heartbeatRunId });
           await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
+          if (run.issueId && /^[0-9a-f-]{36}$/i.test(run.issueId))
+            await notifyDeferredWakesForIssue(tx, { companyId: run.companyId, issueId: run.issueId });
         }
         return tx.update(environmentLeases)
         .set({

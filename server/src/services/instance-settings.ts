@@ -583,6 +583,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toGeneralView(row.general);
     },
 
+    getExperimentalReadOnly: async (runner: Pick<Db, "select"> = db): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const [row] = await runner.select({ experimental: instanceSettings.experimental }).from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY));
+      return toExperimentalView(row?.experimental);
+    },
+
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
       const row = await getOrCreateRow();
       return toExperimentalView(row.experimental);

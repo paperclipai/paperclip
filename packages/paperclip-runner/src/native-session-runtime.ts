@@ -19,8 +19,14 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+  PROVIDER_STATE_INCOMPATIBLE,
+  type HarnessThreadGoal,
+} from "./contracts/harness-driver.js";
+import {
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
@@ -2422,6 +2428,16 @@ export async function executeNativeSession(
             reason: "driver does not support recovery",
           };
     if (!recovery.recovered || !recovery.session) {
+      // A deterministic refusal left the saved state unchanged and repeats on
+      // every retry. A replacement would archive that state and, with a pending
+      // side-effecting call, could repeat or lose the external action. Stop here
+      // for an operator regardless of the checkpoint's replacement policy.
+      if (recovery.failureClass === PROVIDER_SIDE_EFFECT_PENDING) {
+        throw new NativeProviderSideEffectPendingError(recovery.reason ?? "unknown");
+      }
+      if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
+        throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+      }
       if (!replacementAllowed) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
