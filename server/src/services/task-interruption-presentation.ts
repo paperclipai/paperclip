@@ -59,6 +59,8 @@ type ProjectionState = {
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
   approval: boolean;
+  /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
+  ownerStopRequired?: boolean;
 };
 
 function boundedJsonString(value: SQL, limit: number) {
@@ -121,6 +123,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // The previous controller cannot confirm its own stop. Name the one board
+  // action instead of showing the fenced run as working (RC-47).
+  if (input.ownerStopRequired) return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop" };
   // The task's existing dependency UI owns this wait. Keep actual recovery and
   // Retry preparation failures authoritative; this does not change admission.
   if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
@@ -353,6 +358,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
+  const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
+    runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+    eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), eq(issueRecoveryActions.ownerType, "board"),
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
+    sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
+    sql`coalesce(${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}', '') <> 'resuming'`,
+  )) : [];
+  const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
@@ -404,6 +419,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
+      ownerStopRequired: ownerStopRequired.has(`${issue.id}:${runMap.get(issue.id)?.id}`),
     });
     result.set(issue.id, presentation);
     const run = runMap.get(issue.id);

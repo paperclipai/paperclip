@@ -403,6 +403,7 @@ export function FailedRunInboxRow({
           approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
           project_access: "Agent needs project access",
+          confirm_owner_stop: "Confirm the previous server stopped",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
