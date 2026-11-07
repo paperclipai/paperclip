@@ -34,3 +34,9 @@ it("qualifies the runner's own spawned opencode serve, named by its durable sess
     const f = openCodeServeFixture(); expect(matchesOwnedProvider({ ...f, identity: { ...f.identity, ...patch } })).toBe(false);
   }
 });
+it("qualifies a wrapped provider only under its recorded parent within the runner's tree", () => {
+  const f = openCodeFixture(); const wrapped = { ...f, identity: { ...f.identity, parentPid: 555555 }, expected: { ...f.expected, providerParentPid: 555555 } };
+  expect(matchesOwnedProvider(wrapped)).toBe(true);
+  expect(matchesOwnedProvider({ ...wrapped, expected: { ...wrapped.expected, providerParentPid: 444444 } })).toBe(false);
+  expect(matchesOwnedProvider({ ...f, identity: { ...f.identity, parentPid: 555555 } })).toBe(false);
+});

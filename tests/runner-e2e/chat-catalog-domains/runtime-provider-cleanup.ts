@@ -12,9 +12,9 @@ interface ProviderIdentity { pid: number; parentPid: number; uid: number; starte
 interface SuspendedOwner { identity: ProviderIdentity; runId: string; timer: ReturnType<typeof setTimeout> }
 const suspended = new WeakMap<ChatCatalogContext, SuspendedOwner>();
 const retainedProvider = new WeakMap<ChatCatalogContext, ProviderIdentity>();
-export function matchesOwnedProvider(input: { identity: ProviderIdentity; expected: { providerPid: number; providerStartedAt: string; runnerPid: number; uid: number; runStartedAt: string; kind?: "codex" | "opencode"; executable?: string; digest?: string; proxyScript?: string; proxyDigest?: string } }) {
+export function matchesOwnedProvider(input: { identity: ProviderIdentity; expected: { providerPid: number; providerStartedAt: string; runnerPid: number; providerParentPid?: number; uid: number; runStartedAt: string; kind?: "codex" | "opencode"; executable?: string; digest?: string; proxyScript?: string; proxyDigest?: string } }) {
   const { identity: p, expected: e } = input;
-  return Number.isSafeInteger(p.pid) && p.pid > 1 && p.pid !== process.pid && p.pid === e.providerPid && p.pid !== e.runnerPid && p.parentPid === e.runnerPid && p.uid === e.uid
+  return Number.isSafeInteger(p.pid) && p.pid > 1 && p.pid !== process.pid && p.pid === e.providerPid && p.pid !== e.runnerPid && p.parentPid === (e.providerParentPid ?? e.runnerPid) && p.uid === e.uid
     && p.startedAt === e.providerStartedAt && Date.parse(p.startedAt) + 1_000 >= Date.parse(e.runStartedAt)
     && /^[a-f0-9]{64}$/.test(p.digest)
     && (e.kind === "opencode" && !e.proxyScript
@@ -39,15 +39,25 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
       openCodeServe: /^opencode/.test(path.basename(canonical)) && args.includes("serve"), proxyScript: proxy, proxyDigest };
   } catch { throw new Error("Provider cleanup fixture could not qualify the exact owned process; private diagnostics withheld"); }
 }
-/** The single direct child of the verified runner that is a provider of this kind, or undefined. */
-async function soleProviderChild(runnerPid: number, kind: "codex" | "opencode"): Promise<number | undefined> {
+/** The single qualifying provider among the verified runner's descendants (depth <= 4). The
+ * launch path may wrap the provider, so it need not be a direct child. Records a closed summary of
+ * what it saw (depth, executable basename, qualification flags) without command lines. */
+async function soleProviderDescendant(ctx: ChatCatalogContext, runnerPid: number, kind: "codex" | "opencode"): Promise<{ pid: number; parentPid: number } | undefined> {
   const rows = (await promisify(execFile)("/bin/ps", ["-A", "-o", "pid=,ppid="], { timeout: 5_000, maxBuffer: 1_048_576 })).stdout
-    .split("\n").map(line => line.trim().split(/\s+/).map(Number)).filter(([pid, parent]) => Number.isSafeInteger(pid) && parent === runnerPid);
-  const providers: number[] = [];
-  for (const [pid] of rows) {
-    const identity = await providerIdentity(pid!).catch(() => undefined);
-    if (identity && (kind === "opencode" ? !!identity.proxyScript || identity.openCodeServe : identity.appServer)) providers.push(pid!);
+    .split("\n").map(line => line.trim().split(/\s+/).map(Number)).filter(([pid, parent]) => Number.isSafeInteger(pid) && Number.isSafeInteger(parent));
+  const seen: Array<{ depth: number; executable: string | null; proxy: boolean; appServer: boolean; openCodeServe: boolean }> = [];
+  const providers: Array<{ pid: number; parentPid: number }> = [];
+  let frontier = [runnerPid];
+  for (let depth = 1; depth <= 4 && frontier.length; depth += 1) {
+    const next = rows.filter(([, parent]) => frontier.includes(parent!)).map(([pid, parent]) => ({ pid: pid!, parent: parent! }));
+    for (const { pid, parent } of next) {
+      const identity = await providerIdentity(pid).catch(() => undefined);
+      seen.push({ depth, executable: identity ? path.basename(identity.executable) : null, proxy: !!identity?.proxyScript, appServer: !!identity?.appServer, openCodeServe: !!identity?.openCodeServe });
+      if (identity && (kind === "opencode" ? !!identity.proxyScript || identity.openCodeServe : identity.appServer)) providers.push({ pid, parentPid: parent });
+    }
+    frontier = next.map(row => row.pid);
   }
+  await ctx.input.evidence("runtime-cleanup-provider-search.json", { kind, descendants: seen, qualifying: providers.length });
   return providers.length === 1 ? providers[0] : undefined;
 }
 /** This does not signal any group or control ACK timing. Actual public Stop must immediately follow. */
@@ -65,7 +75,8 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   // The runnerd transport records the provider in the checkpoint. When the session runs inside the
   // verified runnerd itself, the provider is its direct child: the one qualifying child is chosen,
   // and every ownership check below still applies to it.
-  const pid = checkpoint?.process?.providerPid ?? await soleProviderChild(runner.pid, kind);
+  const descendant = checkpoint?.process?.providerPid ? undefined : await soleProviderDescendant(ctx, runner.pid, kind);
+  const pid = checkpoint?.process?.providerPid ?? descendant?.pid;
   const started = checkpoint?.process?.providerPid ? checkpoint.process.providerProcessStartedAt : pid ? await readProcessStartedAt(pid) : undefined;
   if (!Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native session lacks a qualified local provider PID/start identity");
   const viaProxy = kind === "opencode" && !!(await providerIdentity(pid)).proxyScript;
@@ -74,7 +85,7 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   const digest = executable ? createHash("sha256").update(await readFile(executable)).digest("hex") : undefined;
   const proxyDigest = proxyScript ? createHash("sha256").update(await readFile(proxyScript)).digest("hex") : undefined;
   if (checkpoint?.process?.providerPid && !sessionReceipts.some(e => e?.payload?.processId === pid)) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
-  const expected: Parameters<typeof matchesOwnedProvider>[0]["expected"] = { providerPid: pid, providerStartedAt: started, runnerPid: runner.pid, uid: runner.uid, runStartedAt: String(run.startedAt), kind, executable, digest, proxyScript, proxyDigest };
+  const expected: Parameters<typeof matchesOwnedProvider>[0]["expected"] = { providerPid: pid, providerStartedAt: started, runnerPid: runner.pid, ...(descendant ? { providerParentPid: descendant.parentPid } : {}), uid: runner.uid, runStartedAt: String(run.startedAt), kind, executable, digest, proxyScript, proxyDigest };
   const first = await providerIdentity(pid), second = await providerIdentity(pid);
   if (!matchesOwnedProvider({ identity: first, expected }) || !matchesOwnedProvider({ identity: second, expected }) || JSON.stringify(first) !== JSON.stringify(second)) throw new Error("Provider cleanup suspension rejected changed or unowned process identity");
   process.kill(pid, "SIGSTOP"); retainedProvider.set(ctx, second);
