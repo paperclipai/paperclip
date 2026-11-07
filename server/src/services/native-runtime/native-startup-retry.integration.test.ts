@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -28,7 +29,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   executeNativeSession: provider.execute,
 }));
 
-import { executePaperclipNativeSession } from "./native-session-executor.js";
+import { executePaperclipNativeSession, prepareNativeSessionOpenTimeoutRetry, scopedRunnerdStateRoot } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
@@ -571,6 +572,94 @@ describe("native provider startup retry", () => {
       now: new Date(Date.now() + 60 * 60_000),
       deferIneligible: false,
     })).toEqual([]);
+  });
+
+  describe("state left by a timed-out session.open", () => {
+    let stateBase: string;
+    let previousStateDir: string | undefined;
+    beforeAll(() => {
+      previousStateDir = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      stateBase = mkdtempSync(join(tmpdir(), "native-startup-retry-state-"));
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    });
+    afterAll(() => {
+      if (previousStateDir === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDir;
+      rmSync(stateBase, { recursive: true, force: true });
+    });
+
+    const deadPid = async () => {
+      const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise(resolveExit => child.once("exit", resolveExit));
+      return child.pid!;
+    };
+    const event = (sourceSeq: number, eventType: string, payload: Record<string, unknown> = {}) => ({
+      sourceSeq, eventType, priority: 0, envelope: { kind: "event", payload: { eventType, payload } },
+    });
+    /** The runner opened a fresh provider session after the controller stopped waiting, then stopped. */
+    async function writeOpenedSessionRoot(seeded: Seeded, options: { turnIssued?: boolean } = {}) {
+      const pid = await deadPid();
+      const root = scopedRunnerdStateRoot(seeded.execution);
+      mkdirSync(join(root, "control-plane"), { recursive: true });
+      mkdirSync(join(root, "runner"), { recursive: true });
+      writeFileSync(join(root, "control-plane", "control-plane-state.json"), JSON.stringify({
+        schema: "paperclip.runner.durable.control-plane-state.v2",
+        identity: { runId: seeded.runId, normalizedSessionId: seeded.execution.binding.runId },
+        bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", credentialsIssued: 1, adopted: false },
+        commands: [
+          { type: "run.prepare", status: "completed", result: { result: { status: "prepared" } } },
+          { type: "session.open", status: "completed", result: { commandType: "session.open", status: "completed",
+            result: { driver: "acpx_runtime", processId: pid, provider: "acpx", status: "started" } } },
+          { type: "runner.drain", status: "completed" },
+          { type: "runner.suspend", status: "completed" },
+          ...(options.turnIssued ? [{ type: "turn.start", status: "pending" }] : []),
+        ],
+        committedEvents: [event(1, "session.started", { processId: pid }), event(2, "session.capabilities.updated")],
+        ackedSourceSeq: 2,
+        connectionCount: 1,
+      }));
+      writeFileSync(join(root, "runner", "runner-state.json"), JSON.stringify({
+        schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended", nextSourceSeq: 3, ackedSourceSeq: 2, outbox: [],
+        processedCommands: {
+          command_prp_00000001: { commandType: "run.prepare", status: "completed" },
+          command_prp_00000002: { commandType: "session.open", status: "completed", result: { processId: pid, status: "started" } },
+        },
+      }));
+      return root;
+    }
+    const timeout = () => new Error("runner_local_connect_failed: PRP command session.open timed out");
+
+    it("quarantines an opened session that no turn used, so the same-run retry starts fresh", async () => {
+      const seeded = await seedRun(await createAgent());
+      const root = await writeOpenedSessionRoot(seeded);
+      await failStartup(seeded, timeout());
+      const state = await read(seeded);
+      expect(state.coordinator).toMatchObject({
+        phase: "retryable_failure",
+        failureDetail: expect.objectContaining({ originalFailureCode: "provider_session_open_timeout", recoveryMode: "bootstrap_retry" }),
+      });
+      expect(existsSync(root)).toBe(false);
+      expect(readdirSync(join(stateBase, "quarantine")).some(name => name.startsWith(`${basename(root)}.identity_indeterminate.`))).toBe(true);
+    });
+
+    it("keeps the run operator-owned and the root intact when a turn may have started", async () => {
+      const seeded = await seedRun(await createAgent());
+      const root = await writeOpenedSessionRoot(seeded, { turnIssued: true });
+      await failStartup(seeded, timeout());
+      const state = await read(seeded);
+      expect(state.coordinator).toMatchObject({
+        phase: "terminal_failure",
+        nextAttemptAt: null,
+        failureDetail: expect.objectContaining({ originalFailureCode: "native_session_interrupted", recoveryMode: "ambiguous_state" }),
+      });
+      expect(existsSync(root)).toBe(true);
+    });
+
+    it("never prepares a remote runner's timeout for an automatic retry", async () => {
+      const seeded = await seedRun(await createAgent());
+      expect(prepareNativeSessionOpenTimeoutRetry(seeded.execution, false)).toBe(false);
+      expect(prepareNativeSessionOpenTimeoutRetry(seeded.execution, true)).toBe(true);
+    });
   });
 
   it("retries startup that a draining server interrupted before any provider session", async () => {

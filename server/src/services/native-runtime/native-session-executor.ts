@@ -2119,7 +2119,7 @@ function runnerdStateBase(): string {
   );
 }
 
-function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
+export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   // Antigravity's first release owns a fresh per-turn daemon. Its native
   // conversation is stored separately and may load under each new run's grant.
   const scope = execution.provider.kind === "acpx" && execution.provider.agent === "antigravity"
@@ -6073,6 +6073,25 @@ export async function restoreRemoteBootstrapCheckpointForRecovery(input: {
   const marker = readRunnerdDurableIdentity(input.root, true);
   if (!marker || marker.runId !== input.execution.binding.runId) return;
   await restoreNativeRunnerCheckpoint(input.db, input.execution.binding, input.root, nativeSessionKey(input.execution));
+}
+
+/**
+ * A session.open timeout leaves an indeterminate root: the runner may have
+ * opened a provider session after the controller stopped waiting. A same-run
+ * bootstrap retry may start only from an empty root. A local root that proves
+ * no turn began (the restart-recovery proof) is quarantined; any other root,
+ * and any remote runner, keeps the run fail-closed.
+ */
+export function prepareNativeSessionOpenTimeoutRetry(execution: NativeExecutionInput, localRunner: boolean): boolean {
+  if (!localRunner) return false;
+  const root = scopedRunnerdStateRoot(execution);
+  if (!lstatSync(root, { throwIfNoEntry: false })) return true;
+  if (!isSafeNativeStateDirectory(root)) return false;
+  const identity = readRunnerdDurableIdentity(root);
+  if (!identity || identity.runId !== execution.binding.runId) return false;
+  if (!runnerdStateProvesIncompleteBootstrap(root, { localProcesses: true })) return false;
+  quarantineRunnerdStateRoot(root, "identity_indeterminate");
+  return true;
 }
 
 export function runnerdStateProvesIncompleteBootstrap(
@@ -10950,7 +10969,13 @@ async function executePaperclipNativeSessionWithinScope(
         throw error;
       }
       const now = new Date();
-      const classifiedFailureCode = nativeSessionFailureSourceCode(error);
+      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error);
+      // A timed-out session.open may still have opened a provider session
+      // before its runner stopped. The same-run retry must not reuse it.
+      const classifiedFailureCode = startupClassifiedFailureCode === "provider_session_open_timeout" &&
+        !prepareNativeSessionOpenTimeoutRetry(input.execution, input.runnerExecutionTarget?.kind !== "remote")
+        ? "native_session_interrupted" as const
+        : startupClassifiedFailureCode;
       const sourceFailureCode =
         classifiedFailureCode === "native_event_replay_conflict"
           ? classifiedFailureCode
