@@ -85,12 +85,6 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
-/** Hash of this process's PID space (host, kernel boot and PID namespace), or
- * "unknown" when it cannot be read. */
-export function currentProcessSpaceHash(): string {
-  return hostHash;
-}
-
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
   return { bootId, pid: process.pid, hostHash,
