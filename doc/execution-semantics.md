@@ -1744,6 +1744,10 @@ Status-only operational recovery can update task liveness, clear bad status, rec
 
 Automatic retries that can continue source work use the agent's configured model. This includes failed source-work retries, process-loss retries, transient or scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, task documents, plans, work products, or attachments. When status-only recovery determines that actual work remains, it must hand back to a worker run before source work or persistent deliverable updates resume.
 
+### 9.4 Release compatibility of saved run state
+
+Deploys and restarts routinely separate saving run state from resuming it. Saved launch configuration, provider and runner pack identity, leases and listeners, session or checkpoint schema, and workspace authority must either carry forward to the next release or be refused with a permanent, named error code. Recovery does not retry that refusal or replace the saved state over it, and it is never reported as a generic retryable interruption such as `native_session_interrupted`. See [`rules/upgrade-safe-run-state.mdc`](../rules/upgrade-safe-run-state.mdc).
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
