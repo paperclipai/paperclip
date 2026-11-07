@@ -23,7 +23,7 @@ use crate::durable::{
     validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
     CommandExecutor, CursorCloudLaunchProfile, DurableRunnerConfig, DurableRunnerError,
     EventPriority, OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
-    PROVIDER_STATE_INCOMPATIBLE,
+    PROVIDER_ATTACH_REFUSED, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -1218,6 +1218,12 @@ struct CodexProviderState {
     config: CodexProviderConfig,
     #[serde(default)]
     opencode_launch_profile_digest: Option<String>,
+    /// SHA-256 of the qualified OpenCode executable: the upstream release that
+    /// owns the saved conversation. The launch-profile digest also covers the
+    /// controller's Node command and proxy bundle, which a rebuild or deploy
+    /// replaces; this field lets a settled session tell those apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opencode_release_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cursor_cloud_launch_profile_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1341,6 +1347,7 @@ impl CodexProviderState {
             lifecycle: "prepared".to_owned(),
             config,
             opencode_launch_profile_digest: None,
+            opencode_release_digest: None,
             cursor_cloud_launch_profile_digest: None,
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
@@ -2007,6 +2014,51 @@ impl CodexCommandExecutor {
         Ok(Some(format!("sha256:{:x}", digest.finalize())))
     }
 
+    fn opencode_release_digest(&self, config: &CodexProviderConfig) -> Option<String> {
+        if config.provider != "opencode" {
+            return None;
+        }
+        self.opencode_launch_profile
+            .as_ref()
+            .map(|profile| profile.executable.sha256.clone())
+    }
+
+    // The launch-profile digest binds every artifact by path and bytes. Only
+    // the OpenCode executable owns the saved conversation; the Node command
+    // and proxy bundle are controller runtime that a rebuild or deploy
+    // replaces between a hard kill and recovery. The proxy keeps no state of
+    // its own. Re-bind a saved session to the current profile only when:
+    // - The saved release digest equals this startup's executable digest.
+    //   State written before that field existed stays exact.
+    // - The saved config names this startup's command and proxy paths
+    //   (bind_opencode_launch_profile has already checked this).
+    // - No provider work is in flight: no active or ambiguous turn, startup
+    //   attempt, receipt-limit interrupt, pending tool call, undelivered event
+    //   or working goal. The next launch only loads the conversation. An
+    //   observed provider exit with nothing in flight qualifies, because
+    //   restore restarts that provider the same way.
+    // Session start still verifies every artifact and the restored provider
+    // identity.
+    fn rebinds_settled_opencode_session(&self, state: &CodexProviderState) -> bool {
+        state.opencode_release_digest.is_some()
+            && state.opencode_release_digest == self.opencode_release_digest(&state.config)
+            && matches!(
+                state.lifecycle.as_str(),
+                "prepared" | "session_open" | "provider_exited"
+            )
+            && state.active_provider_turn_id.is_none()
+            && !state.ambiguous_turn_start_pending
+            && state.startup_attempt.is_none()
+            && !state.receipt_limit_interrupt_pending
+            && state.tool_bridge.pending_calls().next().is_none()
+            && state.pending_events.is_empty()
+            && state.queued_events.is_empty()
+            && state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal.status != "active" && !goal.working_now)
+    }
+
     fn bind_cursor_cloud_launch_profile(
         &self,
         config: &CodexProviderConfig,
@@ -2286,6 +2338,11 @@ impl CodexCommandExecutor {
         })?;
         state.validate()?;
         let expected_launch_profile_digest = self.bind_opencode_launch_profile(&state.config)?;
+        if state.opencode_launch_profile_digest != expected_launch_profile_digest
+            && self.rebinds_settled_opencode_session(&state)
+        {
+            state.opencode_launch_profile_digest = expected_launch_profile_digest.clone();
+        }
         if state.opencode_launch_profile_digest != expected_launch_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "OpenCode runner launch profile changed across durable recovery",
@@ -2573,6 +2630,26 @@ impl CodexCommandExecutor {
                     format!("ambiguous {provider_name} turn recovery reused the previously completed turn identity"),
                 ));
                 }
+            }
+            if let Some(ended_turn_id) = previous_active_turn_id
+                .as_ref()
+                .filter(|_| recovered_active_turn_id.is_none() && !provider_epoch_requires_rollover)
+            {
+                // Recovery settles the turn that ended while the runner was
+                // offline in the durable ledger below. The live provider must
+                // know it too: a resumed thread can report that turn's usage
+                // after it accepts the restart continuation, which is history,
+                // not a foreign turn that fails the continuation.
+                provider
+                    .restore_settled_turn_identities(
+                        std::iter::once(ended_turn_id.clone()),
+                        settled_provider_turn_filter.clone(),
+                    )
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "failed to restore the ended provider turn identity: {error}"
+                        ))
+                    })?;
             }
             provider
                 .restore_completed_turn_authority(
@@ -2888,6 +2965,7 @@ impl CodexCommandExecutor {
             })?;
             let mut state = CodexProviderState::new(config, completion_contract, tool_bridge);
             state.opencode_launch_profile_digest = opencode_launch_profile_digest;
+            state.opencode_release_digest = self.opencode_release_digest(&state.config);
             state.cursor_cloud_launch_profile_digest = cursor_cloud_launch_profile_digest;
             self.state = Some(state);
             self.save_state()?;
@@ -3007,12 +3085,25 @@ impl CodexCommandExecutor {
     }
 
     // Only the authenticated controller can rebind these run-scoped launch
-    // settings. Executable, model, instructions, approval mode, and all other
-    // flags remain part of the immutable durable provider profile.
+    // settings: per-run filesystem and shell-environment entries, and Codex
+    // feature toggles (`--enable`/`--disable`). The controller recomputes the
+    // toggles from Paperclip policy for every launch, so a saved thread must
+    // follow a release that turns a feature on or off rather than become
+    // impossible to resume. Executable, model, instructions, approval mode,
+    // sandbox, permission profile, subcommand, and all other flags remain part
+    // of the immutable durable provider profile.
     fn stable_launch_args(args: &[String]) -> Vec<String> {
         let mut stable = Vec::new();
         let mut index = 0;
         while index < args.len() {
+            if (args[index] == "--enable" || args[index] == "--disable") && index + 1 < args.len() {
+                index += 2;
+                continue;
+            }
+            if args[index].starts_with("--enable=") || args[index].starts_with("--disable=") {
+                index += 1;
+                continue;
+            }
             if args[index] == "-c" && index + 1 < args.len() {
                 let key = args[index + 1].split('=').next().unwrap_or("");
                 if matches!(
@@ -3117,10 +3208,17 @@ impl CodexCommandExecutor {
             blockers.push("durable_active_goal");
         }
         if !blockers.is_empty() {
-            return Err(DurableRunnerError::invalid(format!(
+            let error = DurableRunnerError::invalid(format!(
                 "run.attach requires a settled Codex provider session: {}",
                 blockers.join(", ")
-            )));
+            ));
+            // A pending tool call is a side effect without a recorded result.
+            // The controller must not replace this session to get past it.
+            return Err(if blockers.contains(&"durable_pending_tool_calls") {
+                error.with_classification(PROVIDER_SIDE_EFFECT_PENDING)
+            } else {
+                error
+            });
         }
         let runtime_launch_args: Option<Vec<String>> = payload
             .get("runtimeLaunchArgs")
@@ -3169,7 +3267,8 @@ impl CodexCommandExecutor {
             if config != next_state.config {
                 return Err(DurableRunnerError::invalid(
                     "run.attach cannot change the durable Codex provider profile",
-                ));
+                )
+                .with_classification(PROVIDER_ATTACH_REFUSED));
             }
         }
         let runtime_launch_changed = if let Some(args) = runtime_launch_args {
@@ -3179,7 +3278,8 @@ impl CodexCommandExecutor {
             {
                 return Err(DurableRunnerError::invalid(
                     "run.attach cannot change protected launch arguments",
-                ));
+                )
+                .with_classification(PROVIDER_ATTACH_REFUSED));
             }
             let changed = args != next_state.config.args;
             next_state.config.args = args;
@@ -6469,6 +6569,139 @@ done
     }
 
     #[test]
+    fn saved_thread_adopts_the_controllers_current_codex_feature_policy() {
+        // A thread saved before a Paperclip upgrade carries that release's
+        // feature toggles. The controller recomputes them for every launch, so a
+        // changed toggle must not strand the saved thread. Sandbox, permission
+        // profile, and command changes stay protected.
+        let saved_args: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/a\"}",
+            "--disable",
+            "image_generation",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let current_args: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/b\"}",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let mut settled = opencode_result_state();
+        settled.config.provider = "codex".to_owned();
+        settled.config.driver = "codex_app_server".to_owned();
+        settled.config.command = PathBuf::from("must-not-start-during-attachment");
+        settled.config.model = None;
+        settled.config.args = saved_args.clone();
+        settled.active_provider_turn_id = None;
+        settled.provider_process_generation = 1;
+        settled.lifecycle = "prepared".to_owned();
+
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-feature-policy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(settled.clone());
+        executor
+            .attach_run(&json!({
+                "provider": settled.config.clone(),
+                "runtimeLaunchArgs": current_args.clone(),
+            }))
+            .expect("a saved thread must follow the current feature policy");
+        let rebound = executor.state.as_ref().unwrap();
+        assert_eq!(rebound.config.args, current_args);
+        assert_eq!(rebound.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(rebound.lifecycle, "prepared");
+        assert!(executor.provider.is_none());
+        fs::remove_dir_all(directory).unwrap();
+
+        // Tightening the policy follows the controller as well.
+        let mut tightened = settled.clone();
+        tightened.config.args = current_args.clone();
+        let mut disabled = current_args.clone();
+        disabled.splice(4..4, ["--disable".to_owned(), "memories".to_owned()]);
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-feature-tightening-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.state = Some(tightened.clone());
+        executor
+            .attach_run(&json!({
+                "provider": tightened.config.clone(),
+                "runtimeLaunchArgs": disabled.clone(),
+            }))
+            .unwrap();
+        assert_eq!(executor.state.as_ref().unwrap().config.args, disabled);
+        fs::remove_dir_all(directory).unwrap();
+
+        // A release that turns a feature on is adopted too, in either flag form.
+        for enabled_form in [
+            vec!["--enable".to_owned(), "goals".to_owned()],
+            vec!["--enable=goals".to_owned()],
+        ] {
+            let mut enabled = current_args.clone();
+            enabled.splice(4..4, enabled_form);
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-provider-feature-enable-{}",
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir_all(&directory).unwrap();
+            let mut executor = CodexCommandExecutor::new(&directory);
+            executor.state = Some(tightened.clone());
+            executor
+                .attach_run(&json!({
+                    "provider": tightened.config.clone(),
+                    "runtimeLaunchArgs": enabled.clone(),
+                }))
+                .unwrap();
+            let rebound = executor.state.as_ref().unwrap();
+            assert_eq!(rebound.config.args, enabled);
+            assert_eq!(rebound.thread_id.as_deref(), Some("thread-1"));
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        let mut sandbox_bypass = current_args.clone();
+        sandbox_bypass.insert(4, "--dangerously-bypass-approvals-and-sandbox".to_owned());
+        let mut permission_profile = current_args.clone();
+        permission_profile[1] =
+            "default_permissions=\"paperclip-runner-external-sandbox\"".to_owned();
+        let mut subcommand = current_args.clone();
+        subcommand[4] = "exec".to_owned();
+        for changed in [sandbox_bypass, permission_profile, subcommand] {
+            let before = serde_json::to_value(&settled).unwrap();
+            let mut executor = CodexCommandExecutor::new("unused-protected-launch-change");
+            executor.state = Some(settled.clone());
+            let error = executor
+                .attach_run(&json!({
+                    "provider": settled.config.clone(),
+                    "runtimeLaunchArgs": changed,
+                }))
+                .expect_err("protected launch arguments must stay immutable");
+            assert!(
+                error.to_string().contains("protected launch arguments"),
+                "{error}"
+            );
+            assert_eq!(
+                serde_json::to_value(executor.state.as_ref().unwrap()).unwrap(),
+                before
+            );
+        }
+    }
+
+    #[test]
     fn stopped_checkpoint_rebinding_retains_undelivered_facts_for_the_prior_authority() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-provider-retained-facts-{}",
@@ -7268,6 +7501,7 @@ done
                 conversation_mode: None,
             },
             opencode_launch_profile_digest: None,
+            opencode_release_digest: None,
             cursor_cloud_launch_profile_digest: None,
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,

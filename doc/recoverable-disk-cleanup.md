@@ -63,6 +63,18 @@ directories, and data Codex downloads again on startup: remote plugin bundles un
 install staging. After a restore, remote plugins can be unavailable to a turn until
 Codex finishes downloading them.
 
+A turn that ends without a proven Runner suspension writes no new copy, but the
+controller can still acknowledge the events Runner produced after the last copy.
+Before it restores a copy into a replacement sandbox, the server compares the
+copy's produced event cursor with the controller's acknowledged cursor. If the
+copy is behind, the run fails with `native_event_replay_conflict` and automatic
+recovery stops. No files are copied to the sandbox. Resuming that copy would make
+Runner reject the controller's acknowledgement, and it could repeat work the
+controller already accepted.
+When a controller is registered, the comparison uses its current live cursor.
+The local marker written for external checkpoint storage does not replace that
+authority.
+
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per
 batch, starting two minutes after readiness. A copy expires when all of these hold:

@@ -577,6 +577,23 @@ describe("environment routes", () => {
       expect(JSON.stringify(res.body)).not.toContain("config-credential-must-never-echo");
     });
 
+    it("redacts credential-shaped keys inside arrays nested in arrays", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        config: {
+          provider: "daytona",
+          groups: [[{ name: "a", apiToken: "nested-credential-must-never-echo" }], ["plain"]],
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.config).toEqual({ provider: "daytona", groups: [[{ name: "a" }], ["plain"]] });
+      expect(JSON.stringify(res.body)).not.toContain("nested-credential-must-never-echo");
+    });
+
     it("keeps blanking env vars on legacy kubernetes-marker rows", async () => {
       // Pre-generalization builds may have written platform values into
       // these rows' env vars, so the legacy floor stays absolute there.
@@ -1810,6 +1827,54 @@ describe("environment routes", () => {
       deleteBlockedReasons: ["pending_sandbox_cleanup"],
       destroyedReusableSandboxLeaseCount: 1,
     });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("runs the environment's pending sandbox cleanup now and deletes with explicit consent", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius
+      .mockResolvedValueOnce(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }))
+      .mockResolvedValueOnce(createDeleteBlastRadius());
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 1, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(200);
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledExactlyOnceWith({ environmentId: "env-1", actorId: "admin-1" });
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
+  });
+
+  it("keeps rejecting when the consented pending cleanup attempt does not finish", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledOnce();
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("does not run pending sandbox cleanup without consent or past another blocker", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    expect((await request(app).delete("/api/environments/env-1")).status).toBe(409);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      pendingCleanupLeaseCount: 1, isInstanceDefault: true,
+    }));
+    expect((await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true")).status).toBe(409);
+    expect(retryPendingEnvironmentCleanup).not.toHaveBeenCalled();
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 

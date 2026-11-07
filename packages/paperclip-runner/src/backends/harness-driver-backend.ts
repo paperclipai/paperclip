@@ -4,6 +4,7 @@ import type {
   HarnessSessionRecoveryOptions,
   PersistedHarnessSession,
 } from "../contracts/harness-driver.js";
+import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 import type {
   NativeSession,
   NativeSessionBackend,
@@ -508,6 +509,11 @@ class HarnessNativeSession implements NativeSession {
     this.#input = { ...this.#input, identity: structuredClone(input.identity) };
     this.#terminal = null;
     this.#explicitlyCancelled = false;
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.#assertProtocolIntegrity();
+    return this.#session.release?.() ?? false;
   }
 
   async detachControllerForRestart(): Promise<void> {

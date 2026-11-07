@@ -77,6 +77,7 @@ import {
   chatConversations,
   caseHandoffs,
   companies,
+  budgetPolicies,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -116,7 +117,7 @@ import {
 } from "../activity-log.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { budgetService } from "../budgets.js";
+import { budgetService, policyBlocks } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -2149,11 +2150,11 @@ export function recoveryService(
     return result?.awaiting === true;
   }
 
-  async function isInvocationBudgetBlocked(
+  async function readInvocationBudgetBlock(
     issue: RecoveryIssue,
     agentId: string,
   ) {
-    const budgetBlock = await budgets.getInvocationBlock(
+    return budgets.getInvocationBlock(
       issue.companyId,
       agentId,
       {
@@ -2161,7 +2162,28 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+  }
+
+  async function isInvocationBudgetBlocked(
+    issue: RecoveryIssue,
+    agentId: string,
+  ) {
+    return Boolean(await readInvocationBudgetBlock(issue, agentId));
+  }
+
+  /** A reached hard stop (spend at the limit, or blocked unpriced usage) is a
+   * board decision. Any other budget block (completed runs awaiting accounting,
+   * a native run recovering its accounting, a hold awaiting reconciliation)
+   * clears by itself. Read only: the admission check already reconciled. */
+  async function isBoardOwnedBudgetBlock(
+    companyId: string,
+    block: { scopeType: string; scopeId: string },
+  ) {
+    const policies = await db.select().from(budgetPolicies).where(and(
+      eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, block.scopeType),
+      eq(budgetPolicies.scopeId, block.scopeId), eq(budgetPolicies.isActive, true)));
+    for (const policy of policies) if (await policyBlocks(db, policy)) return true;
+    return false;
   }
 
   async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
@@ -4837,7 +4859,17 @@ export function recoveryService(
           continue;
         }
       }
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      // A task that never started has nothing to recover: a temporary accounting
+      // hold only delays its first admission. Leave it `todo` so the assigned-todo
+      // liveness dispatch below admits it once the hold clears. A reached hard
+      // stop still goes to the board.
+      if (budgetBlock && issue.status === "todo" && !latestRun
+          && !(await isBoardOwnedBudgetBlock(issue.companyId, budgetBlock))) {
+        result.skipped += 1;
+        continue;
+      }
+      if (budgetBlock) {
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4859,8 +4891,9 @@ export function recoveryService(
               issue.status === "in_review"
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
                 : undefined,
+            // Name the actual gate: unpriced or unrecorded usage is not spend over the limit.
             comment:
-              "Paperclip cannot safely continue automatic recovery because the original recovery target is over budget. " +
+              `Paperclip cannot safely continue automatic recovery because the budget does not allow new work: ${budgetBlock.reason} ` +
               "The source assignment is unchanged and the board must choose the next action.",
           });
           if (updated) {

@@ -42,6 +42,15 @@ pub fn redact_diagnostic_text(input: &str) -> String {
 /// build: retrying the same restore cannot succeed.
 pub const PROVIDER_STATE_INCOMPATIBLE: &str = "provider_state_incompatible";
 
+/// The runner refused to attach a new run to a saved provider session because
+/// the durable provider profile or a protected launch argument would change.
+/// The refusal leaves the saved state unchanged and repeats on every retry.
+pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
+
+/// The saved provider session still owns a side-effecting tool call without a
+/// recorded result. Replacing the session could repeat or lose that action.
+pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 

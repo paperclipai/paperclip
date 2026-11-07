@@ -4,7 +4,7 @@ import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { isNativeRestartInterruption, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
@@ -449,6 +449,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "paperclip/runResult") {
+      // Like a terminal, a semantic result can reach the notification channel
+      // before turn/start's response binds its turn (for example, a restart
+      // continuation). Bind it only after that start settles.
+      await state.turnStartSettled;
       if (
         threadId !== state.opened.threadId
         || !state.notificationNamesActiveTurn(turnId, "semantic result")
@@ -543,6 +547,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         mapTerminalTurn(state, turn, turnId);
         return;
       }
+      if (ignoreUnboundRestoredTurnLoss(state, turn, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "turn terminal")) return;
       mapTerminalTurn(state, turn, turnId);
       return;
@@ -689,6 +694,41 @@ function withCompactionSizes(
   const postTokens = count(payload.postTokens) ?? observed?.postTokens ?? null;
   if (postTokens !== null) state.lastContextUsedTokens = postTokens;
   return { ...payload, preTokens, postTokens };
+}
+
+/**
+ * A controller can die after the provider accepted a turn but before that
+ * turn reached its checkpoint. The restored runner then reports the turn as
+ * lost on restore, while this session never bound it. The runner emits that
+ * cause only after it proved the old provider process ended and restored the
+ * same conversation, so the turn can produce no further work or result. It is
+ * not this session's turn: record it as restored history and keep the session
+ * usable for its own (continuation) turn instead of failing the protocol.
+ */
+function ignoreUnboundRestoredTurnLoss(
+  state: CodexSessionState,
+  turn: Record<string, unknown>,
+  turnId: string,
+): boolean {
+  if (
+    turnId.length === 0 ||
+    state.protocolFailed ||
+    turnId === state.activeTurnId ||
+    state.terminalTurns.has(turnId) ||
+    text(turn.status) !== "failed" ||
+    !isNativeRestartInterruption(turn.error)
+  ) {
+    return false;
+  }
+  state.restoredTerminalTurns.add(turnId);
+  state.emit("harness.diagnostic", {
+    code: "provider_notification_identity",
+    method: "turn/completed",
+    classification: "unbound_restored_turn_lost",
+    expectedTurnId: state.activeTurnId,
+    receivedTurnId: turnId.slice(0, 256),
+  });
+  return true;
 }
 
 function ignoreRestoredTerminalReplay(

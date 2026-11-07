@@ -141,9 +141,24 @@ The agent's continuation wake carries server-written next steps and tells it
 not to retry until access is repaired. It must never automatically replay a
 stored approval.
 Deferred historical errors receive the same guidance as their saved cards.
-For an App connection's `create_repository`, the agent
-asks the user to create the repository on GitHub, give the App access, and select
-**Refresh access**, then continues with that repository. Token connections ask
+Direct MCP calls and connection tests receive the same method-specific repair
+steps. A GitHub provider denial is an MCP tool error result, not an HTTP
+authentication failure for the gateway. Invalid gateway credentials still fail
+authentication before any provider call.
+Repair steps are attached after provider output passes content checks, so model
+checks inspect the provider's text without treating Paperclip's own instructions
+as untrusted output. Unsafe provider responses still fail those checks.
+
+For an App connection's `create_repository`, the agent checks the intended
+repository owner first. The authenticated GitHub username and the accounts
+where the App is installed are separate. An organization installation does not
+grant access to the user's personal repositories. Personal repository creation
+needs App access to that personal account; organization creation needs App access
+to that organization and the tool's `organization` argument. The agent must
+keep the owner requested by the user. The user can choose the intended account
+from **Add More Repos on GitHub**, then select **Refresh access**. If creation remains
+unavailable, the user can create the repository on GitHub and give the App access,
+then the agent continues with that repository. Token connections ask
 the user to check token permissions and repository selection, then update or
 replace that token. If the method is unavailable, the agent asks the user to
 check the connection's authentication method. GitHub's text stays in the

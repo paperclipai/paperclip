@@ -11,7 +11,10 @@ COPY packages/paperclip-runner/runner/crates ./crates
 COPY packages/paperclip-runner/protocol ../protocol
 COPY packages/paperclip-runner/acpx-profiles.json packages/paperclip-runner/antigravity-distributions.json ../
 # Retain only the finished executable in this layer. Keeping Cargo's target and
-# download trees makes BuildKit run out of disk while exporting the final image.
+# download trees makes BuildKit run out of disk while exporting the final image
+# and the default-branch build cache. A separate dependency-precompile layer
+# (#19545) did exactly that: about 1.2 GB of retained Cargo trees exhausted the
+# builder disk during the registry cache export.
 RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip-runnerd \
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd \
     && install -m 0755 target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd \
@@ -122,20 +125,25 @@ COPY packages/paperclip-runner/scripts/provision-grok.mjs /tmp/grok-provision/sc
 COPY packages/paperclip-runner/src/providers/grok/platforms.json /tmp/grok-provision/src/providers/grok/platforms.json
 RUN node /tmp/grok-provision/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok && rm -rf /tmp/grok-provision
 
-COPY --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
-COPY --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
-RUN set -eu; for cli in codex claude opencode; do \
-      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
-      chmod 755 "/usr/local/bin/$cli"; \
-    done
-
 # Keep revision-dependent metadata below the stable agent CLI installation
 # layers. A source-only image miss can then reuse those expensive layers from
 # the trusted registry cache.
+# This step must stay ABOVE the COPY --from steps. It does not wait for either
+# builder stage, so BuildKit downloads the cached base and CLI layers (about
+# four minutes) while runnerd and the provider pack compile, instead of after.
 ARG PAPERCLIP_RUNNER_CONTENT_ID
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
     && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
+# --link builds each copied tree as an independent layer, so producing it does
+# not wait for the cached layers below to finish downloading.
+COPY --link --from=runnerd-build /usr/local/bin/paperclip-runnerd /usr/local/bin/paperclip-runnerd
+COPY --link --chown=0:0 --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+RUN set -eu; for cli in codex claude opencode; do \
+      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
+      chmod 755 "/usr/local/bin/$cli"; \
+    done
 
 RUN set -eu; \
     printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \

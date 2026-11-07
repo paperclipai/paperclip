@@ -93,17 +93,16 @@ function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<stri
   const result: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
     if (SECRET_LIKE_CONFIG_KEY_PATTERN.test(key)) continue;
-    if (isPlainRecord(child)) {
-      result[key] = redactSecretLikeConfigKeys(child);
-    } else if (Array.isArray(child)) {
-      result[key] = child.map((element) =>
-        isPlainRecord(element) ? redactSecretLikeConfigKeys(element) : element,
-      );
-    } else {
-      result[key] = child;
-    }
+    result[key] = redactSecretLikeConfigValue(child);
   }
   return result;
+}
+
+/** Objects and arrays at any depth, including arrays nested in arrays. */
+function redactSecretLikeConfigValue(value: unknown): unknown {
+  if (isPlainRecord(value)) return redactSecretLikeConfigKeys(value);
+  if (Array.isArray(value)) return value.map(redactSecretLikeConfigValue);
+  return value;
 }
 
 /**
@@ -361,6 +360,10 @@ export function environmentRoutes(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     recoverMissingPluginWorker?: ReadyPluginWorkerRecovery;
+    /** Runs one teardown attempt now for each pending cleanup of this
+     * environment, without the retry cooldown. Absent, a delete waits for the
+     * scheduled cleanup sweep. */
+    retryPendingEnvironmentCleanup?: (input: { environmentId: string; actorId: string }) => Promise<unknown>;
   } = {},
 ) {
   const router = Router();
@@ -1333,6 +1336,24 @@ export function environmentRoutes(
     // sandboxes belonged to the environment the operator consented to
     // destroy; the rejection reports the count so nothing is silent.
     let destroyedReusableSandboxLeaseCount = 0;
+    // The same consent covers a pending sandbox cleanup: it is the environment's
+    // own sandbox, already queued for teardown. Run one attempt now instead of
+    // waiting out the retry cooldown. An attempt in flight elsewhere is not taken
+    // over, and a failed attempt keeps the lease, so the re-check still rejects.
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.pendingCleanupLeaseCount > 0
+      && options.retryPendingEnvironmentCleanup
+      && impact.deleteBlockedReasons.every((reason) =>
+        reason === "pending_sandbox_cleanup" || reason === "reusable_sandbox_lease")
+    ) {
+      await options.retryPendingEnvironmentCleanup({ environmentId: existing.id, actorId: actor.actorId });
+      impact = await svc.getDeleteBlastRadius(existing.id);
+      if (!impact) {
+        res.status(404).json({ error: "Environment not found" });
+        return;
+      }
+    }
     if (
       req.query.destroyReusableSandboxLeases === "true"
       && impact.reusableSandboxLeaseCount > 0

@@ -1,7 +1,8 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
-import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
+import { NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -52,7 +53,8 @@ import { pumpNotifications } from "./codex-session-notifications.js";
 import { handleServerRequest } from "./codex-session-server-requests.js";
 import {
   mapTerminalTurn,
-  terminalReplayConflict,
+  settleRestoreLostTurnWithHeldResult,
+  settledTerminalReplayConflict,
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
@@ -324,6 +326,14 @@ export class CodexHarnessSession
           // provider thread before deciding whether this submission landed.
           this.terminal = true;
         }
+      }
+      if (this.protocolFailed && !(error instanceof CodexRpcError) && !(error instanceof NativeSessionProtocolIntegrityError)) {
+        // This session's own protocol failure closed the transport, so the
+        // start then reports a lost runner. Keep the cause that ended it.
+        throw new Error(
+          `codex_turn_start_protocol_failure: ${this.protocolFailureCode}: ${this.protocolFailureMessage}`,
+          { cause: error },
+        );
       }
       throw error;
     } finally {
@@ -791,29 +801,43 @@ export class CodexHarnessSession
       const expectedTurn = turns.find(
         (turn) => text(turn.id) === expectedTurnId,
       );
-      if (expectedTurn === undefined) {
+      if (expectedTurn === undefined && this.result !== null && this.resultTurnId === expectedTurnId) {
+        // Provider history can lose a turn whose process was killed before its
+        // terminal was flushed. Paperclip already holds the semantic result this
+        // exact turn proposed, so that durable result is the turn's outcome:
+        // settle it rather than fail recovery and rerun finished work. Without
+        // such a result the outcome stays unknown and recovery fails closed.
+        // (A turn reported lost on restore settles the same way in
+        // mapTerminalTurn.)
+        reconciledTerminalTurnId = expectedTurnId;
+        mapTerminalTurn(this, { id: expectedTurnId, status: "completed", items: [] }, expectedTurnId, true);
+      } else if (expectedTurn === undefined) {
         throw new HarnessReconciliationError(
           `persisted active turn ${expectedTurnId} is missing from thread/read`,
         );
-      }
-      const status = text(expectedTurn.status);
-      if (status === "inProgress") {
-        this.activeTurnId = expectedTurnId;
-      } else if (
-        ["completed", "failed", "interrupted", "cancelled"].includes(status)
-      ) {
-        reconciledTerminalTurnId = expectedTurnId;
-        mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
       } else {
-        throw new HarnessReconciliationError(
-          `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
-        );
+        const status = text(expectedTurn.status);
+        if (status === "inProgress") {
+          this.activeTurnId = expectedTurnId;
+        } else if (
+          ["completed", "failed", "interrupted", "cancelled"].includes(status)
+        ) {
+          reconciledTerminalTurnId = expectedTurnId;
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+        } else {
+          throw new HarnessReconciliationError(
+            `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
+          );
+        }
       }
     }
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
-      const observed = turns.find((turn) => text(turn.id) === turnId);
-      if (observed === undefined) continue;
+      const reported = turns.find((turn) => text(turn.id) === turnId);
+      if (reported === undefined) continue;
+      // A turn settled from its held result keeps that outcome when the
+      // restored runner later reports the same turn lost on restore.
+      const observed = settleRestoreLostTurnWithHeldResult(this, reported, turnId);
       if (
         !["completed", "failed", "interrupted", "cancelled"].includes(
           text(observed.status),
@@ -823,7 +847,7 @@ export class CodexHarnessSession
           `previously terminal turn ${turnId} is no longer terminal in thread/read`,
         );
       }
-      const conflict = terminalReplayConflict(this, observed, fingerprint);
+      const conflict = settledTerminalReplayConflict(this, reported, observed, fingerprint);
       if (conflict !== null) {
         throw new HarnessReconciliationError(
           `previously terminal turn ${turnId} ${conflict.message}`,
@@ -892,6 +916,11 @@ export class CodexHarnessSession
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
     await this.transport.close(input?.reason);
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.assertProtocolIntegrity();
+    return this.transport.release?.() ?? false;
   }
 
   async detachControllerForRestart(): Promise<void> {
