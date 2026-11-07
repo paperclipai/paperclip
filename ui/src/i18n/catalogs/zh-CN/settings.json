@@ -678,7 +678,8 @@
     "chooseSubscriptionAccount": "请在连接中选择订阅账号，然后重试设置。",
     "chooseConnectedApiAccount": "请选择已连接的 API 账号后再继续。",
     "replaceConnectedApiAccount": "请选择已连接的 API 账号，或输入新的 API 密钥以替换此智能体已连接的账号。",
-    "retrySignIn": "重试登录"
+    "retrySignIn": "重试登录",
+    "waitingForCodePending": "等待验证码…"
   },
   "roles": {
     "owner": "所有者",

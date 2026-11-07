@@ -1551,7 +1551,7 @@ function OnboardingWizardInner({
       : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
       ? { label: t("connections:submit_code_32aefbd"), icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: adapterType === "codex_local" ? t("agent-config:waitingForAuth") : t("onboardingWizard.waiting_for_code"), icon: "spinner", disabled: true }
+      ? { label: adapterType === "codex_local" ? t("agent-config:waitingForAuth") : t("onboardingWizard.waitingForCodePending"), icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: t("onboardingWizard.connecting_2240"), icon: "spinner", disabled: true }
         : connectPhase === "ready"
