@@ -152,6 +152,7 @@ export class CodexHarnessSession
       this.resultTurnId = null;
       this.dispositionOnlyRecoveryConsumed = false;
       this.dispositionOnlyRecoveryTurnId = null;
+      this.restartContinuationTurnId = null;
       this.terminal = false;
       this.terminalTurns.clear();
       this.turnStarted = false;
@@ -368,6 +369,7 @@ export class CodexHarnessSession
     if (dispositionOnlyRecovery) {
       this.dispositionOnlyRecoveryTurnId = turnId;
     }
+    this.restartContinuationTurnId = dispositionOnlyRecovery && continuationTurn ? turnId : null;
     this.emit("turn.accepted", { turnId }, { turnId });
     if (this.interruptQueued) {
       this.interruptQueued = false;
@@ -376,6 +378,7 @@ export class CodexHarnessSession
     return {
       turnId,
       effectiveCollaborationMode,
+      ...(this.restartContinuationTurnId === turnId ? { borrowedDispositionMarker: true as const } : {}),
     };
   }
 
