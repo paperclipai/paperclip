@@ -278,6 +278,43 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
     await temporary?.cleanup();
   });
 
+  it("names exhausted lock contention without accepting authority, then rechecks access after release", async () => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const held = new Promise<void>((resolve) => { acquired = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lock = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await held;
+    const onDenied = vi.fn();
+    try {
+      await expect(attestReviewedExternalChatRun({
+        db, ...binding, contextSnapshot: context, onDenied,
+      })).rejects.toMatchObject({
+        message: "reviewed_chat_execution_binding_not_ready",
+        code: "reviewed_chat_execution_binding_not_ready",
+      });
+      expect(onDenied).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await lock;
+    }
+    await expect(attest()).resolves.toBe(true);
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    try {
+      await expect(attest()).resolves.toBe(false);
+    } finally {
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_review", executionRunId: runId, checkoutRunId: null });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status)
+      .toBe("pending");
+  }, 30_000);
+
   it("attests existing execution ownership while preserving real pending governance and checkout state", async () => {
     const [before] = await db
       .select()

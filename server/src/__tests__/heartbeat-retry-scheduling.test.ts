@@ -493,7 +493,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     return { companyId, agentId, issueId, runId, now };
   }
 
-  it.each(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed"].flatMap(errorCode =>
+  it.each(["remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed", "reviewed_chat_execution_binding_not_ready"].flatMap(errorCode =>
     (["resume", "paused", "Stop", "dependency"] as const).map(action => [errorCode, action] as const)))("bounds %s bootstrap retries across restart and honors %s", async (errorCode, action) => {
     const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
     await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
@@ -533,6 +533,28 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now })).toMatchObject({ outcome: "retry_exhausted" });
     await heartbeatService(db).reconcileStrandedAssignedIssues();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+  });
+
+  it("retains the reviewed chat admission on a durable retry without approving the task", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const wakeCommentIds = [randomUUID(), randomUUID()];
+    const source = "chat:slack";
+    const contextSnapshot = { issueId, taskId: issueId, source, wakeCommentIds, commentId: wakeCommentIds[0] };
+    await db.update(heartbeatRuns).set({
+      errorCode: "reviewed_chat_execution_binding_not_ready", contextSnapshot,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, runId));
+    const outcomes = await Promise.all([
+      heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }),
+      heartbeatService(db).scheduleBoundedRetry(runId, { now, random: () => 0 }),
+    ]);
+    expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({ companyId, agentId, issueId, scopeKind: "issue", status: "scheduled_retry",
+      scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure", contextSnapshot });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_review", executionRunId: children[0]!.id });
   });
 
   it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {

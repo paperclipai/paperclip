@@ -302,6 +302,15 @@ Messages from the same conversation still coalesce into one run. Messages from
 different conversations queue separately and run one after the other. Wakes
 without a conversation keep their normal coalescing.
 
+If reviewed chat attestation exhausts its short lock or delivery wait before
+provider dispatch, the run records `reviewed_chat_execution_binding_not_ready`.
+The existing durable retry scheduler permits at most two further attempts. Each
+attempt retains the admitted comment batch and checks current execution ownership,
+provider access and principal permissions again. An answered interaction retains
+its own bounded continuation retry. A denied authorization, Stop, pause or blocked
+dependency cannot use this wait as permission to execute. No retry budget resets,
+new background poller or provider replay are introduced.
+
 For a truncated external-chat wake, native completion feedback requires the
 run-bound complete comment-read receipt before accepting a finish report. An
 unread, partial, stale or foreign receipt returns a corrective

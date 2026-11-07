@@ -30,6 +30,7 @@ import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, Re
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
@@ -1042,6 +1043,34 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
         providerFailure: { provider: "sandbox", phase: "startup", category: "overloaded", httpStatus: 502, retryability: "transient" } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "started", "untrusted", "denied", "retained", "session", "runner"] as const)("bounds only an owned pre-dispatch chat binding wait: %s", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy",
+      ...(scenario === "session" ? { nativeSessionId: randomUUID() } : {}),
+      ...(scenario === "runner" ? { runnerInstanceId: randomUUID() } : {}) });
+    const error = scenario === "untrusted" ? new Error("reviewed_chat_execution_binding_not_ready")
+      : scenario === "denied" ? new ReviewedChatBindingDeniedError("principal_denied")
+      : new ReviewedChatBindingNotReadyError();
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled" } as never);
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reviewed_chat_execution_binding_not_ready" : "setup_failed" });
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps an answered chat interaction on its own bounded continuation retry", async () => {
+    const f = await fixture({ contextSnapshot: { source: "issue.interaction.respond", externalChatContinuation: true,
+      interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" } });
+    await f.completion.failRunSetup(f.setup(new ReviewedChatBindingNotReadyError()));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" });
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
   const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
