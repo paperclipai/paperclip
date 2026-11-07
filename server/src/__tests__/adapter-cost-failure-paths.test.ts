@@ -56,7 +56,13 @@ describe("CLI adapter accounting on timeout", () => {
       });
       const valid = cached === 0 || cached === undefined;
       expect(result.usageComplete, `${fixture.name}: ${JSON.stringify(cached)}`).toBe(valid);
-      expect(result.usage).toEqual(valid ? { inputTokens: 20, outputTokens: 10, cachedInputTokens: 0 } : undefined);
+      expect(result.usage).toEqual(valid
+        ? fixture.name === "opencode"
+          // The opencode parser reports the single-step context high-water
+          // mark alongside the accumulated counters (20 input + 10 output).
+          ? { inputTokens: 20, outputTokens: 10, cachedInputTokens: 0, contextTokens: 30 }
+          : { inputTokens: 20, outputTokens: 10, cachedInputTokens: 0 }
+        : undefined);
       expect(onUsage.mock.calls.at(-1)![0].complete).toBe(valid);
       if (!valid) {
         expect(result.costStatus).toBe("unpriced");
@@ -127,7 +133,7 @@ describe("CLI adapter accounting on timeout", () => {
         const reported = await execute(context);
         const complete = !timedOut && kind.startsWith("zero_");
         expect(reported.usageComplete).toBe(complete);
-        expect(reported.usage).toEqual(kind === "zero_usage" ? { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 } : undefined);
+        expect(reported.usage).toEqual(kind === "zero_usage" ? { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, contextTokens: 0 } : undefined);
         expect(reported.costUsd).toBe(kind === "zero_price" ? 0 : null);
         if (complete || !kind.startsWith("zero_")) expect(onUsage.mock.calls.at(-1)![0]).toMatchObject({ complete });
         if (!kind.startsWith("zero_")) expect(reported.costStatus).toBe("unpriced");
