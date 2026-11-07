@@ -48,7 +48,17 @@ export interface SandboxOrchestrator {
   ): Promise<void>;
 
   /** Tear down the sandbox. Implementations MUST cascade-delete child resources. */
-  release(clients: KubeClients, namespace: string, name: string): Promise<void>;
+  /**
+   * Delete the sandbox. `options.apiVersion` carries the API version the lease
+   * recorded at acquisition, so cleanup does not depend on API discovery being
+   * reachable. An implementation that needs no version ignores it.
+   */
+  release(
+    clients: KubeClients,
+    namespace: string,
+    name: string,
+    options?: { apiVersion?: unknown },
+  ): Promise<void>;
 
   /** Block until phase is Succeeded or Failed, or throw on timeout. */
   waitForCompletion(
