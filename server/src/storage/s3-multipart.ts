@@ -38,6 +38,21 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
     finally { controller.signal.removeEventListener("abort", abort); }
   };
   let pending = Buffer.alloc(0);
+  const readPart = async (length: number, write: (chunk: Buffer) => Promise<void>) => {
+    while (length > 0) {
+      check();
+      if (!pending.length) {
+        const next = await readNext();
+        check();
+        if (next.done) throw new Error("S3 upload source was truncated");
+        pending = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+        if (!pending.length) continue;
+      }
+      const count = Math.min(length, pending.length, 64 * 1024), chunk = pending.subarray(0, count);
+      pending = pending.subarray(count); length -= count;
+      await write(chunk);
+    }
+  };
   let uploadId: string | undefined;
   // Scale part sizes to the S3 part-count limit while retaining stream backpressure.
   const partSize = Math.max(8 * 1024 * 1024, Math.ceil(input.contentLength / 10_000));
@@ -52,31 +67,35 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
       check();
       const length = Math.min(partSize, input.contentLength - offset);
       const number = ++partNumber;
+      const buffered = partSize <= 8 * 1024 * 1024 ? Buffer.allocUnsafe(length) : null;
+      if (buffered) {
+        let position = 0;
+        await readPart(length, async chunk => { chunk.copy(buffered, position); position += chunk.length; });
+      }
       let remaining = length;
       const body = new PassThrough({ highWaterMark: 64 * 1024 });
       bodies.add(body);
-      const uploading = (async () => {
+      const write = async (chunk: Buffer) => {
+        check(); remaining -= chunk.length;
+        if (!body.write(chunk)) await once(body, "drain", { signal: controller.signal });
+      };
+      const sending = (async () => {
         const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: number, Body: body, ContentLength: length }), { abortSignal: controller.signal }));
         if (remaining || !body.readableEnded || !result.ETag) throw new Error("S3 upload part is incomplete");
         parts[number - 1] = { ETag: result.ETag, PartNumber: number };
-      })().catch(stop).finally(() => { active.delete(uploading); bodies.delete(body); body.destroy(); });
+      })().catch(stop);
+      const producing = buffered ? (async () => {
+        for (let position = 0; position < buffered.length; position += 64 * 1024)
+          await write(buffered.subarray(position, Math.min(position + 64 * 1024, buffered.length)));
+        body.end();
+      })().catch(stop) : Promise.resolve();
+      const uploading = Promise.all([sending, producing]).then(() => undefined)
+        .finally(() => { active.delete(uploading); bodies.delete(body); body.destroy(); });
       active.add(uploading);
-      while (remaining > 0) {
-        check();
-        if (!pending.length) {
-          const next = await readNext();
-          check();
-          if (next.done) throw new Error("S3 upload source was truncated");
-          pending = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
-          if (!pending.length) continue;
-        }
-        const count = Math.min(remaining, pending.length, 64 * 1024);
-        const chunk = pending.subarray(0, count);
-        pending = pending.subarray(count);
-        remaining -= count;
-        if (!body.write(chunk)) await once(body, "drain", { signal: controller.signal });
+      if (!buffered) {
+        await readPart(length, write);
+        body.end();
       }
-      body.end();
       offset += length;
     }
     if (pending.length || !(await readNext()).done) throw new Error("S3 upload source exceeds its declared size");
