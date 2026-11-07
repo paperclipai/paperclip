@@ -735,7 +735,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   async function dismiss(id: string, userId: string, userActor: AuthorizationActor, reason?: string | null) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
     if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
-    const empty = current.options.find((option) => option.effects.length === 0);
+    const archiveProposal = (current.metadata as Record<string, unknown>).kind === "attention_archive_proposal";
+    const empty = current.options.find((option) => option.effects.length === 0 && !(archiveProposal && option.id === "archive"));
     if (empty) return decide({ id, optionId: empty.id, decidedByUserId: userId, userActor, dismissed: true, dismissReason: reason });
     const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "decided", executionStatus: "succeeded", chosenOptionId: "dismissed", decidedByUserId: userId,
       decidedAt: new Date(), updatedAt: new Date(), metadata: { ...current.metadata, dismissed: true, dismissReason: reason ?? null,
