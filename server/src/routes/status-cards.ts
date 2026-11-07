@@ -172,21 +172,23 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertCanMutate(req, companyId);
     assertAgentPromptLimit(req, req.body.interestPrompt);
     const actor = getActorInfo(req);
-    // Resolve the link before creating the card: the catch below deletes the card, so nothing that
-    // runs after the compile is queued may fail there.
+    // Resolve the link before creating the card, so a failed lookup leaves nothing behind.
     const issuePrefix = await companyIssuePrefix(companyId);
     const card = await service.create(companyId, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
+    // Only a failure to queue the compile removes the new card. Once the compile is queued, the card
+    // and its generation task exist together, so later failures must not delete the card alone.
+    let compile: Awaited<ReturnType<typeof enqueueCompile>>;
     try {
-      const compile = await enqueueCompile(req, card.id);
-      await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
-      res.status(201).json(withHref(publicCard(compile.card), issuePrefix));
+      compile = await enqueueCompile(req, card.id);
     } catch (error) {
       await service.remove(card.id);
       throw error;
     }
+    await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
+    res.status(201).json(withHref(publicCard(compile.card), issuePrefix));
   });
 
   router.get("/status-cards/:id", async (req, res) => {
