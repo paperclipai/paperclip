@@ -155,6 +155,7 @@ export async function terminalizeLegacyExecution(input: {
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
     await notifyExecutionRunWork(tx, { companyId: current.companyId });
     let updated = (await transitionHeartbeatRunStatus(tx, run.id, {
+      locked: { status: current.status },
       toStatus: input.recordRestoreFailureOnly ? current.status : status,
       patch: {
         ...patch,
