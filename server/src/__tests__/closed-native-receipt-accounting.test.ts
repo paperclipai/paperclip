@@ -433,7 +433,7 @@ const support = await getEmbeddedPostgresTestSupport();
   // Wave s7401: a local ACPX Claude run was killed after its result was
   // accepted. Ten receipts across two sources were all incomplete with zero
   // tokens, its local stop was verified, and the company refused all new work.
-  async function acceptedResultFixture(options: { stopEvidence?: boolean; finishedMinutesAgo?: number } = {}) {
+  async function acceptedResultFixture(options: { stopEvidence?: boolean; finishedMinutesAgo?: number; restart?: boolean } = {}) {
     const f = await fixture({ stopEvidence: options.stopEvidence });
     const contractId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issue.id, revision: 1,
@@ -449,8 +449,8 @@ const support = await getEmbeddedPostgresTestSupport();
       .where(eq(nativeRunFinalizations.runId, f.run.id));
     await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
       finishedAt: new Date(Date.now() - (options.finishedMinutesAgo ?? 0) * 60_000),
-      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSourceFences: { [randomUUID()]: 5 },
-        accountingReceiptSequence: 5 })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSequence: 5,
+        ...(options.restart === false ? {} : { accountingReceiptSourceFences: { [randomUUID()]: 5 } }) })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
     return f;
   }
 
@@ -569,7 +569,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it("stops blocking once a complete late receipt accounts for a timed-out closure", async () => {
-    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);
@@ -589,8 +589,35 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("keeps the blocking policy for a timed-out closure, since the run may still spend", async () => {
+  // s7503 run 267936b9 (Claude C1, K6): the run recovered and succeeded, but
+  // its final usage report was lost with the restart, so all 11 receipts were
+  // incomplete with zero tokens. At the closure bound it settled as unpriced 0
+  // cents; the blocking policy then opened a hard incident, paused the
+  // company and cancelled its pending Retry wakes.
+  it.each([
+    { name: "zero tokens", usage: {}, model: "claude-sonnet-5" },
+    { name: "tokens with no rate card", usage: { inputTokens: 1200, outputTokens: 80 }, model: "unknown-model" },
+  ])("never hard-stops a blocking policy for a restart-derived timed-out receipt ($name)", async ({ usage, model }) => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null,
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ ...usage, model })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system" });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).usageJson).toMatchObject({ accountingClosureTimedOut: true, accountingReceiptUnavailable: true });
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  it("keeps the blocking policy for a timed-out closure with no restart evidence, since the run may still spend", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
     await flushBudgetEvaluationWork(db);

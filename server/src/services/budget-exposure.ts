@@ -157,15 +157,25 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // later growth from a complete receipt is ordinary usage.
     // A final charge settled only because closure evidence never arrived is
     // genuinely unknown spend (its provider may still have run), so none of
-    // these exemptions apply to it.
-    const closureTimedOutCharge = sql`(${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
+    // these exemptions apply to it, unless a control-plane restart caused it.
+    // A restart-derived receipt never trips the blocking policy, whatever its
+    // token count: the run replaced its receipt source, recovered from the
+    // restart, or lost a provider turn on restore. Its activity entry and
+    // provenance remain the board's notice.
+    const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
+    const restartDerived = (alias: string) => sql.raw(`(${alias}.usage_json ? 'accountingReceiptSourceFences'
+        or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
+        or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
+          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'))`);
+    const closureTimedOutCharge = sql`(${finalCharge}
       and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
         and timed_out_run.company_id = ${costEvents.companyId}
-        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true'))`;
-    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
+        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true' and not ${restartDerived("timed_out_run")}))`;
+    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${finalCharge}
         and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
           and lost_receipt_run.company_id = ${costEvents.companyId}
-          and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'))
+          and (lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'
+            or coalesce(lost_receipt_run.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%')))
       or ${costEvents.costCents} > 0
       or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
         and ${costEvents.outputTokens} = 0)))`;

@@ -1958,7 +1958,11 @@ receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
 provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge. A native
+run, and the blocking unpriced-usage policy keeps counting that charge unless
+a control-plane restart caused it. A restart-derived receipt (the run replaced
+its receipt source, recovered from a restart, or lost a provider turn on
+restore) never hard-stops or pauses a company under the blocking policy,
+whatever its token count; its activity entry and provenance remain the notice. A native
 turn that the restored Runner reports as lost on restore can never report its
 usage. It does not hold the run's receipt open: the receipt closes when the
 run's other turns do, and its provenance says the observed usage is a lower
