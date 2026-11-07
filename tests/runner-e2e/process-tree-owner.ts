@@ -279,16 +279,16 @@ export async function stopOwnedProcessTree(
       return (child.exitCode !== null || child.signalCode !== null) && owner.liveGroups().length === 0;
     };
     const graceDeadline = () => deadline;
-    const forcedDeadline = () => phase.forcedDeadline ?? deadline;
+    const forcedDeadline = () => phase.forcedDeadline!;
     do {
       await settled(() => owner.signalGracefully(gracefulSignal), graceDeadline);
       phase.gracefulSent ||= owner.directGraceDelivered();
       if (await stopped(graceDeadline)) return;
       await wait(50);
     } while (Date.now() < deadline);
-    const killDeadline = Date.now() + forcedMs;
-    await settled(() => owner.signal("SIGKILL"), () => killDeadline);
+    // One forced window covers the escalation retry, the stop check and any fallback.
     phase.forcedDeadline = Date.now() + forcedMs;
+    await settled(() => owner.signal("SIGKILL"), forcedDeadline);
     do {
       if (await stopped(forcedDeadline)) return;
       await wait(50);

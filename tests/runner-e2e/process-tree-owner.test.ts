@@ -257,3 +257,26 @@ it.skipIf(process.platform === "win32")("still fails without signaling the uncer
     expect(f.signals).toEqual([]);
   } finally { f.owner.stopObserving(); }
 });
+
+it.skipIf(process.platform === "win32")("keeps an uncertainty that starts at SIGKILL escalation inside one forced window", async () => {
+  // The launcher ignores grace; its runner group turns over only once grace has expired.
+  const gracefulMs = 300, forcedMs = 300;
+  const self = row(process.pid, 1, 10);
+  let stopAt: number | null = null;
+  const signals: Array<[number, NodeJS.Signals]> = [];
+  const child = { pid: 100, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, kill: () => true };
+  const owner = createProcessTreeOwner(child as unknown as ChildProcess, {
+    readTable: async () => stopAt === null || Date.now() - stopAt < gracefulMs
+      ? [self, row(100, process.pid, 100), row(200, 100, 200)]
+      : [self, row(100, process.pid, 100), row(201, 1, 200, "unseen-start")],
+    signalGroup: (pid, signal) => { signals.push([pid, signal]); },
+  });
+  try {
+    await owner.observe();
+    stopAt = Date.now();
+    await expect(stopOwnedProcessTree(child as unknown as ChildProcess, owner, gracefulMs, forcedMs)).rejects.toThrow("identity became uncertain");
+    const elapsed = Date.now() - stopAt;
+    expect(elapsed).toBeLessThan(gracefulMs + forcedMs + 250);
+    expect(signals.filter(([, signal]) => signal === "SIGKILL")).toEqual([]);
+  } finally { owner.stopObserving(); }
+});
