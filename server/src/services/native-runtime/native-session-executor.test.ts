@@ -112,6 +112,7 @@ import { forwardRemoteMcpRequest } from "./remote-mcp-relay.js";
 import { createCapabilityRunnerdProviderEnvironment } from "@paperclipai/paperclip-runner/live";
 import * as nativeSessionResume from "./native-session-resume.js";
 import * as nativeLeaseRenewal from "./native-execution-lease.js";
+import * as retainedPackSource from "./retained-provider-pack-source.js";
 import { buildNativeHeartbeatPreparationSpans, createNativeRunTrace } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -7488,6 +7489,65 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
+  it.each(["stop", "lease-loss"])("cancels the actual per-turn OpenCode code-source wait on %s before provider dispatch", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "native-pack-source-caller-"));
+    const daemonPath = join(root, "paperclip-runnerd");
+    const daemon = Buffer.alloc(64); daemon.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); daemon.writeUInt16LE(62, 18);
+    await writeFile(daemonPath, daemon);
+    const sha = "sha256:" + "a".repeat(64);
+    const artifacts = Object.fromEntries(Object.entries({ grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",
+      productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode", opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+      opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs" }).map(([name, path]) => [name, { path, sha256: sha }]));
+    const payload = { compatibility: { opencode: 1, acpx: 1 }, contractDigest: sha, target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
+      pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion, opencode: "1.18.34", acpx: "0.13.1",
+        grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion, claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
+      acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent => [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
+      artifacts, distDigest: sha, bridgeDigest: "sha256:" + createHash("sha256").update(sha + "\n" + sha + "\n" + sha).digest("hex") };
+    await writeFile(join(root, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", payload,
+      digest: "sha256:" + createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex") }));
+    const current = { ...execution, binding: { ...execution.binding, runId: randomUUID(), executionWorkspaceId: randomUUID() },
+      workspace: { ...execution.workspace, cwd: root }, provider: { kind: "opencode", model: "openai/test" },
+      session: { ...execution.session, normalizedSessionId: randomUUID(), driverKind: "opencode_server", lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } } as NativeExecutionInputV1;
+    const execute = vi.fn(async (command: { args?: string[] }) => ({ exitCode: command.args?.[0] === "-e" ? 1 : 0, timedOut: false, signal: null, stderr: "", stdout: command.args?.[0] === "--build-metadata" ? JSON.stringify({
+      schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd", packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+      durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"], providerPacks: [],
+    }) : "" }));
+    const syncIn = vi.fn(async (_operations: Array<{ files: Array<{ targetPath?: string }> }>) => ({ operations: [] }));
+    let entered!: () => void, release!: () => void, sourceSignal: AbortSignal | undefined, lost: (() => Promise<unknown>) | undefined;
+    const reached = new Promise<void>(done => { entered = done; });
+    const source = vi.spyOn(retainedPackSource, "resolveProviderPackUploadSource").mockImplementation(input => {
+      sourceSignal = input.signal; entered();
+      return new Promise((_resolve, reject) => {
+        release = () => reject(new Error("owned fixture cleanup"));
+        input.signal?.addEventListener("abort", () => reject(input.signal!.reason), { once: true });
+      });
+    });
+    const originalRenewal = nativeLeaseRenewal.startNativeSessionExecutionLeaseRenewal;
+    const renewal = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockImplementation(input => {
+      lost = () => Promise.resolve(input.onLost());
+      return originalRenewal(input);
+    });
+    const running = executePaperclipNativeSession({ db: leaseDb(current), execution: current, useRunnerd: true,
+      runnerInstanceId: "source-caller-runner", runnerRemoteBinaryPath: daemonPath, runnerRemoteProviderPackPath: root,
+      runnerEnvironment: { ...configuredEnvironmentProjection({}), PAPERCLIP_NATIVE_MCP_NAME: "source-caller", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1/mcp/gateways/source-caller", PAPERCLIP_NATIVE_MCP_TOKEN: "owned-fixture" },
+      runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+        effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute, syncIn } } as never });
+    const failure = running.then(() => { throw Error("unexpected provider completion"); }, error => error);
+    try {
+      await Promise.race([reached, failure.then(error => { throw error; })]);
+      expect(sourceSignal).toBeInstanceOf(AbortSignal);
+      const stopping = mode === "stop" ? cancelNativeSession(current.binding.runId, "owned source wait Stop") : lost!();
+      expect(await failure).toMatchObject({ message: mode === "stop" ? "native_cancellation_pending_recovery" : "native_controller_detached_for_restart" });
+      await stopping;
+      expect(sourceSignal!.reason).toMatchObject({ message: mode === "stop" ? "native_cancellation_pending_recovery" : "native_session_lease_lost" });
+      expect(sourceSignal!.aborted).toBe(true);
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(syncIn.mock.calls.flatMap(call => (call[0] as { files?: Array<{ targetPath?: string }> } | undefined)?.files ?? []).some(file => file.targetPath?.endsWith("/provider-pack"))).toBe(false);
+    } finally {
+      release?.(); await failure; source.mockRestore(); renewal.mockRestore(); await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["deadline", "stop"])("retires a claimed warm owner when %s interrupts its reuse diagnostic", async mode => {
     const first: NativeExecutionInputV1 = { ...execution,
       binding: { ...execution.binding, runId: `reuse-log-first-${mode}`, executionWorkspaceId: `reuse-log-workspace-${mode}` },
