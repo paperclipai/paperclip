@@ -267,7 +267,8 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
     await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "pending", expiresAt: new Date(),
       lastUsedAt: new Date(), releasedAt: new Date(), metadata: { ...lease!.metadata, sandboxState: "archived",
-        pendingCleanupRetryAfterMs: Date.now(), remoteExecutionTermination: { observation: "not a stop receipt" } } })
+        pendingCleanupRetryAfterMs: Date.now(), pendingCleanupManualAttemptId: randomUUID(),
+        pendingCleanupController: { attemptId: randomUUID(), countedAttempt: true }, remoteExecutionTermination: { observation: "not a stop receipt" } } })
       .where(eq(environmentLeases.id, f.leaseId));
     expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
     expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(result.receiptDigest);

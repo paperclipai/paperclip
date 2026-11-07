@@ -67,7 +67,7 @@ function webLeaseBinding(lease: typeof environmentLeases.$inferSelect) {
   const fields = Object.fromEntries(Object.entries(lease).filter(([key]) => !["status", "releasedAt", "updatedAt", "lastUsedAt", "expiresAt", "failureReason", "cleanupStatus"].includes(key)));
   const metadata = Object.fromEntries(Object.entries(lease.metadata ?? {}).filter(([key]) => !["pendingCleanupAttemptId", "pendingCleanupInFlight",
     "pendingCleanupLeaseExpiresAtMs", "pendingCleanupRetryAfterMs", "pendingCleanupRetryAttempts", "pendingCleanupRetryCapWarned",
-    "remoteExecutionTermination", "sandboxStopAndRetainReceipt", "sandboxState", "resumedFromState"].includes(key)));
+    "pendingCleanupController", "pendingCleanupManualAttemptId", "remoteExecutionTermination", "sandboxStopAndRetainReceipt", "sandboxState", "resumedFromState"].includes(key)));
   return { ...fields, metadata };
 }
 
