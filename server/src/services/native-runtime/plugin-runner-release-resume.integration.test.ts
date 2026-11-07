@@ -11,11 +11,10 @@ import { expect, it, vi } from "vitest";
 import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
-  parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity, type RunnerProcessHandle } from "../../vendor/paperclip-runner/index.js";
+  parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity, type RunnerProcessHandle, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, canonicalNativeRuntimeContextDigest } from "@paperclipai/paperclip-runner";
 import { materializeAsset } from "./runtime-context.js";
 import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
-import { createPrivateHostControlFixture } from "../../../../packages/paperclip-runner/test/support/private-host-control.js";
 import { describeEmbeddedPostgres, nativeRestartFixture, fakeCodexAppServer, waitForCondition } from "../../__tests__/helpers/native-restart.js";
 import { executePaperclipNativeSession, cancelNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "./native-session-executor.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
@@ -23,6 +22,14 @@ import * as remoteWarmRecovery from "./remote-warm-session-recovery.js";
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+
+const { createPrivateHostControlFixture } = await import(new URL("../../../../packages/paperclip-runner/test/support/private-host-control.ts", import.meta.url).href) as {
+  createPrivateHostControlFixture(): {
+    launch(spec: RunnerProcessLaunchSpec): RunnerProcessHandle;
+    request(frame: Record<string, unknown>): Promise<{ id: string; status: string }>;
+    close(): Promise<void>;
+  };
+};
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
