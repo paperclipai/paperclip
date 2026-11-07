@@ -933,7 +933,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }).returning();
     const otherToken = await gateway.createNamedGatewayToken({
       companyId: company.id, gatewayId: namedGateway.id,
-      body: { name: "Overlapping run", subjectType: "heartbeat_run", subjectId: otherRun!.id },
+      body: {
+        name: "Overlapping run", subjectType: "heartbeat_run", subjectId: otherRun!.id,
+        clientLabel: "Heartbeat runtime", ownerNote: "Overlapping run regression",
+      },
       actor: { agentId: agent.id },
     });
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-run-gateway-"));
