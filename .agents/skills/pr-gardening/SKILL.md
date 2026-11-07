@@ -178,3 +178,24 @@ node --test .agents/skills/pr-gardening/scripts/pr-gardening.test.mjs
 ```
 
 For a live dry run, execute Stages A, B, and F with `--dry-run`, then sanity-check named PRs only if they are still open. Merged or closed examples should appear under `droppedClosedPullRequests`, not in readiness results, and community-authored PRs must appear only under `droppedCommunityPullRequests` — a candidate or report entry with an author outside the allowlist is a scope failure. If also exercising `--archive-inbox`, confirm the report describes the suppressed Stage D action and that no Paperclip archive or marker-comment mutation occurred.
+
+## Merging a verified-ready PR
+
+This skill never merges. When the sign-off owner for an issue whose policy is
+"auto-merge on clean QA + Security" (AUT-2230) is ready to merge, the only
+sanctioned merge command is the gate script:
+
+```bash
+node .agents/skills/pr-gardening/scripts/merge-gated.mjs \
+  --repo OWNER/REPO --pr NUMBER [--origin AUT-NNN]
+```
+
+`--origin` additionally reads the sign-off comments recorded on a Paperclip
+issue, which is where most QA verdicts actually live. The gate exits 2 and
+performs no merge unless both roles approved at the exact current head SHA.
+
+Never run `gh pr merge` (with or without `--auto`) for an AUT-2230-governed
+PR. On PR CannonFodder151/autobrain-mobile#127 the reviewer merged with a
+plain `gh pr merge --squash` eleven seconds after its own "APPROVE" comment;
+the only `security-approved` at that point named `cbc4d6dd`, an already
+superseded head, so the gate would have refused the merge (AUT-5537).
