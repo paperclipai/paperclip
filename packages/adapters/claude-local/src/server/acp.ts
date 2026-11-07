@@ -58,6 +58,7 @@ import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { acpxNonAuthFailureCode, hasClaudeAcpAuthEvidence } from "./acp-auth-evidence.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -422,12 +423,22 @@ export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
 ): AdapterExecutionResult {
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
+  if (hasClaudeAcpAuthEvidence(result)) {
+    return {
+      ...result,
+      errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,
+      ...(result.errorMessage === "ACP agent reported a terminal access failure."
+        ? { errorMessage: "Claude sign-in failed. Sign in again and try again." }
+        : {}),
+    };
+  }
   return {
     ...result,
-    errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,
-    ...(result.errorMessage === "ACP agent reported a terminal access failure."
-      ? { errorMessage: "Claude sign-in failed. Sign in again and try again." }
-      : {}),
+    errorCode: acpxNonAuthFailureCode(result),
+    errorMeta: {
+      ...(result.errorMeta ?? {}),
+      category: asString(result.errorMeta?.acpCode, "") ? "protocol" : "runtime",
+    },
   };
 }
 
