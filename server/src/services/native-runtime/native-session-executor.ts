@@ -10820,7 +10820,7 @@ async function executePaperclipNativeSessionWithinScope(
           durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
       }
     }
-    const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
+    let remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
         input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
       ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
           .from(environmentLeases).where(and(
@@ -10837,7 +10837,7 @@ async function executePaperclipNativeSessionWithinScope(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
-        const result = await trace.run(runnerSessionStartupScope, () =>
+        const runExecution = () =>
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
@@ -11217,8 +11217,115 @@ async function executePaperclipNativeSessionWithinScope(
                 );
               }
             },
-          }),
-        );
+          });
+        let result: Awaited<ReturnType<typeof executeNativeSession>>;
+        try {
+          result = await trace.run(runnerSessionStartupScope, runExecution);
+        } catch (error) {
+          const target = input.runnerExecutionTarget;
+          if (
+            error instanceof Error &&
+            error.message === "native_runner_reuse_unavailable" &&
+            target?.kind === "remote" &&
+            target.transport === "sandbox" &&
+            target.runnerTask &&
+            target.leaseId &&
+            target.reconcileTaskReplacement &&
+            existingWarmSession
+          ) {
+            const state = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "status" }));
+            if (state.kind !== "status" || state.executionStopped !== true || state.sessionStateAvailable !== true) {
+              throw error;
+            }
+            await target.runnerTask({ kind: "complete" });
+            const [leaseRow] = await input.db.select().from(environmentLeases).where(eq(environmentLeases.id, target.leaseId));
+            if (typeof leaseRow?.metadata?.runnerTaskPreviousLeaseId === "string") {
+              await input.db.update(environmentLeases).set({
+                metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+                  runnerTaskExecutionStopped: true,
+                  runnerTaskSessionRetained: true,
+                })}::jsonb`,
+              }).where(and(
+                eq(environmentLeases.id, leaseRow.metadata.runnerTaskPreviousLeaseId),
+                eq(environmentLeases.companyId, input.execution.binding.companyId),
+              ));
+            }
+            await target.reconcileTaskReplacement({ executionContext });
+            const replacementDescription = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
+            if (replacementDescription.kind !== "description") {
+              throw new Error("Plugin Runner description unavailable");
+            }
+            pluginTaskDescription = replacementDescription;
+            const root = scopedRunnerdStateRoot(input.execution);
+            await recoverPluginRunnerCheckpoint(input, root);
+            if (executionContext) await finishStartupContextForFallback();
+            if (replacementDescription.executionContextVersion === 1 &&
+                startupForAdmission?.executionLeaseRenewal &&
+                (input.execution.provider.kind === "codex" ||
+                  (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"))) {
+              executionContext = new NativeExecutionContext(
+                input.execution,
+                Math.floor(Math.min(
+                  coldAdmissionTimeoutMs(input.execution.provider.kind, input.execution.provider.kind === "acpx" ? input.execution.provider.agent : undefined, false),
+                  startupForAdmission.executionLeaseRenewal.remainingMs(),
+                )),
+              );
+              executionContext.pluginSupported = true;
+              startupForAdmission.executionContext = executionContext;
+              if (startupForAdmission.stopRequested) executionContext.abort(new Error("native_session_cancelled"));
+            }
+            if (existingWarmSession.detachControllerForRestart) {
+              await existingWarmSession.detachControllerForRestart().catch(() => undefined);
+            }
+            await existingWarmSession.close({ reason: "reused Runner evicted after inspection" }).catch(() => undefined);
+            existingWarmSession = undefined;
+            if (cachedReleasedOwner) {
+              forgetWarmNativeSession(nativeSessionScopeKey(input.execution), cachedReleasedOwner);
+            }
+            if (warmSessionId) {
+              const existing = warmNativeSessions.get(warmSessionId);
+              if (existing) forgetWarmNativeSession(warmSessionId, existing);
+            }
+            persistedWarmSession = loadWarmNativeCheckpoint(
+              input.execution,
+              warmConfigDigest!,
+              target.kind,
+            );
+            runnerdBackend = await createRunnerdBackend({
+              ...input,
+              executionContext,
+              onDiagnosticLease: ownDiagnosticLease,
+              providerPackAdmissionSource,
+              recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
+              onAccountingEvent: producerUsage?.capture,
+              controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? {
+                bootId: controller.bootId,
+                runnerArtifact: replacementDescription.runner ? {
+                  version: replacementDescription.runner.version,
+                  digest: replacementDescription.runner.digest,
+                } : restoredController ? {
+                  version: restoredController.runnerVersion,
+                  digest: restoredController.runnerDigest,
+                } : undefined,
+              } : undefined,
+              execution: input.execution,
+              runnerInstanceId: effectiveRunnerInstanceId,
+              pluginTaskDescription,
+              durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+              trace,
+              toolTrace,
+            });
+            const updatedCleanupLease = await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+              .from(environmentLeases).where(and(
+                eq(environmentLeases.companyId, input.execution.binding.companyId),
+                eq(environmentLeases.id, target.leaseId),
+              )).then(rows => rows[0]);
+            if (updatedCleanupLease) remoteCleanupLease = updatedCleanupLease;
+            result = await trace.run(runnerSessionStartupScope, runExecution);
+          } else {
+            throw error;
+          }
+        }
         await trace.end(runnerSessionStartupScope, {
           outcome:
             result.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
