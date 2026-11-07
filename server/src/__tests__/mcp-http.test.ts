@@ -85,6 +85,27 @@ describe("parseMcpHttpResponseBody", () => {
     expect(parseMcpHttpResponseBody(body, "text/event-stream")).toEqual(message);
   });
 
+  it("skips notifications sent ahead of the response", () => {
+    const progress = {
+      jsonrpc: "2.0",
+      method: "notifications/progress",
+      params: { progressToken: "tool-call-2", progress: 0, total: 1 },
+    };
+    const message = {
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [{ type: "text", text: "ok" }], isError: false },
+    };
+    const body = `event: message\ndata: ${JSON.stringify(progress)}\n\nevent: message\ndata: ${JSON.stringify(message)}\n\n`;
+    expect(parseMcpHttpResponseBody(body, "text/event-stream")).toEqual(message);
+  });
+
+  it("falls back to a notification when no response message arrives", () => {
+    const progress = { jsonrpc: "2.0", method: "notifications/progress", params: {} };
+    const body = `event: message\ndata: ${JSON.stringify(progress)}\n\n`;
+    expect(parseMcpHttpResponseBody(body, "text/event-stream")).toEqual(progress);
+  });
+
   it("handles multi-line SSE data fields", () => {
     const payload = { jsonrpc: "2.0", id: "1", result: { note: "line" } };
     const json = JSON.stringify(payload, null, 2);
