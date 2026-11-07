@@ -1,4 +1,5 @@
-import { remoteRecoveryLeaseMismatch } from "../native-runtime/remote-recovery-lease-mismatch.js";
+import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } from "../native-runtime/remote-recovery-lease-mismatch.js";
+import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
 import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
@@ -1306,7 +1307,22 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         : saved.remoteCwd !== sandboxRecovery.remoteCwd ? "remote_cwd" as const : null;
       if (mismatch) throw remoteRecoveryLeaseMismatch("workspace_preparation", mismatch);
     }
-    acquiredEnvironment = await timeWorkspace("workspace_environment_acquire", () => envOrchestrator.acquireForRun({
+    // A same-run resume whose inherited runner identity was retired keeps the
+    // run's own retained sandbox, so its workspace and allocation carry over.
+    const retainedSandbox = runOptions.nativeLeaseOwner && !runOptions.nativeRestartRecovery
+      ? readInheritedRunnerRetainedSandbox(parseObject(run.runnerProfileJson)) : null;
+    const acquireRetainedOrNew = async (input: Parameters<typeof envOrchestrator.acquireForRun>[0]) => {
+      if (!retainedSandbox) return envOrchestrator.acquireForRun(input);
+      try {
+        return await envOrchestrator.acquireForRun({ ...input, reattachRemoteLease: retainedSandbox });
+      } catch (error) {
+        // The retained sandbox is gone. Acquire as an ordinary resume does.
+        if (!(error instanceof Error) || !error.message.startsWith(`${NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH}: `)) throw error;
+        logger.warn({ runId: run.id, detail: error.message }, "retained sandbox unavailable for same-run resume; acquiring");
+        return envOrchestrator.acquireForRun(input);
+      }
+    };
+    acquiredEnvironment = await timeWorkspace("workspace_environment_acquire", () => acquireRetainedOrNew({
       companyId: agent.companyId,
       selectedEnvironmentId: selectedEnvironmentId ?? localEnvironment.id,
       localEnvironmentId: localEnvironment.id,
