@@ -84,13 +84,13 @@ const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
 
 const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@openai/codex",
-  runtimePackageVersion: "0.160.0",
+  runtimePackageVersion: "0.166.0",
   packageName: "@openai/codex-linux-x64",
-  packageVersion: "0.160.0-linux-x64",
-  dependencyDeclaration: "npm:@openai/codex@0.160.0-linux-x64",
+  packageVersion: "0.166.0-linux-x64",
+  dependencyDeclaration: "npm:@openai/codex@0.166.0-linux-x64",
   relativeExecutable: "vendor/x86_64-unknown-linux-musl/bin/codex",
   executableDigest:
-    "sha256:12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+    "sha256:b8a11fedf24b2dfb59a70c9e52b030f9a508dcd49cd2dd0d41956f4c785156b8",
   environmentVariable: "CODEX_PATH",
 });
 
