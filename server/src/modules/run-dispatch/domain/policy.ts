@@ -167,7 +167,7 @@ export type QueuedRunFacts = {
   reviewParticipant: ReviewParticipantFacts;
 };
 
-type OwnershipFacts = {
+export type OwnershipFacts = {
   runAgentId: string;
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
@@ -190,6 +190,15 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   return "reassigned";
+}
+
+/**
+ * The ownership half of the queued-run staleness gate. A queued run that
+ * fails it is cancelled with `issue_assignee_changed` before it starts, so
+ * other modules can use this to tell a live successor from a stale one.
+ */
+export function queuedRunStillOwnsIssue(facts: OwnershipFacts): boolean {
+  return decideIssueOwnership(facts) === "current_owner";
 }
 
 type IssueStatusFacts = {

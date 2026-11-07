@@ -45,7 +45,9 @@ export type {
   QueuedRunStalenessErrorCode,
   StalenessDecision,
   QueuedRunFacts,
+  OwnershipFacts,
 } from "./domain/policy.js";
+export { queuedRunStillOwnsIssue } from "./domain/policy.js";
 export type {
   PostCommitEffect,
   PromoteScheduledRetryOutcome,
