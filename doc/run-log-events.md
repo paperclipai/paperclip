@@ -68,10 +68,12 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an
 accepted run-result summary. Its
-`durationMs` starts at the earliest accepted input: the accepted comment or
-answered question, or the durable wake request's `requested_at` when it is earlier
-(deferred, coalesced and retried wakes); otherwise queued run creation, or dispatch
-when history is absent. It ends at Core commit callback. `anchor` names the start:
+`durationMs` starts at the earliest accepted input. The accepted comment or
+answered question is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run uses queued run creation. The durable wake request's `requested_at` replaces
+the start when it is earlier (deferred, coalesced and retried wakes). Without
+preparation history, the start is dispatch and the anchor is `run_created`. It ends at Core commit callback. `anchor` names the start:
 `comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
 zero, or negative when a wake request precedes the run trace. `eventKind` is
 `agentMessage` or `reasoning`. The wake request time is read after the first text,
