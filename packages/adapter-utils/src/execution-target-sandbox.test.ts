@@ -5,7 +5,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -3438,7 +3438,7 @@ describe("sandbox adapter execution targets", () => {
   // Start a host API server that records each forwarded request, so a test can
   // assert the real token and the run id reach the host, or that a rejected
   // request never forwards.
-  async function startRecordingApiServer(): Promise<{
+  async function startRecordingApiServer(responseStatus = 200): Promise<{
     origin: string;
     requests: Array<{
       method: string;
@@ -3482,8 +3482,8 @@ describe("sandbox adapter execution targets", () => {
           res.end(ATTACHMENT_DOWNLOAD_BYTES);
           return;
         }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
+        res.writeHead(responseStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify(responseStatus === 403 ? { error: "API permission denied" } : { ok: true }));
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -3500,6 +3500,143 @@ describe("sandbox adapter execution targets", () => {
       close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     };
   }
+
+  it.each([
+    ["queue_v1", undefined, 403],
+    ["queue_v1", "false", 403],
+    ["queue_v1", "1", 403],
+    ["queue_v1", "true", 200],
+    ["queue_v1", "true", 403],
+    ["http2_v1", undefined, 403],
+    ["http2_v1", "false", 403],
+    ["http2_v1", "1", 403],
+    ["http2_v1", "true", 200],
+    ["http2_v1", "true", 403],
+  ] as const)("applies the host route opt-out over %s with setting %s and API status %s", async (transport, setting, apiStatus) => {
+    vi.stubEnv("PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES", setting);
+    const { remoteCwd } = await createSandboxWorkspace("paperclip-bridge-route-policy-");
+    const api = await startRecordingApiServer(apiStatus);
+    let session: http2.ClientHttp2Session | undefined;
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      session = ctx.connectHttp2();
+    });
+    const target = transport === "http2_v1"
+      ? duplexSandboxTarget(remoteCwd, runner)
+      : queueSandboxTarget(remoteCwd);
+    const bridge = await startTestDuplexBridge("run-route-policy", target, api.origin);
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe(transport);
+      const request = async (method: string, requestPath: string, token: string) => {
+        const headers = {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "x-not-allowed": "drop-me",
+        };
+        if (session) {
+          const response = await http2TestRequest(session, { method, path: requestPath, headers });
+          return { status: response.status, body: JSON.parse(response.body.toString("utf8")) };
+        }
+        const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}${requestPath}`, { method, headers });
+        return { status: response.status, body: await response.json() };
+      };
+      const token = transport === "http2_v1" ? bridgeToken : bridge!.env.PAPERCLIP_API_KEY;
+      expect((await request("GET", "/api/agents/agent-1/instructions-bundle", "wrong-token")).status).toBe(401);
+      expect(api.requests).toHaveLength(0);
+
+      for (const [method, requestPath] of [
+        ["GET", "/api/agents/agent-1/instructions-bundle"],
+        ["GET", "/api/agents/agent-1/instructions-bundle/file?path=AGENTS.md"],
+        ["PUT", "/api/agents/agent-1/instructions-bundle/file?path=AGENTS.md"],
+        ["POST", "/api/companies/company-1/skills"],
+      ]) {
+        const response = await request(method, requestPath, token);
+        expect(response.status).toBe(setting === "true" ? apiStatus : 403);
+        if (setting === "true") {
+          expect(response.body).toEqual(apiStatus === 403 ? { error: "API permission denied" } : { ok: true });
+          expect(api.requests.at(-1)).toMatchObject({
+            method,
+            url: requestPath,
+            auth: "Bearer real-run-jwt",
+            runId: "run-route-policy",
+          });
+          expect(api.requests.at(-1)?.headers["x-not-allowed"]).toBeUndefined();
+        } else {
+          expect(response.body.error).toContain("Route not allowed:");
+        }
+      }
+      expect(api.requests).toHaveLength(setting === "true" ? 4 : 0);
+    } finally {
+      session?.destroy();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("rejects forged queue destinations and filters headers with the route opt-out enabled", async () => {
+    vi.stubEnv("PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES", "true");
+    const { remoteCwd } = await createSandboxWorkspace("paperclip-bridge-forged-queue-");
+    const api = await startRecordingApiServer();
+    const externalApi = await startRecordingApiServer();
+    const bridge = await startTestDuplexBridge("run-forged-queue", queueSandboxTarget(remoteCwd), api.origin);
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      const queueDir = bridge!.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
+      const paths = [
+        `${externalApi.origin}/collect`,
+        `${externalApi.origin.replace("http:", "")}/collect`,
+        `/\\${new URL(externalApi.origin).host}/collect`,
+        "/api/agents/../secrets",
+        "/api/agents/%2e%2e/secrets",
+        "/api/agents%2fsecrets",
+        "/api/agents/agent-1/instructions-bundle/file",
+      ];
+      for (const [index, requestPath] of paths.entries()) {
+        const id = `forged-${index}`;
+        const filePath = path.join(queueDir, "requests", `${id}.json`);
+        await writeFile(`${filePath}.tmp`, JSON.stringify({
+          id,
+          method: "GET",
+          path: requestPath,
+          query: "?path=references%2Fworkflow.md",
+          headers: {
+            accept: "application/json",
+            authorization: "Bearer forged-token",
+            cookie: "forged-session",
+            host: "attacker.example",
+            "x-forwarded-host": "attacker.example",
+            "x-paperclip-run-id": "forged-run",
+          },
+          body: "",
+          createdAt: new Date().toISOString(),
+        }));
+        await rename(`${filePath}.tmp`, filePath);
+      }
+      await vi.waitFor(async () => {
+        expect((await readdir(path.join(queueDir, "responses"))).filter(file => file.endsWith(".json"))).toHaveLength(paths.length);
+      }, { timeout: 5000 });
+      for (const [index] of paths.entries()) {
+        const response = JSON.parse(await readFile(path.join(queueDir, "responses", `forged-${index}.json`), "utf8"));
+        expect(response.status).toBe(index === paths.length - 1 ? 200 : 400);
+      }
+      expect(externalApi.requests).toHaveLength(0);
+      expect(api.requests).toHaveLength(1);
+      expect(api.requests[0]).toMatchObject({
+        url: "/api/agents/agent-1/instructions-bundle/file?path=references%2Fworkflow.md",
+        auth: "Bearer real-run-jwt",
+        runId: "run-forged-queue",
+        headers: { accept: "application/json", host: new URL(api.origin).host },
+      });
+      expect(api.requests[0].headers.cookie).toBeUndefined();
+      expect(api.requests[0].headers["x-forwarded-host"]).toBeUndefined();
+    } finally {
+      await bridge?.stop();
+      await api.close();
+      await externalApi.close();
+    }
+  }, 20000);
 
   it("test_startup_failure_falls_back_to_queue_v1", async () => {
     // The channel open itself fails (a provider startup fault, before any

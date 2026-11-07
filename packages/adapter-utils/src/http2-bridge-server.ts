@@ -773,6 +773,7 @@ export interface CreateHttp2BridgeServerOptions {
   forwardRequest: Http2BridgeForwardHandler;
   /** The route allowlist. The default is {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST}. */
   routes?: readonly SandboxCallbackBridgeRouteRule[];
+  allowAllRoutes?: boolean;
   /** The header allowlist. The default is {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST}. */
   headerAllowlist?: readonly string[];
   /** The maximum request body size, in bytes. The default is {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES}. */
@@ -1203,7 +1204,7 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       }
       const method = normalizeStreamMethod(headers[":method"]);
 
-      const denialReason = authorizeSandboxCallbackBridgeRequestWithRoutes(
+      const denialReason = options.allowAllRoutes === true ? null : authorizeSandboxCallbackBridgeRequestWithRoutes(
         { method, path: parsedPath.value.pathname },
         routes,
       );
