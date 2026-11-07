@@ -987,6 +987,13 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("tells chat to link the profile of an agent it acted on without turning the link into a wake mention", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its profile at /<prefix>/agents/<urlKey or id>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use agent:// only when you intend to notify that agent");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>");
+  });
+
   it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
     expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
