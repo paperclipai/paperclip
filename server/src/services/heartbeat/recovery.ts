@@ -28,6 +28,7 @@ import {
 } from "../sandbox-stop-and-retain.js";
 import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
+import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import {
   legacyControllerBootId,
   liveLegacyControllerExpiresAt,
@@ -108,7 +109,7 @@ import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
 import type { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import type { createHeartbeatRunState } from "./run-state.js";
-import type { HeartbeatRetryDependencies, createHeartbeatRetries } from "./retries.js";
+import { failedRunRetryBudgetSpent, type HeartbeatRetryDependencies, type createHeartbeatRetries } from "./retries.js";
 import type { CancelRunOptions } from "./run-control.js";
 import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
 
@@ -2202,7 +2203,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
         const profile = parseObject(run.runnerProfileJson);
         if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) {
-          remoteRetryRunIds.push(run.id);
+          // A continuation that never started its own runner holds only its
+          // predecessor's identity: resume it the way its failed attempt ran.
+          const retirement = await retireInheritedRemoteRunnerIdentity(db, run.id);
+          if (retirement === "retired") claimableNativeRunIds.add(run.id);
+          // A lock or database error is not evidence: retry on the next sweep.
+          else if (retirement === "transient") scope.onDeferredDeadline?.(Date.now() + 30_000);
+          else remoteRetryRunIds.push(run.id);
         } else {
           const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
             eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -2672,7 +2679,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         !revokedState.processGroupId;
       const shouldRetry =
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
-        (run.processLossRetryCount ?? 0) < 1 &&
+        // Process loss spends the durable failure retry budget that
+        // enqueueProcessLossRetry schedules against (execution-semantics
+        // "Shutdown, process loss, and provider failure"). Checking it here
+        // keeps "retrying once" honest and lets an exhausted chain fall
+        // through to the interaction continuation path below.
+        !failedRunRetryBudgetSpent(run) &&
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           restartInterruptedBeforeDispatch ||

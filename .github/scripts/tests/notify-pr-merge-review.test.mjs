@@ -253,6 +253,58 @@ test("workflow uses read permissions, a protected environment, trusted checkout,
   }
 });
 
+// Evaluates the small GitHub expression subset used by the notifier job condition.
+// Unknown functions or syntax fail the test instead of being silently approximated.
+function jobCondition(expression) {
+  const source = expression.trim().replace(/\s+/g, " ");
+  const allowed = /^(?:\s|\(|\)|&&|\|\||==|!=|,|'[^']*'|\d+|github(?:\.[a-z_]+)+|contains|fromJSON)+$/;
+  assert.match(source, allowed, "Unsupported syntax in the notifier job condition");
+  const javascript = source.replace(/github((?:\.[a-z_]+)+)/g, (_, path) => `github${path.replaceAll(".", "?.")}`)
+    .replace(/==/g, "===").replace(/!===/g, "!==");
+  const evaluate = new Function("github", "contains", "fromJSON", `return (${javascript});`);
+  return (github) => evaluate(github, (list, value) => list.includes(value), (text) => JSON.parse(text));
+}
+
+test("workflow skips non-final events before runner allocation and collapses bursts per PR head", () => {
+  const workflow = readFileSync(".github/workflows/pr-merge-review.yml", "utf8");
+  const triggers = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
+  // Exactly these trigger kinds; check_run and status cannot be filtered at the trigger level.
+  assert.deepEqual([...triggers.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1]),
+    ["workflow_run", "check_run", "status"]);
+  assert.match(triggers, /check_run:\n {4}types: \[completed\]/);
+  const job = workflow.slice(workflow.indexOf("\n  notify:"));
+  const condition = job.slice(job.indexOf("    if: >-"), job.indexOf("\n    # ", job.indexOf("    if: >-")));
+  // GitHub Actions check runs arrive through workflow_run; only other providers schedule a job.
+  assert.match(condition, /github\.event_name == 'check_run' &&\s+github\.event\.check_run\.app\.id != 15368/);
+  assert.match(condition, /fromJSON\('\["success","skipped","neutral"\]'\), github\.event\.check_run\.conclusion/);
+  assert.match(condition, /fromJSON\('\["success","skipped","neutral"\]'\), github\.event\.workflow_run\.conclusion/);
+  assert.match(condition, /github\.event_name == 'status' && github\.event\.state == 'success'/);
+  assert.match(condition, /github\.event\.workflow_run\.event == 'pull_request'/);
+  assert.match(condition, /github\.repository == 'paperclipai\/paperclip'/);
+  // Evaluate the condition for real events so an operator change cannot reopen the flood.
+  const schedules = jobCondition(condition.replace(/^ {4}if: >-/, ""));
+  const repository = { full_name: "paperclipai/paperclip" };
+  const run = (event, conclusion) => ({ event_name: "workflow_run", repository: "paperclipai/paperclip",
+    event: { repository, workflow_run: { event, conclusion, head_sha: head } } });
+  const checkRun = (appId, conclusion) => ({ event_name: "check_run", repository: "paperclipai/paperclip",
+    event: { repository, check_run: { app: { id: appId }, conclusion, head_sha: head } } });
+  const status = (state) => ({ event_name: "status", repository: "paperclipai/paperclip",
+    event: { repository, state, sha: head } });
+  for (const accepted of [run("pull_request", "success"), run("pull_request_target", "neutral"),
+    run("pull_request", "skipped"), checkRun(867647, "success"), checkRun(156372, "neutral"), status("success")]) {
+    assert.equal(schedules(accepted), true, JSON.stringify(accepted));
+  }
+  for (const rejected of [run("pull_request", "failure"), run("pull_request", "cancelled"), run("push", "success"),
+    run("schedule", "success"), checkRun(15368, "success"), checkRun(867647, "failure"),
+    checkRun(867647, "action_required"), status("pending"), status("failure"), status("error"),
+    { ...status("success"), repository: "someone/fork" }]) {
+    assert.equal(schedules(rejected), false, JSON.stringify(rejected));
+  }
+  // Job-level concurrency: a skipped event must not cancel a scheduled notifier.
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("\njobs:")), /concurrency:/);
+  assert.match(job, /\n {4}concurrency:\n {6}group: pr-merge-review-\$\{\{ github\.event\.workflow_run\.head_sha \|\| github\.event\.check_run\.head_sha \|\| github\.event\.sha \}\}\n {6}cancel-in-progress: true\n/);
+});
+
 test("API probe uses the same read permissions without private webhook access", () => {
   const probe = readFileSync(".github/workflows/pr-review-api-access.yml", "utf8");
   for (const permission of ["actions", "checks", "contents", "pull-requests", "statuses"]) {

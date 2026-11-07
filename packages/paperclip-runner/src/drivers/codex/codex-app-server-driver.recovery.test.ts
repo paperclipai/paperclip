@@ -63,6 +63,40 @@ function cursorProviderIdentity(mode: unknown) {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it("keeps one disposition request after a restart continuation completes without a result", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-resultless-continuation", normalizedSessionId: "session-resultless-continuation", workingDirectory: WORKSPACE,
+    });
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    // The provider ends the continuation without paperclip_finish, for
+    // example while it says it will wait for a background command.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    const afterContinuation = await session.snapshot();
+    // The continuation borrowed the one-shot marker for crash adoption; it was
+    // not the disposition request, so the allowance is still available.
+    expect(afterContinuation).toMatchObject({ activeTurnId: null, semanticResult: null,
+      dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null });
+    expect(nativeRestartInterruptedTurnId({ ...afterContinuation, semanticResult: null })).toBeNull();
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    await expect(session.startTurn({ message: { role: "user", text: "Report the disposition." } }))
+      .resolves.toMatchObject({ turnId: "turn-3" });
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    // The disposition request itself is the bound: a resultless answer to it
+    // does not re-arm another request.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-3", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    await expect(session.startTurn({ message: { role: "user", text: "Again." } })).rejects.toThrow();
+    await session.close({ reason: "fixture complete" });
+  });
+
   it("offers another restart continuation when a later restart loses the continuation turn itself", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

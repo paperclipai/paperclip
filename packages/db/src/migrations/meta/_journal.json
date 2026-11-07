@@ -3074,6 +3074,20 @@
       "when": 1794035686391,
       "tag": "0440_flippant_the_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 441,
+      "version": "7",
+      "when": 1794069983192,
+      "tag": "0441_lucky_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 442,
+      "version": "7",
+      "when": 1794071961340,
+      "tag": "0442_low_salo",
+      "breakpoints": true
     }
   ]
 }

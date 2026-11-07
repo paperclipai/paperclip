@@ -139,6 +139,9 @@ vi.mock("../usage-receipts.js", async (importOriginal) => ({
   createRunUsageRecorder: usageRecorder.create,
 }));
 
+const wakeAnchor = vi.hoisted(() => ({ read: vi.fn(async (_db: unknown, _runId: string): Promise<number | null> => null) }));
+vi.mock("./native-run-wake-anchor.js", () => ({ readNativeRunWakeRequestedAtMs: wakeAnchor.read }));
+
 vi.mock("./native-usage-delivery.js", () => ({
   createNativeUsageDelivery: vi.fn(async () => ({ capture: async () => undefined })),
 }));
@@ -740,7 +743,20 @@ describe("remote controller restart adoption", () => {
         runId: "run",
         normalizedSessionId: "session",
       }),
-    ).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    ).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=provider_lease_id"));
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("names the missing durable runner identity before reading the sandbox", async () => {
+    const { execute, target } = fixture();
+    await expect(
+      verifyRemoteRunnerReattachment({
+        claim,
+        target: target as never,
+        identity: {},
+        runId: "run",
+        normalizedSessionId: "session",
+      }),
+    ).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=identity_run_id"));
     expect(execute).not.toHaveBeenCalled();
   });
   it.each([
@@ -8813,13 +8829,50 @@ describe("native resumed preparation timing", () => {
       const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
       expect(ttft).toHaveLength(1);
       expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", startOffsetMs: 0,
-        durationMs: ingress === "native_dispatch" ? 500 : 4_500, eventKind: "agentMessage", outcome: "ok" });
+        durationMs: ingress === "native_dispatch" ? 500 : 4_500, eventKind: "agentMessage", outcome: "ok",
+        anchor: ingress === "comment.to_run_created" ? "comment"
+          : ingress === "question_response.to_run_created" ? "question_response" : "run_created" });
       expect(events.find((event) => event.payload?.span === "provider.time_to_first_agent_event")?.payload)
         .toMatchObject({ parentSpan: "agent.turn", eventKind: "agentMessage" });
       expect(JSON.stringify(ttft)).not.toContain("first text");
       expect(JSON.stringify(ttft)).not.toContain("later text");
     },
   );
+
+  it("anchors first-token timing at an earlier durable wake request without blocking later events", async () => {
+    const startedAtMs = Date.now() - 5_000;
+    const events: AdapterRuntimeEvent[] = [];
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 4_000);
+    let answerRead!: (value: number) => void;
+    wakeAnchor.read.mockImplementationOnce(() => new Promise<number>((resolve) => { answerRead = resolve; }));
+    const event = (eventType: string, payload: Record<string, unknown>) => ({
+      eventType, payload, itemId: "message", emittedAt: new Date(startedAtMs + 2_000).toISOString(),
+    }) as PrpEvent;
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      for (const candidate of [event("turn.submitted", {}), event("turn.started", {})]) await accountingEvents.committed!(candidate);
+      clock.mockReturnValue(startedAtMs + 4_500);
+      await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "first text" }));
+      // The anchor read is still pending; later events are not held behind it.
+      await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "later text" }));
+      expect(events.some((candidate) => candidate.payload?.span === "task.time_to_first_token")).toBe(false);
+      answerRead(startedAtMs - 2_000);
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(), execution, runnerInstanceId: "runner",
+        preparationSpans: [{ name: "heartbeat.queue", startedAtMs, endedAtMs: startedAtMs + 100 }],
+        onEvent: async (event) => { events.push(event); },
+      });
+    } finally { clock.mockRestore(); }
+    expect(wakeAnchor.read).toHaveBeenCalledWith(expect.anything(), execution.binding.runId);
+    const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
+    expect(ttft).toHaveLength(1);
+    expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", startOffsetMs: -2_000,
+      durationMs: 6_500, anchor: "wake_request", eventKind: "agentMessage" });
+  });
 
   it.each([
     ["item.delta", { kind: "reasoning", text: "thinking" }, "reasoning"],
