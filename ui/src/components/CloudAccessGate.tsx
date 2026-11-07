@@ -110,14 +110,20 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   }, [sessionQuery.data]);
 
   const sessionBootstrap = sessionQuery.isSuccess ? sessionQuery.data?.boardBootstrap : undefined;
+  const sessionUserId = sessionQuery.data?.user.id ?? null;
+  const accessError = queryClient.getQueryState([...queryKeys.access.currentBoardAccess, sessionUserId])?.error;
+  const accessDenied = accessError instanceof ApiError && (accessError.status === 401 || accessError.status === 403);
   const bootstrap = sessionBootstrap?.userId === sessionQuery.data?.user.id
-    && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id ? sessionBootstrap : undefined;
+    && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id && !accessDenied ? sessionBootstrap : undefined;
   const boardAccessQuery = useBootstrapQuery({
     ...boardAccessQueryOptions(
-      sessionQuery.data?.user.id ?? null,
-      sessionQuery.data?.boardBootstrap,
+      sessionUserId,
+      bootstrap,
       sessionQuery.dataUpdatedAt,
-      () => { void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session }); },
+      () => {
+        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+        if (current?.user.id === sessionUserId) void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      },
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: retryWhileTransient,

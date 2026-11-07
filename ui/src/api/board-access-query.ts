@@ -19,7 +19,13 @@ export function boardAccessQueryOptions(
     queryFn: async (): Promise<BoardBootstrap["boardAccess"]> => {
       // Path-only request coalescing must not join reads from two accounts.
       detachInflightGet("/cli-auth/me");
-      const access = await accessApi.getCurrentBoardAccess();
+      let access: Awaited<ReturnType<typeof accessApi.getCurrentBoardAccess>>;
+      try {
+        access = await accessApi.getCurrentBoardAccess();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) onAccountChanged();
+        throw error;
+      }
       if (access.userId !== userId) {
         onAccountChanged();
         throw new ApiError("The signed-in account changed. Checking your session again.", 401, { code: "session_changed" });

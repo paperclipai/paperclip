@@ -104,6 +104,101 @@ describe("CloudAccessGate restart recovery", () => {
     await flushReact();
   }
 
+  it("rechecks an expired session after board access returns 401", async () => {
+    await render();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    const previous = responses["/api/auth/get-session"];
+    responses["/api/auth/get-session"] = null;
+    failingPath = "/api/cli-auth/me";
+    failure = () => Response.json({ error: "Unauthorized" }, { status: 401 });
+    try {
+      void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+      await flushReact();
+      await flushReact();
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(container.querySelector("[data-redirect]")?.getAttribute("data-redirect")).toContain("/auth?next=");
+      expect(callsTo("/api/auth/get-session")).toBe(2);
+    } finally { responses["/api/auth/get-session"] = previous; }
+  });
+
+  it("keeps a 403 closed without treating it as a logout", async () => {
+    await render();
+    failingPath = "/api/cli-auth/me";
+    failure = () => Response.json({ error: "Forbidden" }, { status: 403 });
+    void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Unable to load Paperclip");
+    expect(container.querySelector("[data-redirect]")).toBeNull();
+    expect(callsTo("/api/auth/get-session")).toBe(1);
+  });
+
+  it("rechecks the session again when retrying a persistent 401", async () => {
+    await render();
+    failingPath = "/api/cli-auth/me";
+    failure = () => Response.json({ error: "Unauthorized" }, { status: 401 });
+    void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Unable to load Paperclip");
+    const previous = responses["/api/auth/get-session"];
+    responses["/api/auth/get-session"] = null;
+    try {
+      flushSync(() => container.querySelector("button")!.click());
+      await flushReact();
+      await flushReact();
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(container.querySelector("[data-redirect]")?.getAttribute("data-redirect")).toContain("/auth?next=");
+    } finally { responses["/api/auth/get-session"] = previous; }
+  });
+
+  it("does not reopen access from a same-account bootstrap after a 401", async () => {
+    await render();
+    const previous = responses["/api/auth/get-session"];
+    responses["/api/auth/get-session"] = { ...(previous as object), boardBootstrap: {
+      userId: "user", companies: [], boardAccess: { userId: "user", isInstanceAdmin: false, companyIds: ["company"] },
+    } };
+    failingPath = "/api/cli-auth/me";
+    failure = () => Response.json({ error: "Unauthorized" }, { status: 401 });
+    try {
+      void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+      await flushReact();
+      await flushReact();
+      expect(callsTo("/api/auth/get-session")).toBe(2);
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(container.textContent).toContain("Unable to load Paperclip");
+    } finally { responses["/api/auth/get-session"] = previous; }
+  });
+
+  it.each(["401", "success"])("ignores a late %s from the previous account after an account change", async outcome => {
+    await render();
+    let rejectOld!: (response: Response) => void;
+    const previousAccess = responses["/api/cli-auth/me"];
+    const delayed = new Promise<Response>(resolve => { rejectOld = resolve; });
+    fetchMock.mockImplementationOnce(async () => delayed);
+    void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await flushReact();
+    responses["/api/cli-auth/me"] = { userId: "other", isInstanceAdmin: false, companyIds: [] };
+    try {
+      client.setQueryData(queryKeys.auth.session, {
+        session: { id: "other-session", userId: "other" },
+        user: { id: "other", name: "Other", email: "other@example.com", image: null },
+      });
+      await flushReact();
+      rejectOld(outcome === "401"
+        ? Response.json({ error: "Unauthorized" }, { status: 401 })
+        : Response.json({ userId: "user", isInstanceAdmin: true, companyIds: ["old-company"] }));
+      await flushReact();
+      await flushReact();
+      expect(container.querySelector("textarea")).toBeNull();
+      expect(container.textContent).toContain("No organization access");
+      expect(callsTo("/api/auth/get-session")).toBe(1);
+      expect(client.getQueryData([...queryKeys.access.currentBoardAccess, "other"])).toMatchObject({ userId: "other", companyIds: [] });
+    } finally { responses["/api/cli-auth/me"] = previousAccess; }
+  });
+
   it("opens from same-session board access without another startup request", async () => {
     const previous = responses["/api/auth/get-session"];
     responses["/api/auth/get-session"] = { ...(previous as object), boardBootstrap: {
