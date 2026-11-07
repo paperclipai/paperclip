@@ -696,6 +696,102 @@ describe("DiscoveryGrid IA presentation", () => {
   });
 });
 
+describe("DiscoveryGrid list layout", () => {
+  const listCard = {
+    key: "demo-skill",
+    skillId: "skill-1",
+    folderId: null,
+    catalogRef: null,
+    name: "Demo Skill",
+    slug: "demo-skill",
+    author: "Paperclip",
+    version: "v1.2.0",
+    tagline: "Summarize pull requests.",
+    description: null,
+    categories: ["engineering"],
+    iconUrl: null,
+    color: null,
+    starCount: 3,
+    agentCount: 2,
+    forkCount: 0,
+    installed: true,
+    required: false,
+    forkedFrom: false,
+    updatedAt: 0,
+    sourceBadge: "github" as const,
+    sourceLabel: "GitHub",
+  };
+
+  it("keeps cards as the default layout and switches through the toolbar", async () => {
+    const onLayoutChange = vi.fn();
+    const node = await renderDiscoveryGrid({ cards: [listCard], totalCount: 1, onLayoutChange });
+
+    expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+    expect(node.querySelector('[data-skills-layout="list"]')).toBeNull();
+    expect(node.querySelector('[aria-label="Card view"]')?.getAttribute("aria-pressed")).toBe("true");
+
+    await click(node.querySelector<HTMLButtonElement>('[aria-label="List view"]')!);
+    expect(onLayoutChange).toHaveBeenCalledWith("list");
+  });
+
+  it("renders one compact row per skill with the card's content and opens it", async () => {
+    const onOpenCard = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [listCard],
+      totalCount: 1,
+      layout: "list",
+      onLayoutChange: vi.fn(),
+      onOpenCard,
+    });
+    const rows = node.querySelectorAll<HTMLElement>("[data-skill-row]");
+
+    expect(node.querySelector('[data-skills-layout="cards"]')).toBeNull();
+    expect(node.querySelector('[aria-label="List view"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.textContent).toContain("Demo Skill");
+    expect(row.textContent).toContain("Summarize pull requests.");
+    expect(row.textContent).toContain("by Paperclip · v1.2.0");
+    expect(row.textContent).toContain("Enabled for 2 agents");
+    expect(row.textContent).toContain("Installed");
+    expect(row.textContent).toContain("GitHub");
+    expect(row.textContent).toContain("engineering");
+
+    await act(async () => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(onOpenCard).toHaveBeenCalledWith(listCard);
+  });
+
+  it("supports select mode, move to folder and the folder badge in list layout", async () => {
+    const onSelectCard = vi.fn();
+    const onOpenMoveCard = vi.fn();
+    const node = await renderDiscoveryGrid({
+      cards: [{ ...listCard, folderId: "project-folder" }],
+      totalCount: 1,
+      layout: "list",
+      search: "demo",
+      selectMode: true,
+      onSelectCard,
+      onOpenMoveCard,
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onMoveSelected: vi.fn(),
+      onCreateFolderAndMoveSelected: vi.fn(),
+      onClearSelected: vi.fn(),
+      folderResult: projectFolderResult,
+    });
+    const row = node.querySelector<HTMLElement>("[data-skill-row]")!;
+
+    expect(row.textContent).toContain("Acme");
+    await click(row.querySelector<HTMLInputElement>('input[aria-label="Select Demo Skill"]')!);
+    expect(onSelectCard).toHaveBeenCalledWith(expect.objectContaining({ key: "demo-skill" }), true);
+
+    await click(buttonsNamed(row, "Move to folder…")[0]!);
+    expect(onOpenMoveCard).toHaveBeenCalledWith(expect.objectContaining({ key: "demo-skill" }));
+  });
+});
+
 describe("skills discovery tab routing", () => {
   it("opens the folder-first installed view when the URL has no tab", () => {
     expect(resolveDiscoveryTab(null)).toBe("installed");
@@ -1280,6 +1376,39 @@ describe("CompanySkills page read resilience", () => {
   afterEach(() => {
     queryClient.clear();
     vi.unstubAllGlobals();
+  });
+
+  describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s skills layout", (_name, Page) => {
+    afterEach(() => {
+      localStorage.clear();
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+    });
+
+    it("defaults to cards, then follows the saved choice, and lets the URL win", async () => {
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+      let node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+      await act(async () => root?.unmount());
+
+      localStorage.setItem("paperclip:skills-layout", "list");
+      node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="list"]')?.textContent).toContain("Demo Skill");
+      await act(async () => root?.unmount());
+
+      editorRoute.search = "layout=cards";
+      node = await renderPage(Page);
+      expect(node.querySelector('[data-skills-layout="cards"]')).not.toBeNull();
+    });
+
+    it("saves the chosen layout in the browser", async () => {
+      editorRoute.path = undefined;
+      editorRoute.search = "";
+      const node = await renderPage(Page);
+      await click(node.querySelector<HTMLButtonElement>('[aria-label="List view"]')!);
+      expect(localStorage.getItem("paperclip:skills-layout")).toBe("list");
+    });
   });
 
   describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s file editor baseline", (_name, Page) => {

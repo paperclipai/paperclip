@@ -100,6 +100,7 @@ import {
   type SkillCreateDraft,
 } from "../lib/skill-create";
 import { SkillCardIcon } from "../components/SkillCardIcon";
+import { useSkillsLayout, type SkillsLayout } from "./skills/skills-layout";
 import { ImportSkillsFromProjectDialog } from "./skills/ImportSkillsFromProjectDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -805,18 +806,7 @@ function SkillCategoryChip({ label }: { label: string }) {
   );
 }
 
-function SkillCard({
-  card,
-  folders,
-  selected = false,
-  selectMode = false,
-  showFolderBadge = false,
-  onOpen,
-  onSelectChange,
-  onMove,
-  onCreateFolderAndMove,
-  onOpenMove,
-}: {
+type SkillCardProps = {
   card: DiscoveryCard;
   folders?: FolderListItem[];
   selected?: boolean;
@@ -828,9 +818,10 @@ function SkillCard({
   onMove?: (card: DiscoveryCard, folderId: string | null) => void;
   onCreateFolderAndMove?: (card: DiscoveryCard) => void;
   onOpenMove?: (card: DiscoveryCard) => void;
-}) {
-  const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
-  const SourceIcon = source.icon;
+};
+
+// Shared by the card and list layouts so both open, select and move skills the same way.
+function skillCardFolderState(card: DiscoveryCard, folders: FolderListItem[] | undefined, showFolderBadge: boolean) {
   const badgeFolder = showFolderBadge && card.installed
     ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
     : undefined;
@@ -838,18 +829,103 @@ function SkillCard({
   const canMove = card.installed
     && !card.required
     && !(cardFolder && isBundledFolder(cardFolder));
+  return { badgeFolder, canMove };
+}
+
+function skillOpenHandlers(card: DiscoveryCard, onOpen: (card: DiscoveryCard) => void) {
+  return {
+    onClick: () => onOpen(card),
+    onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onOpen(card);
+      }
+    },
+    role: "button",
+    tabIndex: 0,
+  } as const;
+}
+
+function SkillSelectCheckbox({
+  card,
+  selected,
+  onSelectChange,
+  className,
+}: Pick<SkillCardProps, "card" | "selected" | "onSelectChange"> & { className?: string }) {
+  return (
+    <input
+      type="checkbox"
+      className={cn("h-4 w-4 shrink-0 rounded border-border", className)}
+      checked={selected}
+      aria-label={`Select ${card.name}`}
+      onClick={(event) => event.stopPropagation()}
+      onChange={(event) => onSelectChange?.(card, event.target.checked)}
+    />
+  );
+}
+
+function SkillCardActions({
+  card,
+  folders,
+  onMove,
+  onCreateFolderAndMove,
+  onOpenMove,
+  className,
+}: Pick<SkillCardProps, "card" | "folders" | "onMove" | "onCreateFolderAndMove" | "onOpenMove"> & { className?: string }) {
+  if (!folders || !onMove || !onCreateFolderAndMove) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className={cn("shrink-0 opacity-70 group-hover:opacity-100", className)}
+          aria-label={`More actions for ${card.name}`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+        {onOpenMove ? (
+          <>
+            <DropdownMenuItem onSelect={() => onOpenMove(card)}>
+              <FolderInput className="h-3.5 w-3.5" />
+              Move to folder…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        <MoveToMenu
+          folders={folders}
+          currentFolderId={card.folderId}
+          onMove={(folderId) => onMove(card, folderId)}
+          onCreateAndMove={() => onCreateFolderAndMove(card)}
+        />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function SkillCard({
+  card,
+  folders,
+  selected = false,
+  selectMode = false,
+  showFolderBadge = false,
+  onOpen,
+  onSelectChange,
+  onMove,
+  onCreateFolderAndMove,
+  onOpenMove,
+}: SkillCardProps) {
+  const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
+  const SourceIcon = source.icon;
+  const { badgeFolder, canMove } = skillCardFolderState(card, folders, showFolderBadge);
   return (
     <div
-      onClick={() => onOpen(card)}
-      onKeyDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen(card);
-        }
-      }}
-      role="button"
-      tabIndex={0}
+      {...skillOpenHandlers(card, onOpen)}
       className={cn(
         // Quiet interactive-card affordance (DECISION-SHEET: one recipe for
         // clickable cards): pointer cursor, border darkens, slight lift.
@@ -859,14 +935,7 @@ function SkillCard({
     >
       <div className="flex items-start gap-3">
         {selectMode && canMove ? (
-          <input
-            type="checkbox"
-            className="mt-1 h-4 w-4 rounded border-border"
-            checked={selected}
-            aria-label={`Select ${card.name}`}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => onSelectChange?.(card, event.target.checked)}
-          />
+          <SkillSelectCheckbox card={card} selected={selected} onSelectChange={onSelectChange} className="mt-1" />
         ) : null}
         <SkillCardIcon card={card} />
         <div className="min-w-0 flex-1">
@@ -881,37 +950,15 @@ function SkillCard({
             </div>
           ) : null}
         </div>
-        {canMove && folders && onMove && onCreateFolderAndMove ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="-mr-1 -mt-1 opacity-70 group-hover:opacity-100"
-                aria-label={`More actions for ${card.name}`}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
-              {onOpenMove ? (
-                <>
-                  <DropdownMenuItem onSelect={() => onOpenMove(card)}>
-                    <FolderInput className="h-3.5 w-3.5" />
-                    Move to folder…
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </>
-              ) : null}
-              <MoveToMenu
-                folders={folders}
-                currentFolderId={card.folderId}
-                onMove={(folderId) => onMove(card, folderId)}
-                onCreateAndMove={() => onCreateFolderAndMove(card)}
-              />
-            </DropdownMenuContent>
-          </DropdownMenu>
+        {canMove ? (
+          <SkillCardActions
+            card={card}
+            folders={folders}
+            onMove={onMove}
+            onCreateFolderAndMove={onCreateFolderAndMove}
+            onOpenMove={onOpenMove}
+            className="-mr-1 -mt-1"
+          />
         ) : null}
       </div>
 
@@ -984,6 +1031,112 @@ function SkillCard({
   );
 }
 
+// Compact list layout: the card's content on one row that wraps below `sm`.
+function SkillRow({
+  card,
+  folders,
+  selected = false,
+  selectMode = false,
+  showFolderBadge = false,
+  onOpen,
+  onSelectChange,
+  onMove,
+  onCreateFolderAndMove,
+  onOpenMove,
+}: SkillCardProps) {
+  const source = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
+  const SourceIcon = source.icon;
+  const { badgeFolder, canMove } = skillCardFolderState(card, folders, showFolderBadge);
+  const summary = resolveSkillSummaryText({
+    tagline: card.tagline,
+    description: card.description,
+    key: card.key,
+    name: card.name,
+  });
+  return (
+    <div
+      {...skillOpenHandlers(card, onOpen)}
+      data-skill-row={card.key}
+      className={cn(
+        "group flex items-start gap-3 px-3 py-2.5 text-left cursor-pointer transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        card.required && "bg-muted/30",
+      )}
+    >
+      {selectMode && canMove ? (
+        <SkillSelectCheckbox card={card} selected={selected} onSelectChange={onSelectChange} className="mt-2" />
+      ) : null}
+      <SkillCardIcon card={card} />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-mono text-sm font-medium text-foreground">{card.name}</span>
+            {card.forkedFrom ? (
+              <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-micro) text-muted-foreground">
+                <GitFork className="h-3 w-3" aria-hidden="true" />
+                Forked
+              </span>
+            ) : null}
+          </div>
+          {summary ? <p className="truncate text-xs text-muted-foreground">{summary}</p> : null}
+          <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
+            <span className="min-w-0 truncate">by {card.author}{card.version ? ` · ${card.version}` : ""}</span>
+            <span aria-hidden="true">·</span>
+            <span>
+            {card.installed
+              ? card.agentCount > 0
+                ? `Enabled for ${card.agentCount} ${card.agentCount === 1 ? "agent" : "agents"}`
+                : "Not enabled for any agents"
+              : "Available to install"}
+          </span>
+            {card.starCount > 0 ? <SkillStat icon={Star} value={String(card.starCount)} /> : null}
+            {card.forkCount > 0 ? <SkillStat icon={GitFork} value={String(card.forkCount)} /> : null}
+            {badgeFolder !== undefined ? (
+              <span className="flex min-w-0 items-center gap-1.5">
+                <FolderSwatch color={badgeFolder?.color} className="h-2 w-2" />
+                <span className="truncate">{badgeFolder ? badgeFolder.name : "Unfiled"}</span>
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center gap-1 sm:max-w-1/2 sm:shrink-0 sm:justify-end">
+          {card.installed ? (
+          <Badge variant="secondary" className="text-(length:--text-nano)">
+            Installed
+          </Badge>
+          ) : null}
+        <Badge variant="outline" className="max-w-full text-(length:--text-nano) text-muted-foreground">
+          <SourceIcon className="h-3 w-3" aria-hidden="true" />
+          <span className="truncate">{source.label}</span>
+        </Badge>
+          {card.categories.slice(0, 2).map((category) => (
+            <SkillCategoryChip key={category} label={category} />
+          ))}
+          {card.required ? (
+            <Badge variant="outline" className="border-border bg-muted/60 text-(length:--text-nano) text-muted-foreground">
+              <Lock className="h-3 w-3" aria-hidden="true" />
+              Bundled
+            </Badge>
+          ) : card.sourceKind === "optional" ? (
+          <Badge variant="outline" className="text-(length:--text-nano) text-muted-foreground">
+            Optional
+          </Badge>
+        ) : null}
+        </div>
+      </div>
+      {canMove ? (
+        <SkillCardActions
+          card={card}
+          folders={folders}
+          onMove={onMove}
+          onCreateFolderAndMove={onCreateFolderAndMove}
+          onOpenMove={onOpenMove}
+          className="mt-0.5"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export type DiscoveryCategory = { slug: string; count: number };
 
 function CategoryNav({
@@ -1040,6 +1193,8 @@ export function DiscoveryGrid({
   onSearchChange,
   sort,
   onSortChange,
+  layout = "cards",
+  onLayoutChange,
   cards,
   onOpenCard,
   loading,
@@ -1090,6 +1245,8 @@ export function DiscoveryGrid({
   onSearchChange: (value: string) => void;
   sort: DiscoverySort;
   onSortChange: (sort: DiscoverySort) => void;
+  layout?: SkillsLayout;
+  onLayoutChange?: (layout: SkillsLayout) => void;
   cards: DiscoveryCard[];
   onOpenCard: (card: DiscoveryCard) => void;
   loading: boolean;
@@ -1190,6 +1347,19 @@ export function DiscoveryGrid({
   }, [folderResult, folderSelection]);
   const activeProjectId = activeProjectFolder?.systemKey?.slice("project:".length) || null;
 
+  const skillItemProps = (card: DiscoveryCard) => ({
+    card,
+    folders: folderResult?.folders,
+    selected: selectedSkillIds.includes(card.skillId ?? ""),
+    selectMode,
+    showFolderBadge: Boolean(folderResult && search.trim()),
+    onOpen: onOpenCard,
+    onSelectChange: onSelectCard,
+    onMove: onMoveCard,
+    onCreateFolderAndMove: onCreateFolderAndMoveCard,
+    onOpenMove: onOpenMoveCard,
+  });
+
   return (
     // On desktop the store is bounded to the viewport so the category sidebar
     // and the results pane each scroll independently (PAP-10907). Mobile keeps
@@ -1242,6 +1412,7 @@ export function DiscoveryGrid({
           navigation={navigation}
           viewTitle={viewTitle} viewDescription={viewDescription} searchLabel={searchLabel}
           search={search} onSearchChange={onSearchChange} sort={sort} onSortChange={onSortChange}
+          layout={layout} onLayoutChange={onLayoutChange}
           availableSources={availableSources} sourceBadgeFilter={sourceBadgeFilter} setSourceBadgeFilter={setSourceBadgeFilter}
           onScan={onScan} scanPending={scanPending} onCreate={onCreate} onBrowseDiscover={onBrowseDiscover}
           onImport={onImport} onImportFromProject={onImportFromProject}
@@ -1375,23 +1546,19 @@ export function DiscoveryGrid({
                 {sourceFilteredCards.length} {sourceFilteredCards.length === 1 ? "skill" : "skills"}
                 {activeCategory ? <span className="capitalize"> · {activeCategory}</span> : null}
               </p>
-              <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
-                {sourceFilteredCards.map((card) => (
-                  <SkillCard
-                    key={card.key}
-                    card={card}
-                    folders={folderResult?.folders}
-                    selected={selectedSkillIds.includes(card.skillId ?? "")}
-                    selectMode={selectMode}
-                    showFolderBadge={Boolean(folderResult && search.trim())}
-                    onOpen={onOpenCard}
-                    onSelectChange={onSelectCard}
-                    onMove={onMoveCard}
-                    onCreateFolderAndMove={onCreateFolderAndMoveCard}
-                    onOpenMove={onOpenMoveCard}
-                  />
-                ))}
-              </div>
+              {layout === "list" ? (
+                <div data-skills-layout="list" className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+                  {sourceFilteredCards.map((card) => (
+                    <SkillRow key={card.key} {...skillItemProps(card)} />
+                  ))}
+                </div>
+              ) : (
+                <div data-skills-layout="cards" className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
+                  {sourceFilteredCards.map((card) => (
+                    <SkillCard key={card.key} {...skillItemProps(card)} />
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -3949,6 +4116,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [skillsLayout, setSkillsLayout] = useSkillsLayout(searchParams, setSearchParams);
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -5431,6 +5599,8 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           onSearchChange={setDiscoverySearch}
           sort={discoverySort}
           onSortChange={setDiscoverySort}
+          layout={skillsLayout}
+          onLayoutChange={setSkillsLayout}
           cards={visibleDiscoveryCards}
           onOpenCard={openDiscoveryCard}
           loading={skillsQuery.isLoading || catalogListQuery.isLoading || skillsView.kind === "reconnecting" || catalogListView.kind === "reconnecting"}
