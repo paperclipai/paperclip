@@ -10235,6 +10235,9 @@ export function issueRoutes(
               throw conflict("This recovery action already records a different execution reconciliation.");
             }
             if (!recorded && automatic?.replay === "blocked" && executionReconciliation) {
+              // An automatic no-replay disposition is final until a board user
+              // confirms new evidence. The task owner cannot retire it alone.
+              assertBoard(req);
               if (
                 activeRecoveryAction ||
                 sourceIssueStatus !== "todo" ||
@@ -10399,6 +10402,14 @@ export function issueRoutes(
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
+          // The task owner may record a verified stop with a known outcome.
+          // An unknown external outcome or an automatic no-replay hold needs a
+          // board user, because a fresh attempt may repeat an external action.
+          const activeAutomatic = activeRecoveryAction.evidence.automaticRecovery as
+            { replay?: string } | undefined;
+          if (executionReconciliation?.actionOutcome === "unknown" || activeAutomatic?.replay === "blocked") {
+            assertBoard(req);
+          }
           await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,

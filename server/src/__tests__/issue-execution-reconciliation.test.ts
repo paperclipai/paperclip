@@ -155,16 +155,52 @@ describe("issue execution reconciliation with real routes and Postgres", () => {
     expect((await request(f.app).get(`/api/issues/${f.issue.id}`).expect(200)).body.executionBlocker).toMatchObject({ runId: f.run.id });
   });
 
-  it("allows the authenticated task owner to reconcile unknown outcomes", async () => {
+  async function taskOwnerHold(active: boolean) {
     const f = await settledProcessHold(true, true);
     await db.insert(heartbeatRuns).values({ id: f.actorRunId, companyId: f.company.id,
       agentId: f.agent.id, status: "running", invocationSource: "on_demand",
       startedAt: new Date(), contextSnapshot: { issueId: f.issue.id } });
+    if (active) {
+      // An ordinary execution hold: active, without an automatic no-replay disposition.
+      await db.update(issueRecoveryActions).set({ status: "active", outcome: null, resolvedAt: null,
+        evidence: sql`${issueRecoveryActions.evidence} - 'automaticRecovery'` })
+        .where(eq(issueRecoveryActions.sourceIssueId, f.issue.id));
+    }
+    const [before] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id));
+    return { ...f, before: before! };
+  }
+
+  async function expectHoldUnchanged(f: Awaited<ReturnType<typeof taskOwnerHold>>) {
+    const [after] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.before.id));
+    expect(after).toMatchObject({ status: f.before.status, outcome: f.before.outcome });
+    expect(after!.evidence).not.toHaveProperty("executionReconciliation");
+    expect((await request(f.app).get(`/api/issues/${f.issue.id}`).expect(200)).body.executionBlocker)
+      .toMatchObject({ runId: f.run.id });
+  }
+
+  it.each(["not_performed", "unknown"])("refuses the task owner retiring an automatic no-replay hold with a %s outcome", async actionOutcome => {
+    const f = await taskOwnerHold(false);
+    expect(f.before.evidence.automaticRecovery).toMatchObject({ replay: "blocked" });
+    const body = resolutionBody(f.run.id);
+    body.executionReconciliation.actionOutcome = actionOutcome;
+    await request(f.app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`).send(body).expect(403);
+    await expectHoldUnchanged(f);
+  });
+
+  it("refuses the task owner reporting an unknown outcome on an ordinary execution hold", async () => {
+    const f = await taskOwnerHold(true);
     const body = resolutionBody(f.run.id);
     body.executionReconciliation.actionOutcome = "unknown";
-    const response = await request(f.app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`).send(body).expect(200);
+    await request(f.app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`).send(body).expect(403);
+    await expectHoldUnchanged(f);
+  });
+
+  it("allows the task owner to continue an ordinary execution hold with a verified stop and a known outcome", async () => {
+    const f = await taskOwnerHold(true);
+    const response = await request(f.app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`)
+      .send(resolutionBody(f.run.id)).expect(200);
     expect(response.body.recoveryAction.evidence.executionReconciliation).toMatchObject({
-      actorId: f.agent.id, recordedByUserId: null, actionOutcome: "unknown" });
+      actorId: f.agent.id, recordedByUserId: null, actionOutcome: "not_performed" });
     await heartbeat.drainActiveRunExecutions();
   });
 
