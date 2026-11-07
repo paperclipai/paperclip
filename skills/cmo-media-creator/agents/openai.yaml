@@ -1,0 +1,3 @@
+display_name: CMO Media Creator
+short_description: Generate CMO media drafts.
+default_prompt: Create an on-brand image or short video draft from a campaign brief, save the artifact, and report the prompt, model, path, and review status.
