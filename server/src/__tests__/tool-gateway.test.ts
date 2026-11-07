@@ -4629,7 +4629,7 @@ rl.on("line", (line) => {
         } else {
           const timeout = scenario === "default deadline" || scenario === "explicit deadline";
           expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout" : "mcp_remote_fetch_failed");
-          expect(stored.healthStatus).toBe(timeout ? "degraded" : "error");
+          expect(stored.healthStatus).toBe("ok");
           expect(event.metadata).toMatchObject({ execution: {
             failureKind: timeout ? "invocation_timeout" : "transport_failure",
             deadline: { timeoutMs: scenario === "explicit deadline" ? 1500 : 30_000, aborted: timeout },

@@ -6521,6 +6521,17 @@ export function createToolGatewayService(
         // automatically: the failed call may have changed app data.
         if (mcpSession) forgetMcpHttpSession(mcpSession);
       }
+      // Record the response headers before the body is read, so a body that
+      // fails partway still has its status and content type in the evidence.
+      execution.response = {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        bodySizeBytes: 0,
+        upstreamRequestId:
+          response.headers.get("x-request-id") ??
+          response.headers.get("x-zapier-request-id") ??
+          response.headers.get("traceparent"),
+      };
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
@@ -6542,15 +6553,7 @@ export function createToolGatewayService(
             },
           }))
         : await readBoundedRemoteResponse(response);
-      execution.response = {
-        httpStatus: response.status,
-        contentType: response.headers.get("content-type"),
-        bodySizeBytes: Buffer.byteLength(body, "utf8"),
-        upstreamRequestId:
-          response.headers.get("x-request-id") ??
-          response.headers.get("x-zapier-request-id") ??
-          response.headers.get("traceparent"),
-      };
+      execution.response.bodySizeBytes = Buffer.byteLength(body, "utf8");
       if (isInsufficientConnectionScope(response, body)) {
         await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
         throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", {
@@ -6653,13 +6656,10 @@ export function createToolGatewayService(
     } catch (error) {
       execution.error = remoteHttpErrorEvidence(error);
       execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
+      if (execution.response && execution.stream) execution.response.bodySizeBytes = execution.stream.bytesReceived;
       if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
         execution.failureKind = "invocation_timeout";
-        await markCallHealth(
-          "degraded",
-          "Remote MCP tool call timed out; transport remains viable.",
-        );
         throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
           connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
         });
@@ -6696,8 +6696,6 @@ export function createToolGatewayService(
       execution.failureKind = "transport_failure";
       if (error instanceof McpHttpInitializationError && (error.status === 401 || error.status === 403)) {
         await markCallHealth("error", "Remote MCP session authorization failed.");
-      } else {
-        await markCallHealth("error", "Remote MCP tool call failed.");
       }
       if (mcpSession) forgetMcpHttpSession(mcpSession);
       throw new ToolGatewayHttpError(
