@@ -122,7 +122,13 @@ export function currentProcessProbe(): ProcessProbe {
 }
 
 /** The stamp this process writes when it takes ownership of a record. It reads
- * only cached values, so it adds no OS call to the turn path. */
+ * only cached values, so it adds no OS call to the turn path.
+ *
+ * It records no process group: the control-plane server owns the record, and
+ * its provider children are tracked by their own records (the run's process
+ * identity, the runner's startup attempt). A caller that stamps a child it
+ * leads must set `processGroupId` and `processGroupStartedAt` itself; without
+ * them a surviving group is never judged at all. */
 export async function currentLocalOwnerStamp(scope: string, generation: number | null = null): Promise<LocalOwnerStamp> {
   const startedAt = await currentProcessStartedAtMs();
   return {

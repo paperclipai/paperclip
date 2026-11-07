@@ -1655,6 +1655,50 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(journal).toMatchObject({ status: "running", metadata: { uncertain: true } });
   }, 60_000);
 
+  // An uncertain provisioning row used to block every later reservation of
+  // the workspace forever. It settles only once the earlier run's sandbox is
+  // provably stopped; until then the reservation names the operator's action.
+  it("settles an uncertain provisioning command once its run's sandbox is provably stopped", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-stop-proof");
+    const execute = first.runner!.execute.bind(first.runner!);
+    first.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash") throw new Error("lost provisioning reply");
+      return result;
+    };
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "printf 'one effect\\n' >> setup-result.txt" })).rejects.toThrow("lost provisioning reply");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    const reserveNext = () => reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const provision = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision"))))[0]!;
+    // A failed run alone is not proof: its sandbox may still run the command.
+    await expect(reserveNext()).rejects.toMatchObject({ status: 409,
+      details: { code: "remote_workspace_provision_unverified", operationId: (await provision()).id, runId: ids.run } });
+    expect(await provision()).toMatchObject({ status: "running", metadata: { uncertain: true } });
+    const stopped = await lease();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: remoteTerminationReceipt(stopped,
+        { providerLeaseId: stopped.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, ids.lease));
+    const outcome = await reserveNext().then(() => null, (error: unknown) => error as { details?: { code?: string } });
+    expect(outcome?.details?.code).not.toBe("remote_workspace_provision_unverified");
+    expect(await provision()).toMatchObject({ status: "failed", metadata: { uncertain: false, settledBy: "owner_sandbox_stopped" } });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(eq(activityLog.companyId, ids.company),
+      eq(activityLog.action, "workspace.remote_provision_settled")))).toHaveLength(1);
+  }, 60_000);
+
+  it("records a provisioning command that reported a failing exit as finished, not uncertain", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-exit-failure");
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "exit 3" })).rejects.toThrow("remote_workspace_provision_unverified");
+    const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(journal).toMatchObject({ status: "failed", metadata: { uncertain: false, exitCode: 3 } });
+  }, 60_000);
+
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {
     const reserved = await reserve({ kind: "empty" });
     expect(shouldUseRemoteWorkspaces({ adapterType: "paperclip_runner", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toBe(true);
