@@ -5132,3 +5132,17 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+
+### Pool harness host admission
+
+`heartbeat/harness-pool-admission.ts` resolves a virtual Pool selection before
+claim, through the existing authorized router and native provider-profile
+builders. `effective-run-adapter.ts` reads the frozen concrete target; native
+execution receives its normal concrete driver input. `harness-pool-environment.ts`
+reads placement policy for scoped cooldown identity. Fresh environment admission
+checks that placement still matches; retained native recovery uses its admitted
+execution input. Pool management is the facade in `services/harness-pools.ts`.
+It does not add another scheduler, provider transport, idle timer or state store.
+See [central harness pools](connections/AI-CONNECTION-ROUTERS.md#central-harness-pools)
+for operator setup, conversion and continuation limits.

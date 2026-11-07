@@ -21,6 +21,7 @@ import {
   agentObservabilityCaptureSchema,
   agentObservabilityDestinationSchema,
   aiConnectionPoolConfigSchema,
+  harnessPoolConfigSchema,
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
@@ -11329,6 +11330,47 @@ registerCurrentRoute({
 });
 
 // --- AI runtime connections -------------------------------------------------
+
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:read",
+  method: "get", path: "/api/companies/{companyId}/harness-pools", tags: ["ai-connections"],
+  summary: "List central harness pools for connection managers",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:read",
+  method: "get", path: "/api/companies/{companyId}/harness-pools/choices", tags: ["ai-connections"],
+  summary: "List authorized harness pool choices without account references",
+  responses: { 200: r.ok(z.array(z.object({ id: z.string().uuid(), name: z.string(), enabled: z.boolean(), revision: z.number().int().positive() }).strict())), 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:configure",
+  method: "post", path: "/api/companies/{companyId}/harness-pools", tags: ["ai-connections"],
+  summary: "Create or revise a central harness pool with explicit account grants",
+  body: z.object({ id: z.string().uuid().optional(), expectedRevision: z.number().int().positive().optional(), config: harnessPoolConfigSchema }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:read",
+  method: "get", path: "/api/companies/{companyId}/harness-pools/{poolId}/inspection", tags: ["ai-connections"],
+  summary: "Inspect visible account waits and referencing agents without provider probes",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:configure",
+  method: "post", path: "/api/companies/{companyId}/harness-pools/{poolId}/convert", tags: ["ai-connections"],
+  summary: "Preview or convert a built-in ordered pool while retaining its identity and pins",
+  body: z.object({ expectedRevision: z.number().int().positive(), preview: z.boolean().default(true) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:configure",
+  method: "delete", path: "/api/companies/{companyId}/harness-pools/{poolId}", tags: ["ai-connections"],
+  summary: "Archive a central harness pool while retaining historical runs and receipts",
+  body: z.object({ expectedRevision: z.number().int().positive() }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
 
 registerCurrentRoute({
   "x-paperclip-transport": "rest",

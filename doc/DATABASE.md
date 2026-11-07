@@ -2006,3 +2006,21 @@ but those values no longer select the active workspace. API reads derive
 retain the existing account and company-audit checks. Replaying the migration
 preserves explicit Classic choices. Agent Chat ignores its retired stored flag
 without rewriting instance settings. No task, agent, or execution state changes.
+
+
+## Harness pool configuration compatibility
+
+Harness pools use the existing `ai_connection_pools` JSON, revision, task pins,
+cursors and company/credential cooldown table. V2 adds paired `schemaVersion: 2`
+and `kind: "harness_pool"` markers. Storage retains the existing binding/profile
+member shape; the management facade exposes harness/connection/model members.
+There is one canonical members list. V1 rows and frozen selections retain their
+reader; conversion is explicit and retains IDs and pins. No SQL change or new
+migration is needed for these additive JSON fields.
+
+V2 runner holds use `runner:v2:` plus a SHA-256 identity of credential epoch,
+concrete harness and environment. Quota/auth holds keep the existing credential
+identity. Allocation and scoped writers lock the underlying credential identity.
+The captured run selection/receipt records its scope; a later mutable pool edit
+cannot change historical attribution. Use a V2-aware binary for rollback after
+creating V2 pools. Turning off native admission does not delete settlement data.

@@ -6,6 +6,14 @@ export const HARNESS_POOL_TEMPLATES = ["Smart", "Mid", "Cheap"] as const;
 export const harnessPoolBindingSchema = z.object({ poolId: z.string().uuid() }).strict();
 export type HarnessPoolBinding = z.infer<typeof harnessPoolBindingSchema>;
 
+export function effectiveAiConnectionInput(runtimeConfig: unknown): unknown {
+  const runtime = runtimeConfig && typeof runtimeConfig === "object" ? runtimeConfig as Record<string, unknown> : {};
+  if (runtime.harnessPool === undefined) return runtime.aiConnection;
+  const pool = harnessPoolBindingSchema.parse(runtime.harnessPool);
+  if (runtime.aiConnection != null) throw new Error("A Pool harness cannot also select a direct connection");
+  return { mode: "router", connectionId: pool.poolId };
+}
+
 export const harnessPoolMemberSchema = z.object({
   id: z.string().uuid(),
   harness: z.object({ type: z.enum(["claude_code", "codex", "grok", "opencode"]) }).strict(),
@@ -29,8 +37,9 @@ export const harnessPoolConfigSchema = z.object({
 });
 export type HarnessPoolConfigV2 = z.infer<typeof harnessPoolConfigSchema>;
 export interface HarnessPool extends HarnessPoolConfigV2 { id: string; companyId: string; revision: number }
+export type HarnessPoolChoice = Pick<HarnessPool, "id" | "name" | "enabled" | "revision">;
 export interface HarnessPoolExecutionSelection {
-  schemaVersion: 2; poolId: string; poolRevision: number; memberId: string;
+  schemaVersion: 2; poolId: string; poolRevision: number; poolName: string; memberId: string;
   memberSnapshot: HarnessPoolMemberV2; fingerprint: string;
 }
 

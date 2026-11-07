@@ -1,3 +1,4 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { NATIVE_POOL_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -12,7 +13,6 @@ import {
   agentWakeupRequests,
   agents,
   aiConnectionPools,
-  aiConnectionQuotaCooldowns,
   environmentLeases,
   executionWorkspaces,
   executionWorkspaceSnapshots,
@@ -752,7 +752,9 @@ export async function reconcileSafeNativeReplacements(
           const seenRuns = new Set([run.id]);
           let predecessorId = run.retryOfRunId;
           let childId = run.id;
+          let childContext = record(run.contextSnapshot);
           while (predecessorId) {
+            if (record(childContext.aiPoolFailover).sourceRunId !== predecessorId) break;
             if (seenRuns.has(predecessorId) || seenRuns.size >= 100) return false;
             seenRuns.add(predecessorId);
             const [predecessor] = await tx.select().from(heartbeatRuns).where(and(
@@ -763,6 +765,8 @@ export async function reconcileSafeNativeReplacements(
             const [predecessorFinalization] = await tx.select().from(nativeRunFinalizations).where(and(
               eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, predecessor.id),
             ));
+            if (!predecessorFinalization || !["terminal_failure", "superseded"].includes(predecessorFinalization.phase) || !nativePoolFailureKind(predecessorFinalization.failureCode) ||
+                predecessorFinalization.failureDetail?.successorRunId !== childId) return false;
             if (predecessorFinalization?.failureDetail?.quotaCycleResetSuccessorRunId === childId &&
                 predecessorFinalization.failureDetail.successorRunId === childId) break;
             const previous = record(record(predecessor.contextSnapshot).aiRouterSelection);
@@ -771,12 +775,13 @@ export async function reconcileSafeNativeReplacements(
             attemptedMemberIds.push(previous.memberId);
             attemptedRuns.push(predecessor);
             childId = predecessor.id;
+            childContext = record(predecessor.contextSnapshot);
             predecessorId = predecessor.retryOfRunId;
           }
           const [agent] = await tx.select().from(agents).where(and(
             eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
           )).for("share");
-          const configured = record(record(agent?.runtimeConfig).aiConnection);
+          const configured = record(effectiveAiConnectionInput(agent?.runtimeConfig));
           if (!agent || configured.mode !== "router" || configured.connectionId !== poolId) return false;
           const router = aiConnectionRouterService(tx as unknown as Db);
           const transitionInput = {
@@ -818,13 +823,15 @@ export async function reconcileSafeNativeReplacements(
               const matchingMember = pool.config.members.find(member => member.id === attemptedSelection.memberId &&
                 isDeepStrictEqual(member.binding, attemptedBinding));
               if (!matchingMember) continue;
-              const rows = await tx.select().from(aiConnectionQuotaCooldowns).where(and(
-                eq(aiConnectionQuotaCooldowns.companyId, run.companyId),
-                sql`encode(sha256(convert_to(${aiConnectionQuotaCooldowns.credentialIdentity}, 'UTF8')), 'hex') = ${p.quotaIdentityHash}`,
-              ));
-              const cooldown = rows.sort((a, b) => b.retryAt.getTime() - a.retryAt.getTime())[0];
-              if (!cooldown) continue;
-              const deadline = Math.max(cooldown.retryAt.getTime(), Date.parse(p.retryAt));
+              const observed = await router.currentMemberCooldown({ companyId: run.companyId, agentId: run.agentId,
+                userId: run.responsibleUserId, adapterType: agent.adapterType, member: matchingMember, failureKind: attemptedKind,
+                runnerScope: typeof record(attemptedSelection.runnerScope).environmentId === "string"
+                  ? { environmentId: String(record(attemptedSelection.runnerScope).environmentId) }
+                  : Object.hasOwn(record(attemptedSelection.runnerScope), "environmentId") ? { environmentId: null } : undefined,
+                sourceAdapterConfig: transitionInput.sourceAdapterConfig });
+              if (!observed || (observed.identityHash === p.quotaIdentityHash && !observed.recorded)) continue;
+              const deadline = Math.max(observed.retryAt?.getTime() ?? 0,
+                observed.identityHash === p.quotaIdentityHash ? Date.parse(p.retryAt) : 0);
               if (deadline > now.getTime()) future.push(new Date(deadline));
               else eligible.add(attemptedSelection.memberId);
             }

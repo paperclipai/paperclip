@@ -1,3 +1,5 @@
+import { legacyRunHasUnsettledActions } from "../legacy-action-outcomes.js";
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES } from "../native-runtime/native-pool-failure.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, aiConnectionTaskPins, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
@@ -79,7 +81,7 @@ export async function switchFailedPoolPin(db: Db, input: {
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id),
     eq(heartbeatRuns.companyId, input.run.companyId), eq(heartbeatRuns.agentId, input.agent.id)));
   const kind = run && poolFailureKind(run);
-  if (!run || !kind || !hasSettledPoolContinuation(run)) return null;
+  if (!run || !kind || !hasSettledPoolContinuation(run) || await legacyRunHasUnsettledActions(db, run)) return null;
   const context = parseObject(run.contextSnapshot);
   const taskKey = context.aiRouterTaskKey;
   const [task] = run.issueId ? await db.select().from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, run.issueId))) : [];
@@ -90,7 +92,7 @@ export async function switchFailedPoolPin(db: Db, input: {
       !["todo", "in_progress", "in_review"].includes(task.status) ||
       (task.executionRunId && task.executionRunId !== run.id) || (task.checkoutRunId && task.checkoutRunId !== run.id)))) return null;
   const selection = context.aiRouterSelection as AiConnectionRouterSelection;
-  const configured = parseObject(agent.runtimeConfig?.aiConnection);
+  const configured = parseObject(effectiveAiConnectionInput(agent.runtimeConfig));
   if (configured.mode !== "router" || configured.connectionId !== selection.poolId) return null;
   const bootstrap = parseObject(run.resultJson?.executionRecovery);
   const admissionAuthFailure = kind === "auth" && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false &&
@@ -128,6 +130,7 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
         run.sessionIdBefore || run.sessionIdAfter || Object.keys(parseObject(run.runnerProfileJson)).length ||
         run.resultJson?.executionCancellation || run.resultJson?.startupCancellation || run.resultJson?.legacyQuotaStopRequested ||
         run.scopeKind !== source.scopeKind || run.issueId !== source.issueId || !hasSettledPoolContinuation(source)) return;
+    if (await legacyRunHasUnsettledActions(tx as unknown as Db, source)) return;
     const context = parseObject(run.contextSnapshot), original = parseObject(source.contextSnapshot);
     const failover = parseObject(context.aiPoolFailover), kind = poolFailureKind(source);
     const taskKey = original.aiRouterTaskKey, selection = original.aiRouterSelection as AiConnectionRouterSelection;
@@ -150,7 +153,7 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
         !isDeepStrictEqual(proof.selection, selection)) return;
     const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId))).for("share");
-    const configured = parseObject(agent?.runtimeConfig?.aiConnection);
+    const configured = parseObject(effectiveAiConnectionInput(agent?.runtimeConfig));
     if (!agent || ["paused", "terminated"].includes(agent.status) || configured.mode !== "router" || configured.connectionId !== selection.poolId) return;
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));

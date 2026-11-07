@@ -1,3 +1,4 @@
+import { poolRunnerCooldownIdentity } from "../ai-connection-pool-cooldown.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
@@ -133,19 +134,20 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     const taskMatches = run.scopeKind === "issue" ? taskKey === run.issueId || Boolean(issue?.identifier && taskKey === issue.identifier)
       : await hasCompanyPoolAffinity(tx as unknown as Db, run, taskKey);
     if (!taskMatches) return false;
-    const [agent] = await tx.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId))).for("share");
-    const configured = parseObject(parseObject(agent?.runtimeConfig).aiConnection);
-    if (configured.mode !== "router" || configured.connectionId !== poolId) return false;
+
     const [pin] = await tx.select({ id: aiConnectionTaskPins.id }).from(aiConnectionTaskPins)
       .innerJoin(aiConnectionPools, and(eq(aiConnectionPools.id, aiConnectionTaskPins.poolId), eq(aiConnectionPools.companyId, aiConnectionTaskPins.companyId)))
       .where(and(eq(aiConnectionTaskPins.companyId, run.companyId), eq(aiConnectionTaskPins.poolId, poolId),
         eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey),
-        sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType') =
-          (${JSON.stringify(selection)}::jsonb - 'runtimeConfig' - 'notes' - 'adapterType')`,
+        sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope') =
+          (${JSON.stringify(selection)}::jsonb - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope')`,
         sql`${aiConnectionTaskPins.member}->>'id' = ${selection.memberId ?? ""}`,
         sql`${aiConnectionTaskPins.member}->'binding' = ${JSON.stringify(binding)}::jsonb`)).for("update");
     if (!pin) return false;
     const kind = input.failureKind ?? "quota";
+    const runnerScope = parseObject(selection.runnerScope);
+    const cooldownIdentity = kind === "runner" && Object.hasOwn(runnerScope, "environmentId")
+      ? poolRunnerCooldownIdentity(credentialIdentity, parseObject(selection.runtimeConfig), typeof runnerScope.environmentId === "string" ? runnerScope.environmentId : null) : credentialIdentity;
     const eventId = `ai-connection-${kind}-attributed:${run.id}`;
     const [existing] = await tx.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.sourceEventId, eventId))).limit(1);
     const existingPayload = parseObject(existing?.payload);
@@ -153,7 +155,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     if (!receiptDeadline || !Number.isFinite(Date.parse(receiptDeadline))) return false;
     const payload = { schema: `paperclip.ai-connection-${kind}-attribution.v1`, companyId: run.companyId, runId: run.id,
       agentId: run.agentId, poolId, taskKey, memberId: selection.memberId, connectionId, grantId, selection, retryAt: receiptDeadline,
-      quotaIdentityHash: createHash("sha256").update(credentialIdentity).digest("hex") };
+      quotaIdentityHash: createHash("sha256").update(cooldownIdentity).digest("hex") };
     if (existing) {
       const [matches] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.id, existing.id),
         eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
@@ -166,7 +168,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
       await tx.insert(heartbeatRunEvents).values({ companyId: run.companyId, runId: run.id, agentId: run.agentId, seq,
         eventType: `ai_connection.${kind}_attributed`, stream: "system", level: "info", sourceEventId: eventId, payload });
     }
-    await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, credentialIdentity, new Date(receiptDeadline));
+    await aiConnectionRouterService(tx as unknown as Db).recordQuotaCooldown(run.companyId, connectionId, cooldownIdentity, new Date(receiptDeadline), credentialIdentity);
     return true;
   });
 }

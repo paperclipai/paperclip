@@ -5,7 +5,7 @@ import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, agentTaskSessions, agentRuntimeState, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, principalPermissionGrants, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterResult, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings, quotaIdentityFromSessionSnapshot } from "../services/ai-connection-router.js";
@@ -89,6 +89,127 @@ afterAll(async () => {
 });
 
 describe("durable, authorized connection routing", () => {
+  it("manages central harness pools without exposing V2 records to legacy clients", async () => {
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] } as typeof req.actor; next(); });
+    app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
+    const url = `/api/companies/${companyId}/harness-pools`;
+    const native = members[0]!;
+    const config = { schemaVersion: 2, kind: "harness_pool", name: "Smart", enabled: true, mode: "failover", members: [
+      { id: native.id, harness: { type: "codex" }, connection: native.binding, model: native.profile.model },
+      { id: randomUUID(), harness: { type: "codex" }, connection: native.binding, model: "other-configured-model" },
+    ] };
+    const created = await request(app).post(url).send({ config });
+    expect(created.status).toBe(200);
+    const pool = created.body;
+    expect(pool).toMatchObject({ ...config, companyId, revision: 1 });
+    const choices = await request(app).get(`${url}/choices`);
+    expect(choices.status).toBe(200);
+    expect(choices.body).toContainEqual({ id: pool.id, name: "Smart", enabled: true, revision: 1 });
+    expect(Object.keys(choices.body.find((item: { id: string }) => item.id === pool.id))).toEqual(["id", "name", "enabled", "revision"]);
+    expect(await (await import("../services/harness-pools.js")).harnessPoolService(db).choices(companyId, "bob")).toEqual([]);
+
+    expect((await request(app).get(url)).body.some((item: { id: string }) => item.id === pool.id)).toBe(true);
+    await db.insert(principalPermissionGrants).values({ companyId, principalId: "alice", principalType: "user", permissionKey: "agents:configure", scope: {} });
+    const { agentRoutes } = await import("../routes/agents.js");
+    const agentApp = express(); agentApp.use(express.json());
+    agentApp.use((req, _res, next) => { req.actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId] } as typeof req.actor; next(); });
+    agentApp.use("/api", agentRoutes(db)); agentApp.use(errorHandler);
+    const nativeFlag = (await instanceSettingsService(db).getExperimental()).enableNativeRunner;
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    for (const id of [agentId, secondAgentId]) {
+      const bound = await request(agentApp).patch(`/api/agents/${id}`).send({ runtimeConfig: { harnessPool: { poolId: pool.id } } });
+      expect(bound.status, JSON.stringify(bound.body)).toBe(200);
+      expect(bound.body.runtimeConfig).toMatchObject({ harnessPool: { poolId: pool.id } });
+    }
+    const mid = await request(app).post(url).send({ config: { ...config, name: "Mid" } });
+    expect(mid.status).toBe(200);
+    expect((await request(agentApp).patch(`/api/agents/${secondAgentId}`).send({ runtimeConfig: { harnessPool: { poolId: mid.body.id } } })).status).toBe(200);
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]!.runtimeConfig.harnessPool).toEqual({ poolId: pool.id });
+    await db.insert(principalPermissionGrants).values({ companyId, principalId: "alice", principalType: "user", permissionKey: "agents:create", scope: {} });
+    const hired = await request(agentApp).post(`/api/companies/${companyId}/agent-hires`).send({ name: "Pool hire fixture", role: "general", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, runtimeConfig: { harnessPool: { poolId: pool.id } }, budgetMonthlyCents: 0 });
+    expect(hired.status, JSON.stringify(hired.body)).toBe(201);
+    expect(hired.body.agent.runtimeConfig).toMatchObject({ harnessPool: { poolId: pool.id } });
+
+    expect((await request(agentApp).patch(`/api/agents/${agentId}`).send({ adapterType: "claude_local", runtimeConfig: { harnessPool: { poolId: pool.id } } })).status).toBe(422);
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.companyId, companyId));
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: nativeFlag });
+
+    expect((await request(app).get(`/api/companies/${companyId}/ai-connection-pools`)).body.some((item: { id: string }) => item.id === pool.id)).toBe(false);
+    expect((await request(app).get(`/api/companies/${otherCompanyId}/harness-pools`)).status).toBe(403);
+    expect((await request(app).post(url).send({ id: pool.id, expectedRevision: 99, config })).status).toBe(409);
+    expect((await request(app).post(url).send({ id: pool.id, expectedRevision: 1, config: { ...config, name: "Renamed" } })).body).toMatchObject({ id: pool.id, revision: 2, name: "Renamed" });
+    expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: 2 })).status).toBe(200);
+    expect((await request(app).get(url)).body.some((item: { id: string }) => item.id === pool.id)).toBe(false);
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
+  });
+  it("checks every V2 pool account against the managing agent's connection scope", async () => {
+    const seed = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { schemaVersion: 2, kind: "harness_pool", name: "Scoped pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [members[0]!] } }, "alice");
+    const legacy = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Scoped legacy", enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!] } }, "alice");
+    const [manager] = await db.insert(agents).values({ companyId, name: "Scoped manager", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } }).returning();
+    await db.insert(companyMemberships).values({ companyId, principalId: manager!.id, principalType: "agent", membershipRole: "member", status: "active" });
+    const [userGrant] = await db.insert(principalPermissionGrants).values({ companyId, principalId: "alice", principalType: "user", permissionKey: "tools:manage_connections", scope: {} }).returning();
+    await db.insert(principalPermissionGrants).values({ companyId, principalId: manager!.id, principalType: "agent", permissionKey: "tools:manage_connections", scope: { connectionIds: [members[0]!.binding.connectionId, seed.id, legacy.id] } });
+    await db.insert(principalPermissionGrants).values([
+      { companyId, principalId: manager!.id, principalType: "agent", permissionKey: "agents:configure", scope: {} },
+      { companyId, principalId: "alice", principalType: "user", permissionKey: "agents:configure", scope: {} },
+    ]).onConflictDoNothing();
+    const [userProfileGrant] = await db.insert(principalPermissionGrants).values({ companyId, principalId: "alice", principalType: "user", permissionKey: "tools:manage_profiles", scope: {} }).returning();
+    await db.insert(principalPermissionGrants).values({ companyId, principalId: manager!.id, principalType: "agent", permissionKey: "tools:manage_profiles", scope: { connectionIds: [members[0]!.binding.connectionId, seed.id, legacy.id] } });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: manager!.id, status: "running", responsibleUserId: "alice" }).returning();
+    const app = express(); app.use(express.json()); app.use((req, _res, next) => { req.actor = { type: "agent", source: "agent_jwt", agentId: manager!.id, companyId, runId: run!.id, onBehalfOfUserId: "alice", onBehalfOfMemberships: [{ companyId, status: "active", membershipRole: "member" }] } as typeof req.actor; next(); }); app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
+    const config = (member: AiConnectionPoolMember) => ({ schemaVersion: 2, kind: "harness_pool", name: "Scoped pool", enabled: true, mode: "failover", members: [{ id: member.id, connection: member.binding, harness: { type: member.profile.provider === "codex" ? "codex" : "claude_code" }, model: member.profile.model }] });
+    try {
+      const allowed = await request(app).post(`/api/companies/${companyId}/harness-pools`).send({ id: seed.id, expectedRevision: 1, config: config(members[0]!) });
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      const outside = await request(app).post(`/api/companies/${companyId}/harness-pools`).send({ id: seed.id, expectedRevision: 2, config: config(members[1]!) });
+      expect(outside.status, JSON.stringify(outside.body)).toBe(403);
+      expect((await request(app).post(`/api/companies/${companyId}/harness-pools/${legacy.id}/convert`).send({ expectedRevision: 1, preview: true })).status).toBe(403);
+    } finally { await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, userGrant!.id)); await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, userProfileGrant!.id)); }
+  });
+  it("previews and converts only a current built-in pool without replacing its pin", async () => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const facade = harnessPoolService(db);
+    const old = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Mid", enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const pinned = await resolve(old.id, "preserved-v1");
+    await expect(facade.convertV1(companyId, old.id, old.revision + 1, true, "alice")).rejects.toThrow("changed");
+    expect(await facade.convertV1(companyId, old.id, old.revision, true, "alice")).toMatchObject({ id: old.id, name: "Mid", schemaVersion: 2 });
+    expect((await service().list(companyId)).find(item => item.id === old.id)?.kind).toBeUndefined();
+    expect(await facade.convertV1(companyId, old.id, old.revision, false, "alice")).toMatchObject({ id: old.id, revision: old.revision + 1 });
+    expect((await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, old.id)))[0]?.selection).toEqual(pinned);
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const pluginPool = await makePool();
+    await expect(facade.convertV1(companyId, pluginPool.id, pluginPool.revision, false, "alice")).rejects.toThrow("Only legacy");
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: false });
+  });
+  it("freezes a Pool harness target before native claim without changing the agent", async () => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const native = members[0]!;
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Smart native", enabled: true, mode: "failover",
+      members: [{ id: native.id, connection: native.binding, harness: { type: "codex" }, model: native.profile.model }] } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Pool agent", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "inactive-primary" }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Pool task", status: "in_progress", assigneeAgentId: agent!.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, issueId: issue!.id, scopeKind: "issue", status: "queued", contextSnapshot: { issueId: issue!.id } }).returning();
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const prepared = await preparePoolAdapterClaim(db, run!, agent!, "alice");
+    expect(prepared.adapterDispatch).toMatchObject({ adapterType: "paperclip_runner", poolId: pool.id, memberId: native.id });
+    expect(prepared.context).toMatchObject({ harnessPoolSelection: { schemaVersion: 2, poolId: pool.id, memberId: native.id, memberSnapshot: { model: native.profile.model } }, aiRouterSelection: { runtimeConfig: { provider: "codex", model: native.profile.model } } });
+    const effective = effectiveRunAgent({ ...run!, contextSnapshot: prepared.context, runnerProfileJson: { adapterDispatch: prepared.adapterDispatch } }, agent!);
+    expect(effective.adapterConfig.model).toBe(native.profile.model);
+    expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterConfig.model).toBe("inactive-primary");
+    const revised = await harnessPoolService(db).save(companyId, { id: pool.id, expectedRevision: pool.revision, config: { schemaVersion: 2, kind: "harness_pool", name: "Renamed", enabled: true, mode: "failover", members: [{ id: native.id, connection: native.binding, harness: { type: "codex" }, model: "new-model" }] } }, "alice");
+    const historical = await preparePoolAdapterClaim(db, run!, agent!, "alice");
+    expect(historical.context.harnessPoolSelection).toMatchObject({ poolRevision: revised.revision, poolName: "Renamed", memberSnapshot: { model: native.profile.model } });
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
+    expect((await preparePoolAdapterClaim(db, run!, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ kind: "configuration" });
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    expect((await preparePoolAdapterClaim(db, { ...run!, issueId: null, scopeKind: "company" }, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ message: "Pool harness requires a task" });
+    await harnessPoolService(db).archive(companyId, pool.id, revised.revision, "alice");
+    expect((await preparePoolAdapterClaim(db, run!, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ kind: "configuration" });
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
+
+  });
   it("pins the effective Codex adapter for a configured Claude agent", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
       name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[0]!],
@@ -98,6 +219,39 @@ describe("durable, authorized connection routing", () => {
     expect(poolMemberRuntimeConfig(members[0]!, "claude_local")).toMatchObject({ adapterType: "codex_local" });
     expect(applyAiConnectionRouterTaskSettings({ command: "claude", cwd: home, permissions: "retained" }, selection, "claude_local"))
       .toEqual({ ...selection.runtimeConfig, cwd: home, permissions: "retained" });
+  });
+  it("reopens an unstarted initial Pool wait when configuration or accounts change", async () => {
+    const { reopenNativeQuotaPoolWaits } = await import("../services/native-runtime/native-quota-wake.js");
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Initial wait", enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const [task] = await db.insert(issues).values({ companyId, title: "Initial pool wait", status: "in_progress", assigneeAgentId: agentId }).returning();
+    const context = { issueId: task!.id, aiRouterPoolId: pool.id };
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, scopeKind: "issue", issueId: task!.id, status: "cancelled", contextSnapshot: context,
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } }).returning();
+    const deadline = new Date(Date.now() + 3_600_000);
+    const [waiting] = await db.insert(heartbeatRuns).values({ companyId, agentId, scopeKind: "issue", issueId: task!.id, status: "scheduled_retry", contextSnapshot: context,
+      retryOfRunId: source!.id, scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: deadline }).returning();
+    expect(await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as ReturnType<typeof createDb>, { companyId, poolId: pool.id }))).toBe(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting!.id)))[0]!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 1000);
+  });
+  it("shares quota across five model members and agents but scopes runner cooldowns by environment", async () => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
+    const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Scoped pool fixture", apiKey: "scoped-pool-fixture", agentIds: [], allAgents: true }, randomUUID());
+    const connection = { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account };
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Five models", enabled: true, mode: "failover", members: Array.from({ length: 5 }, (_, index) => ({ id: randomUUID(), harness: { type: "codex" as const }, connection, model: `configured-model-${index}` })) } }, "alice");
+    const first = await resolve(pool.id, "scope-first", { environmentId: "environment-a" });
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+    const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    const identity = `secret:${secret!.id}:${secret!.aiSessionEpoch}`;
+    const deadline = new Date(Date.now() + 300_000);
+    await service().recordQuotaCooldown(companyId, account.connectionId, poolRunnerCooldownIdentity(identity, first.runtimeConfig, "environment-a"), deadline, identity);
+    await expect(resolve(pool.id, "scope-blocked", { environmentId: "environment-a" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
+    const otherEnvironment = await resolve(pool.id, "scope-other", { agentId: secondAgentId, environmentId: "environment-b" });
+    expect(otherEnvironment.memberId).toBe(first.memberId);
+    expect(await service().accountCooldown(companyId, account.connectionId, identity)).toBeNull();
+    await service().recordQuotaCooldown(companyId, account.connectionId, identity, deadline);
+    for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: "environment-b" })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
   });
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,

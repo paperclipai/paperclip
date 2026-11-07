@@ -179,3 +179,58 @@ control for routing. With a test agent already bound to a saved pool, they also 
 the **Used by** list, avatars and profile links. Cleanup archives only the test's own pool and verifies that existing
 accounts and pools remain intact. This suite does not execute agents or probe
 live usage; provider and restart acceptance remain separate gated test drives.
+
+
+## Central harness pools
+
+Settings → Connections → Harness pools manages shared, company-scoped pools.
+Smart, Mid and Cheap are editable starting names, not fixed model tiers. Add as
+many ordered members as needed (up to 100). Each member chooses its own saved
+account grant, concrete harness, model ID and optional effort. The same account
+can appear with different models. No credentials are copied into the pool.
+
+On an agent's Harness / Runtime settings, choose **Harness: Pool**, then the
+central pool. This explicitly uses **Paperclip Runner** and requires the existing
+Native Runner experiment to be enabled by the operator. Pool selection does not
+enable that setting or upgrade Legacy agents. Use the existing Runner upgrade
+action before selecting Pool on a Legacy agent. New agent setup offers a held
+Pool choice and tests it before the normal hiring/approval action. Several agents can choose the same pool; changing one
+agent's selection does not change the others. Instructions, permissions and the
+execution environment belong to the agent and remain admission constraints.
+Models and accounts belong to the pool. Pool runs require a task.
+
+The host freezes the concrete driver profile, pool name/revision and selected
+member before claim. It uses the existing Codex, Claude/Grok ACPX or OpenCode
+driver, with one native run owner. Pool is not another model API, Rust provider,
+CLI wrapper process or nested agent loop. Existing direct/Legacy configurations
+and old run snapshots keep their original readers. The optional
+`runtimeConfig.harnessPool: { poolId }` conflicts with a direct `aiConnection`.
+
+A healthy task keeps its pinned member. Confirmed usage/authentication failures
+hold the credential across models and agents; the provider reset deadline wins,
+otherwise the hold is two hours. Definitive stopped-runner failures hold the
+credential/harness/environment combination for five minutes. New credential
+epochs do not inherit old cooldowns. Unsupported or uncertain failures retain the
+existing recovery hold. All-cooling work waits for the earliest deadline or a
+real configuration/reconnect event, without trying a blocked provider repeatedly.
+
+A supported transition admits one linked successor after the existing settlement,
+Stop, task ownership, budget, permission and workspace checks. It retains the
+workspace and bounded task handoff. It starts a fresh provider conversation when
+necessary; it does not copy private Claude/Codex sessions or replay completed or
+uncertain tool calls. Historical failures can still record a verified cooldown
+after an agent changes pools. That receipt cannot authorize a new successor.
+
+Existing built-in ordered pools offer **Preview conversion** and an explicit
+**Convert pool** action. Conversion preserves the ID, order and historical pins;
+it does not upgrade agents or change an active run. Plugin-owned routers cannot
+be converted. Archive explains that new work needs another pool; historical
+receipts remain readable. Edits and archive use the existing revision checks.
+
+The `/companies/:companyId/harness-pools` management API shares the existing
+connection permissions, company boundaries, audit log, pool storage and cursor.
+Its inspection returns visible member status/account deadlines and referencing
+agents. Runner eligibility also depends on each task's environment and policy.
+Legacy pool listings exclude V2 records. Existing OpenAI-compatible gateway
+connections remain qualified connection types; installing/managing a proxy is
+outside this feature, and hidden upstream accounts are not attributed by Paperclip.

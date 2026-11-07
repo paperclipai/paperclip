@@ -1,3 +1,5 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
+import { harnessPoolService } from "../services/harness-pools.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -2180,6 +2182,16 @@ export function agentRoutes(
     }
   }
 
+  async function assertHarnessPoolBinding(companyId: string, adapterType: string, config: Record<string, unknown>, runtimeConfig: Record<string, unknown>) {
+    if (!runtimeConfig.harnessPool) return;
+    effectiveAiConnectionInput(runtimeConfig);
+    if (adapterType !== "paperclip_runner" || !(await instanceSettingsService(db).getExperimental()).enableNativeRunner)
+      throw unprocessable("Pool harness requires an enabled Paperclip Runner");
+    if (config.homeMode === "preconfigured") throw unprocessable("Pool harness owns its model account; remove the preconfigured home");
+    const binding = effectiveAiConnectionInput(runtimeConfig) as { connectionId: string };
+    await harnessPoolService(db).get(companyId, binding.connectionId);
+  }
+
   async function normalizeCreatedAgentRuntimeConfig(
     req: Request,
     companyId: string,
@@ -2188,6 +2200,10 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    if (normalized.harnessPool) {
+      await assertHarnessPoolBinding(companyId, adapterType, adapterConfig, normalized);
+      return normalized;
+    }
     if (normalized.aiConnection) {
       await assertBuiltinPoolAdapter(companyId, adapterType, aiRuntimeConnectionBindingSchema.parse(normalized.aiConnection));
       return normalized;
@@ -3304,7 +3320,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      const poolBinding = requestedBinding ?? aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(savedAgent?.runtimeConfig));
       const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
         && (req.body.runner === undefined || req.body.runner === "auto")
         && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
@@ -4650,7 +4666,7 @@ export function agentRoutes(
 
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
-      const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      const managedHireBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(normalizedHireInput.runtimeConfig));
       const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, "none", true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
@@ -4929,7 +4945,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
-    const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
+    const managedBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(normalizedRuntimeConfig));
     const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
     const createdAgent = await svcLifecycle.requestHire(
       companyId,
@@ -5702,7 +5718,7 @@ export function agentRoutes(
       });
     }
     const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection && !requestedRuntimeConfig.harnessPool
       && !isAgentSetupDraft(existing)) {
       const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
       if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
@@ -5711,7 +5727,7 @@ export function agentRoutes(
         requestedRuntimeConfig.aiConnection = existingBinding;
       }
     }
-    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+    if (!requestedRuntimeConfig?.harnessPool && !existing.runtimeConfig.harnessPool && !requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
       && !isAgentSetupDraft(existing)
       && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
       && nextAiConfig.acpxAgent === "copilot"
@@ -5719,11 +5735,13 @@ export function agentRoutes(
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+    if (requestedRuntimeConfig || touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))
+      await assertHarnessPoolBinding(existing.companyId, requestedAdapterType, nextAiConfig, requestedRuntimeConfig ?? existing.runtimeConfig);
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.optional().parse(effectiveAiConnectionInput(requestedRuntimeConfig ?? existing.runtimeConfig));
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
       await assertBuiltinPoolAdapter(existing.companyId, requestedAdapterType, nextAiBinding);
-      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
+      const changed = !isDeepStrictEqual(nextAiBinding, effectiveAiConnectionInput(existing.runtimeConfig));
       if (changed && req.actor.type === "agent") {
         await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
           type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,

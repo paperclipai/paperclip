@@ -3,7 +3,7 @@ import type { Request, RequestHandler } from "express";
 import { and, eq, or, sql } from "drizzle-orm";
 import { type Db, toolConnections, toolApplications, toolProfiles, toolProfileEntries, toolProfileBindings,
   toolMcpGateways, toolMcpGatewayTokens, chatEndpoints, chatConversations, connectionGrants, connectionGrantDelegations, agents, issues,
-  toolConnectionInstalls, heartbeatRuns, toolPolicies, toolRuntimeSlots, toolCatalogEntries, chatSlackManagerGrants, adapterAuthSessions, companySecrets, companies, companyMemberships } from "@paperclipai/db";
+  toolConnectionInstalls, heartbeatRuns, toolPolicies, toolRuntimeSlots, toolCatalogEntries, chatSlackManagerGrants, adapterAuthSessions, companySecrets, companies, companyMemberships, aiConnectionPools } from "@paperclipai/db";
 import { badRequest, forbidden, notFound, HttpError } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, hasCompanyAccess, getActorInfo } from "./authz.js";
 import { connectionManagementService, responsibleConnectionUser, type ConnectionManagementContext } from "../services/connection-management.js";
@@ -78,6 +78,7 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
   const management = connectionManagementService(db);
   return (action: ConnectionManagementAction, operation: string, options: { personal?: boolean; slackManagerGrant?: boolean } = {}): RequestHandler => async (req, _res, next) => {
     const rawBody = req.body ?? {};
+    const poolOperation = operation.includes("ai-connection-pools") || operation.includes("harness-pools");
     const authorizeRequest = async (afterHumanAction?: boolean): Promise<ConnectionManagementContext> => {
       const authorize: typeof management.authorize = (actor, requestedAction, resolved, checkOptions) =>
         management.authorize(actor, requestedAction, resolved, { ...checkOptions, afterHumanAction });
@@ -145,7 +146,7 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
       };
       const uuid = (value: unknown) => { if (typeof value !== "string" || !isUuidLike(value)) throw badRequest("Expected a resource identifier"); return value; };
       const text = (value: unknown) => typeof value === "string" && value ? value : null;
-      let connectionId = text(req.params.connectionId) ?? text(req.query.connectionId) ?? text(body.resumeConnectionId) ?? text(body.reconnectConnectionId) ?? text(body.connectionId) ?? text(req.params.poolId) ?? (operation.includes("ai-connection-pools") ? text(body.id) : null);
+      let connectionId = text(req.params.connectionId) ?? text(req.query.connectionId) ?? text(body.resumeConnectionId) ?? text(body.reconnectConnectionId) ?? text(body.connectionId) ?? text(req.params.poolId) ?? (poolOperation ? text(body.id) : null);
       let profileId = text(req.params.profileId) ?? text(req.query.profileId) ?? text(body.profileId);
       let gatewayId = text(req.params.gatewayId) ?? text(req.query.gatewayId) ?? text(req.query.gateway);
       for (const id of new Set(Array.isArray(body.policyIds) ? body.policyIds : [])) {
@@ -302,14 +303,19 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
       for (const install of Array.isArray(body.installs) ? body.installs : []) {
         if (install.targetType === "agent" && text(install.targetId)) targets.add(install.targetId);
       }
-      if ((operation.includes("ai-connection-pools") && req.method === "POST") || body.allAgents || body.access === "all_agents" || body.targetType === "company" || body.installs?.some?.((install: { targetType: string }) => install.targetType === "company")) {
+      if ((poolOperation && req.method === "POST") || body.allAgents || body.access === "all_agents" || body.targetType === "company" || body.installs?.some?.((install: { targetType: string }) => install.targetType === "company")) {
         const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
         companyAgents.forEach(agent => targets.add(agent.id));
       }
       resource.projectId ??= text(body.projectId) ?? text(body.executionDefaults?.projectId);
       resource.issueId ??= text(body.issueId);
       if (body.approvalIssueId) extraResources.push({ ...resource, issueId: uuid(body.approvalIssueId) });
-      for (const member of Array.isArray(body.config?.members) ? body.config.members : []) addSelector(member.binding ?? {});
+      for (const member of Array.isArray(body.config?.members) ? body.config.members : []) addSelector(member.binding ?? (poolOperation ? member.connection : undefined) ?? {});
+      if (poolOperation && req.method === "POST" && operation.endsWith("/convert") && connectionId) {
+        const [stored] = await db.select({ config: aiConnectionPools.config }).from(aiConnectionPools).where(and(
+          eq(aiConnectionPools.companyId, companyId!), eq(aiConnectionPools.id, connectionId)));
+        stored?.config.members.forEach(member => addSelector(member.binding));
+      }
       for (const binding of Array.isArray(body.bindings) ? body.bindings : []) addSelector(binding);
       if (req.method !== "GET" && (operation.includes("/tools/policies") || operation.includes("/trust-rules/")) &&
           (policyAudiences.length ? policyAudiences : [{}]).some(selected => !selected.agentId && !(Array.isArray(selected.agentIds) && selected.agentIds.length))) {
@@ -385,7 +391,7 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
       }
       const changesAudience = req.actor.type === "agent" && req.method !== "GET" && action === "connections:configure" && (
         ["allAgents", "agentIds", "assignedAgentId", "installs", "bindings", "ownership", "grantKind", "credentialPolicy", "access"].some(key => Object.hasOwn(body, key)) ||
-        operation.includes("ai-connection-pools"));
+        poolOperation);
       if (changesAudience) await authorize(req.actor, "connections:profiles", resource, { targetAgentIds: [...targets] });
       const uniqueResources = new Map(extraResources.map(referenced => [JSON.stringify([
         referenced.connectionId, referenced.profileId, referenced.gatewayId, referenced.projectId, referenced.issueId, referenced.routineId, referenced.provider, referenced.purpose,

@@ -25,6 +25,8 @@ Agent access: [companion](../agent-access-map/agents.md).
 - `api-keys`: `agents/api-keys` — create and inspect named agent credentials, copy a new token once, and revoke it without changing agent identity.
 - `managed-agent-setup`: `agents/managed-agent-setup` — probe, create, or adopt a qualified Anthropic managed-agent profile with pinned provider resources and retention acknowledgement.
 
+Agents can explicitly choose Harness: Pool in Harness / Runtime after Paperclip Runner is enabled. Shared pool names, members and models are managed through [harness pools](connection-setup.md#harness-pools); selecting another pool affects only this agent.
+
 ## How to get to it (user POV)
 
 ### `hire-agent`

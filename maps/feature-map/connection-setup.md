@@ -29,6 +29,8 @@ policies use the ordinary Permissions screen. See [connector notes](../../doc/co
 
 ## Sub-features
 
+- `harness-pools`: `connection-setup/harness-pools` — configure reusable ordered harness/model/account pools, inspect usage and account waits, preview conversion and archive. Agents explicitly choose a pool through Paperclip Runner.
+
 - `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
   unavailable methods explain their prerequisite rather than silently switching.
 - `identity-and-access`: `connection-setup/identity-and-access` — select personal/shared identity and eligible agents;
@@ -293,3 +295,19 @@ admission at those boundaries. Verify a served deployment and provider settings,
 not only the catalog action count. Vercel preview requires an existing deployment;
 its provider makes the first deployment production, so an empty-project preview
 must fail before submission and explain the explicit production prerequisite.
+
+
+### `harness-pools`
+
+Open Settings → Connections → Harness pools. Start with Smart, Mid, Cheap or a
+custom name. Add account members, choose each harness/model, change their order
+and save. Open an agent's Harness / Runtime settings, choose Pool and its name.
+Paperclip Runner must already be enabled. Existing built-in ordered pools offer
+preview and explicit conversion; agent upgrades remain explicit.
+
+Verify with two agents sharing Smart, then select Mid on one agent. Reload both
+and the pool editor. Confirm independent agent choices, member order, revision
+conflicts, unavailable account feedback and archive confirmation. Exercise a
+settled failure separately to confirm a fresh linked successor and account wait.
+Component/API tests are fixture evidence; live provider execution, physical
+cleanup and restart acceptance require their own qualified environment.

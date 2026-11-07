@@ -74,16 +74,18 @@ describePostgres("agent configuration save latency", () => {
     if (home) await rm(home, { recursive: true, force: true });
   });
 
-  it("rejects a Codex-only pool for a legacy Claude adapter", async () => {
+  it("allows a legacy Claude agent to select its installed Codex pool account", async () => {
     const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account },
       profile: { provider: "codex" as const, model: "gpt-5.6-sol" } };
     const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
       config: { name: "Failover", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, userId);
     await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toMatch(/no compatible harness/i);
-    expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const saved = await readAgent();
+    expect(saved.adapterType).toBe("claude_local");
+    expect(saved.adapterConfig.model).toBe("claude-sonnet-5");
+    expect(saved.runtimeConfig.aiConnection).toEqual({ mode: "router", connectionId: pool.id });
   });
 
   it("allows a legacy Claude agent to bind a pool containing a permitted Claude account", async () => {

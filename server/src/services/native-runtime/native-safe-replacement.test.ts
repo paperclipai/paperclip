@@ -292,7 +292,7 @@ const support = externalDatabaseUrl
       }
       expect(selection.memberId).toBe(members[4].id);
     });
-    it("atomically commits the quota successor and pin and rolls both back on failure", async () => {
+    it.each(["deadline", "reconnect"] as const)("atomically commits the quota successor and pin and rolls both back on failure (%s)", async repair => {
       const source = await seed();
       const userId = `quota-${randomUUID()}`;
       await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -314,7 +314,7 @@ const support = externalDatabaseUrl
         if (!secret) throw new Error("Fixture credential is missing");
         return `${grantId}:${ref.secretId}:${secret.aiSessionEpoch}`;
       };
-      const firstIdentity = await credentialIdentity(selection.binding.grantId);
+      let firstIdentity = await credentialIdentity(selection.binding.grantId);
       const secondIdentity = await credentialIdentity(second.grantId);
       await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, responsibleUserId: userId,
         errorCode: "native_provider_usage_limit", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
@@ -398,10 +398,17 @@ const support = externalDatabaseUrl
       let [cycle] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
       expect(cycle?.nextAttemptAt).not.toBeNull();
       expect((await pins())[0]!.selection).toEqual(selectedSecond);
-      const past = new Date(Date.now() - 1000);
-      await db.update(aiConnectionQuotaCooldowns).set({ retryAt: past }).where(and(eq(aiConnectionQuotaCooldowns.companyId, source.companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${firstIdentity.slice(first.grantId.length + 1)}`)));
-      const [firstReceipt] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, `ai-connection-quota-attributed:${source.runId}`));
-      await db.update(heartbeatRunEvents).set({ payload: { ...firstReceipt!.payload, retryAt: past.toISOString() } }).where(eq(heartbeatRunEvents.id, firstReceipt!.id));
+      if (repair === "deadline") {
+        const past = new Date(Date.now() - 1000);
+        await db.update(aiConnectionQuotaCooldowns).set({ retryAt: past }).where(and(eq(aiConnectionQuotaCooldowns.companyId, source.companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${firstIdentity.slice(first.grantId.length + 1)}`)));
+        const [firstReceipt] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, `ai-connection-quota-attributed:${source.runId}`));
+        await db.update(heartbeatRunEvents).set({ payload: { ...firstReceipt!.payload, retryAt: past.toISOString() } }).where(eq(heartbeatRunEvents.id, firstReceipt!.id));
+      } else {
+        const secretId = firstIdentity.split(":")[1]!;
+        await db.update(companySecrets).set({ aiSessionEpoch: Number(firstIdentity.split(":")[2]) + 1 }).where(eq(companySecrets.id, secretId));
+        firstIdentity = await credentialIdentity(first.grantId);
+        await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: source.companyId, connectionId: first.connectionId }));
+      }
       expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).scheduled).toBe(1);
       [cycle] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
       const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, successor.id));

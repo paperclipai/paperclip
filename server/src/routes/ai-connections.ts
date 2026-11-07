@@ -33,6 +33,8 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { harnessPoolService } from "../services/harness-pools.js";
+import { harnessPoolConfigSchema } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
 import { probeCopilotConnection } from "../services/copilot-connection-probe.js";
@@ -155,12 +157,54 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   const service = aiConnectionService(db);
   const localLogin = localAiLoginService(db);
   const pools = aiConnectionRouterService(db);
+  const harnessPools = harnessPoolService(db);
+  async function harnessPoolCompany(req: Request) {
+    const companyId = req.params.companyId as string;
+    assertBoardOrAgent(req); assertCompanyAccess(req, companyId);
+    const context = connectionRequestContext(req);
+    const targeted = typeof req.params.poolId === "string" || (req.method === "POST" && typeof req.body?.id === "string");
+    const scopedConfigure = targeted && context?.resource.connectionId && (context.decision.action === "connections:configure"
+      || (await connectionManagementService(db).capability(req.actor, "connections:configure", context.resource, { mutation: false })).allowed);
+    if (!scopedConfigure && !(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
+    return companyId;
+  }
+  router.get("/companies/:companyId/harness-pools/choices", managementGuard("connections:read", "GET /companies/:companyId/harness-pools/choices", { personal: true }), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoardOrAgent(req); assertCompanyAccess(req, companyId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await filterConnectionManagementRows(db, req, "connections:read", await harnessPools.choices(companyId, responsibleUserForAiRequest(req)!), pool => ({ connectionId: pool.id })));
+  });
+  router.get("/companies/:companyId/harness-pools", managementGuard("connections:read", "GET /companies/:companyId/harness-pools", { personal: true }), async (req, res) => {
+    const companyId = await harnessPoolCompany(req);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await filterConnectionManagementRows(db, req, "connections:read", await harnessPools.list(companyId), pool => ({ connectionId: pool.id })));
+  });
+  router.post("/companies/:companyId/harness-pools", managementGuard("connections:configure", "POST /companies/:companyId/harness-pools", { personal: true }), async (req, res) => {
+    const companyId = await harnessPoolCompany(req);
+    const body = z.object({ id: z.string().uuid().optional(), expectedRevision: z.number().int().positive().optional(), config: harnessPoolConfigSchema }).strict().parse(req.body);
+    res.json(await harnessPools.save(companyId, body, responsibleUserForAiRequest(req)!, connectionRequestContext(req)));
+  });
+  router.get("/companies/:companyId/harness-pools/:poolId/inspection", managementGuard("connections:read", "GET /companies/:companyId/harness-pools/:poolId/inspection", { personal: true }), async (req, res) => {
+    const companyId = await harnessPoolCompany(req);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await harnessPools.inspect(companyId, z.string().uuid().parse(req.params.poolId), responsibleUserForAiRequest(req)!));
+  });
+  router.post("/companies/:companyId/harness-pools/:poolId/convert", managementGuard("connections:configure", "POST /companies/:companyId/harness-pools/:poolId/convert", { personal: true }), async (req, res) => {
+    const companyId = await harnessPoolCompany(req);
+    const body = z.object({ expectedRevision: z.number().int().positive(), preview: z.boolean().default(true) }).strict().parse(req.body);
+    res.json(await harnessPools.convertV1(companyId, z.string().uuid().parse(req.params.poolId), body.expectedRevision, body.preview, responsibleUserForAiRequest(req)!, connectionRequestContext(req)));
+  });
+  router.delete("/companies/:companyId/harness-pools/:poolId", managementGuard("connections:configure", "DELETE /companies/:companyId/harness-pools/:poolId", { personal: true }), async (req, res) => {
+    const companyId = await harnessPoolCompany(req);
+    const body = z.object({ expectedRevision: z.number().int().positive() }).strict().parse(req.body);
+    res.json(await harnessPools.archive(companyId, z.string().uuid().parse(req.params.poolId), body.expectedRevision, responsibleUserForAiRequest(req)!, connectionRequestContext(req)));
+  });
   router.get("/companies/:companyId/ai-connection-pools", managementGuard("connections:read", "GET /companies/:companyId/ai-connection-pools", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertBoardOrAgent(req); assertCompanyAccess(req, companyId);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
     res.setHeader("Cache-Control", "no-store");
-    res.json(await filterConnectionManagementRows(db, req, "connections:read", await pools.list(companyId), pool => ({ connectionId: pool.id })));
+    res.json(await filterConnectionManagementRows(db, req, "connections:read", (await pools.list(companyId)).filter(pool => pool.kind !== "harness_pool"), pool => ({ connectionId: pool.id })));
   });
   router.get("/companies/:companyId/ai-connection-pools/:poolId/inspection", managementGuard("connections:read", "GET /companies/:companyId/ai-connection-pools/:poolId/inspection", { personal: true }), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -174,6 +218,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     assertBoardOrAgent(req); assertCompanyAccess(req, companyId);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden("Manage connections permission is required");
     const body = z.object({ pluginKey: z.string().min(1).max(160), id: z.string().uuid().optional(), expectedRevision: z.number().int().positive().optional(), config: aiConnectionPoolConfigSchema }).strict().parse(req.body);
+    if (body.config.kind || body.id && (await pools.list(companyId)).some(pool => pool.id === body.id && pool.kind === "harness_pool")) throw unprocessable("Use Harness pools to edit this pool");
     res.json(await pools.save(body.pluginKey, { ...body, companyId }, responsibleUserForAiRequest(req)!, connectionRequestContext(req)));
   });
   router.delete("/companies/:companyId/ai-connection-pools/:poolId", managementGuard("connections:configure", "DELETE /companies/:companyId/ai-connection-pools/:poolId", { personal: true }), async (req, res) => {
@@ -229,7 +274,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       throw unprocessable("Invalid agent ID");
     res.json({
       currentUserId,
-      pools: await filterConnectionManagementRows(db, req, "connections:read", await pools.selectable(companyId, currentUserId), pool => ({ connectionId: pool.id })),
+      pools: await filterConnectionManagementRows(db, req, "connections:read", (await pools.selectable(companyId, currentUserId)).filter(pool => pool.kind !== "harness_pool"), pool => ({ connectionId: pool.id })),
       canManageConnections: await canManageAiConnections(db, req, companyId),
       connections: await filterConnectionManagementRows(db, req, "connections:read", await service.list(
         companyId,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { aiConnectionPoolConfigSchema } from "./ai-connection-router.js";
 import { agentRuntimeConfigSchema } from "./validators/agent.js";
-import { harnessPoolConfigSchema, harnessPoolToRuntimeConfig, decodeHarnessPoolConfig, harnessPoolBindingSchema } from "./harness-pools.js";
+import { harnessPoolConfigSchema, harnessPoolToRuntimeConfig, decodeHarnessPoolConfig, harnessPoolBindingSchema, effectiveAiConnectionInput } from "./harness-pools.js";
 
 const binding = { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const,
   connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" };
@@ -9,6 +9,14 @@ const member = { id: "33333333-3333-4333-8333-333333333333", harness: { type: "c
 const pool = { schemaVersion: 2 as const, kind: "harness_pool" as const, name: "Smart", enabled: true, mode: "failover" as const, members: [member] };
 
 describe("harness pool contracts", () => {
+  it("projects Pool intent into the existing authorized connection boundary without mutating it", () => {
+    const runtime = { harnessPool: { poolId: binding.connectionId } };
+    expect(effectiveAiConnectionInput(runtime)).toEqual({ mode: "router", connectionId: binding.connectionId });
+    expect(runtime).toEqual({ harnessPool: { poolId: binding.connectionId } });
+    expect(effectiveAiConnectionInput({ aiConnection: binding })).toEqual(binding);
+    expect(() => effectiveAiConnectionInput({ ...runtime, aiConnection: binding })).toThrow();
+    expect(() => effectiveAiConnectionInput({ harnessPool: { poolId: "invalid" } })).toThrow();
+  });
   it("round trips a versioned runtime envelope without changing the concrete member", () => {
     const stored = harnessPoolToRuntimeConfig(pool);
     expect(aiConnectionPoolConfigSchema.parse(stored)).toEqual(stored);

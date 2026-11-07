@@ -508,6 +508,15 @@ describe("openapi routes", () => {
     expect(operation.responses["503"]).toBeDefined();
   });
 
+  it("documents central Pool management, metadata-only choices and revision checks", () => {
+    const { spec } = loadSpecRoutes();
+    const root = "/api/companies/{companyId}/harness-pools";
+    expect(spec.paths[root]?.post?.requestBody).toBeDefined();
+    expect(spec.paths[`${root}/choices`]?.get?.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentBearerAuth: [] }]);
+    expect(spec.paths[`${root}/{poolId}/convert`]?.post?.requestBody.required).toBe(true);
+    expect(spec.paths[`${root}/{poolId}`]?.delete?.requestBody.required).toBe(true);
+  });
+
   it("documents delegated pool management with revision-checked deletion", () => {
     const { spec } = loadSpecRoutes();
     const pools = spec.paths["/api/companies/{companyId}/ai-connection-pools"];

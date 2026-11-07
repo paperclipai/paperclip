@@ -1,10 +1,11 @@
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, toolInvocations, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
@@ -79,6 +80,25 @@ describe("legacy quota prestart retry", () => {
     return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
+  it.each(["pending_invocation", "missing_result", "pending_provider_tool", "pending_semantic_tool", "incomplete_api_receipt"])("holds a local backup for %s until its outcome is receipted", async condition => {
+    const f = await fixture(true);
+    let invocationId: string | undefined;
+    if (condition === "pending_invocation" || condition === "missing_result") {
+      const [invocation] = await db.insert(toolInvocations).values({ companyId: f.companyId, agentId: f.agent.id, runId: f.source.id, toolName: "write_record", riskLevel: "write", status: condition === "pending_invocation" ? "executing" : "succeeded", completedAt: condition === "missing_result" ? new Date() : null }).returning();
+      invocationId = invocation!.id;
+    } else if (condition !== "incomplete_api_receipt") {
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id, stream: "system", level: "info", eventType: condition === "pending_semantic_tool" ? "semantic_tool.input" : "tool.execution.started", payload: { executionId: "write-1", name: "write_record", callId: "call-1", toolId: "tool-1", operationId: "updateRecord" } });
+    } else {
+      f.source.resultJson = { ...f.source.resultJson, apiToolReceipts: { write: { operationId: "updateRecord" } } };
+      await db.update(heartbeatRuns).set({ resultJson: f.source.resultJson }).where(eq(heartbeatRuns.id, f.source.id));
+    }
+    expect(await f.schedule()).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+    expect((await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, f.pool.id)))[0]!.selection.memberId).toBe(f.members[0]!.id);
+    if (invocationId) await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date(), resultHash: "receipted-result" }).where(eq(toolInvocations.id, invocationId));
+    else if (condition !== "incomplete_api_receipt") await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id, stream: "system", level: "info", eventType: condition === "pending_semantic_tool" ? "semantic_tool.result" : "tool.execution.completed", payload: { executionId: "write-1", name: "write_record", status: "succeeded", callId: "call-1", toolId: "tool-1", operationId: "updateRecord", outcome: "succeeded" } });
+    else { f.source.resultJson = { ...f.source.resultJson, apiToolReceipts: { write: { operationId: "updateRecord", result: { ok: true } } } }; await db.update(heartbeatRuns).set({ resultJson: f.source.resultJson }).where(eq(heartbeatRuns.id, f.source.id)); }
+    expect((await f.schedule()).outcome).toBe("scheduled");
+  });
   it("continues a quota-interrupted conversation on the next account with a fresh session", async () => {
     const f = await fixture(true);
     const result = await f.schedule();

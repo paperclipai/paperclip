@@ -297,6 +297,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     }
     selectedEnvironmentId = kubernetesEnvironment.id;
   }
+  const poolSelection = parseObject(context.aiRouterSelection);
+  const poolScope = parseObject(poolSelection.runnerScope);
+  if (!Object.keys(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput)).length && Object.hasOwn(poolScope, "environmentId") && poolScope.environmentId !== selectedEnvironmentId) {
+    throw new Error("The Pool execution environment changed during admission; retry with the current environment settings.");
+  }
   const selectedEnvironmentForConfig =
     selectedEnvironmentId === localEnvironment.id
       ? localEnvironment

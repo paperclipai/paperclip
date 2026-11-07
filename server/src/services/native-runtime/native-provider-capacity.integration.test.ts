@@ -32,6 +32,7 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   executeNativeSession: provider.execute,
 }));
 
+import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
@@ -42,7 +43,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { aiConnectionService } from "../ai-connections.js";
 import { aiConnectionRouterService } from "../ai-connection-router.js";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember } from "@paperclipai/shared";
 import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
 import { fenceQuotaReplacementStop } from "./native-cancellation-request.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
@@ -88,9 +89,14 @@ describe("native provider capacity failure persistence", () => {
     { replayed: false, structured: false, kind: "auth", hold: "stop" },
     { replayed: false, structured: false, kind: "runner", hold: "unknown_action" },
     { replayed: false, structured: false, kind: "runner_definitive", hold: "unknown_action" },
+    ...["quota", "auth", "runner_definitive"].map(kind => ({ replayed: false, structured: false, kind, hold: "", poolHarness: true })),
+    { replayed: false, structured: false, kind: "quota", hold: "", poolHarness: true, ordinaryRetry: true },
   ])(
     "persists $kind failure and continues receipted work (replayed=$replayed, structured=$structured, hold=$hold)",
-    async ({ replayed, structured, kind: scenarioKind, hold }) => {
+    async scenario => {
+      const { replayed, structured, kind: scenarioKind, hold } = scenario;
+      const poolHarness = "poolHarness" in scenario && scenario.poolHarness === true;
+      const ordinaryRetry = "ordinaryRetry" in scenario && scenario.ordinaryRetry === true;
       const immediate = scenarioKind === "runner_definitive";
       const kind = immediate ? "runner" : scenarioKind;
       const code = kind === "auth" ? "native_provider_auth_failed" : kind === "runner" ? "native_provider_runner_failed" : "native_provider_usage_limit";
@@ -209,22 +215,26 @@ describe("native provider capacity failure persistence", () => {
       await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
       const accounts = aiConnectionService(db);
       const saved = await Promise.all(["First", "Backup"].map(name => accounts.save(companyId, userId, {
-        provider: "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
+        provider: poolHarness && name === "Backup" ? "anthropic" : "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
       }, randomUUID())));
-      const members = saved.map(account => ({ id: randomUUID(), binding: {
-        mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account,
-      }, profile: { provider: "codex" as const, model: "gpt-5" } }));
+      const members: AiConnectionPoolMember[] = saved.map((account, index) => ({ id: randomUUID(), binding: {
+        mode: "delegated" as const, provider: poolHarness && index === 1 ? "anthropic" as const : "openai" as const, method: "api_key" as const, ...account,
+      }, profile: poolHarness && index === 1 ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } : { provider: "codex", model: "gpt-5" } }));
       const router = aiConnectionRouterService(db);
       const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId,
-        config: { name: "Capacity pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
-      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agentId));
-      const selection = await router.resolve({ companyId, poolId: pool.id, agentId, userId, adapterType: "paperclip_runner", taskKey: issueId });
+        config: { ...(poolHarness ? { schemaVersion: 2 as const, kind: "harness_pool" as const } : {}), name: "Capacity pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: poolHarness ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agentId));
+      const selection = await router.resolve({ companyId, poolId: pool.id, agentId, userId, adapterType: "paperclip_runner", taskKey: issueId, ...(poolHarness ? { environmentId: null } : {}) });
       if (selection.binding.mode === "responsible_user") throw new Error("Expected delegated fixture");
       await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, responsibleUserId: userId,
         contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection },
         runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { ...execution, workspace: { ...execution.workspace, cwd: workspaceCwd } },
           sessionCheckpoint: { providerSessionId: "capacity-test-provider-session", providerIdentity: { threadId: "capacity-test-thread" }, ...(immediate ? { terminal: { runTerminalState: "failed" } } : {}) } },
       }).where(eq(heartbeatRuns.id, runId));
+      if (ordinaryRetry) {
+        const [previous] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId, scopeKind: "issue", status: "failed", errorCode: "workspace_git_scan_timeout", contextSnapshot: { issueId, aiRouterTaskKey: issueId, aiRouterSelection: selection }, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).returning();
+        await db.update(heartbeatRuns).set({ retryOfRunId: previous!.id }).where(eq(heartbeatRuns.id, runId));
+      }
       const event: PrpEvent = {
         schema: "paperclip.prp.event.v1",
         runId,
@@ -369,13 +379,15 @@ describe("native provider capacity failure persistence", () => {
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, selection.binding.grantId));
       const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
       const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, agentId));
       const attributionStartedAt = Date.now();
       const attributed = await recordVerifiedRouterQuotaCooldown(db, { companyId, agentId, runId,
         credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`,
         retryNotBefore: null, failureKind: kind as "quota" | "auth" | "runner",
       });
       expect(attributed).toBe(true);
-      const cooldown = await router.accountCooldown(companyId, selection.binding.connectionId, `secret:${secret.id}:${secret.aiSessionEpoch}`);
+      if (poolHarness && kind === "quota") await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, agentId));
+      const cooldown = await router.accountCooldown(companyId, selection.binding.connectionId, `secret:${secret.id}:${secret.aiSessionEpoch}`, poolHarness ? { config: selection.runtimeConfig, scope: { environmentId: null } } : undefined);
       const expectedDelay = kind === "runner" ? 5 * 60_000 : 2 * 60 * 60_000;
       expect(cooldown!.getTime()).toBeGreaterThanOrEqual(attributionStartedAt + expectedDelay);
       expect(cooldown!.getTime()).toBeLessThanOrEqual(Date.now() + expectedDelay);
@@ -399,7 +411,7 @@ describe("native provider capacity failure persistence", () => {
       expect(pin.selection.memberId).toBe(members[1].id);
       expect(provider.execute).toHaveBeenCalledTimes(1);
       expect(await readFile(savedFile, "utf8")).toBe(savedWork);
-      if (kind !== "quota") {
+      if (kind !== "quota" || poolHarness) {
         const [currentIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
         const [runningSuccessor] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date(),
           runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, successor.id)).returning();
@@ -407,17 +419,24 @@ describe("native provider capacity failure persistence", () => {
         const prepared = await prepareNativeHeartbeatRun({ db, run: runningSuccessor, issue: currentIssue,
           environmentLeaseId: randomUUID() });
         await db.insert(nativeRunFinalizations).values({ runId: successor.id, companyId, issueId, phase: "observed" });
+        const backupInput = poolHarness ? buildNativeExecutionInput({ companyId, runId: successor.id, agentId,
+          issue: { id: issueId, title: issue.title, description: issue.description, identifier: issueId, workMode: "standard" },
+          taskPrompt: "Continue remaining work; preserve the receipted output.", workspace: { id: runId, ...execution.workspace },
+          normalizedSessionId: prepared.normalizedSessionId, provider: "acpx", acpxAgent: "claude", model: String(pin.selection.runtimeConfig.model),
+          completionContract: execution.completionContract, runtimeContext: nativeRuntimeContextFixture(),
+        }) : null;
+        if (backupInput && backupInput.provider.kind !== "acpx") throw new Error("Expected the selected Claude driver");
         const nextExecution: NativeExecutionInputV10 = { ...execution,
           binding: { ...execution.binding, runId: successor.id },
-          provider: { kind: "codex", model: String(pin.selection.runtimeConfig.model), approvalPolicy: "never" },
-          session: { ...execution.session, normalizedSessionId: prepared.normalizedSessionId } };
+          provider: backupInput?.provider.kind === "acpx" ? backupInput.provider : { kind: "codex", model: String(pin.selection.runtimeConfig.model), approvalPolicy: "never" },
+          session: { ...execution.session, driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", normalizedSessionId: prepared.normalizedSessionId } };
         provider.execute.mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
           expect(await readFile(savedFile, "utf8")).toBe(savedWork);
           await options.controlPlane.openRun({ ...openInput,
             identity: { ...openInput.identity, runId: successor.id, sessionId: prepared.normalizedSessionId }, sourceInstanceId: prepared.runnerInstanceId });
           return { result: { summary: "Finished remaining work without replay" }, terminal: { runTerminalState: "succeeded" },
             turnId: prepared.turnId, normalizedSessionId: prepared.normalizedSessionId, providerSessionId: "backup-provider",
-            driverKind: "codex_app_server", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+            driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
         });
         const executeBackup = () => executePaperclipNativeSession({ db, execution: nextExecution, runnerInstanceId: prepared.runnerInstanceId,
           backend: { descriptor: async () => { throw new Error("unexpected descriptor"); }, openSession: async () => { throw new Error("unexpected session"); } } });

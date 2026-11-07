@@ -1,3 +1,4 @@
+import { legacyRunHasUnsettledActions } from "./legacy-action-outcomes.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -104,7 +105,9 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
   if (await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
-      && !(await isPreDispatchExecutionWaitVerified(db, run)));
+      && !(await isPreDispatchExecutionWaitVerified(db, run))) ||
+    (run.runtimeMode !== "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+      && await legacyRunHasUnsettledActions(db, run));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */

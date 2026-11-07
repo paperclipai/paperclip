@@ -78,6 +78,7 @@ export interface AiConnectionPoolSaveInput {
   config: AiConnectionPoolConfig;
 }
 export interface AiConnectionRouterSelection {
+  runnerScope?: { environmentId: string | null };
   /** Execution harness selected by the host; absent on pre-upgrade allocations. */
   adapterType?: string;
   poolId: string;
