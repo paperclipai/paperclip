@@ -2,6 +2,7 @@ import type { SetIssueTitle } from "@paperclipai/shared";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
+import type { IssueContextUsage } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
@@ -370,6 +371,9 @@ export const issuesApi = {
     options
       ? api.get<Issue>(`/issues/${id}`, options)
       : api.get<Issue>(`/issues/${id}`),
+  getContextUsage: (id: string) => api.get<IssueContextUsage | null>(`/issues/${id}/context-usage`),
+  compactContext: (id: string) =>
+    api.post<{ requestId: string; runId: string }>(`/issues/${id}/context/compact`, {}),
   getRunnerGoal: (id: string, agentId?: string | null) => {
     const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
     return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
@@ -416,7 +420,7 @@ export const issuesApi = {
       data,
     ),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
-    api.post<{ runId: string; resultId: string; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
+    api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
   retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>

@@ -1,14 +1,15 @@
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
-import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
+import { NativeSessionCloseUnrecoverableError, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, budgetPolicies, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, completionContracts, nativeRunResults, costEvents, agentWakeupRequests, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase, withRunExecutionTiming } from "../execution-preparation-timing.js";
@@ -20,7 +21,7 @@ import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError } from "../native-runtime/native-session-executor.js";
+import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError, nativeSessionFailureSourceCode, nativeSessionFailureDisposition } from "../native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
 import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwnershipLostError } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
@@ -30,6 +31,16 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+
+import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
+import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
+import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
+import type { ControlPlanePort, NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
+const postResultProvider = vi.hoisted(() => ({ execute: vi.fn() }));
+vi.mock("../../vendor/paperclip-runner/index.js", async original => ({
+  ...await original<typeof import("../../vendor/paperclip-runner/index.js")>(), executeNativeSession: postResultProvider.execute,
+}));
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
 // and gateway delivery are external boundaries; browser acceptance covers their wiring.
@@ -114,6 +125,281 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     };
     return { input, adapter, run };
   }
+  it.each(["current", "expired", "replaced-owner", "generation", "attempt", "boot", "pid", "process-start", "stopped", "unknown-code", "permission", "io", "diagnostic-sink-failed", "diagnostic-lock-busy"] as const)(
+    "preserves post-result diagnostics without changing recovery authority (%s)", async scenario => {
+      const { input } = await fixture(true);
+      const issue = input.task.issueRef!;
+      const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, contextSnapshot: { issueId: issue.id }, costAccountingPending: true }).where(eq(heartbeatRuns.id, input.run.id)).returning();
+      input.run = run;
+      const prepared = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
+      const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+      const completion = buildNativeCompletionContract(issue, { revision: contract.revision });
+      await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: issue.id, phase: "observed" });
+      const execution: NativeExecutionInputV1 = {
+        schema: "paperclip.native-execution-input.v1", interactionResponses: [], credentialBindings: [], binding: { companyId: run.companyId, agentId: run.agentId, issueId: issue.id, runId: run.id, executionWorkspaceId: run.id },
+        completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1", contract: completion },
+        provider: { kind: "codex", model: "test-model" },
+        task: { identifier: issue.id, title: issue.title, description: null, prompt: "Local post-result fault", workMode: "standard" },
+        workspace: { cwd: home, repoUrl: null, repoRef: null, branchName: null },
+        session: { normalizedSessionId: prepared.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      };
+      input.runtime.nativeExecution = execution;
+      input.runtime.nativeRunnerInstanceId = prepared.runnerInstanceId;
+      input.workspace.nativeWorkspaceSync = { mode: "host_current", reference: {
+        schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "controlled-local", remoteCwd: home, resourceDisposition: null },
+        restoreWorkspace: vi.fn(async () => {}), cleanup: vi.fn(async () => {}) };
+      const diagnosticExpected = ["current", "stopped", "unknown-code", "permission", "io", "diagnostic-sink-failed"].includes(scenario);
+      let faultInjected = false, lockHeld = false, settledWhileLocked = false;
+      let releaseLock: () => void = () => {};
+      let lockTask: Promise<unknown> | undefined;
+      let diagnosticLockError: { code?: string; message?: string } | undefined;
+      if (scenario === "diagnostic-lock-busy") {
+        const transaction = db.transaction.bind(db);
+        let armed = false;
+        const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(async (body, config) => {
+          const result = await transaction(async tx => {
+            // Observe real query errors; the executor still executes its actual
+            // diagnostic SELECT against PostgreSQL and the competing row lock.
+            if (faultInjected) {
+              const select = tx.select.bind(tx);
+              vi.spyOn(tx, "select").mockImplementation(fields => {
+                const selection = fields === undefined ? select() : select(fields);
+                const from = selection.from.bind(selection);
+                selection.from = ((table: Parameters<typeof selection.from>[0]) => {
+                  const query = from(table);
+                  if (table === nativeRunFinalizations && fields?.runId === nativeRunFinalizations.runId) {
+                    const lock = query.for.bind(query);
+                    query.for = ((...args: Parameters<typeof query.for>) => lock(...args).catch(error => {
+                      diagnosticLockError = error.cause ?? error;
+                      throw error;
+                    })) as typeof query.for;
+                  }
+                  return query;
+                }) as typeof selection.from;
+                return selection as ReturnType<typeof select>;
+              });
+            }
+            return body(tx);
+          }, config);
+          // The first transaction after the injected I/O failure publishes the
+          // control deadline. Hold the row only after that transaction commits.
+          if (faultInjected && !armed) {
+            armed = true;
+            let ready!: () => void;
+            const acquired = new Promise<void>(resolve => { ready = resolve; });
+            const release = new Promise<void>(resolve => { releaseLock = resolve; });
+            lockTask = transaction(async locker => {
+              await locker.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+                .where(eq(nativeRunFinalizations.runId, run.id)).for("update");
+              lockHeld = true;
+              ready();
+              await release;
+              lockHeld = false;
+            });
+            await acquired;
+          }
+          return result;
+        });
+        onTestFinished(async () => { releaseLock(); await lockTask; transactionSpy.mockRestore(); });
+      }
+      postResultProvider.execute.mockReset().mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
+        await options.controlPlane.openRun({ identity: { companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId, sessionId: prepared.normalizedSessionId }, backendKind: "mock", sourceInstanceId: prepared.runnerInstanceId });
+        await options.controlPlane.completeRun({ result: { ...CONTROL_PLANE_CONFORMANCE_RESULT, completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: completion.revision } },
+          terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: prepared.turnId });
+        const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        const controller = await currentNativeControllerIdentity();
+        expect(owner).toMatchObject({ phase: "workspace_finalizing", attempt: 1, controllerGeneration: 1, controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt });
+        expect(owner.leaseOwner).toBeTruthy();
+        expect(owner.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+        const changed = scenario === "expired" ? { leaseExpiresAt: new Date(0) }
+          : scenario === "replaced-owner" ? { leaseOwner: "replacement-owner" }
+          : scenario === "generation" ? { controllerGeneration: owner.controllerGeneration + 1 }
+          : scenario === "attempt" ? { attempt: owner.attempt + 1 }
+          : scenario === "boot" ? { controllerBootId: randomUUID() }
+          : scenario === "pid" ? { controllerPid: controller.pid + 1 }
+          : scenario === "process-start" ? { controllerProcessStartedAt: new Date(controller.processStartedAt.getTime() - 1000) } : null;
+        if (changed) await db.update(nativeRunFinalizations).set(changed).where(eq(nativeRunFinalizations.runId, run.id));
+        if (scenario === "stopped") await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+        try { await readFile(join(home, `missing-${run.id}`, "harmless-checkpoint")); }
+        catch (error) {
+          faultInjected = true;
+          if (scenario === "unknown-code") (error as NodeJS.ErrnoException).code = "private-unrecognized-code";
+          if (scenario === "permission") (error as NodeJS.ErrnoException).code = "EACCES";
+          if (scenario === "io") (error as NodeJS.ErrnoException).code = "EIO";
+          throw error;
+        }
+        throw new Error("fixture must fail with ENOENT");
+      });
+      const events: unknown[] = [];
+      let controlError: unknown;
+      const actual = await vi.importActual<typeof import("../native-runtime/native-session-executor.js")>("../native-runtime/native-session-executor.js");
+      vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async options => {
+        try { return await actual.executePaperclipNativeSession({ ...options, useRunnerd: false,
+          backend: { descriptor: async () => { throw new Error("Unexpected provider call"); }, openSession: async () => { throw new Error("Unexpected provider call"); } },
+          onEvent: async event => {
+            events.push(event);
+            if (event.eventType === "native.post_result_failure" && scenario === "diagnostic-sink-failed") throw new Error("private sink failure");
+            await options.onEvent?.(event);
+          } }); }
+        catch (error) {
+          controlError = error;
+          settledWhileLocked = lockHeld;
+          releaseLock();
+          await lockTask;
+          throw error;
+        }
+      });
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeWorkspaceFinalizeScheduledError", reasonCode: "workspace_sync_out_failed", terminalFailure: false });
+      expect((controlError as Error).message).toBe("native_session_lease_lost");
+      if (scenario === "diagnostic-lock-busy") {
+        expect(settledWhileLocked).toBe(true);
+        expect(diagnosticLockError?.code).toBe("55P03");
+        expect(diagnosticLockError?.message).toContain("could not obtain lock");
+      }
+      const source = nativeSessionFailureSourceCode(controlError);
+      expect(source).toBe(nativeSessionFailureSourceCode(new Error("native_session_lease_lost")));
+      expect(nativeSessionFailureDisposition(1, new Date(0), source)).toEqual(nativeSessionFailureDisposition(1, new Date(0), nativeSessionFailureSourceCode(new Error("native_session_lease_lost"))));
+      expect((controlError as { diagnostic?: unknown }).diagnostic).toEqual(diagnosticExpected
+        ? { stage: "post_result_execution", category: scenario === "unknown-code" ? "execution_failure" : scenario === "permission" ? "io_permission_denied" : scenario === "io" ? "io_failure" : "io_not_found", resultAlreadyAccepted: true }
+        : undefined);
+      const diagnostics = events.filter(event => (event as { eventType: string }).eventType === "native.post_result_failure") as Array<{ payload: unknown }>;
+      expect(diagnostics).toHaveLength(diagnosticExpected ? 1 : 0);
+      if (diagnosticExpected) expect(diagnostics[0].payload).toEqual({ stage: "post_result_execution", category: scenario === "unknown-code" ? "execution_failure" : scenario === "permission" ? "io_permission_denied" : scenario === "io" ? "io_failure" : "io_not_found", resultAlreadyAccepted: true });
+      expect(JSON.stringify(diagnostics)).not.toContain(home);
+      expect(JSON.stringify(diagnostics)).not.toContain("private-");
+      const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      const results = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, run.id));
+      expect(results).toHaveLength(1);
+      expect(after.resultId).toBe(results[0].id);
+      expect(after.phase).toBe("retryable_failure");
+      expect(after.failureCode).toBe("native_workspace_sync_out_failed");
+      expect(after.nextAttemptAt).toBeInstanceOf(Date);
+      const saved = await read(run.id);
+      expect(saved.costAccountingPending).toBe(true);
+      expect(saved.costAccountedAt).toBeNull();
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, run.id))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, run.companyId))).toHaveLength(0);
+      if (scenario === "stopped") expect(saved.status).toBe("cancelled");
+      expect(postResultProvider.execute).toHaveBeenCalledOnce();
+      expect(input.effects.onNativeWorkspaceFinalizeScheduled).toHaveBeenCalledOnce();
+      expect(input.services.enqueueWakeup).not.toHaveBeenCalled();
+      expect(input.workspace.nativeWorkspaceSync.restoreWorkspace).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["settled", "workspace-check-failed", "terminal-unreadable"] as const)("settles an accepted local result when runner close cannot prove suspension (%s)", async scenario => {
+    const { input } = await fixture(true);
+    const issue = input.task.issueRef!;
+    const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, contextSnapshot: { issueId: issue.id }, costAccountingPending: true }).where(eq(heartbeatRuns.id, input.run.id)).returning();
+    input.run = run;
+    const prepared = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+    const completion = buildNativeCompletionContract(issue, { revision: contract.revision });
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: issue.id, phase: "observed" });
+    input.runtime.nativeExecution = {
+      schema: "paperclip.native-execution-input.v1", interactionResponses: [], credentialBindings: [], binding: { companyId: run.companyId, agentId: run.agentId, issueId: issue.id, runId: run.id, executionWorkspaceId: run.id },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1", contract: completion },
+      provider: { kind: "codex", model: "test-model" },
+      task: { identifier: issue.id, title: issue.title, description: null, prompt: "Local runner settlement fault", workMode: "standard" },
+      workspace: { cwd: home, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: prepared.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    } satisfies NativeExecutionInputV1;
+    input.runtime.nativeRunnerInstanceId = prepared.runnerInstanceId;
+    postResultProvider.execute.mockReset().mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
+      await options.controlPlane.openRun({ identity: { companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId, sessionId: prepared.normalizedSessionId }, backendKind: "mock", sourceInstanceId: prepared.runnerInstanceId });
+      await options.controlPlane.completeRun({ result: { ...CONTROL_PLANE_CONFORMANCE_RESULT, completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: completion.revision } },
+        terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: prepared.turnId });
+      if (scenario === "terminal-unreadable") {
+        await db.update(nativeRunResults).set({ resultJson: sql`${nativeRunResults.resultJson} - 'terminal'` }).where(eq(nativeRunResults.runId, run.id));
+      }
+      // The runner retired after the accepted result, but its suspend command
+      // did not complete before the close deadline (for example, under load).
+      throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: true }, true);
+    });
+    const actual = await vi.importActual<typeof import("../native-runtime/native-session-executor.js")>("../native-runtime/native-session-executor.js");
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async options => actual.executePaperclipNativeSession({ ...options, useRunnerd: false,
+      backend: { descriptor: async () => { throw new Error("Unexpected provider call"); }, openSession: async () => { throw new Error("Unexpected provider call"); } } }));
+
+    if (scenario === "terminal-unreadable") {
+      // Without a rebuildable accepted result, no succeeded finalize row is written.
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ message: "native_session_lease_lost" });
+      const operations = await finalizations();
+      expect(operations.map(operation => operation.status)).toEqual(["failed"]);
+      return;
+    }
+    if (scenario === "workspace-check-failed") {
+      // A failed workspace finalization check keeps the existing failure path.
+      const recorder = input.workspace.workspaceOperationRecorder;
+      const record = recorder.recordOperation.bind(recorder);
+      vi.spyOn(recorder, "recordOperation").mockImplementation(async operation => {
+        if (operation.phase === "workspace_finalize") throw new Error("workspace check failed");
+        return record(operation);
+      });
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ message: "native_session_lease_lost", diagnostic: { category: "runner_settlement_incomplete" } });
+      const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      expect(after).toMatchObject({ phase: "retryable_failure", leaseOwner: null, failureCode: "workspace_finalization_failed" });
+      return;
+    }
+    // Runner bookkeeping after an accepted result is not an adapter failure:
+    // the result returns to ordinary completion like any successful turn.
+    const execution = await executeHeartbeatRuntime(db, input);
+    if (!execution.dispatched) throw new Error("expected a dispatched native execution");
+    expect(execution.adapterResult).toMatchObject({ exitCode: 0, errorMessage: null, timedOut: false,
+      resultJson: { nativePostResultFailure: { stage: "post_result_execution", category: "runner_settlement_incomplete", resultAlreadyAccepted: true } },
+      nativeFinalization: { runId: run.id, terminal: { runTerminalState: "succeeded" } } });
+
+    // The executor handed over its lease, so the accepted result was finalized
+    // now rather than after the lease TTL.
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(after).toMatchObject({ phase: "committed", leaseOwner: null, leaseExpiresAt: null });
+    const saved = await read(run.id);
+    expect(saved.status).toBe("running");
+    expect(saved.errorCode).toBeNull();
+    const [operation] = await finalizations();
+    expect(operation.status).toBe("succeeded");
+    expect(postResultProvider.execute).toHaveBeenCalledOnce();
+    expect(input.services.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps workspace failure handling for other accepted-result failures on a local workspace", async () => {
+    const { input } = await fixture(true);
+    const issue = input.task.issueRef!;
+    const [run] = await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, contextSnapshot: { issueId: issue.id }, costAccountingPending: true }).where(eq(heartbeatRuns.id, input.run.id)).returning();
+    input.run = run;
+    const prepared = await prepareNativeHeartbeatRun({ db, run, issue, environmentLeaseId: randomUUID() });
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+    const completion = buildNativeCompletionContract(issue, { revision: contract.revision });
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: issue.id, phase: "observed" });
+    input.runtime.nativeExecution = {
+      schema: "paperclip.native-execution-input.v1", interactionResponses: [], credentialBindings: [], binding: { companyId: run.companyId, agentId: run.agentId, issueId: issue.id, runId: run.id, executionWorkspaceId: run.id },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1", contract: completion },
+      provider: { kind: "codex", model: "test-model" },
+      task: { identifier: issue.id, title: issue.title, description: null, prompt: "Local post-result I/O fault", workMode: "standard" },
+      workspace: { cwd: home, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: prepared.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+    } satisfies NativeExecutionInputV1;
+    input.runtime.nativeRunnerInstanceId = prepared.runnerInstanceId;
+    postResultProvider.execute.mockReset().mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
+      await options.controlPlane.openRun({ identity: { companyId: run.companyId, issueId: issue.id, runId: run.id, agentId: run.agentId, sessionId: prepared.normalizedSessionId }, backendKind: "mock", sourceInstanceId: prepared.runnerInstanceId });
+      await options.controlPlane.completeRun({ result: { ...CONTROL_PLANE_CONFORMANCE_RESULT, completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, contractRevision: completion.revision } },
+        terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: prepared.turnId });
+      await readFile(join(home, `missing-${run.id}`, "harmless-checkpoint"));
+      throw new Error("fixture must fail with ENOENT");
+    });
+    const actual = await vi.importActual<typeof import("../native-runtime/native-session-executor.js")>("../native-runtime/native-session-executor.js");
+    vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async options => actual.executePaperclipNativeSession({ ...options, useRunnerd: false,
+      backend: { descriptor: async () => { throw new Error("Unexpected provider call"); }, openSession: async () => { throw new Error("Unexpected provider call"); } } }));
+
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ message: "native_session_lease_lost", diagnostic: { category: "io_not_found" } });
+
+    // The executor hands its exact lease to finalization, which records the
+    // workspace failure for repair instead of waiting out the lease TTL.
+    const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(after).toMatchObject({ phase: "retryable_failure", leaseOwner: null, failureCode: "workspace_finalization_failed" });
+    expect((await read(run.id)).status).toBe("running");
+  });
+
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const finalizations = () => db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "workspace_finalize"));
   function expectCleanup(input: HeartbeatRuntimeExecutionInput) {
@@ -239,6 +525,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       exact = saved.costUsdExact as string;
       expect(Number(exact)).toBe(1.002);
       expect(saved.budgetExposure).toMatchObject({ costCents: "100.2000000" });
+      await flushBudgetEvaluationWork(db, { companyId: run.companyId });
       expect((await db.select().from(agents).where(eq(agents.id, input.agent.id)))[0].lifecycleHolds).toContain("budget");
       return { exitCode: 0, signal: null, timedOut: false, usageComplete: true, costUsd: null, model: "gpt-6.1-sol" };
     });
@@ -281,6 +568,18 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     });
     expect(input.effects.onNativeSessionResumeScheduled).toHaveBeenCalledOnce();
     expect(await finalizations()).toHaveLength(0);
+    expectCleanup(input);
+  });
+
+  it("logs a pointer to the docs when a same-run retry follows a failed attachment", async () => {
+    const { input, run } = await fixture(true);
+    await db.update(heartbeatRuns).set({ nativeIssueId: input.task.issueId }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: run.companyId, issueId: input.task.issueId!, runId: run.id, phase: "retryable_failure" });
+    const error = new Error('native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"message":"run.attach requires a settled Codex provider session: active_turn"}}');
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ name: "NativeSessionResumeScheduledError", original: error });
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("doc/execution-semantics.md#session-settlement-after-a-run"));
+    expect(input.output.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("run.attach requires a settled Codex provider session: active_turn"));
     expectCleanup(input);
   });
 

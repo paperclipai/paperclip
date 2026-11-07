@@ -1047,9 +1047,9 @@ describe("Inbox toolbar", () => {
       await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
       await vi.waitFor(() => expect(container.textContent).toContain("Cached readable task"));
       const row = container.querySelector("[data-inbox-item]");
-      apiMocks.inboxMine.mockRejectedValue(status === "network" ? new Error("Refresh unavailable") : new ApiError("Refresh unavailable", status, null));
+      apiMocks.inboxMine.mockRejectedValue(status === "network" ? new TypeError("Failed to fetch") : new ApiError("Refresh unavailable", status, null));
       await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe("company-1") }); });
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Some inbox items couldn’t load."));
+      expect(document.body.textContent).not.toContain("Some inbox items couldn’t load.");
       expect(container.querySelector("[data-inbox-item]")).toBe(row);
       expect(container.textContent).toContain("Cached readable task");
       expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
@@ -1176,7 +1176,7 @@ describe("Inbox toolbar", () => {
     const pendingParent = createDeferred<Issue[]>();
     const pendingBundle = createDeferred<InboxMineSnapshot>();
     let switched = false;
-    apiMocks.inboxMine.mockRejectedValueOnce(new Error("Aggregate temporarily unavailable")).mockReturnValueOnce(pendingBundle.promise);
+    apiMocks.inboxMine.mockRejectedValueOnce(new ApiError("tenant_app_unavailable", 503, null)).mockReturnValueOnce(pendingBundle.promise);
     apiMocks.issuesList.mockImplementation((_company, filters) => {
       if (filters.ids?.includes(parent.id)) return switched ? pendingParent.promise : Promise.resolve([parent]);
       return Promise.resolve([child]);
@@ -1195,7 +1195,7 @@ describe("Inbox toolbar", () => {
       await vi.waitFor(() => expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2));
       expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids?.includes(parent.id))).toHaveLength(1);
       expect(container.querySelector(`[title="${parent.title}"]`)).toBeNull();
-      await act(() => pendingBundle.reject(new Error("New account aggregate temporarily unavailable")));
+      await act(() => pendingBundle.reject(new ApiError("tenant_app_unavailable", 503, null)));
       await vi.waitFor(() => expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids?.includes(parent.id))).toHaveLength(2));
       expect(container.querySelector(`[title="${parent.title}"]`)).toBeNull();
       expect(container.textContent).not.toContain(parent.identifier);
@@ -1502,7 +1502,7 @@ describe("Inbox toolbar", () => {
       routerMock.location.pathname = "/inbox/mine";
       setIssueRows([createIssue({ title: "Available task" })]);
       const bundled = source === "failureError" || source === "contextError";
-      if (bundled) mineFixture = { ...mineFixture, [source]: { status: 503, message: "Optional source unavailable" } };
+      if (bundled) mineFixture = { ...mineFixture, [source]: { status: 403, message: "Optional source access denied" } };
       else apiMocks[source].mockRejectedValue(new Error("Optional source unavailable"));
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
       const root = createRoot(container);
@@ -1524,6 +1524,47 @@ describe("Inbox toolbar", () => {
       } finally { await act(() => root.unmount()); queryClient.clear(); }
     },
   );
+
+  it.each([429, 503])("offers retry after an initial %s when the server remains reachable", async status => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.inboxMine.mockRejectedValue(new ApiError("temporarily_unavailable", status, null));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).not.toBeNull());
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      expect(container.textContent).not.toContain("temporarily_unavailable");
+      apiMocks.inboxMine.mockResolvedValue(createMineSnapshot({ issues: [createIssue({ title: "Recovered task" })] }));
+      await act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+      await vi.waitFor(() => expect(container.textContent).toContain("Recovered task"));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it.each(["failureError", "contextError"] as const)("automatically recovers a transient %s without hiding loaded tasks", async source => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    routerMock.location.pathname = "/inbox/mine";
+    setIssueRows([createIssue({ title: "Available task" })]);
+    mineFixture = { ...mineFixture, [source]: { status: 503, message: "tenant_app_unavailable" } };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Available task"));
+      expect(document.body.textContent).not.toContain("Some inbox items couldn’t load.");
+      expect(document.body.textContent).not.toContain("tenant_app_unavailable");
+      const row = container.querySelector("[data-inbox-item]");
+      apiMocks.inboxMine.mockResolvedValue(createMineSnapshot({ issues: mineFixture.issues }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await vi.waitFor(() => expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2));
+      expect(client.getQueryData<InboxMineSnapshot>([...queryKeys.issues.list("company-1"), "mine-context", "local-board"])?.[source]).toBeUndefined();
+      expect(container.querySelector("[data-inbox-item]")).toBe(row);
+      expect(container.textContent).toContain("Available task");
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2);
+    } finally { await act(() => root.unmount()); client.clear(); vi.useRealTimers(); }
+  });
 
   it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
     routerMock.location.pathname = "/inbox/mine";
@@ -1622,7 +1663,8 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
+  it.each([true, false])("uses bold titles without unread dots (Streamlined UI=%s)", async streamlined => {
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false, enableStreamlinedUi: streamlined });
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -1659,33 +1701,17 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
-    // The canonical spacer reserves the disclosure column on every leaf row.
-    const hasLeadingSpacer = (row: Element) =>
-      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
-    // The overlay anchor is present on read AND unread Inbox rows without
-    // consuming a layout column.
-    const dotSlot = (row: Element) =>
-      row.querySelector('[data-testid="issue-row-unread-slot"]');
-
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
-
-    // Both rows share the canonical task-row geometry. The dot is absolutely
-    // positioned in the row gutter, so Inbox does not gain a column that Tasks
-    // lacks and unread state cannot shift status/title alignment.
-    const unreadSlot = dotSlot(unreadRow);
-    const readSlot = dotSlot(readRow);
-    expect(unreadSlot).not.toBeNull();
-    expect(readSlot).not.toBeNull();
-    expect(unreadSlot?.className).toContain("absolute");
-    // Only the unread row carries the dot button; the read slot is empty.
-    expect(markReadButton(unreadSlot!)).not.toBeNull();
-    expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
-    expect(hasLeadingSpacer(unreadRow)).toBe(true);
-
-    // Read rows keep the same spacer, so both rows line up.
-    expect(hasLeadingSpacer(readRow)).toBe(true);
+    expect(unreadRow.querySelector('[data-slot="task-row-title"]')?.className).toContain("font-semibold");
+    expect(readRow.querySelector('[data-slot="task-row-title"]')?.className).not.toContain("font-semibold");
+    expect(container.querySelector('[data-testid="issue-row-unread-slot"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    if (streamlined) {
+      for (const row of [unreadRow, readRow]) {
+        expect(row.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
+      }
+    }
 
     act(() => {
       root.unmount();

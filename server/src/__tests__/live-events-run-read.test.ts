@@ -278,6 +278,11 @@ describe("live-event run read boundaries", () => {
       await once(socket, "open");
       socket.send(JSON.stringify({ type: "live.interests", version: 1, revision: 1, runIds: [] }));
       await expect.poll(() => messages.some(message => message.type === "live.subscribed" && message.revision === 1)).toBe(true);
+      // Runtime-state refreshes reach the company without a transcript subscription.
+      const refreshedAgentId = randomUUID();
+      publishLiveEvent({ companyId, type: "agent.runtime_state.updated", payload: { agentId: refreshedAgentId } });
+      await barrier();
+      expect(messages.find(message => message.type === "agent.runtime_state.updated")?.payload).toMatchObject({ agentId: refreshedAgentId });
       const baseline = queries.length;
       publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: sourcePayload }); await barrier();
       expect(messages.some(message => message.type === "heartbeat.run.event")).toBe(false);

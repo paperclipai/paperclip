@@ -158,7 +158,8 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
     async setRequiredPlugins(agent, owner, pluginIds) {
       const rows = await db.update(agents).set({ lifecycleRequiredPluginIds: pluginIds })
         .where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
-          sql`${agents.lifecycleRequiredPluginIds} is null`,
+          agent.lifecycleRequiredPluginIds === null ? sql`${agents.lifecycleRequiredPluginIds} is null`
+            : sql`${agents.lifecycleRequiredPluginIds} = ${JSON.stringify(agent.lifecycleRequiredPluginIds)}::jsonb`,
           sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
       return rows.length > 0;
     },
