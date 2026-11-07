@@ -92,7 +92,7 @@ jobs:
         run: pnpm storybook-visual:baseline pack
 
       - name: Upload Storybook visual report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: storybook-visual-report-${{ github.run_id }}
@@ -103,7 +103,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload updated baseline review bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         if: ${{ github.event.inputs.update_snapshots == 'true' }}
         with:
           name: storybook-visual-baseline-review-${{ github.run_id }}
