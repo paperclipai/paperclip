@@ -673,8 +673,29 @@ export async function migrateRemoteWorkspaceCohort(input: {
     eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, workspaceIds))).orderBy(executionWorkspaces.id);
   if (initial.length !== workspaceIds.length) throw new Error("workspace_cohort_member_missing");
   const imported = initial.map(workspace => Boolean(readRemoteWorkspaceAuthority(workspace.metadata)));
-  if (imported.every(Boolean)) return { companyId, applied: Boolean(input.apply), replayed: true,
-    members: await Promise.all(workspaceIds.map(workspaceId => inventoryRemoteWorkspaceMigration(input.db, { companyId, workspaceId }))) };
+  if (imported.every(Boolean)) {
+    const snapshotIds = initial.flatMap(workspace => readRemoteWorkspaceAuthority(workspace.metadata)?.snapshotId ?? []);
+    if (snapshotIds.length !== workspaceIds.length) throw new Error("workspace_cohort_membership_changed");
+    const saved = await input.db.select({ snapshot: executionWorkspaceSnapshots, operation: workspaceOperations })
+      .from(executionWorkspaceSnapshots).innerJoin(workspaceOperations, and(
+        eq(workspaceOperations.companyId, executionWorkspaceSnapshots.companyId),
+        eq(workspaceOperations.id, executionWorkspaceSnapshots.sourceOperationId)))
+      .where(and(eq(executionWorkspaceSnapshots.companyId, companyId), inArray(executionWorkspaceSnapshots.id, snapshotIds),
+        inArray(executionWorkspaceSnapshots.executionWorkspaceId, workspaceIds)));
+    const parsed = cohortSchema.safeParse(saved[0]?.operation.metadata?.cohortMigration);
+    if (!parsed.success) throw new Error("workspace_cohort_membership_changed");
+    const cohort = parsed.data;
+    if (saved.length !== workspaceIds.length || cohort.companyId !== companyId
+      || canonical(cohort.members.map(member => member.workspaceId)) !== canonical(workspaceIds)
+      || new Set(cohort.members.map(member => member.operationId)).size !== workspaceIds.length
+      || saved.some(({ snapshot, operation }) => operation.status !== "succeeded" || operation.phase !== "remote_workspace_migration"
+        || operation.executionWorkspaceId !== snapshot.executionWorkspaceId || !["committed", "superseded"].includes(snapshot.status)
+        || operation.metadata?.snapshotId !== snapshot.id || operation.metadata?.manifestDigest !== snapshot.manifestDigest
+        || cohort.members.find(member => member.workspaceId === snapshot.executionWorkspaceId)?.operationId !== operation.id
+        || canonical(operation.metadata?.cohortMigration) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
+    return { companyId, cohortId: cohort.id, applied: Boolean(input.apply), replayed: true,
+      members: await Promise.all(workspaceIds.map(workspaceId => inventoryRemoteWorkspaceMigration(input.db, { companyId, workspaceId }))) };
+  }
   if (imported.some(Boolean)) throw new Error("workspace_cohort_membership_changed");
   const stop = new AbortController(), signal = AbortSignal.any([input.signal, stop.signal]);
   const members = await Promise.all(workspaceIds.map(async workspaceId => {

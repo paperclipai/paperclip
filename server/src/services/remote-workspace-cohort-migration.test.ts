@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,7 @@ import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-wor
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
 
 const support = await getEmbeddedPostgresTestSupport(), execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
@@ -114,9 +115,11 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     });
     try {
       await expect(migrateRemoteWorkspaceCohort({ db, storage, companyId: f.companyId, workspaceIds,
-        apply: true, concurrency: 2, signal: AbortSignal.timeout(50_000) })).resolves.toMatchObject({ applied: true });
+        apply: true, signal: AbortSignal.timeout(50_000) })).resolves.toMatchObject({ applied: true });
     } finally { clearTimeout(timer); }
     expect(maximum).toBe(2);
+    await expect(run(f)).resolves.toMatchObject({ applied: true, replayed: true });
+    await expect(run(f, { workspaceIds: [f.leaves[0].id] })).rejects.toThrow("workspace_cohort_membership_changed");
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, held.runId)))[0]).toEqual(held.owner);
     const archives = [];
     for (const workspace of f.leaves) {
@@ -134,6 +137,44 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       expect(await fs.readFile(path.join(targetDir, "untracked.txt"), "utf8")).toBe(`${workspace.name} untracked work\n`);
       expect(await git(targetDir, "log", "-1", "--format=%s")).toBe("Original history");
     }
+  }, 60_000);
+  it("shares the merged child verifier across parallel aliases under the complete cohort fence", async () => {
+    const f = await fixture(), parent = f.leaves[0], cwd = path.join(parent.cwd!, ".paperclip", "worktrees", "nested");
+    await git(f.root, "worktree", "add", "-qb", "nested", cwd);
+    const [childIssue, aliasIssue] = await db.insert(issues).values([
+      { companyId: f.companyId, projectId: f.projectId, title: "Nested child" },
+      { companyId: f.companyId, projectId: f.projectId, title: "Leaf alias" },
+    ]).returning();
+    const [child, alias] = await db.insert(executionWorkspaces).values([
+      { companyId: f.companyId, projectId: f.projectId, sourceIssueId: childIssue.id, name: "nested", mode: "isolated_workspace",
+        strategyType: "git_worktree", providerType: "git_worktree", cwd, providerRef: cwd, repoUrl: parent.repoUrl, branchName: "nested" },
+      { companyId: f.companyId, projectId: f.projectId, sourceIssueId: aliasIssue.id, name: "alias", mode: parent.mode,
+        strategyType: parent.strategyType, providerType: parent.providerType, cwd: parent.cwd, providerRef: parent.providerRef,
+        repoUrl: parent.repoUrl, branchName: parent.branchName },
+    ]).returning();
+    await db.update(issues).set({ executionWorkspaceId: child.id }).where(eq(issues.id, childIssue.id));
+    await db.update(issues).set({ executionWorkspaceId: alias.id }).where(eq(issues.id, aliasIssue.id));
+    await fs.writeFile(path.join(cwd, "untracked.txt"), "nested dirty bytes\n");
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id, apply: true,
+      signal: AbortSignal.timeout(50_000) });
+    const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, child.id));
+    const get = storage.getObject.bind(storage), head = storage.headObject.bind(storage);
+    let reads = 0;
+    vi.spyOn(storage, "headObject").mockImplementation(async (...args) => {
+      const result = await head(...args);
+      if (!result.exists) return result;
+      const bytes = await fs.readFile(path.join(home, "objects", args[1]));
+      return { ...result, etag: `"${createHash("sha256").update(bytes).digest("hex")}"` };
+    });
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (args[1] === snapshot.objectKey) reads++;
+      return get(...args);
+    });
+    const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    await expect(run(f, { workspaceIds: [parent.id, alias.id] })).resolves.toMatchObject({ applied: true });
+    expect(reads).toBe(1);
+    expect(capture.mock.calls.filter(([input]) => input.cwd === cwd && path.basename(input.archivePath) === "current.pcws")).toHaveLength(4);
+    expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe("nested dirty bytes\n");
   }, 60_000);
   it.each(["foreign", "journal"])("refuses a changed %s operation before any authority write", async mode => {
     const f = await fixture(), put = storage.putFile.bind(storage); let uploaded = 0;
@@ -166,6 +207,16 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const membership = operation.metadata!.cohortMigration;
     expect(await db.select().from(workspaceOperations)).toHaveLength(1);
     await assertLocal(f);
+    const noStorage = new Proxy(storage, { get() { throw new Error("readonly_preflight_storage_forbidden"); } });
+    await db.transaction(async tx => {
+      await tx.execute(sql`set local statement_timeout='8s'`);
+      await tx.execute(sql`set local lock_timeout='1s'`);
+      expect((await tx.execute(sql`select current_setting('transaction_read_only') as ro`))[0].ro).toBe("on");
+      await expect(run(f, { db: tx as unknown as Db, storage: noStorage, apply: false }))
+        .resolves.toMatchObject({ applied: false, eligible: true, cohortId: (membership as { id: string }).id });
+    }, { accessMode: "read only" });
+    expect(await db.select().from(workspaceOperations)).toHaveLength(1);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
     await expect(run(f, { workspaceIds: [operation.executionWorkspaceId!] })).rejects.toThrow("workspace_cohort_membership_changed");
     await expect(migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: operation.executionWorkspaceId!,
       apply: true, signal: AbortSignal.timeout(50_000) })).rejects.toThrow("remote_workspace_cohort_resume_required");
@@ -220,6 +271,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
   it("refuses unreviewed membership, a parent/child pair, and a foreign journal without captures", async () => {
     const f = await fixture(), put = vi.spyOn(storage, "putFile");
     await expect(run(f, { workspaceIds: Array(9).fill(f.leaves[0].id) })).rejects.toThrow();
+    await expect(run(f, { concurrency: 9 })).rejects.toThrow();
     await expect(run(f, { workspaceIds: [f.leaves[0].id, f.leaves[0].id.toUpperCase()] })).rejects.toThrow("duplicate_member");
     await expect(run(f, { workspaceIds: [f.parent.id, f.leaves[0].id] })).rejects.toThrow("leaf_members_required");
     await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.parent.id,

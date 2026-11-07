@@ -18,10 +18,13 @@ await migrateRemoteWorkspaceCohort({
 });
 ```
 
-The caller must supply an original `createDb` pool and an `AbortSignal`.
+An apply caller must supply an original `createDb` pool and an `AbortSignal`.
 `concurrency` defaults to two and accepts values from one through eight.
 `apply: false` checks the selected membership without reserving operations or
-capturing files. It does not promise that a later apply will remain eligible.
+capturing files or using storage. A verified read-only transaction can supply
+this observation's database reads. It does not attest held source fences or
+promise that a later apply will remain eligible. Its generated cohort ID is not
+an apply token; a saved journal's complete membership remains authoritative.
 
 ## Execution and resource limits
 
@@ -34,8 +37,15 @@ an enclosing transaction because a savepoint cannot confirm the outer commit.
 
 Reservation runs serially on the original pool. Capture, encryption, upload,
 authenticated readback, restore, and recapture run concurrently on that pool.
+One nested-child verifier belongs to the complete cohort fence. Its prepare
+calls are queued; each call retains the existing two-child bound and completed
+authenticated immutable proof. Every member still rechecks current local bytes,
+Git metadata, database references and recovery bindings. The verifier closes
+only after all member work joins, before the fence can leave.
 The caller must budget for the number of logical captures, even though there is
-only one Node process. Eight captures can use much more scratch space, CPU,
+only one Node process. Include up to two nested-child verification workers in
+addition to the configured member concurrency. The first hosted qualification
+uses two same-component leaves without imported children. Eight captures can use much more scratch space, CPU,
 storage bandwidth, and database capacity than one capture. Start with a
 two-member canary and measure the actual host before increasing concurrency.
 
@@ -65,7 +75,9 @@ source checks still run after a process or volume handover; the durable logical
 fingerprint does not treat an inode number as lasting authority.
 
 An uncertain commit must first be observed through the canonical inventory and
-journals. An entirely remote set is an idempotent replay. A mixed remote/local
+journals. An entirely remote set is an idempotent replay only when its selected
+snapshots and succeeded journals prove the same complete cohort membership.
+A partial, unrelated or changed committed set is refused. A mixed remote/local
 set is refused for explicit investigation. The API does not repair or clear
 foreign journals, recovery actions, or remote provider obligations.
 
@@ -77,4 +89,9 @@ journals, journal mutation, partial reservation, caller cancellation, peer
 failure, fence connection loss, and an actual deferred outer-commit failure.
 The existing single-workspace and recovery suites remain part of the affected
 regression check. Local macOS evidence does not replace a source Linux/Node 24
-two-member canary or prove the speedup at eight captures.
+two-member canary or prove a speedup. An earlier six-run macOS comparison was
+inconclusive under host contention, including slower cohort runs. Its twelve
+cold restores passed, but it is not performance acceptance. Hosted use remains
+opt-in: measure two members on the same host, including peak memory and scratch
+headroom, before considering a larger cohort. This API adds no caller, scheduler
+or automatic batch selection to the running app.
