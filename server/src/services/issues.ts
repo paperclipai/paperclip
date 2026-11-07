@@ -9537,6 +9537,7 @@ export function issueService(db: Db) {
         )).orderBy(asc(issues.id));
       if (cancelled.length === 0) return null;
       const state = JSON.stringify({
+        assigneeAgentId: dependent.assigneeAgentId,
         cancelled: cancelled.map(row => [row.id, row.cancelledAt?.toISOString() ?? null]),
         blockedCycle: dependent.blockedTransitionAt?.toISOString() ?? null,
       });
