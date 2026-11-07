@@ -359,7 +359,7 @@ attempt or owning phase:
 | `authorization.base`, `.responsible_user`, `.authorizing_user`, `.task_privacy`, `.project_privacy` | The existing base decision, responsible/authorizing-user intersections, and applicable app-record privacy decisions beneath `workspace.access.task_authorization` or `workspace.access.authorization`. These details are scoped to workspace authorization. |
 | `workspace.notification`, `workspace.write` | Notification statements and record writes. |
 | `workspace.materialize.*`, `workspace.checkout.*` | Private source-directory setup and identity verification, existing checkout lookup, Git credential resolution, clone, optional pristine-object cache lookup/publication (`cache_lookup`, `cache_publish`), requested-ref checkout, and atomic publication. The enclosing `heartbeat.prepare.workspace_source_materialize` includes the complete source-materialization path. |
-| `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
+| `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, dynamic skill package staging (`skill_assets`), bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
 | `runtime_context.instructions`, `.skills`, `.mcp` | The three concurrent runtime-context branches. Their durations overlap. |
 | `runtime_context.asset_*` | Source reads, manifest hashing, cache lookup, cold materialization, and exact file verification on cold and warm paths. |
 | `skills.inventory`, `.wait`, `.bundled`, `.releases`, `.folders`, `.local_sources` | Company skill reconciliation, waiting for an existing company refresh, and its bundled imports, release verification, folder, and local-source work beneath runtime skill preparation. Inventory children overlap their parent. |
@@ -746,10 +746,17 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
-dispatch. The interval includes queueing, Core preparation, workspace preparation,
+The span starts at the earliest accepted input. The accepted comment or attested
+question response is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run starts at run creation from the queue span and reports `run_created`. The
+durable wake request's acceptance time replaces the start when it is earlier
+(deferred, coalesced and retried wakes). The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
+wait before `turn.start` and never delays event delivery. Callers without
+preparation history start at native dispatch and report `run_created`. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
 using the Core clock rather than the provider event timestamp. Browser delivery
@@ -1019,7 +1026,16 @@ receives a successful HTTP delivery response. The process retains the latest
 processing backpressure, network errors and rate limits can discard the event.
 Unconfirmed captures wait 60 seconds before a later task read can try again;
 this pending cache also holds at most 1,000 entries and starts no background
-timer. A server restart or cache eviction can report an old failure again.
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
 This task-state event can accompany a separate terminal run-failure report;
 the `failure_source` tag distinguishes them.
 
@@ -1314,7 +1330,9 @@ executor's identity redaction. These observations do not change close, quarantin
 or recovery behavior.
 
 Remote runner reattachment failures also record `remoteRunnerRecoveryStage`
-and `remoteRunnerRecoveryReason` from the saved run. When reattachment fails
+and `remoteRunnerRecoveryReason` from the saved run. A confirmed missing process
+also records the closed `remoteRunnerLifecycle` and boolean `remoteRunnerSettled`
+from the exited runner's saved state. When reattachment fails
 before the coordinator saves its result, the report reads the same labels from
 the caught recovery error instead. These fields contain
 closed labels for marker reads and process verification. They distinguish

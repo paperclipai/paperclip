@@ -406,7 +406,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -462,6 +462,45 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
         + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract code=EIO exit=1" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
       vi.mocked(second.runner!.execute).mockRestore();
+    }
+    if (mode === "restore lock busy") {
+      const lockDirectory = path.join(path.dirname(expectedRemoteRoot), ".paperclip-runtime", "workspace-restore-locks");
+      await fs.mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+      const lockPath = path.join(lockDirectory, createHash("sha256").update(expectedRemoteRoot).digest("hex") + ".sqlite");
+      const preload = path.join(root, "advance-lock-deadline.cjs");
+      await fs.writeFile(preload, "let ticks=0;Object.defineProperty(performance,'now',{value:()=>ticks++*120001});");
+      const owner = spawn(process.execPath, ["-e", "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);db.exec('BEGIN IMMEDIATE');process.stdout.write('ready');setInterval(()=>{},1000);", lockPath],
+        { stdio: ["ignore", "pipe", "pipe"] });
+      let ready = false; owner.stdout.on("data", data => { ready ||= String(data).includes("ready"); }); owner.stderr.resume();
+      const stopped = new Promise<void>(resolve => owner.once("close", () => resolve()));
+      const run = second.runner!.execute.bind(second.runner);
+      let afterBusy: (() => Promise<void>) | undefined;
+      const spy = vi.spyOn(second.runner!, "execute").mockImplementation(async command => {
+        if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        const result = await run({ ...command, args: ["--require", preload, ...command.args] });
+        await afterBusy?.(); return result;
+      });
+      try {
+        await vi.waitFor(() => expect(ready).toBe(true), { timeout: 5000 });
+        const attempt = () => prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+          .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+        expect(await attempt()).toMatchObject({ step: "sandbox_restore", retryable: true,
+          message: expect.stringMatching(/stage=restore_lock reason=restore_lock_busy$/) });
+        const authority = readRemoteWorkspaceAuthority(reservedAgain.metadata)!;
+        for (const changed of [{ dirty: true }, { epoch: authority.epoch + 1 }, { writerRunId: randomUUID() }, { snapshotId: randomUUID() }]) {
+          afterBusy = async () => { await db.update(executionWorkspaces).set({ metadata: { ...reservedAgain.metadata,
+            remoteWorkspace: { ...authority, ...changed } } }).where(eq(executionWorkspaces.id, reservedAgain.id)); };
+          try { expect(await attempt()).toMatchObject({ step: "sandbox_restore", retryable: false }); }
+          finally { await db.update(executionWorkspaces).set({ metadata: reservedAgain.metadata }).where(eq(executionWorkspaces.id, reservedAgain.id)); }
+        }
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally { spy.mockRestore(); owner.kill("SIGTERM"); await stopped; }
+      const fence = lockPath.slice(0, -7) + ".fence.json"; await fs.writeFile(fence, "{");
+      const corrupt = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      expect(corrupt).toMatchObject({ step: "sandbox_restore", retryable: false,
+        message: expect.stringMatching(/reason=unsafe_restore_fence$/) });
+      expect(await fs.readFile(fence, "utf8")).toBe("{"); await fs.unlink(fence);
     }
     if (mode === "missing object") {
       // Storage reports a lost saved object as 404; retrying cannot bring it back.
@@ -582,7 +621,9 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     // Only the new restore receipt identifies the root; the retired preparation receipt is gone.
     expect(await fs.lstat(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-ready.json")).catch(() => null)).toBeNull();
     expect(JSON.parse(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-restored.json"), "utf8")))
-      .toMatchObject({ identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      .toMatchObject({ schema: "paperclip.workspace-restored.v1", root: restored.remoteRoot,
+        restorationEpoch: readRemoteWorkspaceAuthority(restored.workspace.metadata)!.epoch,
+        identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
     // A lost reply repeats the same preparation without replacing the restored root again.
     await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
     // An attempt interrupted after publish left its retired root; the repeat keeps its runtime state.
@@ -1612,6 +1653,50 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(authority.location!.remoteCwd, "setup-result.txt"), "utf8")).toBe("one effect\n");
     const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision")));
     expect(journal).toMatchObject({ status: "running", metadata: { uncertain: true } });
+  }, 60_000);
+
+  // An uncertain provisioning row used to block every later reservation of
+  // the workspace forever. It settles only once the earlier run's sandbox is
+  // provably stopped; until then the reservation names the operator's action.
+  it("settles an uncertain provisioning command once its run's sandbox is provably stopped", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-stop-proof");
+    const execute = first.runner!.execute.bind(first.runner!);
+    first.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash") throw new Error("lost provisioning reply");
+      return result;
+    };
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "printf 'one effect\\n' >> setup-result.txt" })).rejects.toThrow("lost provisioning reply");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    const reserveNext = () => reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const provision = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision"))))[0]!;
+    // A failed run alone is not proof: its sandbox may still run the command.
+    await expect(reserveNext()).rejects.toMatchObject({ status: 409,
+      details: { code: "remote_workspace_provision_unverified", operationId: (await provision()).id, runId: ids.run } });
+    expect(await provision()).toMatchObject({ status: "running", metadata: { uncertain: true } });
+    const stopped = await lease();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: remoteTerminationReceipt(stopped,
+        { providerLeaseId: stopped.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, ids.lease));
+    const outcome = await reserveNext().then(() => null, (error: unknown) => error as { details?: { code?: string } });
+    expect(outcome?.details?.code).not.toBe("remote_workspace_provision_unverified");
+    expect(await provision()).toMatchObject({ status: "failed", metadata: { uncertain: false, settledBy: "owner_sandbox_stopped" } });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(eq(activityLog.companyId, ids.company),
+      eq(activityLog.action, "workspace.remote_provision_settled")))).toHaveLength(1);
+  }, 60_000);
+
+  it("records a provisioning command that reported a failing exit as finished, not uncertain", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-exit-failure");
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "exit 3" })).rejects.toThrow("remote_workspace_provision_unverified");
+    const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(journal).toMatchObject({ status: "failed", metadata: { uncertain: false, exitCode: 3 } });
   }, 60_000);
 
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {

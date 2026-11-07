@@ -135,7 +135,13 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>, deadlineOwners?: IdleDeadlineOwners) {
+export function instanceSettingsRoutes(
+  db: Db,
+  pluginWorkers?: PluginWorkerManager,
+  prepareIdleDatabaseBackup?: () => Promise<boolean>,
+  deadlineOwners?: IdleDeadlineOwners,
+  prepareIdlePluginLifecycle?: (input: { canRetire: () => boolean }) => Promise<"none" | "present" | "unknown">,
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -162,26 +168,10 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
           { inheritsDefault: true });
       }
-      // An explicit tenant write of the instance default reclassifies its
-      // attribution: whatever the default becomes — including a deliberate
-      // re-selection of the managed sandbox row — it is tenant-chosen, so
-      // the reconciliation stamp marker must not survive to let a later
-      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
-      // stamp and revert it. The marker clear and the settings write commit
-      // in ONE transaction, so no partial failure can desync attribution
-      // from the default (neither a stale stamp on a tenant choice, nor a
-      // reconciliation default that lost its marker and can never revert).
-      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
-      const managedSandbox = writesDefault
-        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
-        : null;
-      const updated = await db.transaction(async (tx) => {
-        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
-          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
-          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
-        }
-        return svc.update(req.body, { db: tx });
-      });
+      // An explicit default write is an ordinary set value: boot only fills an
+      // unset, local or dangling default (`fillUnsetInstanceDefault`), and the
+      // lock it takes on this row means it never overwrites a concurrent write.
+      const updated = await svc.update(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
@@ -350,6 +340,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
           deadlineCapability: domainDeadlines ? capabilities : undefined }),
         pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
         { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+          prepareLocalWork: async ({ canPrepare }) => {
+            const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
+            if (result.busy || result.failed) return "present";
+            return prepareIdlePluginLifecycle ? prepareIdlePluginLifecycle({ canRetire: canPrepare }) : "none";
+          },
           ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;

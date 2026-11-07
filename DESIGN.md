@@ -95,6 +95,16 @@ missing photos use the shared initials fallback. Match ownership by the stored
 author user ID and the authenticated viewer ID, never by display name or the bot
 that relayed a message from another channel.
 
+Images produced in a task turn appear as compact thumbnails in a wrapping grid.
+Keep the first image's row and each tile mounted as more results arrive. Documents,
+video, and authored messages retain their chronological positions and separate
+image batches. Open thumbnails in the existing gallery, with keyboard navigation
+and downloads. Images without an originating run stay separate. Generated native
+image preparation receipts are redundant with those tiles; identify them by the
+attachment-preparation marker and links to the image, author, and originating run,
+independent of receipt wording or image title. Older receipts use their exact
+historical preparation sentence as a fallback. Authored progress text stays visible.
+
 ## Contextual feedback
 
 Keep the runner turn's avatar, name, status header and current-activity slot

@@ -6,8 +6,12 @@ import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
 import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
 import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
+import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
+import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 
-export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+
+export { ephemeralServerEnabled };
 
 /** Validate before consumers can generate a replacement local identity. Error
  * messages name settings only, never credential values or connection URLs. */
@@ -49,6 +53,7 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
     .where(isNull(agentFileRoots.agentId)).limit(1);
   if (missingFiles) blockers.push("agent_files_require_migration");
+  if (await hasUnsettledLocalInstructionCopies(db)) blockers.push("local_instruction_copies_require_settlement");
   // Only inspect configuration here; filesystem reads must never adopt an
   // empty directory on the replacement machine as the old server's content.
   const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
@@ -68,6 +73,7 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   if (localTrace) blockers.push("provider_traces_require_migration");
   if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
   if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
+  if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {

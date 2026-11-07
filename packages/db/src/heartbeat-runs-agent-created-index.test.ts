@@ -7,7 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 
 const support = await getEmbeddedPostgresTestSupport();
 const indexName = "heartbeat_runs_company_agent_created_idx";
-const migrationFile = "0439_burly_guardsmen.sql";
+const migrationFile = "0444_burly_guardsmen.sql";
 
 (support.supported ? describe : describe.skip)("heartbeat_runs agent run-list index migration", () => {
   it("builds the agent created_at index and repairs an invalid copy after concurrent replay", async () => {

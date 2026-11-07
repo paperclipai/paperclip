@@ -35,6 +35,7 @@ import {
   listAuthorizedChatAttachments,
   resolveExternalChatResponseWaitAuthorization,
 } from "../services/native-runtime/chat-attachment-reuse.js";
+import * as chatAttachmentReuse from "../services/native-runtime/chat-attachment-reuse.js";
 import { decideIssueReviewPathRecovery } from "../services/recovery/review-path-recovery.js";
 import { resolveCurrentWakeCommentsBinding } from "../services/native-runtime/current-wake-comments.js";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
@@ -276,6 +277,43 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
   afterAll(async () => {
     await temporary?.cleanup();
   });
+
+  it("names exhausted lock contention without accepting authority, then rechecks access after release", async () => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const held = new Promise<void>((resolve) => { acquired = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lock = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await held;
+    const onDenied = vi.fn();
+    try {
+      await expect(attestReviewedExternalChatRun({
+        db, ...binding, contextSnapshot: context, onDenied,
+      })).rejects.toMatchObject({
+        message: "reviewed_chat_execution_binding_not_ready",
+        code: "reviewed_chat_execution_binding_not_ready",
+      });
+      expect(onDenied).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await lock;
+    }
+    await expect(attest()).resolves.toBe(true);
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    try {
+      await expect(attest()).resolves.toBe(false);
+    } finally {
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_review", executionRunId: runId, checkoutRunId: null });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status)
+      .toBe("pending");
+  }, 30_000);
 
   it("attests existing execution ownership while preserving real pending governance and checkout state", async () => {
     const [before] = await db
@@ -650,6 +688,49 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
       await restoreSuccessorLock(before);
     }
   });
+
+  it.each(["authorized", "principal_denied", "binding_denied"] as const)(
+    "rechecks full authorization when inbound processing commits between reads: %s",
+    async (outcome) => {
+      await db.update(chatDeliveries)
+        .set({ state: "processing", processedAt: null })
+        .where(eq(chatDeliveries.id, deliveryId));
+      const authorize = chatAttachmentReuse.authorizeChatConversationForBoundRun;
+      const observed = vi.spyOn(chatAttachmentReuse, "authorizeChatConversationForBoundRun")
+        .mockImplementationOnce(async (...args) => {
+          try {
+            return await authorize(...args);
+          } catch (error) {
+            expect(error).toMatchObject({ message: "paperclip_runner_chat_attachment_binding_denied" });
+            await db.update(chatDeliveries)
+              .set({ state: "processed", processedAt: new Date() })
+              .where(eq(chatDeliveries.id, deliveryId));
+            throw error;
+          }
+        });
+      try {
+        if (outcome === "principal_denied") {
+          await db.update(companyMemberships).set({ status: "suspended" })
+            .where(eq(companyMemberships.principalId, userId));
+        }
+        if (outcome === "binding_denied") {
+          await db.update(chatConversations).set({ issueId: otherIssueId })
+            .where(eq(chatConversations.id, conversationId));
+        }
+        await expect(attest()).resolves.toBe(outcome === "authorized");
+        if (outcome === "authorized") expect(observed).toHaveBeenCalledTimes(2);
+      } finally {
+        observed.mockRestore();
+        await db.update(companyMemberships).set({ status: "active" })
+          .where(eq(companyMemberships.principalId, userId));
+        await db.update(chatConversations).set({ issueId })
+          .where(eq(chatConversations.id, conversationId));
+        await db.update(chatDeliveries)
+          .set({ state: "processed", processedAt: new Date() })
+          .where(eq(chatDeliveries.id, deliveryId));
+      }
+    },
+  );
 
   it("waits for exact inbound delivery processing to commit before attesting", async () => {
     await db

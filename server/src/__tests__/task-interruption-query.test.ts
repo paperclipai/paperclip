@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
+  toolApplications, toolConnections,
+  nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { readNativeSessionResumptionAgent } from "../services/native-runtime/native-session-resumption-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -24,6 +27,9 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+  // The shared fixture's failures are historical; reporting tests need a current failure.
+  const markFailuresFresh = (companyId: string) => db.update(heartbeatRuns).set({ finishedAt: new Date() })
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "failed")));
 
   it("shows a pending native same-run resume instead of a competing Retry", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
@@ -88,6 +94,53 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       .where(eq(nativeRunFinalizations.runId, runId));
     expect((await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id))
       .toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), userId = "board-user";
+    await db.insert(companies).values({ id: companyId, name: "Interrupted task", issuePrefix: `Q${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Researcher", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Creative brief",
+      status: "todo", assigneeAgentId: agentId }).returning();
+    // The message was queued well before the user clicked Interrupt.
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 60_000), payload: { issueId: issue.id },
+    }).returning();
+    const interrupt = async (requestedAt: Date) => {
+      await db.update(agentWakeupRequests).set({ payload: { issueId: issue.id,
+        queuedCommentInterrupt: { actorId: userId, requestedAt: requestedAt.toISOString() } } })
+        .where(eq(agentWakeupRequests.id, wake.id));
+    };
+    await interrupt(new Date(Date.now() - 20_000));
+    // Same resultJson the queued-comment Interrupt route passes to cancelRun.
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "cancelled", runtimeMode: "native", errorCode: "operator_interrupted",
+      startedAt: new Date(Date.now() - 42_000), finishedAt: new Date(Date.now() - 20_000),
+      resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt", interruptedIssueId: issue.id,
+        interruptedByActorType: "user", interruptedByActorId: userId, cancelledByActorType: "user", cancelledByUserId: userId,
+        queuedCommentInterruptQueueId: wake.id } });
+    captureTaskInterruptionFailure.mockClear();
+    for (const presentation of [(await taskInterruptionPresentations(db, companyId, [issue])).get(issue.id),
+      await taskInterruptionPresentation(db, issue)]) {
+      expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
+    }
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    // A newer queued message does not hide the wake the run was stopped for.
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 30_000), payload: { issueId: issue.id },
+    });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, intentId: wake.id });
+    // A run stopped for a different queue is not this hand-off.
+    await db.update(heartbeatRuns).set({ resultJson: { operatorInterrupted: true, cancelledByActorType: "user",
+      cancelledByUserId: userId, queuedCommentInterruptQueueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(heartbeatRuns).set({ resultJson: { operatorInterrupted: true, cancelledByActorType: "user",
+      cancelledByUserId: userId, queuedCommentInterruptQueueId: wake.id } }).where(eq(heartbeatRuns.id, runId));
+    // A hand-off that never starts eventually offers one Retry.
+    await interrupt(new Date(Date.now() - 10 * 60_000));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
   });
 
   it("decides several pending native resumes in one list read", async () => {
@@ -243,6 +296,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     visit(explain["QUERY PLAN"][0].Plan);
     expect(inspected.length).toBeGreaterThan(0);
     expect(Math.max(...inspected)).toBeLessThan(30);
+    await markFailuresFresh(f.companyId);
     const presentations = await taskInterruptionPresentations(db, f.companyId, f.input);
     for (const issue of f.input) expect(presentations.get(issue.id)).toMatchObject({ state: "failed", canRetry: true });
     for (const issue of f.input) expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
@@ -315,13 +369,133 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       expect(result.get(input[n]!.id)).toMatchObject({ responsibility: "system", state: "failed" });
       expect(captureTaskInterruptionFailure).toHaveBeenCalledWith({
         companyId, agentId, taskId: input[n]!.id, runId: runs[n]!.id,
-        runStatus: runs[n]!.status, agentAdapter: "process", intentId: n === 1 ? wait!.id : null,
+        runStatus: runs[n]!.status, agentAdapter: "process", intentId: n === 1 ? wait!.id : null, runErrorCode: null,
       });
     }
     expect(result.get(input[2]!.id)?.state).toBe("working");
     expect(result.get(input[3]!.id)?.state).toBe("retry_scheduled");
     for (const n of [4, 5]) expect(result.get(input[n]!.id)?.state).toBe("resolved");
     for (const n of [6, 8]) expect(result.get(input[n]!.id)?.responsibility).toBe("user");
+  });
+
+  it("reports a retained failure once at its state change, not on every later process's read", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Retained failures", issuePrefix: `R${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process" });
+    const input = await db.insert(issues).values(Array.from({ length: 3 }, (_, n) => ({
+      companyId, title: `Retained ${n}`, status: "in_progress", assigneeAgentId: agentId,
+    }))).returning();
+    const old = new Date(Date.now() - 22 * 60 * 60_000);
+    const runs = await db.insert(heartbeatRuns).values(input.map((issue, n) => ({
+      companyId, agentId, issueId: issue.id, status: "failed", createdAt: old,
+      finishedAt: n === 2 ? new Date(Date.now() - 60_000) : old,
+      errorCode: n === 0 ? "native_workspace_sync_out_retry_exhausted" : null,
+    }))).returning();
+    // A new saved message is a new state change for an old failed run.
+    const [wait] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
+      requestedByActorType: "user", payload: { issueId: input[1]!.id }, requestedAt: new Date(Date.now() - 20_000),
+    }).returning();
+    captureTaskInterruptionFailure.mockClear();
+    const result = await taskInterruptionPresentations(db, companyId, input);
+    for (const issue of input) expect(result.get(issue.id)).toMatchObject({ responsibility: "system", state: "failed" });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledTimes(2);
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: input[1]!.id, runId: runs[1]!.id, intentId: wait!.id }));
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: input[2]!.id, runId: runs[2]!.id, intentId: null }));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, runs[0]!.id));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [input[0]!]);
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: input[0]!.id, runErrorCode: "native_workspace_sync_out_retry_exhausted" }));
+  });
+
+  it("reports recovery that newly fails on an old run once, then treats it as retained", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Old run recovery", issuePrefix: `O${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Recovery", status: "in_progress",
+      assigneeAgentId: agentId }).returning();
+    const old = new Date(Date.now() - 22 * 60 * 60_000);
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue!.id, status: "failed",
+      createdAt: old, finishedAt: old }).returning();
+    // Exhausted recovery clears nextAttemptAt; only the saved transition time is recent.
+    const exhausted = { ...createSystemRecovery(run!.id), state: "exhausted" as const, attempts: 6, retriesUsed: 5,
+      firstFailureAt: old.getTime(), deadlineAt: old.getTime() + 30 * 60_000, nextAttemptAt: null };
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issue!.id,
+      kind: "workspace_recovery", status: "active", ownerType: "system", cause: "native_workspace_sync_out_failed",
+      fingerprint: `recovery:${run!.id}`, nextAction: "Recover saved files.", createdAt: old, updatedAt: new Date(),
+      evidence: { runId: run!.id, systemRecovery: exhausted } }).returning();
+    captureTaskInterruptionFailure.mockClear();
+    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
+      .toMatchObject({ responsibility: "system", state: "failed" });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: issue!.id, runId: run!.id }));
+    await db.update(issueRecoveryActions).set({ updatedAt: old }).where(eq(issueRecoveryActions.id, action!.id));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports a native resume that is newly exhausted on an old run once, then treats it as retained", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Old native run", issuePrefix: `N${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Native worker", adapterType: "paperclip_runner" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Native resume", status: "in_progress",
+      assigneeAgentId: agentId }).returning();
+    const old = new Date(Date.now() - 22 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issue!.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_interrupted", createdAt: old, finishedAt: old });
+    // Only the coordinator's saved terminal transition is recent.
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue!.id, runId, phase: "terminal_failure",
+      attempt: 3, nextAttemptAt: null, createdAt: old, updatedAt: new Date() });
+    captureTaskInterruptionFailure.mockClear();
+    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
+      .toMatchObject({ responsibility: "system", state: "failed" });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: issue!.id, runId, runErrorCode: "native_session_interrupted" }));
+    await db.update(nativeRunFinalizations).set({ updatedAt: old }).where(eq(nativeRunFinalizations.runId, runId));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "cancelled"])("reports a delayed Retry that newly becomes %s, then ages out", async status => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), intentId = randomUUID(), actionId = randomUUID();
+    const old = new Date(Date.now() - 22 * 60 * 60_000), recent = new Date(Date.now() - 60_000);
+    await db.insert(companies).values({ id: companyId, name: "Delayed chat Retry", issuePrefix: "D" + companyId.slice(0, 7) });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Chat worker", adapterType: "claude_local" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Deferred Retry", status: "in_progress",
+      assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId: issue!.id,
+      status: "failed", createdAt: old, finishedAt: old });
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Chat",
+      applicationKey: randomUUID(), type: "chat" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id,
+      name: "Chat", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({ companyId, connectionId: connection!.id,
+      assignedAgentId: agentId, provider: "slack", publicId: randomUUID(), status: "active" }).returning();
+    const payload = { issueId: issue!.id, agentId, failedRunId: runId, taskRetryIntentId: intentId };
+    await db.insert(chatActions).values({ id: actionId, companyId, endpointId: endpoint!.id,
+      kind: "failed_run_retry", providerActionId: randomUUID(), status, payload, createdAt: old, updatedAt: recent });
+    await db.insert(agentWakeupRequests).values({ id: intentId, companyId, agentId, source: "on_demand",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: old,
+      payload: { issueId: issue!.id, taskRetry: { sourceRunId: runId, chatActionId: actionId } } });
+    captureTaskInterruptionFailure.mockClear();
+    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
+      .toMatchObject({ responsibility: "system", state: "failed", nextRetryAt: null });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: issue!.id, runId, intentId }));
+    await db.update(chatActions).set({ updatedAt: old }).where(eq(chatActions.id, actionId));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    await db.update(chatActions).set({ updatedAt: recent, payload: { ...payload, failedRunId: randomUUID() } })
+      .where(eq(chatActions.id, actionId));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
   });
 
   it("keeps the failed run's adapter after the task is reassigned", async () => {
@@ -331,6 +505,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     }).returning();
     const [reassigned] = await db.update(issues).set({ assigneeAgentId: nextAgent!.id })
       .where(eq(issues.id, f.input[0]!.id)).returning();
+    await markFailuresFresh(f.companyId);
     captureTaskInterruptionFailure.mockClear();
     const result = await taskInterruptionPresentations(db, f.companyId, [reassigned!]);
     expect(result.get(reassigned!.id)?.state).toBe("failed");

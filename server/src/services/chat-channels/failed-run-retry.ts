@@ -566,6 +566,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       "provider_transport_failed",
       "native_runner_process_exited",
       "provider_session_open_rejected",
+      "provider_session_open_timeout",
       "local_runtime_api_listener_unavailable",
     ];
     if (
@@ -604,6 +605,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const evidence = await nativeProviderRecoveryEvidence({
       db: tx as unknown as Db,
       runId: run.id,
+      metadataOnly: true,
       sourceFailureCode: detail.originalFailureCode as Parameters<
         typeof nativeProviderRecoveryEvidence
       >[0]["sourceFailureCode"],

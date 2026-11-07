@@ -16,6 +16,9 @@ on:
       - PR review API access
     types: [completed]
   # External check providers and legacy commit statuses can finish after CI.
+  # GitHub has no trigger-level filter for these events, so the job condition
+  # below skips them before a runner is allocated. GitHub Actions check runs
+  # are covered by the workflow_run list above.
   check_run:
     types: [completed]
   status:
@@ -29,11 +32,27 @@ permissions:
 
 jobs:
   notify:
+    # A skipped job does not take a runner. Only events that can complete a
+    # green PR state schedule the job: successful, skipped, or neutral PR
+    # workflow runs, the same results from non-Actions check providers (GitHub
+    # Actions app 15368 checks arrive through workflow_run), and successful
+    # commit statuses. One PR push previously queued about 60 runner jobs.
     if: >-
       github.repository == 'paperclipai/paperclip' &&
-      (github.event_name != 'workflow_run' ||
-        github.event.workflow_run.event == 'pull_request' ||
-        github.event.workflow_run.event == 'pull_request_target')
+      ((github.event_name == 'workflow_run' &&
+        (github.event.workflow_run.event == 'pull_request' ||
+          github.event.workflow_run.event == 'pull_request_target') &&
+        contains(fromJSON('["success","skipped","neutral"]'), github.event.workflow_run.conclusion)) ||
+      (github.event_name == 'check_run' &&
+        github.event.check_run.app.id != 15368 &&
+        contains(fromJSON('["success","skipped","neutral"]'), github.event.check_run.conclusion)) ||
+      (github.event_name == 'status' && github.event.state == 'success'))
+    # Collapse bursts for one PR head to the latest event. The notifier reads
+    # the current PR state, so the newest event subsumes older ones. Job-level
+    # concurrency keeps skipped events from cancelling a scheduled notifier.
+    concurrency:
+      group: pr-merge-review-${{ github.event.workflow_run.head_sha || github.event.check_run.head_sha || github.event.sha }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Restrict this environment to master. Repository secrets would also be

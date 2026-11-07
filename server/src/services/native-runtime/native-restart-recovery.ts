@@ -12,7 +12,7 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader,
-  nativeRunnerCheckpointProvesIncompleteBootstrap } from "./native-runner-checkpoint.js";
+  nativeRunnerCheckpointRemoteBootstrapProof } from "./native-runner-checkpoint.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
@@ -35,6 +35,10 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
+import { persistActivity } from "../activity-log.js";
+import { OPERATOR_ATTESTED_CONTROLLER_HOST, requestNativeControllerStopConfirmation } from "./native-controller-host-recovery.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -53,12 +57,17 @@ export type NativeControllerIdentity = {
   bootId: string;
   pid: number;
   processStartedAt: Date;
+  /** PID space of `pid`; "unknown" when this host's space cannot be read,
+   * which no later probe accepts. Optional for identities built in tests. */
+  hostHash?: string;
 };
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
 
 /** A recovery claim for one run failed unexpectedly and was deferred. */
 export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
+
+export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
 
 export type NativeRestartRecoveryClaim =
   | {
@@ -96,6 +105,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     }
   | {
       kind: "bootstrap_incomplete";
@@ -105,6 +116,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     };
 
 export type NativeRestartRecoveryDisposition =
@@ -120,14 +133,161 @@ export type NativeRestartRecoveryDisposition =
 export function nextNativeProviderAttempt(
   currentAttempt: number,
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
+  chargesProviderAttempt = true,
 ): number {
-  return recoveryKind === "reattach_existing_runner" ||
+  return !chargesProviderAttempt ||
+    recoveryKind === "reattach_existing_runner" ||
     recoveryKind === "reattach_remote_runner"
     ? currentAttempt
     : currentAttempt + 1;
 }
 
-const controllerBootId = randomUUID();
+/**
+ * The execution recovery budget bounds runs that keep failing their provider
+ * turn. A graceful drain that suspended the run for reattachment is an
+ * infrastructure restart the run did not cause, so the next controller's
+ * resume of that turn does not spend an attempt. A crash (no drain record)
+ * still charges one. The drain record is consumed by the next claim; waits for
+ * ownership evidence or a deferred block in between do not erase it.
+ */
+const RECOVERY_CLAIM_DISPOSITIONS: ReadonlySet<unknown> = new Set<NativeRestartRecoveryClaim["kind"]>([
+  "reattach_existing_runner", "reattach_remote_runner", "resume_dead_runner", "bootstrap_incomplete",
+]);
+export function suspendedByCleanDrain(coordinator: {
+  attempt: number;
+  recoveryHistory: ReadonlyArray<{ disposition?: unknown }>;
+}): boolean {
+  // Attempt 0 means no execution has claimed the run yet. Its first provider
+  // start must still be counted, whatever interrupted preparation.
+  if (coordinator.attempt <= 0) return false;
+  for (let index = coordinator.recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const disposition = coordinator.recoveryHistory[index]?.disposition;
+    if (disposition === "restart_suspended") return true;
+    if (RECOVERY_CLAIM_DISPOSITIONS.has(disposition)) return false;
+  }
+  return false;
+}
+
+/**
+ * A controller restart (a crash, so no drain record) that interrupts a resume
+ * which had already made progress is also not the run's failure. Each claim
+ * records the run's event-log position; the next claim does not charge an
+ * attempt when, after that position, the provider accepted a new turn and then
+ * completed work in it (a tool execution or a non-usage item). A resume that
+ * dies before it completes any work in a new turn still charges, so a crash
+ * loop without progress, a resume that fails each time, and provider failures
+ * stay bounded. A resume the controller died before starting is not charged
+ * either (restartResumeKeepsAttempt). Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
+ * controller generations, so a run that makes progress and then crashes the
+ * controller every time is still bounded.
+ */
+export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = 12;
+const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed"] as const;
+
+type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
+
+/**
+ * The most recent recovery claim's event-log position and the provider attempt
+ * its resume runs as. Entries from releases that did not record them give none.
+ */
+export function lastRecoveryClaimResume(
+  recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
+): { watermark: number; attempt: number; launchesRunner: boolean } | null {
+  for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const entry = recoveryHistory[index];
+    if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
+    const watermark = entry?.progressWatermarkSeq;
+    const attempt = entry?.progressAttempt;
+    // A reattachment adopts a runner that had already started its provider.
+    const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
+    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
+      && typeof attempt === "number" && Number.isSafeInteger(attempt)
+      ? { watermark, attempt, launchesRunner } : null;
+  }
+  return null;
+}
+
+/**
+ * Whether the resume claimed at `watermark` reached execution. The executor
+ * records native.process_start_requested before any backend may spawn a
+ * runner, and every runner event carries a source event ID.
+ */
+async function nativeExecutionStartedSince(tx: Pick<Db, "select">, runId: string, watermark: number): Promise<boolean> {
+  const [started] = await tx
+    .select({ seq: heartbeatRunEvents.seq })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.runId, runId),
+      gt(heartbeatRunEvents.seq, watermark),
+      or(
+        isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [
+          "adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "tool.execution.started",
+        ]),
+      ),
+    ))
+    .limit(1);
+  return started !== undefined;
+}
+
+async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): Promise<number> {
+  const [row] = await tx
+    .select({ seq: sql<string | number | null>`max(${heartbeatRunEvents.seq})` })
+    .from(heartbeatRunEvents)
+    .where(eq(heartbeatRunEvents.runId, runId));
+  return Number(row?.seq ?? 0);
+}
+
+/**
+ * Whether this restart claim keeps the provider attempt instead of charging
+ * one. Both cases are judged from the previous claim's recorded position:
+ * - That resume launched a new runner (not a reattachment) and never started:
+ *   no runner was requested and no runner event was
+ *   recorded before the controller died (for example in a K6 crash loop). It
+ *   used no provider work, so this claim replaces it and carries its charge:
+ *   the attempt ends at the attempt that resume was to run as, never above it.
+ * - That resume made progress on the current attempt (see above). A normal
+ *   retry in between starts a new attempt, and earlier work does not count.
+ * Neither applies at or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT.
+ */
+export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
+  runId: string;
+  coordinator: {
+    attempt: number;
+    controllerGeneration: number;
+    recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>;
+  };
+}): Promise<boolean> {
+  if (input.coordinator.attempt <= 0) return false;
+  if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
+  const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
+  if (previous === null) return false;
+  // Only a claim that launches a new runner can be unstarted. A reattachment
+  // adopted provider work that had already started, so only progress counts.
+  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+    return input.coordinator.attempt >= previous.attempt;
+  if (previous.attempt !== input.coordinator.attempt) return false;
+  const watermark = previous.watermark;
+  const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
+  const [work] = await tx
+    .select({ seq: heartbeatRunEvents.seq })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.runId, input.runId),
+      gt(heartbeatRunEvents.seq, watermark),
+      inArray(heartbeatRunEvents.eventType, [...RESUME_PROGRESS_EVENT_TYPES]),
+      sql`coalesce(${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind', '') <> 'usage'`,
+      // The inner alias hides the table name, so unqualified outer references
+      // below resolve to the outer completed-work row.
+      sql`exists (select 1 from ${heartbeatRunEvents} as accepted_turn where accepted_turn.run_id = ${input.runId}
+        and accepted_turn.seq > ${watermark} and accepted_turn.seq < ${heartbeatRunEvents.seq}
+        and accepted_turn.event_type = 'turn.accepted'
+        and accepted_turn.payload -> 'prpEvent' ->> 'turnId' = ${workTurnId})`,
+    ))
+    .limit(1);
+  return work !== undefined;
+}
+
 
 function processIsAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
@@ -169,14 +329,18 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+/** The native controller stamp of this process. The boot id is the single
+ * process boot id (`controller-process-identity.ts`) and the start time is read
+ * from the OS once, so claims and renewals on the turn path spawn no `ps`. */
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = await currentProcessStartedAtMs();
   const fallback = new Date(getServerProcessStartedAt());
   return {
-    bootId: controllerBootId,
+    bootId: currentControllerBootId(),
     pid: process.pid,
     processStartedAt:
-      observed ?? (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+      observed !== null ? new Date(observed) : (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+    hostHash: currentProcessSpaceHash(),
   };
 }
 
@@ -184,7 +348,7 @@ export function isCurrentNativeControllerProcess(owner: {
   controllerBootId: string | null;
   controllerPid: number | null;
 }): boolean {
-  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+  return owner.controllerBootId === currentControllerBootId() && owner.controllerPid === process.pid;
 }
 
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
@@ -195,12 +359,29 @@ function definitivelyDifferentProcessStart(
   left: Date | null,
   right: Date | null,
 ): boolean {
-  if (left === null || right === null) return false;
-  // `ps -o lstart` has only whole-second precision on macOS and BSD. A
-  // sub-second disagreement can therefore be the same process when one probe
-  // fell back to a higher-precision spawn timestamp. Treat it as ambiguous and
-  // fail closed instead of declaring the live PID recycled.
-  return Math.abs(left.getTime() - right.getTime()) >= 1_000;
+  // Shared with every other owner proof: a sub-second gap is ambiguous.
+  return processStartsDefinitelyDiffer(left, right);
+}
+
+export type NativeControllerTakeoverDecision = {
+  allowed: boolean;
+  reason: string;
+  /** The proof used the one-release local fallback for a row with no recorded host. */
+  legacyHostFallback?: true;
+};
+
+/** Activity-log action for each use of the null-host fallback. The release
+ * that removes the fallback counts these to see whether any rows still need
+ * it. It is not a run-log event: run events are progress evidence for
+ * restart recovery, and this record must not change any recovery decision. */
+export const LEGACY_HOST_FALLBACK_EVENT = "legacy_host_unknown_dead_pid_proof";
+
+export async function recordLegacyHostFallbackProof(db: Db, run: { companyId: string; id: string; agentId: string },
+  decision: NativeControllerTakeoverDecision, source: string) {
+  if (!decision.legacyHostFallback) return;
+  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "native-restart-recovery",
+    action: LEGACY_HOST_FALLBACK_EVENT, entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+    details: { reason: decision.reason, source } });
 }
 
 export async function evaluateNativeControllerTakeover(input: {
@@ -210,7 +391,13 @@ export async function evaluateNativeControllerTakeover(input: {
     | "leaseExpiresAt"
     | "controllerPid"
     | "controllerProcessStartedAt"
-  >;
+  > & {
+    /** PID space of controllerPid. Absent for owners built from receipts
+     * that never stored one. Null on coordinator rows saved before the column
+     * existed: those keep the previous local proof for one release, outside
+     * ephemeral mode only (see LEGACY_HOST_FALLBACK_EVENT). */
+    controllerHostHash?: string | null;
+  };
   now: Date;
   coordinatedPreviousController?: {
     pid: number;
@@ -220,7 +407,7 @@ export async function evaluateNativeControllerTakeover(input: {
   readProcessStartedAt?: (pid: number) => Promise<Date | null>;
   requireStoppedController?: boolean;
   remoteLeaseFenced?: boolean;
-}): Promise<{ allowed: boolean; reason: string }> {
+}): Promise<NativeControllerTakeoverDecision> {
   const { owner, now } = input;
   if (input.remoteLeaseFenced) {
     return owner.leaseExpiresAt && owner.leaseExpiresAt > now
@@ -243,6 +430,26 @@ export async function evaluateNativeControllerTakeover(input: {
           : "live_legacy_lease_without_controller_identity",
     };
   }
+  const recordsHost = Object.prototype.hasOwnProperty.call(owner, "controllerHostHash");
+  // A board operator confirmed this exact controller stopped (see
+  // confirmNativeControllerStopped); that attestation is the proof.
+  if (recordsHost && owner.controllerHostHash === OPERATOR_ATTESTED_CONTROLLER_HOST) {
+    return { allowed: true, reason: "operator_attested_controller_stopped" };
+  }
+  // A PID can only be judged in the PID space that recorded it. A controller
+  // on another host or namespace (or an unreadable local space) is never
+  // proven gone by a local probe; its lease or fence decides instead.
+  if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
+    return { allowed: false, reason: "controller_host_unprovable" };
+  }
+  // A row saved before the host column existed. An ephemeral (multi-host)
+  // server can never assume it was written here; a board operator decides.
+  if (recordsHost && owner.controllerHostHash == null && ephemeralServerEnabled()) {
+    return { allowed: false, reason: "controller_host_unrecorded" };
+  }
+  // Single-host servers keep the previous local proof for one release, and
+  // every use is recorded so the release that removes it can check for rows.
+  const fallback = recordsHost && owner.controllerHostHash == null ? { legacyHostFallback: true as const } : {};
   if (!isAlive(priorPid)) {
     return {
       allowed: true,
@@ -250,6 +457,7 @@ export async function evaluateNativeControllerTakeover(input: {
         owner.leaseExpiresAt !== null && owner.leaseExpiresAt <= now
           ? "expired_lease_controller_process_dead"
           : "controller_process_dead",
+      ...fallback,
     };
   }
 
@@ -262,7 +470,7 @@ export async function evaluateNativeControllerTakeover(input: {
       observedStartedAt,
     )
   ) {
-    return { allowed: true, reason: "controller_pid_recycled" };
+    return { allowed: true, reason: "controller_pid_recycled", ...fallback };
   }
 
   const coordinated = input.coordinatedPreviousController;
@@ -337,6 +545,11 @@ export async function evaluateNativeProviderProcesses(input: {
 }
 
 /** Run event types that can carry a provider process identity. */
+/** Projected events a runner emits while opening its provider session, before any turn. */
+const SESSION_OPEN_PROVIDER_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "harness.ready", "session.started", "session.resumed", "session.updated",
+]);
+
 export const NATIVE_PROVIDER_PROCESS_EVENT_TYPES = [
   "harness.ready",
   "session.started",
@@ -453,8 +666,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
   unclaimedBootstrap?: boolean;
-  /** The durable controller checkpoint of a claimed remote bootstrap proves no provider work. */
+  /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
+  remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -464,6 +678,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   checkpointFailed?: boolean;
   stagedAttachmentVerified?: boolean;
   providerAttempt?: number;
+  /** False when resuming keeps the current attempt (a clean drain). */
+  resumeChargesAttempt?: boolean;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
   reason: string;
@@ -483,11 +699,13 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     if (input.unclaimedBootstrap === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       return { claimKind: "bootstrap_incomplete", reason: "remote_execution_never_claimed" };
     }
-    if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
+    // Callers prove provider evidence is absent or only session-open events.
+    if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint) {
       // Each same-run bootstrap is another provider attempt; keep restarts bounded.
-      if ((input.providerAttempt ?? 0) >= 3)
+      if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
         return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
-      return { claimKind: "bootstrap_incomplete", reason: "remote_bootstrap_proven_incomplete" };
+      return { claimKind: "bootstrap_incomplete",
+        reason: input.remoteBootstrapIncompleteReason ?? "remote_bootstrap_proven_incomplete" };
     }
     return input.hasCheckpoint &&
       input.checkpointIdentityMatches === true &&
@@ -524,7 +742,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       reason: "live_provider_process_identity_unverifiable",
     };
   }
-  if ((input.providerAttempt ?? 0) >= 3)
+  // Continuing an attempt already counted needs no budget; a new one does.
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
@@ -545,6 +764,31 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     };
   }
   return { claimKind: null, reason: "ambiguous_provider_recovery_evidence" };
+}
+
+/** Any record that execution reached a runner: a requested or identified
+ * process, an adapter invocation, a tool start, or a runner-sourced event. */
+export async function hasNativeExecutionStartEvidence(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string },
+): Promise<boolean> {
+  const [executionEvent] = await tx
+    .select({ id: heartbeatRunEvents.id })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId),
+      eq(heartbeatRunEvents.runId, run.id),
+      or(
+        isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [
+          "adapter.invoke",
+          PROCESS_START_REQUESTED,
+          PROCESS_IDENTITY_RECORDED,
+          "tool.execution.started",
+        ]),
+      ),
+    ))
+    .limit(1);
+  return executionEvent !== undefined;
 }
 
 function historyEntry(input: {
@@ -907,7 +1151,13 @@ export async function claimNativeRestartRecoveries(input: {
         coordinatedPreviousController:
           input.coordinatedPreviousController ?? null,
       });
+      await recordLegacyHostFallbackProof(tx as unknown as Db, row.run, takeover, "native_restart_recovery");
+      if (!takeover.allowed && takeover.reason === "controller_host_unrecorded") {
+        await requestNativeControllerStopConfirmation(tx as unknown as Db, row.coordinator);
+      }
       if (!takeover.allowed) {
+        const previous = row.coordinator.recoveryHistory.at(-1);
+        const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
         const event = historyEntry({
           now,
           restartKind: input.restartKind,
@@ -929,7 +1179,9 @@ export async function claimNativeRestartRecoveries(input: {
           .set({
             recoveryState: "awaiting_evidence",
             recoveryRequestId: input.recoveryRequestId ?? null,
-            recoveryHistory: appendBoundedRecoveryHistory(event),
+            // Repeated scans of one ownership wait record it once, so the
+            // bounded history keeps the drain record the next claim reads.
+            ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
             updatedAt: now,
           })
           .where(
@@ -1004,6 +1256,7 @@ export async function claimNativeRestartRecoveries(input: {
       const providerEvents = await tx
         .select({
           id: heartbeatRunEvents.id,
+          eventType: heartbeatRunEvents.eventType,
           payload: heartbeatRunEvents.payload,
         })
         .from(heartbeatRunEvents)
@@ -1051,24 +1304,39 @@ export async function claimNativeRestartRecoveries(input: {
             controller.bootId === (await currentNativeControllerIdentity()).bootId) {
           return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
         }
-        const [executionEvent] = await tx
-          .select({ id: heartbeatRunEvents.id })
-          .from(heartbeatRunEvents)
-          .where(and(
-            eq(heartbeatRunEvents.companyId, row.run.companyId),
-            eq(heartbeatRunEvents.runId, row.run.id),
-            or(
-              isNotNull(heartbeatRunEvents.sourceEventId),
-              inArray(heartbeatRunEvents.eventType, [
-                "adapter.invoke",
-                PROCESS_START_REQUESTED,
-                PROCESS_IDENTITY_RECORDED,
-                "tool.execution.started",
-              ]),
-            ),
-          ))
-          .limit(1);
-        unclaimedBootstrap = !executionEvent;
+        unclaimedBootstrap = !(await hasNativeExecutionStartEvidence(tx, row.run));
+      }
+
+      // A claimed remote run whose executor died while still preparing. The
+      // executor durably records native.process_start_requested before any
+      // backend may spawn a runner, and a remote runner exchanges commands only
+      // through a Postgres controller checkpoint. With neither, nothing reached
+      // a runner. The previous controller is gone (takeover was allowed above).
+      const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
+        && !durableAuthority && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
+        // Either the executor still held the claim, or it settled a same-run
+        // bootstrap retry itself (for example after a shutdown closed its local
+        // runtime listener) and released the lease. That retry already proved
+        // no provider session, event or checkpoint; the checks below re-prove it.
+        && (row.coordinator.phase === "observed" ? Boolean(row.coordinator.leaseOwner)
+          : row.coordinator.phase === "retryable_failure" && row.run.status === "failed"
+            && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && !row.coordinator.leaseOwner)
+        && !row.coordinator.failureDetail?.successorRunId
+        && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
+        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !hasCheckpoint && !hasProviderEvidence
+        && !(await hasNativeExecutionStartEvidence(tx, row.run));
+      // A settled retry starts new work, so it needs the same current
+      // admission as the resumption reconciler: task pause, agent status,
+      // dependencies, ownership and competing runs. Keep it waiting otherwise.
+      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+        && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
       }
 
       // A claimed remote bootstrap (runner launched, perhaps connected) has no
@@ -1077,17 +1345,34 @@ export async function claimNativeRestartRecoveries(input: {
       // writes every command to Postgres before sending it, so that checkpoint
       // is the complete record of what reached the sandbox runner. When it
       // proves no provider work, bootstrap again instead of holding the task.
-      const remoteBootstrapProvenIncomplete = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
-        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && !hasProviderEvidence
+      // A graceful drain can also suspend a run whose runner had just opened its
+      // provider session: session-open events may already be projected here,
+      // but no session snapshot or turn exists. Those events alone do not make
+      // the checkpoint proof ambiguous; any turn or provider event does.
+      const providerEvidenceIsSessionOpenOnly = !hasCheckpointProviderIdentity
+        && providerEvents.every(event => SESSION_OPEN_PROVIDER_EVENT_TYPES.has(event.eventType));
+      const remoteBootstrapProof = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
+        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && providerEvidenceIsSessionOpenOnly
         && Boolean(row.run.runnerInstanceId && row.run.nativeSessionId)
-        && await nativeRunnerCheckpointProvesIncompleteBootstrap(tx, {
+        ? await nativeRunnerCheckpointRemoteBootstrapProof(tx, {
           companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
-        }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! });
+        }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! })
+        : null;
+      // Projected session-open events need the stronger session-opened proof.
+      const remoteBootstrapProvenIncomplete = remoteBootstrapProof !== null
+        && (!hasProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
+      // Read before this claim appends its own history entry.
+      const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
+      const resumeKeepsAttempt = cleanDrainSuspension || await restartResumeKeepsAttempt(tx, {
+        runId: row.run.id, coordinator: row.coordinator,
+      });
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
-        remoteBootstrapProvenIncomplete,
+        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched,
+        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,
@@ -1105,6 +1390,7 @@ export async function claimNativeRestartRecoveries(input: {
             ?.runTerminalState === "failed" &&
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
+        resumeChargesAttempt: !resumeKeepsAttempt,
       });
       if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
         return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
@@ -1278,6 +1564,11 @@ export async function claimNativeRestartRecoveries(input: {
         recycledProviderPids: providerProcesses.recycledPids,
         stderrTail: row.run.stderrExcerpt,
       });
+      // The next claim credits this resume only for work recorded after here.
+      const progressWatermarkSeq = await nativeRunEventWatermark(tx, row.run.id);
+      const attemptKeptForProgress = resumeKeepsAttempt && !cleanDrainSuspension;
+      // The attempt the executor runs this resume as (see its execution claim).
+      const progressAttempt = nextNativeProviderAttempt(providerAttempt, claimKind, !resumeKeepsAttempt);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const claimed = await tx
         .update(nativeRunFinalizations)
@@ -1290,6 +1581,7 @@ export async function claimNativeRestartRecoveries(input: {
           leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
           controllerPid: controller.pid,
+          controllerHostHash: controller.hostHash ?? null,
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
           recoveryState:
@@ -1300,7 +1592,9 @@ export async function claimNativeRestartRecoveries(input: {
                 ? "resuming_session"
                 : "bootstrap_incomplete",
           recoveryRequestId: input.recoveryRequestId ?? null,
-          recoveryHistory: appendBoundedRecoveryHistory(event),
+          recoveryHistory: appendBoundedRecoveryHistory({
+            ...event, progressWatermarkSeq, progressAttempt, ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
+          }),
           failureCode: null,
           nextAttemptAt: null,
           updatedAt: now,
@@ -1368,6 +1662,7 @@ export async function claimNativeRestartRecoveries(input: {
         providerAttempt,
         restartKind: input.restartKind,
         recoveryRequestId: input.recoveryRequestId ?? null,
+        chargesProviderAttempt: !resumeKeepsAttempt,
       };
       if (claimKind === "reattach_remote_runner") {
         return {

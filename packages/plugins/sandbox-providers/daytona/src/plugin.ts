@@ -200,6 +200,13 @@ interface DaytonaDriverConfig {
    * normalized provider config; it only raises the effective auto-stop.
    */
   warmIdleTimeoutMs: number | null;
+  /**
+   * Host-owned remote runner reconnect grace (ms): how long the host still
+   * reattaches a live remote runner after a controller outage. Null when the
+   * lease hosts no remote runner. Never persisted in the normalized provider
+   * config; it only raises the effective auto-stop.
+   */
+  runnerReconnectGraceMs: number | null;
 }
 
 type WorkspaceSentinelResult = {
@@ -256,17 +263,37 @@ const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
 export const DEFAULT_WARM_RUNNER_IDLE_TIMEOUT_MS = 300_000;
 export const WARM_IDLE_AUTO_STOP_MARGIN_MINUTES = 5;
 
+// A remote runner keeps working while its controller is offline, but Daytona
+// counts only SDK and lifecycle events as activity. With no controller there are
+// none, so an auto-stop shorter than the host's reconnect grace stops the
+// sandbox (and kills the runner) while the host would still reattach it. The
+// host forwards its grace for runner leases; the provider backstop then fires
+// only after the grace plus this margin. Idle sandboxes still stop.
+
+/**
+ * Host-owned floors (ms) the provider auto-stop must outlive: the warm runner
+ * idle window and the remote runner reconnect grace.
+ */
+function hostAutoStopFloorsMs(
+  config: Pick<DaytonaDriverConfig, "warmIdleTimeoutMs" | "runnerReconnectGraceMs">,
+): number[] {
+  return [config.warmIdleTimeoutMs, config.runnerReconnectGraceMs]
+    .filter((value): value is number => value != null && value > 0);
+}
+
 /**
  * Effective Daytona auto-stop (minutes) for a sandbox. An explicit 0 (disabled)
- * is preserved. A warm reusable lease never auto-stops before the host's warm
- * idle window plus {@link WARM_IDLE_AUTO_STOP_MARGIN_MINUTES}.
+ * is preserved. A sandbox never auto-stops before a host-owned window (the warm
+ * idle window of a warm reusable lease, or the remote runner reconnect grace)
+ * plus {@link WARM_IDLE_AUTO_STOP_MARGIN_MINUTES}.
  */
 export function effectiveAutoStopIntervalMinutes(
-  config: Pick<DaytonaDriverConfig, "autoStopInterval" | "warmIdleTimeoutMs">,
+  config: Pick<DaytonaDriverConfig, "autoStopInterval" | "warmIdleTimeoutMs" | "runnerReconnectGraceMs">,
 ): number | null {
   const configured = config.autoStopInterval;
-  if (configured === 0 || config.warmIdleTimeoutMs == null) return configured;
-  const floor = Math.ceil(config.warmIdleTimeoutMs / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES;
+  const floorsMs = hostAutoStopFloorsMs(config);
+  if (configured === 0 || floorsMs.length === 0) return configured;
+  const floor = Math.ceil(Math.max(...floorsMs) / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES;
   return Math.max(configured ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES, floor);
 }
 
@@ -347,6 +374,11 @@ function parseOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parsePositiveInteger(value: unknown): number | null {
+  const parsed = parseOptionalInteger(value);
+  return parsed != null && parsed > 0 ? parsed : null;
+}
+
 function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
   const timeoutMs = Number(raw.timeoutMs ?? DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS);
   const livenessTimeoutMs = Number(raw.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
@@ -370,6 +402,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
     warmIdleTimeoutMs: parseWarmIdleTimeoutMs(raw),
+    runnerReconnectGraceMs: parsePositiveInteger(raw.runnerReconnectGraceMs),
   };
 }
 
@@ -2744,8 +2777,10 @@ const plugin = definePlugin(trackDaytonaHooks({
       return { ok: false, errors };
     }
 
-    // The warm idle window is host-owned; keep it out of the saved provider config.
-    const { warmIdleTimeoutMs: _warmIdleTimeoutMs, ...normalizedConfig } = config;
+    // The warm idle window and reconnect grace are host-owned; keep them out of
+    // the saved provider config.
+    const { warmIdleTimeoutMs: _warmIdleTimeoutMs, runnerReconnectGraceMs: _runnerReconnectGraceMs,
+      ...normalizedConfig } = config;
     return {
       ok: true,
       normalizedConfig,
@@ -3028,13 +3063,14 @@ const plugin = definePlugin(trackDaytonaHooks({
         }
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
-        // A sandbox created before the warm floor (or under a shorter warm
-        // window) keeps its old auto-stop. Raise it on resume so the provider
-        // backstop cannot race the host's warm idle window. Best effort: the
-        // host's bounded resume retry still covers a refused resume.
+        // A sandbox created before a host floor (or under a shorter warm window
+        // or reconnect grace) keeps its old auto-stop. Raise it on resume so the
+        // provider backstop cannot race the host's warm idle window or a later
+        // controller outage. Best effort: the host's bounded resume retry still
+        // covers a refused resume.
         const autoStopInterval = effectiveAutoStopIntervalMinutes(config);
         const currentAutoStop = sandbox.autoStopInterval;
-        if (autoStopInterval != null && autoStopInterval > 0 && config.warmIdleTimeoutMs != null
+        if (autoStopInterval != null && autoStopInterval > 0 && hostAutoStopFloorsMs(config).length > 0
           && typeof currentAutoStop === "number" && currentAutoStop > 0 && currentAutoStop < autoStopInterval) {
           await withLivenessTimeout("sandbox.setAutostopInterval",
             Math.max(1, Math.min(config.livenessTimeoutMs > 0 ? config.livenessTimeoutMs : AUTO_STOP_UPDATE_TIMEOUT_MS, AUTO_STOP_UPDATE_TIMEOUT_MS)),

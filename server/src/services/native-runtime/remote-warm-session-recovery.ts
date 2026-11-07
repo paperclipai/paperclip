@@ -1,8 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
-import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
 export type RemoteWarmSessionRecovery = {
@@ -10,6 +10,7 @@ export type RemoteWarmSessionRecovery = {
   checkpoint: PersistedNativeSession;
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
+  releasedSource?: DurableRecoveryIdentity;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -142,6 +143,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(), requireStoppedController: true,
       remoteLeaseFenced: persistedRecovery !== null });
     if (!stopped.allowed) return deny();
+    await recordLegacyHostFallbackProof(input.db, prior.run, stopped, "remote_warm_session_recovery");
   };
   await assertPriorStopped();
   const priorLeases = await input.db.select().from(environmentLeases).where(and(

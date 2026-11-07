@@ -85,13 +85,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "daytona-cpu": { type: "string" },
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
+      "storm-minutes": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -109,14 +110,18 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   // B5 grades bench.sh progress read from the live workspace while it runs. A
   // Daytona run's live workspace is inside the sandbox, so B5 is local-only.
   const workloadChoices = env === "daytona" ? WORKLOAD_IDS.filter(id => id !== "B5") : WORKLOAD_IDS;
+  // K13 restart storm: faults come from the storm clock, and `--tasks` is the
+  // pool that keeps `--concurrency` tasks in flight until the storm ends.
+  const stormMinutes = values["storm-minutes"] === undefined ? undefined : integer(values["storm-minutes"], "storm-minutes", 60, 1, 240);
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices),
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", ["K1", "K2", "K4"]),
+    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? FAULT_KINDS : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
-    tasks: integer(values.tasks, "tasks", 8, 1, 200),
+    tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
+    ...(stormMinutes ? { stormMinutes } : {}),
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,

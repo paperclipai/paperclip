@@ -78,7 +78,9 @@ describe("residual recovery production matrix", () => {
     vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
   });
   afterAll(async () => {
-    await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    if (db) {
+      await closeLivenessDb(db, 1); await closeCheckpointDb(db, 1);
+    }
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
   });
   async function fixture() {
@@ -510,7 +512,7 @@ describe("residual recovery production matrix", () => {
     } finally { db.$client.options.debug = prior; }
     expect(await getRun(run.id)).toMatchObject({ processPid: pid, processStartedAt: null });
     await quiet();
-    await persistHeartbeatRunProcessMetadata(db, run.id, { pid, processGroupId: null, startedAt: startedAt.toISOString() });
+    await persistHeartbeatRunProcessMetadata(db, run.id, { pid, processGroupId: null, startedAt: startedAt.toISOString(), targetKind: "local" });
     await advance(1_000);
     await vi.waitFor(async () => expect((await getRun(run.id)).processPid).toBeNull());
     expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, run.id),

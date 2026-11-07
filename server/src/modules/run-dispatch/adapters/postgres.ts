@@ -41,6 +41,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetReadOnly } from "../../../services/budgets.js";
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
+import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -666,6 +667,8 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
+        await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
@@ -1501,7 +1504,8 @@ export function createPostgresRunDispatchAdapter(
         }
       }
       const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
-        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
+        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId,
+        admittedRecovery: Boolean(input.recoveryLeaseOwner) });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
       if (input.recoveryLeaseOwner) {
         const [owner] = run.runtimeMode === "native" ? await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(

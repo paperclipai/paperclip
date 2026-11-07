@@ -27,6 +27,8 @@ import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAI
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE } from "../repository-catalog-unavailable-error.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY } from "../reviewed-chat-binding-diagnostics.js";
 import { RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY, RUNNER_REVISION_WAIT_RETRY_REASON } from "../runner-revision-mismatch.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
@@ -76,6 +78,7 @@ import {
 
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -141,7 +144,8 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
   return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated
     || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE
     || code === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || code === PLUGIN_WORKER_UNAVAILABLE_CODE
-    || code === RUNNER_REVISION_MISMATCH_CODE || code === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
+    || code === RUNNER_REVISION_MISMATCH_CODE || code === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+    || code === REPOSITORY_CATALOG_UNAVAILABLE_CODE || code === REVIEWED_CHAT_BINDING_NOT_READY;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
@@ -356,6 +360,8 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE ||
     run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE ||
     run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE ||
+    run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE ||
+    run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY ||
     run.errorCode === RUNNER_REVISION_MISMATCH_CODE
   ) {
     return true;
@@ -365,11 +371,14 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     return false;
 
   const resultJson = parseObject(run.resultJson);
+  // A refused exact resume names its interrupted attempt in `error`; the
+  // retry decision follows the current refusal only.
+  const error = currentRunFailureText(run);
   return (
-    isSpawnLikeFailureMessage(run.error) ||
+    isSpawnLikeFailureMessage(error) ||
     isSpawnLikeFailureMessage(resultJson.errorMessage) ||
     isSpawnLikeFailureMessage(resultJson.message) ||
-    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(error) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
   );
@@ -504,11 +513,12 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
     const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        || retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON && run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const codexTransientFallbackMode =
-      agent.adapterType === "codex_local" &&
+      agent.adapterType === "codex_local" && run.errorCode !== REPOSITORY_CATALOG_UNAVAILABLE_CODE &&
       transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;

@@ -2,6 +2,7 @@ import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
+import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -15,6 +16,7 @@ import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-resto
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailableError } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
@@ -24,7 +26,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
-import { reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -1086,10 +1088,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await processRunCancellationSettlements.get(run.id)?.settled;
     const providerFailure = providerFailureFromError(err);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const message = redactCurrentUserText(
-      identityRedactor.redact(err instanceof Error ? err.message : "Unknown adapter failure"),
-      currentUserRedactionOptions,
-    );
+    const redactFailureText = (text: string) =>
+      redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
+    const thrownMessage = redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure");
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err
       : null;
@@ -1106,23 +1107,39 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // durable coordinator is also the stronger authority here: legacy
     // runs simply have no row, while native result-less exhaustion keeps
     // its named failure instead of being flattened to `adapter_failed`.
-    const nativeTerminalFailureCode = await db
+    const nativeCoordinator = await db
       .select({
         phase: nativeRunFinalizations.phase,
         resultId: nativeRunFinalizations.resultId,
         failureCode: nativeRunFinalizations.failureCode,
+        attempt: nativeRunFinalizations.attempt,
+        recoveryHistory: nativeRunFinalizations.recoveryHistory,
       })
       .from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, run.id))
       .limit(1)
-      .then((rows) => {
-        const coordinator = rows[0];
-        return coordinator?.phase === "terminal_failure" &&
-          coordinator.resultId === null
-          ? coordinator.failureCode
-          : null;
-      })
+      .then((rows) => rows[0] ?? null)
       .catch(() => null);
+    const nativeTerminalFailureCode =
+      nativeCoordinator?.phase === "terminal_failure" &&
+      nativeCoordinator.resultId === null
+        ? nativeCoordinator.failureCode
+        : null;
+    // A same-run exact-checkpoint retry can fail closed before the executor
+    // claims a provider attempt, for example when the interrupted attempt left
+    // its checkpoint unresumable. The refusal alone hides why the run retried,
+    // so the reported failure names the interrupted attempt first. Failure
+    // classification reads only the thrown error (here and, through
+    // `nativeExactResumeRefusal.refusal`, in the retry and recovery
+    // classifiers). Both texts are masked whole before any length budget cuts
+    // them, so a cut cannot leave an unmasked username prefix.
+    const exactResumeCause = interruptedExactResumeCause(nativeCoordinator);
+    const interruptedExactResume = exactResumeCause
+      ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
+      : null;
+    const message = interruptedExactResume
+      ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      : thrownMessage;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1167,11 +1184,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       finishedAt: new Date(),
       resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
         errorCode: failureErrorCode,
-        errorMessage: message,
+        errorMessage: thrownMessage,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
+          ...(interruptedExactResume ? { nativeExactResumeRefusal: {
+            originalFailureCode: interruptedExactResume.originalFailureCode,
+            originalMessage: boundOriginalMessage(interruptedExactResume.originalMessage),
+            interruptedAttempt: interruptedExactResume.interruptedAttempt,
+            refusal: thrownMessage,
+          } } : {}),
           ...requiredWorkspaceRestoreEvidence,
           ...(workspaceValidationFailure?.resultJson ??
             configurationIncompleteFailure?.resultJson ??
@@ -1215,7 +1238,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       keepIdleOnFailure:
         Boolean(nonRetryablePreflightFailureCode(err)) ||
-        isWorkspaceSyncConflictFailure(message),
+        isWorkspaceSyncConflictFailure(thrownMessage),
     });
     await setWakeupStatus(run.wakeupRequestId, "failed", {
       finishedAt: new Date(),
@@ -1313,6 +1336,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     await settleAgent();
+    if (failureOutcome === "failed" && failedRun?.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1387,6 +1416,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // stays with its creation record and the cleanup reconciler.
     const environmentProviderUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
+    const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
+    const reviewedChatBindingNotReady = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof ReviewedChatBindingNotReadyError
+      ? outerErr : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
@@ -1396,6 +1430,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       remoteWorkspaceRestoreFailure?.code ??
       pluginWorkerUnavailableFailure?.code ??
       environmentProviderUnavailable?.code ??
+      repositoryCatalogUnavailable?.code ??
+      reviewedChatBindingNotReady?.code ??
       (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
@@ -1409,9 +1445,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       "setup_failed";
     // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
     const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
+    // A wrapped query error hides its driver cause (for example
+    // CONNECTION_CLOSED or SQLSTATE 53300). Log the bounded code only.
+    const causeCode = outerErr instanceof Error ? (outerErr.cause as { code?: unknown } | undefined)?.code : undefined;
+    const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
     logger.error(
       { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
-        errorCode: setupFailureErrorCode, ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
+        errorCode: setupFailureErrorCode, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
     const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
@@ -1445,6 +1486,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
+        ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
+      } : {}),
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
@@ -1561,7 +1605,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           // An accepted interaction keeps its own continuation retry, which
           // carries the interaction and escalates on exhaustion.
           const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
-            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE)
+            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
