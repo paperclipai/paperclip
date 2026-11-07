@@ -27,7 +27,7 @@ import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
-  baselineRows, rankPreTurnSteps, recoverySamples, distribution,
+  baselineRows, rankPreTurnSteps, recoverySamples, distribution, openShellExecutions,
   type BaselineEvent, type BaselineFault, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -42,7 +42,8 @@ const coldTask = (nonce: string) => [
 const warmFollowUp = (nonce: string) =>
   `Follow-up ${nonce}: reply with one more one-line comment that says \`AGAIN ${nonce}\`, then mark the task done again.`;
 const restartTask = (nonce: string) => [
-  `Baseline restart ${nonce}. First run the shell command \`sleep 75\` and wait for it to finish.`,
+  // Claude Code's Bash tool refuses a bare long \`sleep\`; a Python sleep is one ordinary shell call everywhere.
+  `Baseline restart ${nonce}. First run the shell command \`python3 -c "import time; time.sleep(75)"\` and wait for it to finish.`,
   `Then reply with a one-line comment that says \`DONE ${nonce}\` and mark this task done.`,
   "Do not create files, documents or other tasks.",
 ].join("\n");
@@ -61,8 +62,12 @@ async function runsFor(api: ChaosApi, issueId: string): Promise<Json[]> {
   return await api.get<Json[]>(`/api/issues/${issueId}/runs`, 10_000).catch(() => []);
 }
 
-/** Wait until the task has at least `minRuns` runs and none is active. */
-async function waitForRest(api: ChaosApi, supervisor: ChaosSupervisor, issueId: string, minRuns: number): Promise<Json[]> {
+/**
+ * Wait until the task has at least `minRuns` runs and none is active. Returns
+ * `timedOut: true` at the deadline, so the caller never treats an active run
+ * as a finished sample.
+ */
+async function waitForRest(api: ChaosApi, supervisor: ChaosSupervisor, issueId: string, minRuns: number): Promise<{ runs: Json[]; timedOut: boolean }> {
   const deadline = Date.now() + TASK_TIMEOUT_MS;
   let restSince: number | null = null;
   while (Date.now() < deadline) {
@@ -71,11 +76,11 @@ async function waitForRest(api: ChaosApi, supervisor: ChaosSupervisor, issueId: 
       const resting = runs.length >= minRuns && runs.every(run => !ACTIVE_RUN_STATUSES.has(String(run.status)));
       restSince = resting ? (restSince ?? Date.now()) : null;
       // A finished run can queue a continuation; confirm the rest for a few seconds.
-      if (restSince !== null && Date.now() - restSince >= 6_000) return runs;
+      if (restSince !== null && Date.now() - restSince >= 6_000) return { runs, timedOut: false };
     }
     await delay(2_000);
   }
-  return await runsFor(api, issueId);
+  return { runs: await runsFor(api, issueId), timedOut: true };
 }
 
 async function allEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]> {
@@ -92,15 +97,20 @@ async function allEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
   }
 }
 
-/** Wait until the run is inside a provider tool call (or has started a turn). */
-async function waitForToolCall(api: ChaosApi, issueId: string): Promise<string | null> {
+/** The running run of the task, when it is inside an open shell tool call. */
+async function runInShellCall(api: ChaosApi, issueId: string): Promise<string | null> {
+  const active = (await runsFor(api, issueId)).find(run => String(run.status) === "running");
+  if (!active) return null;
+  const events = await allEvents(api, runIdOf(active)).catch(() => []);
+  return openShellExecutions(events).length ? runIdOf(active) : null;
+}
+
+/** Wait until the run is inside its shell tool call (started, not ended). */
+async function waitForShellCall(api: ChaosApi, issueId: string): Promise<string | null> {
   const deadline = Date.now() + 4 * 60_000;
   while (Date.now() < deadline) {
-    const active = (await runsFor(api, issueId)).find(run => String(run.status) === "running");
-    if (active) {
-      const events = await allEvents(api, runIdOf(active)).catch(() => []);
-      if (events.some(event => event.eventType === "tool.execution.started")) return runIdOf(active);
-    }
+    const runId = await runInShellCall(api, issueId);
+    if (runId) return runId;
     await delay(1_500);
   }
   return null;
@@ -181,6 +191,19 @@ async function main() {
   const tasks: Array<{ issueId: string; adapter: AdapterId; phase: BaselineRun["phase"] }> = [];
   const faults: BaselineFault[] = [];
   const runPhase = new Map<string, BaselineRun["phase"]>();
+  const timedOutIssues = new Set<string>();
+  // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
+  // runs in a detached process group and the embedded Postgres has no exit hook.
+  let stopping: Promise<void> | null = null;
+  const shutdown = () => (stopping ??= supervisor.stop().catch(error => {
+    process.stderr.write(`supervisor stop: ${String(error)}\n`);
+  }));
+  const onSignal = (signal: NodeJS.Signals) => {
+    timeline.add("baseline_interrupted", { signal });
+    void shutdown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
   try {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
@@ -195,13 +218,24 @@ async function main() {
         const nonce = `${adapter}-${index}-${Date.now().toString(36)}`;
         const issueId = await createTask(api, lab, adapter, `TTFT baseline ${nonce}`, coldTask(nonce));
         tasks.push({ issueId, adapter, phase: "cold" });
-        const coldRuns = await waitForRest(api, supervisor, issueId, 1);
-        for (const run of coldRuns) runPhase.set(runIdOf(run), "cold");
-        timeline.add("baseline_cold_done", { adapter, issueId, runs: coldRuns.length });
+        const cold = await waitForRest(api, supervisor, issueId, 1);
+        for (const run of cold.runs) runPhase.set(runIdOf(run), "cold");
+        if (cold.timedOut) {
+          // Never send the follow-up into an active turn; drop the whole sample.
+          timedOutIssues.add(issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "cold" });
+          continue;
+        }
+        timeline.add("baseline_cold_done", { adapter, issueId, runs: cold.runs.length });
         await api.post(`/api/issues/${issueId}/comments`, { body: warmFollowUp(nonce), reopen: true });
-        const warmRuns = await waitForRest(api, supervisor, issueId, coldRuns.length + 1);
-        for (const run of warmRuns) if (!runPhase.has(runIdOf(run))) runPhase.set(runIdOf(run), "warm");
-        timeline.add("baseline_warm_done", { adapter, issueId, runs: warmRuns.length - coldRuns.length });
+        const warm = await waitForRest(api, supervisor, issueId, cold.runs.length + 1);
+        for (const run of warm.runs) if (!runPhase.has(runIdOf(run))) runPhase.set(runIdOf(run), "warm");
+        if (warm.timedOut) {
+          timedOutIssues.add(issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "warm" });
+          continue;
+        }
+        timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
       }
     }));
 
@@ -213,31 +247,50 @@ async function main() {
         const nonce = `${adapter}-r${index}-${Date.now().toString(36)}`;
         const issueId = await createTask(api, lab, adapter, `TTFT restart ${nonce}`, restartTask(nonce));
         tasks.push({ issueId, adapter, phase: "restart" });
-        return { issueId, runId: await waitForToolCall(api, issueId) };
+        return { issueId, adapter, runId: await waitForShellCall(api, issueId) };
       }));
-      const runIds = inFlight.flatMap(entry => entry.runId ? [entry.runId] : []);
+      // Recheck right before the fault: a fast adapter may have finished its call
+      // while a slower one was still starting. Only runs still inside it count.
+      const stillInside = await Promise.all(inFlight.map(async entry =>
+        entry.runId && await runInShellCall(api, entry.issueId) === entry.runId ? entry.runId : null));
+      for (const [position, entry] of inFlight.entries()) {
+        if (!stillInside[position]) timeline.add("baseline_restart_sample_skipped", { adapter: entry.adapter, issueId: entry.issueId });
+      }
+      const runIds = stillInside.flatMap(runId => runId ? [runId] : []);
       for (const runId of runIds) runPhase.set(runId, "restart");
       const receipt = await supervisor.fault(kind, 0, `ttft-baseline-${index}`);
       faults.push({ kind, readyAt: receipt.readyAt ?? Date.now(), runIds });
-      await Promise.all(inFlight.map(entry => waitForRest(api, supervisor, entry.issueId, 1)));
+      const settled = await Promise.all(inFlight.map(entry => waitForRest(api, supervisor, entry.issueId, 1)));
+      for (const [position, entry] of inFlight.entries()) {
+        if (settled[position]!.timedOut) {
+          timedOutIssues.add(entry.issueId);
+          timeline.add("baseline_sample_timeout", { adapter: entry.adapter, issueId: entry.issueId, phase: "restart" });
+        }
+      }
     }
 
     const runs: BaselineRun[] = [];
     for (const task of tasks) {
+      // A sample that never came to rest is reported, not measured.
+      if (timedOutIssues.has(task.issueId)) continue;
       for (const run of await runsFor(api, task.issueId)) {
         const runId = runIdOf(run);
         runs.push({ runId, adapter: task.adapter, environment: "local",
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
       }
     }
-    const data = { waveId, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)), samples, restarts, gitSha: process.env.GIT_SHA ?? null, runs, faults };
+    const data = { waveId, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+      timedOutTasks: timedOutIssues.size, samples, restarts, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });
     process.stdout.write(report(runs, faults));
+    if (timedOutIssues.size) process.stdout.write(`\n${timedOutIssues.size} sample(s) timed out and were left out.\n`);
     process.stdout.write(`\nWrote ${outDir}\n`);
   } finally {
     // Always stop the wrapper-owned embedded Postgres (SysV shared memory is scarce).
-    await supervisor.stop().catch(error => { process.stderr.write(`supervisor stop: ${String(error)}\n`); });
+    await shutdown();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
 }
 

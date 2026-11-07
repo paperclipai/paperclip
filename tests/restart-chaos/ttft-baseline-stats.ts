@@ -168,3 +168,33 @@ export function rankPreTurnSteps(runs: readonly BaselineRun[]): StepRank[] {
   }).filter(rank => (rank.p95 ?? 0) >= 1)
     .sort((a, b) => (b.p95 ?? 0) - (a.p95 ?? 0) || (b.p50 ?? 0) - (a.p50 ?? 0));
 }
+
+/** The tool payload of a run-log `tool.execution.*` row (PRP envelope or bare). */
+function toolPayload(event: BaselineEvent): Record<string, unknown> {
+  const outer = event.payload ?? {};
+  const prp = outer.prpEvent as Record<string, unknown> | undefined;
+  return ((prp?.payload ?? outer) as Record<string, unknown>) ?? {};
+}
+
+const SHELL_TOOL = /\b(bash|sh|zsh|shell|terminal|python3?)\b/i;
+
+/**
+ * Executions of a shell tool that started and have not ended. A restart sample
+ * is valid only while one is open, so the fault lands inside the tool call.
+ */
+export function openShellExecutions(events: readonly BaselineEvent[]): string[] {
+  const open = new Map<string, boolean>();
+  for (const event of events) {
+    if (!event.eventType.startsWith("tool.execution.")) continue;
+    const payload = toolPayload(event);
+    const id = typeof payload.executionId === "string" ? payload.executionId : null;
+    if (!id) continue;
+    if (event.eventType === "tool.execution.started") {
+      const label = `${String(payload.name ?? "")} ${String(payload.subject ?? "")}`;
+      if (payload.operation === "execute" || SHELL_TOOL.test(label)) open.set(id, true);
+    } else if (event.eventType !== "tool.execution.progressed") {
+      open.delete(id);
+    }
+  }
+  return [...open.keys()];
+}

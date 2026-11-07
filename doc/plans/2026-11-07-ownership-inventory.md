@@ -29,7 +29,12 @@ The five findings that matter most for Phase 1:
    - the runtime-control sweep (`workspace-operations.ts:126-135`);
    - the orphan reaper `terminalizeOrphanedRunningRun` (`recovery/service.ts:6096`).
 
-   Only `controllerProcessExited` (`controller-process-identity.ts:83-91`) checks the host. When the host is different, it returns "not exited" and the record waits out a TTL (15 or 30 min). No proof returns `unprovable`.
+   Three of the ten proofs check the host:
+   - `controllerProcessExited` (`controller-process-identity.ts:83-91`) compares a host, boot and pid-namespace hash. On another host it returns "not exited", and the record waits out a TTL (15 or 30 min).
+   - `proveLocalWorkspaceOwnerStopped` (`native-workspace-owner-stop-proof.ts:62-106`) returns `unsupported` / `foreign_host`. That is the closest existing equivalent of `unprovable`.
+   - `recordedLocalExecutionStopped` (`native-local-process-stop.ts:27-40`) requires the recorded hostname.
+
+   No shared prover returns `unprovable`, and only `controllerProcessExited` also checks the boot id and the pid namespace.
 3. **Company-wide admission still waits on cleanup and accounting through five gates** (invariant 3, section D):
    - `waitingRunCount` (`budget-exposure.ts:201-202`);
    - `recoveringRunCount` (`budgets.ts:858`);
@@ -77,7 +82,7 @@ The 11 rows that describe the same storage as another row are merged as follows.
 
 | Fact | Separate proofs (file:line) | Disagreement |
 |---|---|---|
-| The recorded controller process is gone | `controllerProcessExited` controller-process-identity.ts:83-91 · `evaluateNativeControllerTakeover` native-restart-recovery.ts:360-437 · `recordedProcessMayBeLive`/`runProcessMayBeLive`/`controllerMayBeLive` native-failed-run-owner-release.ts:93-127 · `verifiedRecoveryProcessIsAlive` native-session-executor.ts:581-598 · `proveLocalWorkspaceOwnerStopped` native-workspace-owner-stop-proof.ts:62-106 · `recordedLocalExecutionStopped` native-local-process-stop.ts:27-40 · `isProcessAlive` heartbeat/recovery.ts:308 · `isPidAlive` local-service-supervisor.ts:245 · `ownerProcessIsAlive` workspace-operations.ts:126-135 · Rust `local_process_definitely_gone` provider_backend.rs:447-458 | They differ on the host check (2 of 10 check it), EPERM handling, and the start-time tolerance (1 ms or 1 s). |
+| The recorded controller process is gone | `controllerProcessExited` controller-process-identity.ts:83-91 · `evaluateNativeControllerTakeover` native-restart-recovery.ts:360-437 · `recordedProcessMayBeLive`/`runProcessMayBeLive`/`controllerMayBeLive` native-failed-run-owner-release.ts:93-127 · `verifiedRecoveryProcessIsAlive` native-session-executor.ts:581-598 · `proveLocalWorkspaceOwnerStopped` native-workspace-owner-stop-proof.ts:62-106 · `recordedLocalExecutionStopped` native-local-process-stop.ts:27-40 · `isProcessAlive` heartbeat/recovery.ts:308 · `isPidAlive` local-service-supervisor.ts:245 · `ownerProcessIsAlive` workspace-operations.ts:126-135 · Rust `local_process_definitely_gone` provider_backend.rs:447-458 | They differ on the host check (3 of 10 check it: `controllerProcessExited`, `proveLocalWorkspaceOwnerStopped`, `recordedLocalExecutionStopped`), EPERM handling, and the start-time tolerance (1 ms or 1 s). |
 | The controller of this process | 3 boot UUIDs: controller-process-identity.ts:13 → `sandbox_creation_operations`, teardown claims · native-restart-recovery.ts:284 → `native_run_finalizations.controller_boot_id` · legacy-controller-lease.ts:8 → `heartbeat_runs.controller_boot_id` | Different values for the same process. Section A must migrate the stored columns. |
 | Provider work never started | `resultJson.executionRecovery.providerWorkStarted` · `usageJson.accountingProviderWorkStarted` (run-cost-accounting.ts:41-42) · `nativeProviderWorkNeverStarted` (empty fence map + seq 0 + no journal row, run-cost-accounting.ts:108-120) · `noProviderWork` (service invocations) · Runner `startup_attempt.before_spawn` (provider_backend.rs:2190-2210) | The fence-map test reads a recorder rebind with sequence 0 as "work began" (usage-receipts.ts:582, native-usage-delivery.ts:35). |
 | The native coordinator is settled | `settledNativeCoordinator` run-cost-accounting.ts:85-88 · "recovering" budget-exposure.ts:142-146 · inline re-checks run-cost-accounting.ts:205-206, 258-261, 392-394 | Three encodings |

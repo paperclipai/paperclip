@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  baselineRows, distribution, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
+  baselineRows, distribution, openShellExecutions, percentile, rankPreTurnSteps, recoverySamples, runMetrics, runWarmth,
   type BaselineEvent, type BaselineRun,
 } from "./ttft-baseline-stats.js";
 
@@ -80,5 +80,28 @@ describe("ttft baseline statistics", () => {
       { runId: "r1", adapter: "codex", kind: "K1", disposition: "resume_dead_runner", latencyMs: 3_250 },
       { runId: "r2", adapter: "codex", kind: "K1", disposition: "none", latencyMs: null },
     ]);
+  });
+});
+
+describe("restart sample guard", () => {
+  const tool = (eventType: string, executionId: string, extra: Record<string, unknown> = {}): BaselineEvent => ({
+    eventType, createdAt: at(0), payload: { prpEvent: { payload: { executionId, ...extra } } },
+  });
+
+  it("keeps a shell call open until it ends, and ignores other tools", () => {
+    expect(openShellExecutions([
+      tool("tool.execution.started", "mcp-1", { name: "paperclip.issue.comment", operation: "unknown" }),
+      tool("tool.execution.started", "sh-1", { name: "Bash", operation: "execute" }),
+      tool("tool.execution.progressed", "sh-1"),
+    ])).toEqual(["sh-1"]);
+  });
+
+  it("closes a shell call on completion or failure", () => {
+    expect(openShellExecutions([
+      tool("tool.execution.started", "sh-1", { name: "/bin/zsh -lc 'python3 -c ...'" }),
+      tool("tool.execution.completed", "sh-1"),
+      tool("tool.execution.started", "sh-2", { name: "bash" }),
+      tool("tool.execution.failed", "sh-2"),
+    ])).toEqual([]);
   });
 });
