@@ -116,6 +116,8 @@ async function completedOperationReceipts<T>(db: Db, result: T): Promise<T> {
       items.push({ ...member, operationId: String(operation.id) });
     }
     return items;
+  }).catch(error => {
+    throw new Error("online_migration_committed_receipt_requires_reconciliation", { cause: error });
   });
   return (receipt.members ? { ...receipt, members: completed } : { ...receipt, operationId: completed[0].operationId }) as T;
 }
