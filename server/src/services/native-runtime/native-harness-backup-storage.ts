@@ -287,15 +287,19 @@ export async function persistNativeHarnessBackup(input: {
   } finally { key.fill(0); await removeNativeHarnessBackup(scratch); }
 }
 
-/** How long a durable read may go without receiving a byte. */
+/** How long a durable read may go without progress. */
 export const NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS = 300_000;
+/** Outer bound for one whole restore or verification, including local steps. */
+export const NATIVE_HARNESS_RESTORE_MAX_MS = 30 * 60_000;
 export const NATIVE_HARNESS_DOWNLOAD_STALLED = "native_harness_storage_download_stalled";
+export const NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED = "native_harness_storage_restore_deadline_exceeded";
 
 /**
- * Bound each durable read by inactivity, not by total time. A large or slow
- * backup keeps restoring while bytes arrive; a read that stops for the idle
- * window aborts the whole restore with a named error. Local decrypt, digest and
- * extraction never run under this timer.
+ * Bound each durable read by inactivity, not by a short total time. A large or
+ * slow backup keeps restoring while bytes flow through the read; a read that
+ * makes no progress for the idle window aborts the whole restore with a named
+ * error. A generous outer bound keeps a hung local step diagnosable. Caller
+ * cancellation (Stop) keeps its own reason.
  */
 async function withDownloadProgressDeadline<T>(
   input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number },
@@ -305,31 +309,42 @@ async function withDownloadProgressDeadline<T>(
   if (idleMs === undefined) return run(input.storage, input.signal);
   if (!Number.isSafeInteger(idleMs) || idleMs <= 0) throw new Error("native_harness_storage_idle_timeout_invalid");
   const stall = new AbortController();
+  const outer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_RESTORE_DEADLINE_EXCEEDED)),
+    Math.max(idleMs, NATIVE_HARNESS_RESTORE_MAX_MS));
+  outer.unref?.();
   const signal = input.signal ? AbortSignal.any([input.signal, stall.signal]) : stall.signal;
   const base = input.storage;
-  const storage: StorageService = Object.assign(Object.create(base) as StorageService, {
-    async getObject(companyId: string, objectKey: string, options?: Parameters<StorageService["getObject"]>[2]) {
-      let timer: NodeJS.Timeout | undefined;
-      const disarm = () => { if (timer) clearTimeout(timer); timer = undefined; };
-      const arm = () => {
-        disarm();
-        timer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_DOWNLOAD_STALLED)), idleMs);
-        timer.unref?.();
-      };
-      arm();
-      let object: Awaited<ReturnType<StorageService["getObject"]>>;
-      try {
-        object = await base.getObject(companyId, objectKey, {
-          ...options, signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal });
-      } catch (error) { disarm(); throw error; }
-      arm();
-      const observed = new Transform({
-        transform(bytes, _encoding, callback) { arm(); callback(null, bytes); },
-        flush(callback) { disarm(); callback(); },
-      });
-      observed.once("close", disarm);
-      pipeline(object.stream, observed, { signal }).catch(() => disarm());
-      return { ...object, stream: observed };
+  const getObject: StorageService["getObject"] = async (companyId, objectKey, options) => {
+    let timer: NodeJS.Timeout | undefined;
+    const disarm = () => { if (timer) clearTimeout(timer); timer = undefined; };
+    const arm = () => {
+      disarm();
+      timer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_DOWNLOAD_STALLED)), idleMs);
+      timer.unref?.();
+    };
+    arm();
+    let object: Awaited<ReturnType<StorageService["getObject"]>>;
+    try {
+      object = await base.getObject(companyId, objectKey, {
+        ...options, signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal });
+    } catch (error) { disarm(); throw error; }
+    arm();
+    // Chunks pass through as the consumer reads them, so a read is idle when
+    // neither the store nor the local writer makes progress.
+    const observed = new Transform({
+      transform(bytes, _encoding, callback) { arm(); callback(null, bytes); },
+      flush(callback) { disarm(); callback(); },
+    });
+    observed.once("close", disarm);
+    pipeline(object.stream, observed, { signal }).catch(() => disarm());
+    return { ...object, stream: observed };
+  };
+  // Forward every other member to the real service so its own state stays intact.
+  const storage = new Proxy(base, {
+    get(target, property) {
+      if (property === "getObject") return getObject;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
   });
   try {
@@ -337,7 +352,7 @@ async function withDownloadProgressDeadline<T>(
   } catch (error) {
     if (stall.signal.aborted && !input.signal?.aborted) throw stall.signal.reason;
     throw error;
-  }
+  } finally { clearTimeout(outer); }
 }
 
 export async function restoreDurableNativeHarnessBackup(input: {
