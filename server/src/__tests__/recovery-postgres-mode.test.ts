@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   unsafe: vi.fn(async (_query: string) => []),
   end: vi.fn(async () => {}),
   createDb: vi.fn(),
-  support: vi.fn(async () => ({ supported: true })),
+  support: vi.fn(async (): Promise<{ supported: true } | { supported: false; reason: string }> => ({ supported: true })),
   embedded: vi.fn(),
 }));
 vi.mock("@paperclipai/db", () => ({
@@ -32,6 +32,7 @@ it("keeps separate fixture allocations when a recovery URL belongs to another ex
     .mockResolvedValueOnce({ connectionString: "postgresql://paperclip@127.0.0.1:55448/first_owned_test", cleanup: firstCleanup })
     .mockResolvedValueOnce({ connectionString: "postgresql://paperclip@127.0.0.1:55448/second_owned_test", cleanup: secondCleanup });
   const { startRecoveryPostgres } = await import("./helpers/recovery-postgres.js");
+  const supportChecks = mocks.support.mock.calls.length;
   const first = await startRecoveryPostgres("first-fixture-");
   const second = await startRecoveryPostgres("second-fixture-");
   expect(first.connectionString).not.toBe(second.connectionString);
@@ -40,7 +41,7 @@ it("keeps separate fixture allocations when a recovery URL belongs to another ex
   expect(mocks.embedded.mock.calls).toEqual([["first-fixture-"], ["second-fixture-"]]);
   expect(mocks.migrations).not.toHaveBeenCalled();
   expect(mocks.createDb).not.toHaveBeenCalled();
-  expect(mocks.support).not.toHaveBeenCalled();
+  expect(mocks.support).toHaveBeenCalledTimes(supportChecks);
   await first.cleanup(); await second.cleanup();
   expect(firstCleanup).toHaveBeenCalledOnce(); expect(secondCleanup).toHaveBeenCalledOnce();
   expect(mocks.closeRegistered).not.toHaveBeenCalled();
@@ -84,4 +85,28 @@ it("retains fresh external database allocation and matching cleanup for existing
   expect(mocks.createDb.mock.calls).toEqual([[admin], [admin], [admin], [admin]]);
   expect(mocks.end).toHaveBeenCalledTimes(4);
   expect(mocks.embedded).not.toHaveBeenCalled(); expect(mocks.support).not.toHaveBeenCalled();
+});
+
+it("keeps default recovery support unavailable on an unsupported platform despite another owner's ambient dedicated URL", async () => {
+  mocks.support.mockResolvedValue({ supported: false, reason: "Unsupported synthetic platform" });
+  const { recoveryPostgresSupport } = await import("./helpers/recovery-postgres.js");
+  expect(recoveryPostgresSupport).toEqual({ supported: false, reason: "Unsupported synthetic platform" });
+  expect(mocks.support).toHaveBeenCalledOnce();
+  expect(mocks.embedded).not.toHaveBeenCalled(); expect(mocks.createDb).not.toHaveBeenCalled();
+  expect(mocks.migrations).not.toHaveBeenCalled();
+});
+
+it("supports the exact explicit dedicated mode without probing unsupported embedded PostgreSQL", async () => {
+  mocks.support.mockResolvedValue({ supported: false, reason: "Unsupported synthetic platform" });
+  const { getRecoveryPostgresSupport, startRecoveryPostgres } = await import("./helpers/recovery-postgres-fixture.js");
+  const selectedUrl = "postgresql://paperclip@127.0.0.1:55448/explicit_recovery_modes_test";
+  const options = { dedicatedDatabaseUrl: selectedUrl };
+  expect(await getRecoveryPostgresSupport(options)).toEqual({ supported: true });
+  const fixture = await startRecoveryPostgres("explicit-dedicated-", options);
+  expect(fixture.connectionString).toBe(selectedUrl);
+  expect(mocks.migrations).toHaveBeenCalledExactlyOnceWith(selectedUrl);
+  expect(mocks.support).not.toHaveBeenCalled();
+  expect(mocks.embedded).not.toHaveBeenCalled(); expect(mocks.createDb).not.toHaveBeenCalled();
+  await fixture.cleanup();
+  expect(mocks.closeRegistered).toHaveBeenCalledExactlyOnceWith(selectedUrl, { scope: "database" });
 });
