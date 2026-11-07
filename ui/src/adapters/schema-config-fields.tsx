@@ -62,6 +62,32 @@ const inputClass =
 // Combobox: type-to-filter dropdown with free text fallback
 // ---------------------------------------------------------------------------
 
+type ComboboxOption = { label: string; value: string; group?: string };
+
+function comboboxOptionMatches(opt: ComboboxOption, filter: string): boolean {
+  if (!filter) return true;
+  const q = filter.toLowerCase();
+  return (
+    opt.value.toLowerCase().includes(q) ||
+    opt.label.toLowerCase().includes(q) ||
+    (!!opt.group && opt.group.toLowerCase().includes(q))
+  );
+}
+
+/**
+ * Value a combobox commits when focus leaves it with typed text, matching
+ * Enter: the only matching option, otherwise the typed text itself.
+ * Returns null when nothing was typed, so the current value is kept.
+ */
+export function resolveComboboxTypedValue(
+  typed: string,
+  options: ComboboxOption[],
+): string | null {
+  if (!typed) return null;
+  const matches = options.filter((opt) => comboboxOptionMatches(opt, typed));
+  return matches.length === 1 ? matches[0].value : typed;
+}
+
 function ComboboxField({
   value,
   options,
@@ -69,28 +95,27 @@ function ComboboxField({
   placeholder,
 }: {
   value: string;
-  options: { label: string; value: string; group?: string }[];
+  options: ComboboxOption[];
   onChange: (val: string) => void;
   placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilterState] = useState("");
+  // Mirrors `filter` synchronously, so onBlur sees text cleared by select() in the same event.
+  const filterRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const setFilter = useCallback((text: string) => {
+    filterRef.current = text;
+    setFilterState(text);
+  }, []);
 
   // Sync filter with external value when it changes (e.g. provider switch resets model)
   useEffect(() => {
     setFilter("");
-  }, [value]);
+  }, [value, setFilter]);
 
-  const filtered = options.filter((opt) => {
-    if (!filter) return true;
-    const q = filter.toLowerCase();
-    return (
-      opt.value.toLowerCase().includes(q) ||
-      opt.label.toLowerCase().includes(q) ||
-      (opt.group && opt.group.toLowerCase().includes(q))
-    );
-  });
+  const filtered = options.filter((opt) => comboboxOptionMatches(opt, filter));
 
   const selectedOpt = options.find((o) => o.value === value);
   const displayValue = filter || selectedOpt?.value || value || "";
@@ -110,7 +135,7 @@ function ComboboxField({
       setFilter("");
       inputRef.current?.blur();
     },
-    [onChange],
+    [onChange, setFilter],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -148,6 +173,10 @@ function ComboboxField({
             if (!open) setOpen(true);
           }}
           onBlur={() => {
+            // Commit typed text so tabbing away or clicking Save keeps it, as Enter does.
+            const typed = resolveComboboxTypedValue(filterRef.current, options);
+            setFilter("");
+            if (typed !== null && typed !== value) onChange(typed);
             // Delay close to allow click on option to register
             setTimeout(() => setOpen(false), 150);
           }}
