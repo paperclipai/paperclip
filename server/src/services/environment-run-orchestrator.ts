@@ -32,7 +32,11 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "./runner-environment-lifecycle.js";
+import {
+  resolveRunnerEnvironmentForRun,
+  resolveRunnerReconnectGraceMsForRun,
+  resolveWarmRunnerIdleTimeoutMsForRun,
+} from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -221,6 +225,7 @@ export function environmentRunOrchestrator(
     runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
     warmRunnerIdleTimeoutMs?: number;
+    runnerReconnectGraceMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -328,6 +333,9 @@ export function environmentRunOrchestrator(
     const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
       selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
     );
+    const runnerReconnectGraceMs = input.adapterType
+      ? resolveRunnerReconnectGraceMsForRun(selectedEnvironment, input.adapterType)
+      : undefined;
     const acquisitionInput = {
       companyId: input.companyId,
       environment,
@@ -340,6 +348,7 @@ export function environmentRunOrchestrator(
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
+      runnerReconnectGraceMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
@@ -370,6 +379,7 @@ export function environmentRunOrchestrator(
         const resumed = await environmentRuntime.resumeRunLease({
           environment, lease, requestedCwd: expected.remoteCwd,
           ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+          ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
         });
         if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
             resumed.metadata?.expired === true) {

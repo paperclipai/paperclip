@@ -302,6 +302,25 @@ Messages from the same conversation still coalesce into one run. Messages from
 different conversations queue separately and run one after the other. Wakes
 without a conversation keep their normal coalescing.
 
+If reviewed chat attestation exhausts its short lock or delivery wait before
+provider dispatch, the run records `reviewed_chat_execution_binding_not_ready`.
+The existing durable retry scheduler permits at most two further attempts. Each
+attempt retains the admitted comment batch and checks current execution ownership,
+provider access and principal permissions again. An answered interaction retains
+its own bounded continuation retry. A denied authorization, Stop, pause or blocked
+dependency cannot use this wait as permission to execute. No retry budget resets,
+new background poller or provider replay are introduced.
+
+Question-answer delivery records its interaction marker in the wake context.
+Queue enrichment backfills that marker for older question-answer payloads only.
+Plan confirmations retain their existing admission and handoff lifecycle.
+
+An answered retry proves at most two saved pre-dispatch failure ancestors before
+reading the original user-owned answer receipt. It rechecks that receipt, its
+original delivery target and current chat permissions. The original receipt and
+delivery remain unchanged. New comments and control wakes queue separately from
+a retained chat retry, including while the retry waits for its scheduled time.
+
 For a truncated external-chat wake, native completion feedback requires the
 run-bound complete comment-read receipt before accepting a finish report. An
 unread, partial, stale or foreign receipt returns a corrective
@@ -1075,7 +1094,13 @@ transfer's own scratch paths and the explicit source exclusions. Older providers
 that omit files fail inventory verification rather than publish an incomplete save.
 Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
 1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
-verification and archive normalization share a two-minute cancellation deadline.
+verification shares a two-minute budget across the received-tree check and both
+source rechecks. Controller archive normalization has its own five-minute
+cancellation deadline, matching normal sandbox capture. Time spent sealing does
+not consume the remaining metadata verification budget. The fallback does not
+extend a caller deadline or create new execution authority. Its save interface
+currently has no caller abort signal; the existing source ownership checks still
+fence durable publication.
 These limits reject excessive work before publication and keep the source retained.
 Inventory rechecks cancellation after file identity validation and before opening
 the read stream. An expired deadline rejects the capture without an unhandled
@@ -1288,7 +1313,20 @@ not part of lease identity or metadata. Daytona derives its effective
 on resume (a bounded, best-effort update). Its cached-handle freshness keeps using
 the configured interval until the provider confirms the new one. An explicit `0`
 (auto-stop disabled), a longer configured interval, per-turn, and non-reusable
-sandboxes are unchanged, and idle sandboxes still auto-stop.
+sandboxes are unchanged by the warm floor, and idle sandboxes still auto-stop.
+
+A remote runner also keeps working while its controller is offline, and the host
+reattaches it within the remote runner reconnect grace (7 minutes). Daytona counts
+only SDK and lifecycle calls as activity, so with no controller its idle auto-stop
+runs during the outage; a shorter interval stops the sandbox and kills the runner
+while the host would still reattach it. For every `paperclip_runner` run on a
+sandbox environment the host therefore also forwards `runnerReconnectGraceMs`,
+on acquisition and on recovery resume, under the same provider-only rules. Daytona
+keeps the effective `autoStopInterval` at least the grace plus 5 minutes (12
+minutes today), applies it at creation, and raises an older sandbox's shorter
+interval on recovery resume. An explicit `0` and a longer configured interval are
+unchanged, released sandboxes are still stopped or destroyed by cleanup, and
+leaked sandboxes still auto-stop after the raised interval.
 
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
@@ -2659,6 +2697,19 @@ waits for that start, like a terminal, instead of failing the new turn. If this
 session's own protocol failure ends a pending turn start, the run reports
 `codex_turn_start_protocol_failure` with the cause instead of a runner exit.
 
+The continuation tells the agent to finish in that turn, not to end it while
+waiting for a background command or a notification, and to report one
+`paperclip_finish` or `paperclip_block`. It also says that processes started in
+earlier turns may no longer run after the restart: the agent checks the
+workspace for their outputs and re-runs a command when its expected output is
+missing, instead of blocking on the lost process. The continuation only borrows the
+one-shot disposition marker so a crash can adopt its accepted turn. If the
+continuation completes without a semantic result, the driver returns the marker
+and the same attempt sends one disposition request. That request does not use
+another provider attempt, so restarts the run already survived cannot block it.
+A disposition request that also ends without a result consumes the marker and
+fails closed as before.
+
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
 When that deadline fails a native run with a prepared workspace, the same
@@ -3555,6 +3606,11 @@ provider pack when its verified durable session binding and pack receipt remain
 available. A new controller release or diagnostics setting does not replace the
 proxy behind the saved provider state. If the exact artifacts are unavailable,
 continuation stays blocked; this rule grants no fresh-session or replay authority.
+A configured controller pack with a different identity is not uploaded in its
+place: before clearing or uploading anything, the run fails as
+`runner_remote_provider_artifact_incompatible` and names both digest prefixes.
+Archive integrity failures keep `runner_remote_provider_archive_invalid` with a
+fixed reason such as `size_mismatch` or `sha256_mismatch`.
 A newly launched daemon binds its current Runner artifact while retaining the
 provider pack. Only a surviving daemon retains its previous Runner artifact.
 An authorized continuity break releases the pack pin after archiving the old

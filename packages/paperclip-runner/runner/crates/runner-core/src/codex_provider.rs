@@ -192,6 +192,9 @@ pub(crate) enum ProviderStartupStage {
 }
 
 pub(crate) enum ProviderStartupObservation {
+    /// Launch checks passed and the process spawn is about to begin. Until
+    /// this is durable, a startup intent provably owns no process.
+    SpawnStarting,
     Spawned {
         process_id: u32,
         process_group_id: u32,
@@ -1155,6 +1158,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_cursor_cloud_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1176,6 +1180,7 @@ impl CodexProvider {
                     ));
                 }
                 let launch = verified_opencode_launch(profile)?;
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_verified_with_environment_keys(
                     &launch,
                     Duration::from_secs(2),
@@ -1183,6 +1188,7 @@ impl CodexProvider {
                     &environment_keys,
                 )
             } else {
+                observe(ProviderStartupObservation::SpawnStarting)?;
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
                     &launch_args,
@@ -5773,6 +5779,7 @@ done
             None,
             None,
             &mut |observation| match observation {
+                ProviderStartupObservation::SpawnStarting => Ok(()),
                 ProviderStartupObservation::Spawned {
                     process_id,
                     process_group_id,
