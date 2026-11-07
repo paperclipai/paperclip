@@ -11,8 +11,9 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { subscribeDatabaseWork, agentWakeupRequests, agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { nativeRunProjectionWork } from "../services/native-runtime/native-run-projection-work.js";
 import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
 import { NATIVE_RUN_FAILED_UNEXPLAINED } from "../services/native-runtime/native-run-failure-explanation.js";
@@ -742,6 +743,27 @@ describe("committed native run projection lifecycle", () => {
       await coordinator!.stop(); await startRecovered(); await flush();
       await heartbeatService(db).resumeQueuedRuns();
       expect((await followUps(binding.issueId, binding.runId)).map(run => run.id)).toEqual([followUp.id]);
+    });
+
+    it("hints the saved comment's own wake when recovery projects its run, not only the company", async () => {
+      // A company hint waits out the deferred-receipt worker's reconstruction
+      // interval after the decision commit's pass, so the task looked done
+      // with its message still unread (RC-37, s7401 replay).
+      const binding = await seed(true);
+      const { wake } = await deferredComment(binding);
+      await complete(binding, "control_plane"); await barrier(binding);
+      await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+      expect((await read(binding.runId)).status).toBe("running");
+      const hints: string[] = [];
+      const stop = subscribeDatabaseWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, (event, received) => {
+        if (event === "settled") hints.push(...(received ?? []));
+      });
+      try {
+        await projectCommittedRun({ db, run: await read(binding.runId), coordinator: await state(binding.runId) });
+      } finally { stop(); }
+      expect((await read(binding.runId)).status).toBe("succeeded");
+      expect(hints.map(hint => JSON.parse(hint) as { requestId?: string })).toContainEqual(
+        expect.objectContaining({ requestId: wake.id }));
     });
 
     it("does not wake again for a comment the recovered run already received as a steer", async () => {

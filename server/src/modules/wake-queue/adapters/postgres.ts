@@ -314,14 +314,30 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queryableCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
-      const liveNonSelfCommentIds = queryableCommentIds.filter((commentId) => {
+      const liveAndUnauthored = queryableCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
         return Boolean(row && !row.deletedAt && (!targetsFinishingRunAgent || row.createdByRunId !== finishingRunId));
       });
+      // A succeeded run of the wake's agent that received the comment in its
+      // prompt (as wake input or as task history) consumed it. Promoting the
+      // saved wake again would deliver it twice and can reopen finished work.
+      const delivered = new Set<string>();
+      for (const commentId of liveAndUnauthored) {
+        const [receipt] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, wakeAgentId),
+          eq(heartbeatRuns.status, "succeeded"),
+          or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+          sql`(coalesce(${heartbeatRuns.contextSnapshot}->'wakeCommentIds', '[]'::jsonb) ? ${commentId}
+            or jsonb_path_exists(${heartbeatRuns.contextSnapshot}, '$.executionContinuation.messages[*] ? (@.id == $id)', jsonb_build_object('id', ${commentId}::text))
+            or jsonb_path_exists(${heartbeatRuns.contextSnapshot}, '$.paperclipWake.messages[*] ? (@.id == $id)', jsonb_build_object('id', ${commentId}::text)))`,
+        )).limit(1);
+        if (receipt) delivered.add(commentId);
+      }
+      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
-      return { liveNonSelfCommentIds, containedSelfAuthoredComment };
+      return { liveNonSelfCommentIds, containedSelfAuthoredComment, deliveredCommentIds: [...delivered] };
     },
 
     async cancelDeferredWake({ companyId, wakeId, agentId, reason, now }) {
