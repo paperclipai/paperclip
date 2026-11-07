@@ -6159,6 +6159,7 @@ export function createToolGatewayService(
   ) {
     const record = asRecord(result);
     if (!record) throw malformedRemoteMcpResponse();
+    const structuredContent = asRecord(record.structuredContent);
     const providerContent = normalizeMcpContent(record.content);
     const githubFailure = record.isError === true
       ? githubAccessError(sourceTemplateKey, providerContent) : null;
@@ -6174,7 +6175,11 @@ export function createToolGatewayService(
       content,
       data: {
         content: record.content,
-        structuredContent: record.structuredContent ?? null,
+        // `structuredContent` is optional in `CallToolResult`, and it is an object when
+        // present. Remote MCP servers omit the key when a tool has no structured output.
+        // Coercing that absence to `null` produced an invalid result, and MCP clients that
+        // validate the schema reject the whole response. Omit the key instead.
+        ...(structuredContent ? { structuredContent } : {}),
         isError: record.isError === true,
         transport,
         spawnedLocalProcess,
