@@ -1093,7 +1093,19 @@ impl SupervisedProcess {
         let lineage = match crate::process_lineage::LineageTracker::start(process_group_id) {
             Ok(lineage) => lineage,
             Err(reason) => {
-                signal_process_group(process_group_id, "KILL");
+                // The host may be out of threads or processes, so signal with
+                // a direct system call rather than a `kill` child process. The
+                // new process has had no time to start tools of its own.
+                let group = i32::try_from(process_group_id)
+                    .ok()
+                    .and_then(rustix::process::Pid::from_raw);
+                let signalled = group.is_some_and(|group| {
+                    rustix::process::kill_process_group(group, rustix::process::Signal::KILL)
+                        .is_ok()
+                });
+                if !signalled {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 return Err(LocalRunnerError::invalid(format!(
                     "failed to start supervised process {}: {reason}",
