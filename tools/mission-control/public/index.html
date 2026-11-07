@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en" data-paperclip-base-url="/">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Read-only operational view of a Paperclip company.">
+    <title>Mission Control · Paperclip</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <div>
+          <p class="eyebrow">Paperclip / Operations</p>
+          <h1>Mission Control</h1>
+        </div>
+      </div>
+      <span class="readonly-label">Read-only Mission Control</span>
+    </header>
+
+    <main id="main-content" class="mission-shell">
+      <div id="live-status" class="live-status" role="status" aria-live="polite" aria-atomic="true">
+        Connecting to control plane…
+      </div>
+
+      <section class="zone zone-header" aria-labelledby="company-header-title">
+        <div class="zone-heading">
+          <p class="eyebrow">Company pulse</p>
+          <h2 id="company-header-title">Company overview</h2>
+        </div>
+        <div id="company-header" class="zone-content"></div>
+      </section>
+
+      <div class="map-grid">
+        <section class="zone zone-graph" aria-labelledby="agent-graph-title">
+          <div class="zone-heading">
+            <p class="eyebrow">People &amp; lanes</p>
+            <h2 id="agent-graph-title">Agent graph</h2>
+          </div>
+          <div id="agent-graph" class="zone-content"></div>
+        </section>
+
+        <section class="zone zone-decisions" aria-labelledby="decision-rail-title">
+          <div class="zone-heading">
+            <p class="eyebrow">Governance</p>
+            <h2 id="decision-rail-title">Decision rail</h2>
+          </div>
+          <div id="decision-rail" class="zone-content"></div>
+        </section>
+      </div>
+
+      <section class="zone zone-timeline" aria-labelledby="operations-timeline-title">
+        <div class="zone-heading">
+          <p class="eyebrow">Audit trail</p>
+          <h2 id="operations-timeline-title">Operations timeline</h2>
+        </div>
+        <div id="operations-timeline" class="zone-content"></div>
+      </section>
+    </main>
+
+    <noscript>
+      <p class="noscript-note">Mission Control needs JavaScript enabled to read the control-plane state.</p>
+    </noscript>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
