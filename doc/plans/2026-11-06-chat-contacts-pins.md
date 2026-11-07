@@ -37,3 +37,12 @@ An early row-wide drag allowed native link navigation after sorting. A dedicated
 grip and prevention of native link dragging fixed it. The regression failed
 before the fix and passed afterward. Long-history tests also check that a failed
 summary chunk retains all snapshots.
+
+## Review corrections
+
+Reserve separate space for unread badges and pin actions, including touch input.
+Unread rows do not fade text that the pin no longer covers. Build pin sets and
+item maps once per list, keep their inputs stable, and share pin state across
+agent rows. Large-list regressions count input reads and pin parsing for five
+hundred agents and pins. Reordering retains hidden-company slots. Task history
+also uses indexed summary lookups now that it is no longer capped at five rows.

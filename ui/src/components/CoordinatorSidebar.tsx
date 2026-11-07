@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug } from "lucide-react";
-import type { Project } from "@paperclipai/shared";
+import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
+import type { Agent, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -26,7 +26,7 @@ import { StatusIcon } from "./StatusIcon";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 import { AgentAvatar } from "./AgentAvatar";
 import { agentChatPinKey } from "./AgentChatPin";
-import { PinnedNavigationList } from "./PinnedNavigationList";
+import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -40,6 +40,19 @@ const moreDestinations = [
   { label: "Audit", to: "/activity", icon: History },
   { label: "Settings", to: "/settings", icon: Settings },
 ] as const;
+
+export function buildPinnedNavigationItems(pins: readonly string[], agents: readonly Agent[], destinations: readonly { to: string; label: string; icon: LucideIcon }[]): PinnedNavigationItem[] {
+  const keys = new Set(pins);
+  const items = new Map<string, PinnedNavigationItem>(destinations.map(item => [item.to, { key: item.to, to: item.to, label: item.label, icon: <item.icon className="size-4" /> }]));
+  for (const agent of agents) {
+    const key = agentChatPinKey(agent.companyId, agent.id);
+    if (keys.has(key)) items.set(key, { key, to: `/chats/${encodeURIComponent(agentRouteRef(agent))}`, label: agent.name, icon: <AgentAvatar agent={agent} size={20} /> });
+  }
+  return pins.flatMap(key => {
+    const item = items.get(key);
+    return item ? [item] : [];
+  });
+}
 
 function ProjectRecent({ project }: { project: Project }) {
   const [expanded, setExpanded] = useState(false);
@@ -97,18 +110,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const destinations = experimental?.enableCases
+  const destinations = useMemo(() => experimental?.enableCases
     ? [...moreDestinations, { label: "Cases", to: "/cases", icon: Boxes }]
-    : moreDestinations;
+    : moreDestinations, [experimental?.enableCases]);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => destinations.filter(item => item.to === to));
-  const pinnedAgents = (agents.data ?? []).filter(agent => pinnedNavigation.pins.includes(agentChatPinKey(agent.companyId, agent.id)));
-  const pinItems = [
-    ...pinnedDestinations.map(item => ({ key: item.to, to: item.to, label: item.label, icon: <item.icon className="size-4" /> })),
-    ...pinnedAgents.map(agent => ({ key: agentChatPinKey(agent.companyId, agent.id), to: `/chats/${encodeURIComponent(agentRouteRef(agent))}`, label: agent.name, icon: <AgentAvatar agent={agent} size={20} /> })),
-  ];
-  const orderedPins = pinnedNavigation.pins.flatMap(key => pinItems.filter(item => item.key === key));
+  const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;

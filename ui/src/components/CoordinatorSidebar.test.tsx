@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
-import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
@@ -90,6 +90,21 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("builds hundreds of agent pins with input reads proportional to list size", () => {
+    const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
+    const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
+    let reads = 0;
+    function bounded<T>(items: T[]) {
+      return new Proxy(items, { get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * agents.length) throw new Error("Pin construction scans growing lists repeatedly");
+        return Reflect.get(target, property, receiver);
+      } });
+    }
+    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), []);
+    expect(items.map(item => item.key)).toEqual(pins);
+    expect(reads).toBeLessThanOrEqual(4 * agents.length);
+    expect(items[0].to).toBe("/chats/agent-499");
+  });
   it("keeps mixed pins in stored order and prevents native link dragging", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
     const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];

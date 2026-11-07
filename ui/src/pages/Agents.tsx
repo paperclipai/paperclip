@@ -1,7 +1,7 @@
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { AgentChatPin } from "@/components/AgentChatPin";
+import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
@@ -190,6 +190,7 @@ export function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds:
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+  const agentChatPins = useAgentChatPins();
   const [query, setQuery] = useState("");
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
@@ -409,7 +410,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           </div>
         )}
       />
-      <AgentChatPin agent={agent} />
+      <AgentChatPin agent={agent} pins={agentChatPins} />
       </div>
     );
   };

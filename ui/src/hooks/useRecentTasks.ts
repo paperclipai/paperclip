@@ -123,7 +123,8 @@ export function useRecentTasks({
 
   useEffect(() => {
     if (!storageKey || !companyId || !summaries) return;
-    const authorizedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    const summaryById = new Map(summaries.filter((issue) => issue.companyId === companyId).map((issue) => [issue.id, issue]));
+    const authorizedIds = new Set(summaryById.keys());
     const mergeCached = (value: unknown) => {
       if (!value || typeof value !== "object") return;
       const issue = value as Issue;
@@ -132,7 +133,7 @@ export function useRecentTasks({
         || !issue.updatedAt || !Object.hasOwn(issue, "projectId")) return;
       // At equal task versions, the summary's independently computed readiness
       // is newer than an already-cached full detail response.
-      const summary = summaries.find((item) => item.id === issue.id);
+      const summary = summaryById.get(issue.id);
       if (!summary || new Date(issue.updatedAt).getTime() <= new Date(summary.updatedAt).getTime()) return;
       updateRecentTaskSnapshots(storageKey, companyId, [issue]);
     };

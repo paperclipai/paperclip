@@ -5444,3 +5444,4 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
     mask-image: linear-gradient(to right, var(--foreground) calc(100% - var(--spacing) * 10), transparent calc(100% - var(--spacing) * 2));
   }
 }
+.agent-contact-pin-row[data-has-unread="true"] .agent-pin-text { mask-image: none; }

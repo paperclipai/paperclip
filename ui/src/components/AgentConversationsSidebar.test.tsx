@@ -132,26 +132,38 @@ it("passes numeric unread counts to contacts and updates them from the account c
 
 it("reuses chat indexes for 500 agents across unchanged parent renders and refreshes changed counts", async () => {
   const agents = Array.from({ length: 500 }, (_, index) => ({ ...roster[0], id: `agent-${index}`, name: `Agent ${index}`, urlKey: `agent-${index}` }));
-  const chats = agents.map(agent => ({ ...chat(agent.id), isUnreadForMe: true, unreadMessageCount: 7 }));
-  const key = queryKeys.agentChats.list("company-a", "user-a");
-  client.setQueryData(queryKeys.agents.list("company-a"), agents);
-  client.setQueryData(key, chats);
-  await render();
-  const first = sidebarInputs.at(-1)!;
-  expect(first.existingChatAgentIds).toHaveLength(500);
-  expect(first.unreadAgentIds).toHaveLength(500);
-  expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
-  await render();
-  const unchanged = sidebarInputs.at(-1)!;
-  expect(unchanged.existingChatAgentIds).toBe(first.existingChatAgentIds);
-  expect(unchanged.unreadAgentIds).toBe(first.unreadAgentIds);
-  expect(unchanged.unreadMessageCounts).toBe(first.unreadMessageCounts);
-  await act(async () => {
-    client.setQueryData(key, [{ ...chats[0], isUnreadForMe: false, unreadMessageCount: 0 }, ...chats.slice(1)]);
-    await new Promise(resolve => setTimeout(resolve, 0));
+  const savedPins = JSON.stringify(agents.map(agent => `agent-chat:company-a:${agent.id}`));
+  localStorage.setItem("paperclip.coordinator.pinned-nav.v1:user-a", savedPins);
+  const originalParse = JSON.parse;
+  let pinParses = 0;
+  const parse = vi.spyOn(JSON, "parse").mockImplementation((value, reviver) => {
+    if (value === savedPins && ++pinParses > 8) throw new Error("Each contact parses the full pin list");
+    return originalParse(value, reviver);
   });
-  expect(document.querySelector('[aria-label="7 unread messages from Agent 0"]')).toBeNull();
-  expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(499);
+  try {
+    const chats = agents.map(agent => ({ ...chat(agent.id), isUnreadForMe: true, unreadMessageCount: 7 }));
+    const key = queryKeys.agentChats.list("company-a", "user-a");
+    client.setQueryData(queryKeys.agents.list("company-a"), agents);
+    client.setQueryData(key, chats);
+    await render();
+    const first = sidebarInputs.at(-1)!;
+    expect(first.existingChatAgentIds).toHaveLength(500);
+    expect(first.unreadAgentIds).toHaveLength(500);
+    expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
+    await render();
+    const unchanged = sidebarInputs.at(-1)!;
+    expect(unchanged.existingChatAgentIds).toBe(first.existingChatAgentIds);
+    expect(unchanged.unreadAgentIds).toBe(first.unreadAgentIds);
+    expect(unchanged.unreadMessageCounts).toBe(first.unreadMessageCounts);
+    await act(async () => {
+      client.setQueryData(key, [{ ...chats[0], isUnreadForMe: false, unreadMessageCount: 0 }, ...chats.slice(1)]);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(document.querySelector('[aria-label="7 unread messages from Agent 0"]')).toBeNull();
+    expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(499);
+    expect(container.querySelectorAll('[aria-label^="Unpin Agent "]')).toHaveLength(500);
+    expect(pinParses).toBeLessThanOrEqual(8);
+  } finally { parse.mockRestore(); }
 });
 
 it("retains terminated agents' history by id without offering them for new chats", async () => {
