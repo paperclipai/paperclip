@@ -8,12 +8,14 @@ import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import type { SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
 
-type Source = { companyId: string; issueId: string; runId: string; controller: string; supervisor?: string };
+type Source = { companyId: string; issueId: string; runId: string; controller: string; supervisor?: string;
+  purpose?: "filesystem_independence" };
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export function legacyNativeControllerArchive(source: Source) {
   const manifest = JSON.stringify({ schema: "paperclip.legacy-controller-archive.v1", companyId: source.companyId,
-    issueId: source.issueId, runId: source.runId, reason: "original_runner_artifact_unproven",
+    issueId: source.issueId, runId: source.runId, reason: source.purpose === "filesystem_independence"
+      ? "original_volume_source_evidence" : "original_runner_artifact_unproven",
     files: { "control-plane-state.json": sha256(source.controller),
       ...(source.supervisor === undefined ? {} : { "supervisor.json": sha256(source.supervisor) }) } });
   return { manifest, scopeDigest: sha256(manifest), manifestSha256: `sha256:${sha256(manifest)}` };
@@ -25,6 +27,24 @@ export async function hasArchivedLegacyNativeController(db: Db, input: Source & 
 }
 
 export async function archiveFailedLegacyNativeController(db: Db, input: Source & {
+  storage: StorageService; writersStopped?: true; onlineOwner?: SettledControllerArchiveOwner; signal: AbortSignal;
+}) {
+  if (input.purpose || input.onlineOwner?.filesystemIndependence) throw new Error("native_controller_archive_authority_invalid");
+  return persistLegacyControllerEvidence(db, input);
+}
+
+export async function archiveNativeControllerSourceEvidence(db: Db, input: Source & {
+  storage: StorageService; onlineOwner: SettledControllerArchiveOwner; signal: AbortSignal;
+}) {
+  if (input.purpose !== "filesystem_independence" || !input.onlineOwner.filesystemIndependence) {
+    throw new Error("native_controller_archive_authority_invalid");
+  }
+  await db.transaction(async tx => (await import("./native-controller-archive-source.js"))
+    .assertSettledControllerArchiveSource(tx as unknown as Db, input.onlineOwner));
+  return persistLegacyControllerEvidence(db, input);
+}
+
+async function persistLegacyControllerEvidence(db: Db, input: Source & {
   storage: StorageService; writersStopped?: true; onlineOwner?: SettledControllerArchiveOwner; signal: AbortSignal;
 }) {
   if (input.onlineOwner ? input.writersStopped || input.onlineOwner.kind !== "settled_controller_archive"

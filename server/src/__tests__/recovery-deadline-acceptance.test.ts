@@ -1,3 +1,11 @@
+import { preparationFailureFixture, drivePreparationFailure } from "./helpers/recovery-preparation-failure.js";
+import { controlledOrdinaryBootstrapProtocol, controlledOrdinaryBootstrapResult, controlledOrdinaryBootstrapScript } from "./helpers/recovery-deadline-ordinary-bootstrap.js";
+import { controlledCompanyBootstrapResult, controlledCompanyBootstrapScript } from "./helpers/recovery-deadline-bootstrap.js";
+import * as legacySettlement from "../services/heartbeat/legacy-process-settlement.js";
+import express, { type Request } from "express";
+import request from "supertest";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import { registerBudgetEnforcementWork } from "../services/budget-enforcement-worker.js";
 import { hasPendingBudgetEvaluation, queueBudgetEvaluation } from "../services/budget-evaluation-work.js";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
@@ -6,12 +14,12 @@ import { registerDeadlineWork } from "../services/deadline-work.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { processAdapter } from "../adapters/process/index.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { issueService } from "../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, environmentLeases, issueExecutionDecisions, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -49,10 +57,13 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     await applyPendingMigrations(adminUrl!);
     db = createDb(fixtureUrl!, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     registerServerAdapter({ ...processAdapter, type: "recovery_deadline_process", execute: async context => {
-      const result = await processAdapter.execute(context);
+      const result = controlledOrdinaryBootstrapResult(context.config,
+        controlledCompanyBootstrapResult(context.config, await processAdapter.execute(context)));
       if (result.exitCode === 0 && !result.timedOut && !result.errorCode) {
         const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, context.runId));
-        if (!current?.issueId) throw new Error("Controlled agent requires its admitted task");
+        if (!current) throw new Error("Controlled agent requires its admitted run");
+        if (current.scopeKind === "company" && current.issueId === null) return result;
+        if (!current.issueId) throw new Error("Controlled agent requires its admitted task");
         const tasks = issueService(db);
         await tasks.addComment(current.issueId, "The controlled local process produced recovery-deadline-result; task completed.",
           { agentId: context.agent.id, runId: context.runId });
@@ -62,6 +73,22 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       return result;
     } });
   }, 90_000);
+  beforeAll(() => {
+    registerServerAdapter({ ...processAdapter, type: "recovery_review_process", execute: async context => {
+      const result = await processAdapter.execute(context);
+      if (result.exitCode === 75) return { ...result,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } };
+      if (result.exitCode === 0 && !result.timedOut && !result.errorCode) {
+        const current = await run(context.runId);
+        if (!current.issueId) throw new Error("Review agent requires its admitted issue");
+        const response = await patchIssue(current.issueId, { type: "agent", agentId: context.agent.id,
+          companyId: current.companyId, runId: context.runId },
+        { status: "done", comment: "Reviewed the controlled local process result; approved." });
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+      }
+      return result;
+    } });
+  });
   beforeEach(async () => {
     await db.execute(sql`TRUNCATE companies CASCADE`);
     heartbeat = heartbeatService(db);
@@ -84,7 +111,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     vi.useRealTimers();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { unregisterServerAdapter("recovery_deadline_process"); await db?.$client.end({ timeout: 1 }); });
+  afterAll(async () => { unregisterServerAdapter("recovery_deadline_process"); unregisterServerAdapter("recovery_review_process"); await db?.$client.end({ timeout: 1 }); });
 
   async function start(options: { budgets?: boolean } = {}) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
@@ -104,7 +131,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 5_000 });
   }
-  async function fixture(options: { retainedSourceLock?: boolean; quotaResetAt?: Date } = {}) {
+  async function fixture(options: { retainedSourceLock?: boolean; quotaResetAt?: Date; companyScope?: boolean } = {}) {
     const companyId = randomUUID();
     await db.insert(authUsers).values({ id: "recovery-test-user", name: "Recovery test owner", email: "recovery-owner@example.test",
       createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
@@ -119,21 +146,103 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       { companyId, principalId: "recovery-test-user", principalType: "user", status: "active", membershipRole: "owner" },
       { companyId, principalId: agent.id, principalType: "agent", status: "active", membershipRole: "member" },
     ]);
-    const [issue] = await db.insert(issues).values({ companyId, title: "Retry producer acceptance", status: "in_progress", assigneeAgentId: agent.id }).returning();
-    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
+    const [issue] = await db.insert(issues).values({ companyId, title: "Retry producer acceptance", status: options.companyScope ? "done" : "in_progress", assigneeAgentId: agent.id }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: options.companyScope ? "company" : "issue", issueId: options.companyScope ? null : issue.id,
       status: "failed", responsibleUserId: "recovery-test-user", errorCode: options.quotaResetAt ? "provider_quota" : "codex_transient_upstream", finishedAt: new Date(),
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, ...(options.quotaResetAt ? {
         errorFamily: "provider_quota", retryNotBefore: options.quotaResetAt.toISOString(), providerQuotaRetryNotBefore: options.quotaResetAt.toISOString(),
-      } : {}) }, contextSnapshot: { issueId: issue.id },
+      } : {}) }, contextSnapshot: options.companyScope ? {} : { issueId: issue.id },
     }).returning();
-    if (options.retainedSourceLock !== false)
+    if (!options.companyScope && options.retainedSourceLock !== false)
       await db.update(issues).set({ executionRunId: source.id, checkoutRunId: source.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, source };
   }
   async function schedule(sourceId: string, delayMs = 600_000) {
     const result = await heartbeat.scheduleBoundedRetry(sourceId, { delayMs, random: () => 0 });
-    if (result.outcome !== "scheduled") throw new Error(`Retry producer failed: ${result.outcome}`);
+    if (result.outcome !== "scheduled") throw new Error(`Retry producer failed: ${JSON.stringify(result)}`);
     return result;
+  }
+  async function patchIssue(issueId: string, actor: Request["actor"], body: Record<string, unknown>) {
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = actor; next(); });
+    app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1])); app.use(errorHandler);
+    return request(app).patch(`/api/issues/${issueId}`).send(body);
+  }
+  async function reviewFailure(quota: boolean) {
+    const f = await fixture({ retainedSourceLock: false });
+    const reset = new Date(Math.ceil((Date.now() + 40_000) / 60_000) * 60_000);
+    const resetClock = `${reset.getUTCHours()}:${String(reset.getUTCMinutes()).padStart(2, "0")}`;
+    const message = quota ? `You've hit your usage limit. Try again at ${resetClock} (UTC).` : "Controlled review bootstrap unavailable";
+    const [reviewer] = await db.insert(agents).values({ companyId: f.companyId, name: "Controlled reviewer", role: "qa",
+      status: "paused", adapterType: "recovery_review_process",
+      adapterConfig: { command: process.execPath, args: ["-e", `console.error(${JSON.stringify(message)});process.exit(75)`], cwd: process.cwd() },
+      runtimeConfig: f.agent.runtimeConfig,
+    }).returning();
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalId: reviewer.id,
+      principalType: "agent", status: "active", membershipRole: "member" });
+    const stageId = randomUUID();
+    const response = await patchIssue(f.issue.id, { type: "board", userId: "recovery-test-user",
+      companyIds: [f.companyId], isInstanceAdmin: true, source: "local_implicit" },
+    { status: "in_review", comment: "Implementation ready for controlled review.", executionPolicy: {
+      stages: [{ id: stageId, type: "review", participants: [{ type: "agent", agentId: reviewer.id }] }],
+    } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [pending] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(pending).toMatchObject({ status: "in_review", executionState: { status: "pending", currentStageId: stageId,
+      currentParticipant: { type: "agent", agentId: reviewer.id } } });
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, reviewer.id));
+    await start(); await settled();
+    const source = await heartbeat.wakeup(reviewer.id, { source: "on_demand", reason: "execution_review_participant_recovery",
+      requestedByActorType: "system", contextSnapshot: { issueId: f.issue.id, currentStageId: stageId } });
+    if (!source) throw new Error("Current reviewer was not admitted");
+    await vi.waitFor(async () => expect((await run(source.id)).status).toBe("failed"), { timeout: 15_000 });
+    await heartbeat.drainActiveRunExecutions();
+    const saved = await run(source.id);
+    expect(saved.stderrExcerpt).toContain(message);
+    expect(saved.resultJson?.executionRecovery).toMatchObject({ kind: "bootstrap", providerWorkStarted: false });
+    await db.update(agents).set({ status: "idle", adapterConfig: { command: process.execPath,
+      args: ["-e", "console.log('recovery-review-result')"], cwd: process.cwd() } }).where(eq(agents.id, reviewer.id));
+    return { ...f, reviewer, stageId, reviewSource: saved, reset };
+  }
+  async function actualCompanyFailure(expectReceipt = true, companyScope = true) {
+    const f = await fixture(companyScope ? { companyScope: true } : { companyScope: false, retainedSourceLock: false });
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", companyScope ? controlledCompanyBootstrapScript : controlledOrdinaryBootstrapScript],
+      cwd: process.cwd() } }).where(eq(agents.id, f.agent.id));
+    await start(); await settled();
+    const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual",
+      requestedByActorType: "system", contextSnapshot: companyScope ? {} : { issueId: f.issue.id, taskId: f.issue.id } });
+    if (!admitted) throw new Error("Company failure source was not admitted");
+    await vi.waitFor(async () => expect((await run(admitted.id)).status).toBe("failed"), { timeout: 15_000 });
+    await heartbeat.drainActiveRunExecutions();
+    const failed = await run(admitted.id);
+    expect(failed).toMatchObject({ scopeKind: companyScope ? "company" : "issue", issueId: companyScope ? null : f.issue.id,
+      status: "failed", errorCode: companyScope ? "adapter_failed" : "codex_transient_upstream" });
+    expect(failed.stderrExcerpt).toContain(companyScope ? "Controlled review bootstrap unavailable" : controlledOrdinaryBootstrapProtocol);
+    expect(failed.processPid).toBeGreaterThan(1); expect(failed.processGroupId).toBeGreaterThan(1);
+    expect(failed.processStartedAt).toBeInstanceOf(Date); expect(failed.controllerBootId).toEqual(expect.any(String));
+    expect(failed.controllerLeaseExpiresAt).toBeNull();
+    if (expectReceipt) expect(legacySettlement.legacySourceProcessSettled(failed)).toBe(true);
+    else expect(failed.legacyProcessSettlement).toBeNull();
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", "console.log('recovery-deadline-result')"], cwd: process.cwd() } }).where(eq(agents.id, f.agent.id));
+    return { ...f, actualSource: failed };
+  }
+  async function assertReviewResult(f: Awaited<ReturnType<typeof reviewFailure>>, retryId: string) {
+    await vi.waitFor(async () => expect((await run(retryId)).status).toBe("succeeded"), { timeout: 45_000 });
+    await heartbeat.drainActiveRunExecutions();
+    expect((await run(retryId)).stdoutExcerpt).toContain("recovery-review-result");
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(task.status).toBe("done");
+    const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issue.id));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ stageId: f.stageId, actorAgentId: f.reviewer.id, createdByRunId: retryId, outcome: "approved" });
+    const starts = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, retryId),
+      eq(heartbeatRunEvents.message, "run started")));
+    expect(starts).toHaveLength(1);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.reviewSource.id));
+    expect(successors.map(row => row.id)).toEqual([retryId]);
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
   }
   const run = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]);
   async function proof() {
@@ -203,6 +312,314 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
   }, 30_000);
 
+  it.each([false, true])("cold-reconstructs a real company retry with represented coalescence=%s exactly once", async coalesce => {
+    const f = await fixture({ companyScope: true }); await start(); await settled();
+    const scheduled = await schedule(f.source.id, 30_000); await settled();
+    expect(scheduled.dueAt.getTime() - scheduled.run.createdAt.getTime()).toBeGreaterThanOrEqual(29_000);
+    expect(scheduled.run).toMatchObject({ scopeKind: "company", issueId: null, retryOfRunId: f.source.id });
+    if (coalesce) {
+      const accepted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "company_retry_followup",
+        contextSnapshot: { companyRetryInput: "retained-input" }, requestedByActorType: "system" });
+      expect(accepted?.id).toBe(scheduled.run.id);
+      const receipts = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.runId, scheduled.run.id), eq(agentWakeupRequests.status, "coalesced")));
+      expect(receipts).toHaveLength(1); const coalescedId = receipts[0].id;
+      expect(receipts[0].finishedAt).not.toBeNull();
+      expect((await run(scheduled.run.id)).contextSnapshot?.companyRetryInput).toBe("retained-input");
+      const payload = receipts[0].payload;
+      const foreign = await fixture({ companyScope: true });
+      for (const patch of [{ companyId: foreign.companyId }, { agentId: foreign.agent.id }, { runId: null },
+        { finishedAt: null }, { payload: { ...payload, unrepresentedInput: "lost" } }]) {
+        await db.update(agentWakeupRequests).set(patch).where(eq(agentWakeupRequests.id, coalescedId));
+        expect((await proof()).backgroundWork).not.toBe("none");
+        await db.update(agentWakeupRequests).set({ payload, finishedAt: receipts[0].finishedAt, companyId: f.companyId, agentId: f.agent.id, runId: scheduled.run.id }).where(eq(agentWakeupRequests.id, coalescedId));
+      }
+    }
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
+    await worker!.stop(); await coordinator!.stop();
+    expect((await proof()).backgroundWork).not.toBe("none");
+    heartbeat = heartbeatService(db); await start(); await settled();
+    expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
+    await vi.waitFor(async () => expect((await run(scheduled.run.id)).status).toBe("succeeded"), { timeout: 40_000 });
+    await heartbeat.drainActiveRunExecutions();
+    const saved = await run(scheduled.run.id);
+    expect(saved.stdoutExcerpt).toContain("recovery-deadline-result");
+    if (coalesce) expect(saved.contextSnapshot?.companyRetryInput).toBe("retained-input");
+    const all = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(all.map(row => row.id).sort()).toEqual([f.source.id, scheduled.run.id].sort());
+    const starts = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, scheduled.run.id),
+      eq(heartbeatRunEvents.message, "run started")));
+    expect(starts).toHaveLength(1);
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+  }, 60_000);
+
+  it("cold-reconstructs an actual failed company process history without erasing its identity", async () => {
+    const f = await actualCompanyFailure();
+    const scheduled = await schedule(f.actualSource.id, 30_000); await settled();
+    const report = await proof(); expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
+    const receipt = f.actualSource.legacyProcessSettlement;
+    for (const patch of [{ legacyProcessSettlement: null }, { legacyProcessSettlement: {} },
+      { legacyProcessSettlement: { ...receipt, processPid: "malformed" } },
+      { legacyProcessSettlement: { ...receipt, companyId: randomUUID() } },
+      { processPid: f.actualSource.processPid! + 1 }, { controllerBootId: randomUUID() },
+      { controllerLeaseExpiresAt: new Date(0) }, { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }, { processStartedAt: null },
+      { resultJson: { ...f.actualSource.resultJson, cancellation: {} } }]) {
+      const rollback = new Error("changed historical company settlement rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.actualSource.id));
+        expect((await readIdleRetrySchedule(tx, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+        if ("controllerBootId" in patch || "processPid" in patch || "controllerLeaseExpiresAt" in patch ||
+            "processStartedAt" in patch || "resultJson" in patch) {
+          expect(await legacySettlement.recordLegacyProcessSettlement(tx as unknown as Db, f.actualSource, () => true)).toBe(false);
+        }
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    const pendingCleanupRollback = new Error("pending source cleanup rollback");
+    await expect(db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ legacyProcessSettlement: null }).where(eq(heartbeatRuns.id, f.actualSource.id));
+      await tx.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.actualSource.id,
+        provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+      expect(await legacySettlement.recordLegacyProcessSettlement(tx as unknown as Db, f.actualSource, () => true)).toBe(false);
+      const [held] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.actualSource.id));
+      expect(held.legacyProcessSettlement).toBeNull();
+      expect((await readIdleRetrySchedule(tx, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      throw pendingCleanupRollback;
+    })).rejects.toThrow(pendingCleanupRollback.message);
+    await worker!.stop(); await coordinator!.stop();
+    expect((await proof()).backgroundWork).not.toBe("none");
+    heartbeat = heartbeatService(db); await start(); await settled();
+    expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
+    await vi.waitFor(async () => expect((await run(scheduled.run.id)).status).toBe("succeeded"), { timeout: 45_000 });
+    await heartbeat.drainActiveRunExecutions();
+    expect((await run(scheduled.run.id)).stdoutExcerpt).toContain("recovery-deadline-result");
+    expect((await run(f.actualSource.id)).processPid).toBe(f.actualSource.processPid);
+    const starts = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.runId, scheduled.run.id), eq(heartbeatRunEvents.message, "run started")));
+    expect(starts).toHaveLength(1);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id));
+    expect(successors).toHaveLength(1);
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+  }, 60_000);
+
+  it("cold-reconstructs an actual failed ordinary issue process with exact source settlement", async () => {
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let f: Awaited<ReturnType<typeof actualCompanyFailure>>;
+    try { f = await actualCompanyFailure(true, false); }
+    finally { jitter.mockRestore(); }
+    const produced = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id));
+    expect(produced, JSON.stringify(produced.map(row => ({ id: row.id, status: row.status, dueAt: row.scheduledRetryAt,
+      reason: row.scheduledRetryReason })))).toHaveLength(1);
+    expect(produced[0]).toMatchObject({ status: "scheduled_retry", scopeKind: "issue", issueId: f.issue.id,
+      agentId: f.agent.id, companyId: f.companyId, scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1,
+      startedAt: null, finishedAt: null });
+    expect(produced[0].scheduledRetryAt).toBeInstanceOf(Date);
+    const scheduled = { run: produced[0], dueAt: produced[0].scheduledRetryAt! };
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, scheduled.run.wakeupRequestId!));
+    expect(wake).toMatchObject({ runId: scheduled.run.id, companyId: f.companyId, agentId: f.agent.id, status: "queued" });
+    const producerEvents = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.actualSource.id),
+      sql`${heartbeatRunEvents.message} LIKE 'Scheduled bounded retry %'`));
+    expect(producerEvents).toHaveLength(1);
+    expect(producerEvents[0].payload).toMatchObject({ retryRunId: scheduled.run.id, retryReason: "transient_failure",
+      scheduledRetryAt: scheduled.dueAt.toISOString(), baseDelayMs: 30_000, delayMs: 30_000 });
+    expect(scheduled.dueAt.getTime()).toBeGreaterThan(Date.now());
+    await settled();
+    const observedReceipt = f.actualSource.legacyProcessSettlement;
+    expect(observedReceipt).not.toBeNull();
+    expect(f.actualSource).toMatchObject({ scopeKind: "issue", issueId: f.issue.id, nativeIssueId: null, nativeSessionId: null });
+    expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(false);
+    const report = await proof(); expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
+    for (const patch of [{ legacyProcessSettlement: null }, { legacyProcessSettlement: {} },
+      { processPid: f.actualSource.processPid! + 1 }, { processStartedAt: new Date(f.actualSource.processStartedAt!.getTime() + 1000) },
+      { controllerLeaseExpiresAt: new Date(0) }, { nativeIssueId: f.issue.id },
+      { resultJson: { ...f.actualSource.resultJson, cancellation: {} } }]) {
+      const rollback = new Error("ordinary issue source regression rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.actualSource.id));
+        expect((await readIdleRetrySchedule(tx, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    expect((await run(f.actualSource.id)).legacyProcessSettlement).toEqual(observedReceipt);
+    await settled();
+    await worker!.stop(); await coordinator!.stop();
+    expect((await proof()).backgroundWork).not.toBe("none");
+    heartbeat = heartbeatService(db); await start(); await settled();
+    expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
+    await vi.waitFor(async () => expect((await run(scheduled.run.id)).status).toBe("succeeded"), { timeout: 45_000 });
+    await heartbeat.drainActiveRunExecutions();
+    expect((await run(scheduled.run.id)).stdoutExcerpt).toContain("recovery-deadline-result");
+    expect((await run(f.actualSource.id)).processPid).toBe(f.actualSource.processPid);
+    expect((await run(f.actualSource.id)).legacyProcessSettlement).toEqual(observedReceipt);
+    const starts = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.runId, scheduled.run.id), eq(heartbeatRunEvents.message, "run started")));
+    expect(starts).toHaveLength(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.actualSource.id))).map(row => row.id))
+      .toEqual([scheduled.run.id]);
+    expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+  }, 60_000);
+
+  it("keeps failed optional settlement persistence blocked while normal execution cleanup continues", async () => {
+    const failedWrite = vi.spyOn(legacySettlement, "recordLegacyProcessSettlement")
+      .mockRejectedValue(new Error("controlled optional settlement write failure"));
+    try {
+      const f = await actualCompanyFailure(false);
+      expect(failedWrite).toHaveBeenCalledTimes(1);
+      const scheduled = await schedule(f.actualSource.id, 30_000); await settled();
+      expect((await proof()).backgroundWork).not.toBe("none");
+      expect((await run(f.actualSource.id)).status).toBe("failed");
+      await heartbeat.cancelRun(scheduled.run.id, "controlled receipt failure cleanup", { suppressImmediateRecovery: true });
+      await heartbeat.drainActiveRunExecutions();
+      expect((await run(scheduled.run.id)).status).toBe("cancelled");
+    } finally { failedWrite.mockRestore(); }
+  }, 30_000);
+
+  async function claimedPreparationFailure(optionalWriteFailure = false) {
+    const f = await fixture({ retainedSourceLock: false });
+    const control = await preparationFailureFixture(db, f.agent.id);
+    const entered = vi.spyOn(getServerAdapter("recovery_deadline_process"), "execute");
+    const persisted = vi.spyOn(legacySettlement, "recordLegacyPreparationSettlement");
+    if (optionalWriteFailure) persisted.mockRejectedValueOnce(new Error("controlled preparation receipt persistence failure"));
+    heartbeat = heartbeatService(db, { environmentRuntime: control.runtime });
+    try { await start(); await settled(); }
+    catch (error) { control.unblock(); entered.mockRestore(); persisted.mockRestore(); await control.dispose(); throw error; }
+    return { ...f, control, entered, persisted };
+  }
+
+  async function disposePreparation(f: Awaited<ReturnType<typeof claimedPreparationFailure>>) {
+    f.control.unblock();
+    try { await worker?.stop(); await coordinator?.stop(); await heartbeat.drainActiveRunExecutions(); }
+    finally { f.entered.mockRestore(); f.persisted.mockRestore(); await f.control.dispose(); }
+  }
+
+  it("certifies actual never-dispatched preparation only after owned cleanup and cold-reconstructs its saved retry", async () => {
+    const f = await claimedPreparationFailure();
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const failed = await drivePreparationFailure({ db, heartbeat, control: f.control, entered: f.entered, persisted: f.persisted,
+        companyId: f.companyId, agentId: f.agent.id, issueId: f.issue.id, run, owner: worker!.retries.reconciliationSnapshot }); jitter.mockRestore(); await settled();
+      expect(failed.controllerLeaseExpiresAt).toBeNull(); expect(failed.processPid).toBeNull();
+      expect(f.persisted).toHaveBeenCalledTimes(1); expect(legacySettlement.legacySourceProcessSettled(failed)).toBe(true);
+      expect(failed.legacyProcessSettlement).toMatchObject({ schema: "paperclip.legacy-preparation-settlement.v1",
+        targetKind: "not-dispatched", adapterDispatched: false, runId: failed.id, controllerBootId: failed.controllerBootId });
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "transient_failure", issueId: f.issue.id,
+        startedAt: null, finishedAt: null }); expect(retry.scheduledRetryAt).toBeInstanceOf(Date);
+      const dueAt = retry.scheduledRetryAt!;
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.wakeupRequestId!));
+      expect(wake).toMatchObject({ runId: retry.id, status: "queued", companyId: f.companyId, agentId: f.agent.id });
+      const scheduled = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, failed.id),
+        sql`${heartbeatRunEvents.message} LIKE 'Scheduled bounded retry %'`));
+      expect(scheduled).toHaveLength(1); expect(scheduled[0].payload).toMatchObject({ delayMs: 30_000, baseDelayMs: 30_000,
+        retryRunId: retry.id, scheduledRetryAt: dueAt.toISOString() });
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(false);
+      expect((await proof()).backgroundWork).not.toBe("none");
+      for (const patch of [{ controllerBootId: randomUUID() }, { controllerLeaseExpiresAt: new Date(0) },
+        { startedAt: new Date(0) }, { executionStage: "dispatching" }, { costAccountingPending: true },
+        { nativeIssueId: f.issue.id }, { processPid: 42 }, { processStartedAt: new Date() },
+        { resultJson: { ...failed.resultJson, cancellation: {} } }]) {
+        const rollback = new Error("preparation current SQL fence rollback");
+        await expect(db.transaction(async tx => {
+          await tx.update(heartbeatRuns).set({ ...patch, legacyProcessSettlement: null }).where(eq(heartbeatRuns.id, failed.id));
+          expect(await legacySettlement.recordLegacyPreparationSettlement(tx as unknown as Db, failed, () => true)).toBe(false);
+          const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, failed.id));
+          expect(current.legacyProcessSettlement).toBeNull();
+          throw rollback;
+        })).rejects.toThrow(rollback.message);
+      }
+      const cleanupRollback = new Error("preparation pending cleanup SQL rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ legacyProcessSettlement: null }).where(eq(heartbeatRuns.id, failed.id));
+        await tx.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: failed.id,
+          provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+        expect(await legacySettlement.recordLegacyPreparationSettlement(tx as unknown as Db, failed, () => true)).toBe(false);
+        const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, failed.id));
+        expect(current.legacyProcessSettlement).toBeNull(); throw cleanupRollback;
+      })).rejects.toThrow(cleanupRollback.message);
+      expect((await run(failed.id)).legacyProcessSettlement).toEqual(failed.legacyProcessSettlement);
+      await f.control.useLocalEnvironment();
+      await worker!.stop(); await coordinator!.stop();
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      heartbeat = heartbeatService(db, { environmentRuntime: f.control.runtime }); await start(); await settled();
+      expect(coordinator!.nextWakeAt()).toBe(dueAt.getTime());
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, dueAt.getTime() - Date.now())));
+      await finish(retry.id);
+      expect(f.entered).toHaveBeenCalledTimes(1);
+      expect((await run(failed.id)).processPid).toBeNull();
+      expect((await run(failed.id)).legacyProcessSettlement).toEqual(failed.legacyProcessSettlement);
+      expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, retry.id),
+        eq(heartbeatRunEvents.message, "run started")))).toHaveLength(1);
+      expect(await heartbeat.promoteDueScheduledRetries()).toEqual({ promoted: 0, runIds: [] });
+    } finally { jitter.mockRestore(); await disposePreparation(f); }
+  }, 60_000);
+
+  it("leaves a failed optional preparation receipt blocked while normal cleanup and retry ownership complete", async () => {
+    const f = await claimedPreparationFailure(true); const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const failed = await drivePreparationFailure({ db, heartbeat, control: f.control, entered: f.entered, persisted: f.persisted,
+        companyId: f.companyId, agentId: f.agent.id, issueId: f.issue.id, run, owner: worker!.retries.reconciliationSnapshot }); jitter.mockRestore(); await settled();
+      expect(f.persisted).toHaveBeenCalledTimes(1); expect(failed.legacyProcessSettlement).toBeNull();
+      expect(failed.controllerLeaseExpiresAt).toBeNull(); expect(f.entered).not.toHaveBeenCalled();
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry" }); expect(retry.scheduledRetryAt).toBeInstanceOf(Date);
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      await heartbeat.cancelRun(retry.id, "controlled failed preparation proof cleanup", { suppressImmediateRecovery: true });
+      expect((await run(retry.id)).status).toBe("cancelled");
+    } finally { jitter.mockRestore(); await disposePreparation(f); }
+  }, 60_000);
+
+  it("never certifies an adapter that was entered without publishing a process identity", async () => {
+    const f = await fixture({ retainedSourceLock: false });
+    const execution = vi.spyOn(getServerAdapter("recovery_deadline_process"), "execute").mockResolvedValueOnce({
+      exitCode: 75, signal: null, timedOut: false, errorCode: "codex_transient_upstream", errorFamily: "transient_upstream",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+    const jitter = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      await start(); await settled();
+      const admitted = await heartbeat.wakeup(f.agent.id, { source: "on_demand", reason: "manual", requestedByActorType: "system",
+        contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id } });
+      if (!admitted) throw new Error("Adapter-entry negative was not admitted");
+      await heartbeat.drainActiveRunExecutions(); await settled();
+      const failed = await run(admitted.id);
+      expect(execution).toHaveBeenCalledTimes(1); expect(failed).toMatchObject({ status: "failed", processPid: null,
+        processGroupId: null, processStartedAt: null, legacyProcessSettlement: null });
+      expect(failed.controllerBootId).toEqual(expect.any(String)); expect(failed.controllerLeaseExpiresAt).toBeNull();
+      expect(legacySettlement.legacySourceProcessSettled(failed)).toBe(false);
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry" });
+      expect((await readIdleRetrySchedule(db, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+      await heartbeat.cancelRun(retry.id, "controlled entered-adapter cleanup", { suppressImmediateRecovery: true });
+    } finally { jitter.mockRestore(); execution.mockRestore(); }
+  }, 60_000);
+
+  it("keeps company cancellation and first producer during drain fenced", async () => {
+    const f = await fixture({ companyScope: true }); await start(); await settled();
+    const old = await owners.retries!(db, Date.now(), () => {});
+    draining = true;
+    const scheduled = await schedule(f.source.id, 30_000);
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5_000 });
+    expect(old.current()).toBe(false);
+    expect((await proof()).backgroundWork).not.toBe("none");
+    draining = false; worker!.wake(); await settled();
+    expect((await proof()).backgroundWork).toBe("none");
+    for (const principalId of [f.agent.id, "recovery-test-user"]) {
+      await db.update(companyMemberships).set({ status: "inactive" }).where(and(
+        eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, principalId)));
+      expect((await proof()).backgroundWork).not.toBe("none");
+      await db.update(companyMemberships).set({ status: "active" }).where(and(
+        eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, principalId)));
+    }
+    await heartbeat.cancelRun(scheduled.run.id, "company operator stop", { suppressImmediateRecovery: true });
+    await worker!.stop(); await coordinator!.stop(); heartbeat = heartbeatService(db);
+    await start(); await settled();
+    expect(await heartbeat.promoteDueScheduledRetries(new Date(scheduled.dueAt.getTime() + 1))).toEqual({ promoted: 0, runIds: [] });
+    expect(await run(scheduled.run.id)).toMatchObject({ status: "cancelled", startedAt: null });
+  }, 20_000);
+
   it("cancellation before the deadline invalidates its alarm and prevents resumed execution", async () => {
     const f = await fixture(); await start(); await settled();
     const scheduled = await schedule(f.source.id); await settled();
@@ -234,6 +651,96 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(resumed.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
     await heartbeat.cancelRun(scheduled.run.id, "fixture cleanup", { suppressImmediateRecovery: true });
   }, 20_000);
+
+  it("cold-reconstructs the current reviewer retry and persists one ordinary review decision", async () => {
+    const f = await reviewFailure(false);
+    const scheduled = await heartbeat.scheduleBoundedRetry(f.reviewSource.id, { delayMs: 30_000, random: () => 0,
+      retryReason: "execution_review_participant_recovery", wakeReason: "execution_review_participant_recovery" });
+    if (scheduled.outcome !== "scheduled") throw new Error(`Review retry not scheduled: ${scheduled.outcome}`);
+    await settled();
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
+    const [pending] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    for (const state of [{ ...pending.executionState, currentStageId: randomUUID() },
+      { ...pending.executionState, currentParticipant: { type: "user", userId: "recovery-test-user" } }]) {
+      const rollback = new Error("review retry changed participant rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(issues).set({ executionState: state }).where(eq(issues.id, f.issue.id));
+        expect((await readIdleRetrySchedule(tx, Date.now(), worker!.retries.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    await worker!.stop(); await coordinator!.stop(); heartbeat = heartbeatService(db);
+    expect((await proof()).backgroundWork).not.toBe("none");
+    await start(); await settled();
+    expect(coordinator!.nextWakeAt()).toBe(scheduled.dueAt.getTime());
+    await assertReviewResult(f, scheduled.run.id);
+  }, 60_000);
+
+  it("carries actual reviewer quota failure through monitor cold reconstruction, due claim and useful review", async () => {
+    const f = await reviewFailure(true);
+    const monitor = () => registerDeadlineWork(coordinator!, DELIVERY_QUEUES.issueMonitors, {
+      retryMs: 1000, canRun: () => !draining,
+      run: signal => heartbeat.tickIssueMonitors(new Date(), () => !signal.aborted && !draining),
+      next: () => heartbeat.nextIssueMonitorAt(),
+    });
+    monitorWorker = monitor(); await monitorWorker.ready;
+    owners.quota = bindIdleDeadlineOwner(monitorWorker.reconciliationSnapshot, readIdleQuotaSchedule,
+      snapshot => ({ issueWaits: snapshot.issueWaits }));
+    const recovery = await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issue.id });
+    expect(recovery.providerQuotaMonitored).toBe(1);
+    await vi.waitFor(() => expect(monitorWorker!.reconciliationSnapshot().reconciled).toBe(true)); await settled();
+    const [saved] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(saved.monitorNextCheckAt).toEqual(f.reset);
+    expect(saved.executionPolicy?.monitor).toMatchObject({ externalRef: f.reviewSource.id,
+      serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME });
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(f.reset.toISOString());
+    for (const state of [{ ...saved.executionState, currentStageId: randomUUID() },
+      { ...saved.executionState, currentParticipant: { type: "user", userId: "recovery-test-user" } }]) {
+      const rollback = new Error("review quota changed authority rollback");
+      await expect(db.transaction(async tx => {
+        await tx.update(issues).set({ executionState: state }).where(eq(issues.id, f.issue.id));
+        expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    const paused = new Error("review quota revoked current authority rollback");
+    await expect(db.transaction(async tx => {
+      await tx.update(agents).set({ status: "paused" }).where(eq(agents.id, f.reviewer.id));
+      expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+      throw paused;
+    })).rejects.toThrow(paused.message);
+    const rollback = new Error("native review quota source rollback");
+    await expect(db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.reviewSource.id));
+      expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+      throw rollback;
+    })).rejects.toThrow(rollback.message);
+    await monitorWorker.stop(); await worker!.stop(); await coordinator!.stop();
+    heartbeat = heartbeatService(db); await start(); monitorWorker = monitor(); await monitorWorker.ready;
+    owners.quota = bindIdleDeadlineOwner(monitorWorker.reconciliationSnapshot, readIdleQuotaSchedule,
+      snapshot => ({ issueWaits: snapshot.issueWaits }));
+    expect(coordinator!.nextWakeAt()).toBe(f.reset.getTime());
+    let retryId = "";
+    await vi.waitFor(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.reviewSource.id));
+      expect(rows).toHaveLength(1); retryId = rows[0].id;
+      expect(rows[0].scheduledRetryReason).toBe("execution_review_participant_recovery");
+    }, { timeout: Math.max(0, f.reset.getTime() - Date.now()) + 10_000 });
+    await settled();
+    const retry = await run(retryId);
+    expect(retry.agentId).toBe(f.reviewer.id);
+    expect(retry.scheduledRetryAt!.getTime()).toBeGreaterThan(f.reset.getTime());
+    const retryDelay = retry.scheduledRetryAt!.getTime() - retry.createdAt.getTime();
+    expect(retryDelay).toBeGreaterThanOrEqual(23_900);
+    expect(retryDelay).toBeLessThanOrEqual(36_100);
+    const retryProof = await proof();
+    expect(retryProof.backgroundWork, JSON.stringify(retryProof.diagnostics)).toBe("none");
+    await assertReviewResult(f, retryId);
+  }, 170_000);
 
   it("the quota recovery producer saves an exact future monitor inspected by its registered owner", async () => {
     const reset = new Date(Date.now() + 600_000);

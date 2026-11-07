@@ -560,7 +560,10 @@ vi.mock("../services/index.js", () => ({
   })),
 }));
 
-vi.mock("../services/chat-completion-delivery.js", () => ({ chatCompletionDeliveryService: () => ({ hasPending: vi.fn(async () => false), sweepPending: completionSweepMock }) }));
+vi.mock("../services/chat-completion-delivery.js", () => ({
+  CHAT_COMPLETION_WAKE_REASON: "chat_task_completed",
+  chatCompletionDeliveryService: () => ({ hasPending: vi.fn(async () => false), sweepPending: completionSweepMock }),
+}));
 
 // Only startup registration belongs here; real handoff persistence, authority,
 // and provider settlement are covered by the database-backed workflow suites.
