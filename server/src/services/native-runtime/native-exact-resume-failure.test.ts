@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeRefusedExactResume, interruptedExactResumeCause } from "./native-exact-resume-failure.js";
+import { boundOriginalMessage, describeRefusedExactResume, failureClassificationText, interruptedExactResumeCause } from "./native-exact-resume-failure.js";
 
 const interruption = {
   at: "2099-01-01T00:00:00.000Z",
@@ -40,10 +40,13 @@ describe("interruptedExactResumeCause", () => {
     expect(interruptedExactResumeCause(coordinator)).toBeNull();
   });
 
-  it("bounds the original message so the chained failure fits the failure detail", () => {
+  it("returns the whole original message so it can be masked before any cut", () => {
     const cause = interruptedExactResumeCause({ ...claimed, recoveryHistory: [{ ...interruption, stderrTail: "x".repeat(4_096) }] });
-    expect(cause?.originalMessage).toHaveLength(1_500);
-    expect(describeRefusedExactResume(cause!, "Plugin Runner retained session is not authorized").length).toBeLessThanOrEqual(2_000);
+    expect(cause?.originalMessage).toHaveLength(4_096);
+    expect(boundOriginalMessage(cause!.originalMessage)).toHaveLength(1_500);
+    const message = describeRefusedExactResume(cause!, "Plugin Runner retained session is not authorized");
+    expect(message.length).toBeLessThanOrEqual(2_000);
+    expect(message).toContain(`native_session_interrupted: ${"x".repeat(1_500)}; exact checkpoint`);
   });
 });
 
@@ -73,5 +76,22 @@ describe("describeRefusedExactResume", () => {
   it("keeps the original failure code when no message was persisted", () => {
     expect(describeRefusedExactResume({ originalFailureCode: "native_session_interrupted", originalMessage: "", interruptedAttempt: 1 }, "refused"))
       .toBe("native_session_interrupted; exact checkpoint resume refused: refused");
+  });
+});
+
+describe("failureClassificationText", () => {
+  it("classifies a refused exact resume from its refusal, not the chained error", () => {
+    expect(failureClassificationText({
+      error: "native_session_interrupted: spawn agent ENOENT; exact checkpoint resume refused: retained session is not authorized",
+      resultJson: { nativeExactResumeRefusal: { refusal: "retained session is not authorized" } },
+    })).toBe("retained session is not authorized");
+  });
+
+  it.each([
+    ["no result", { error: "spawn agent ENOENT", resultJson: null }],
+    ["a result without a refusal", { error: "spawn agent ENOENT", resultJson: { errorMessage: "other" } }],
+    ["a malformed refusal", { error: "spawn agent ENOENT", resultJson: { nativeExactResumeRefusal: { refusal: 7 } } }],
+  ])("uses the run error for %s", (_name, run) => {
+    expect(failureClassificationText(run)).toBe("spawn agent ENOENT");
   });
 });

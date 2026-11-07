@@ -2,7 +2,7 @@ import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
-import { describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
+import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -1129,13 +1129,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // claims a provider attempt, for example when the interrupted attempt left
     // its checkpoint unresumable. The refusal alone hides why the run retried,
     // so the reported failure names the interrupted attempt first. Failure
-    // classification below still reads only the thrown error and coordinator.
-    const interruptedExactResume = interruptedExactResumeCause(nativeCoordinator);
+    // classification reads only the thrown error (here and, through
+    // `nativeExactResumeRefusal.refusal`, in the retry and recovery
+    // classifiers). Both texts are masked whole before any length budget cuts
+    // them, so a cut cannot leave an unmasked username prefix.
+    const exactResumeCause = interruptedExactResumeCause(nativeCoordinator);
+    const interruptedExactResume = exactResumeCause
+      ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
+      : null;
     const message = interruptedExactResume
-      ? redactFailureText(describeRefusedExactResume(
-          interruptedExactResume,
-          err instanceof Error ? err.message : "Unknown adapter failure",
-        ))
+      ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
       : thrownMessage;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
@@ -1181,14 +1184,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       finishedAt: new Date(),
       resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
         errorCode: failureErrorCode,
-        errorMessage: message,
+        errorMessage: thrownMessage,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
           ...(interruptedExactResume ? { nativeExactResumeRefusal: {
             originalFailureCode: interruptedExactResume.originalFailureCode,
-            originalMessage: redactFailureText(interruptedExactResume.originalMessage),
+            originalMessage: boundOriginalMessage(interruptedExactResume.originalMessage),
             interruptedAttempt: interruptedExactResume.interruptedAttempt,
             refusal: thrownMessage,
           } } : {}),

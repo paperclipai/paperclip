@@ -93,7 +93,7 @@ function callbacks(db: Db) {
     budgets: { getInvocationBlock: vi.fn(async () => null) },
     treeControlSvc: { getActivePauseHoldGate: vi.fn(async () => null) },
     enqueueWakeup: vi.fn(),
-    getCurrentUserRedactionOptions: vi.fn(async () => ({ enabled: false })),
+    getCurrentUserRedactionOptions: vi.fn<HeartbeatLifecycleDependencies["getCurrentUserRedactionOptions"]>(async () => ({ enabled: false })),
     getAgentInvokability: vi.fn<HeartbeatLifecycleDependencies["getAgentInvokability"]>(async () => ({ invokable: true })),
     emitTerminalAgentTaskRun: vi.fn(), budgetHooks: {},
   } satisfies HeartbeatLifecycleDependencies;
@@ -752,6 +752,25 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
       expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "adapter_failed",
         failureDetail: { message: expected, originalFailureCode: "adapter_failed" } });
+    });
+
+    it("masks usernames in both texts before their length budgets cut them", async () => {
+      // Each username crosses a cut: 1,500 characters for the original message
+      // and 480 for the refusal. A cut before masking would keep "casp".
+      const userName = "casperhost";
+      const original = `${"x".repeat(1_495)} ${userName} could not resume`;
+      const longRefusal = `${"r".repeat(475)} ${userName} retained session is not authorized`;
+      const { f } = await resumeClaim([{ ...interruption, stderrTail: original }]);
+      f.deps.getCurrentUserRedactionOptions.mockResolvedValue({ enabled: true, userNames: [userName], homeDirs: [] });
+      await f.completion.failRun(f.failure(new Error(longRefusal)));
+      const failed = await read(f.run.id);
+      const recorded = (failed.resultJson as { nativeExactResumeRefusal: Record<string, string> }).nativeExactResumeRefusal;
+      expect(failed.error).toHaveLength(2_000);
+      expect(failed.error!.startsWith("native_session_interrupted: xxx")).toBe(true);
+      expect(failed.error!.endsWith(`; exact checkpoint resume refused: ${"r".repeat(475)} c***`)).toBe(true);
+      expect(recorded.originalMessage).toBe(`${"x".repeat(1_495)} c***`);
+      expect(recorded.refusal).toBe(`${"r".repeat(475)} c********* retained session is not authorized`);
+      for (const text of [failed.error!, recorded.originalMessage, recorded.refusal]) expect(text).not.toContain("casp");
     });
 
     it.each([

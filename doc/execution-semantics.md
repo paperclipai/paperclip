@@ -2452,7 +2452,9 @@ provider attempt. For example, the interrupted attempt can leave the provider
 state not suspended. The run error then names the interrupted attempt first, as
 `<original failure code>: <original message>; exact checkpoint resume refused:
 <refusal>`. The run result keeps the same facts in `nativeExactResumeRefusal`.
-The error code, recovery owner, and retry eligibility do not change.
+The error code, recovery owner, and retry eligibility do not change: retry,
+recovery and stop-reason checks read the refusal, not the earlier failure text.
+Both texts are masked before they are cut to fit the 2,000-character bound.
 
 Reattachment readies the exact retained sandbox lease through the provider's
 bounded lifecycle resume before running short preparation commands such as the
