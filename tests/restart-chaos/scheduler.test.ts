@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
+import { chaosLifecycleOverrides } from "./seed.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
   StormRun, stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
 import type { WaveOptions } from "./types.js";
@@ -108,6 +109,18 @@ describe("CLI parsing", () => {
   it("parses a wave command including pnpm's forwarded --", () => {
     const parsed = parseCommand(["--", "--env", "local", "--adapters", "codex,claude,opencode", "--concurrency", "4", "--tasks", "8", "--faults", "K1,K2,K4", "--seed", "17"]);
     expect(parsed).toMatchObject({ mode: "wave", options: { env: "local", adapters: ["codex", "claude", "opencode"], concurrency: 4, tasks: 8, faults: ["K1", "K2", "K4"], seed: 17 } });
+  });
+
+  it("carries a forced runner lifecycle in the plan options", () => {
+    expect(parseCommand(["--lifecycle", "warm", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "warm" } });
+    expect(parseCommand(["--seed", "1"])).not.toHaveProperty("options.lifecycle");
+    expect(() => parseCommand(["--lifecycle", "sometimes"])).toThrow(/per_turn, warm or default/);
+    expect(parseCommand(["--lifecycle", "default", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "default" } });
+    // default drops the catalog's pinned lifecycle from the created agent.
+    expect(JSON.parse(JSON.stringify({ lifecycleMode: "per_turn", model: "m", ...chaosLifecycleOverrides("default") }))).toEqual({ model: "m" });
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--lifecycle", "warm"])).toThrow(/reproduces the saved plan/);
+    expect(chaosLifecycleOverrides("warm")).toEqual({ lifecycleMode: "warm", idleTimeoutMs: 300_000 });
+    expect(chaosLifecycleOverrides(undefined)).toBeUndefined();
   });
 
   it("parses --replay", () => {
