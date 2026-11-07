@@ -35,6 +35,7 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -349,12 +350,8 @@ function definitivelyDifferentProcessStart(
   left: Date | null,
   right: Date | null,
 ): boolean {
-  if (left === null || right === null) return false;
-  // `ps -o lstart` has only whole-second precision on macOS and BSD. A
-  // sub-second disagreement can therefore be the same process when one probe
-  // fell back to a higher-precision spawn timestamp. Treat it as ambiguous and
-  // fail closed instead of declaring the live PID recycled.
-  return Math.abs(left.getTime() - right.getTime()) >= 1_000;
+  // Shared with every other owner proof: a sub-second gap is ambiguous.
+  return processStartsDefinitelyDiffer(left, right);
 }
 
 export async function evaluateNativeControllerTakeover(input: {

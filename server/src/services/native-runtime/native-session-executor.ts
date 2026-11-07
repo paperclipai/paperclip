@@ -296,6 +296,7 @@ import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { processExists, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
@@ -581,21 +582,21 @@ const nativeRuntimeRequestResolutions = new Map<
   NativeRuntimeRequestResolution
 >();
 
-async function verifiedRecoveryProcessIsAlive(input: {
+/**
+ * True when the recorded runner still owns its PID. A start time within the
+ * shared precision window is the same process: `ps -o lstart` on macOS has
+ * whole-second precision, so an exact match would call a live runner gone.
+ */
+export async function verifiedRecoveryProcessIsAlive(input: {
   pid: number;
   startedAt: string;
 }): Promise<boolean> {
-  try {
-    process.kill(input.pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM")
-      return false;
-  }
+  if (!processExists(input.pid)) return false;
   try {
     const observed = await readProcessStartedAt(input.pid);
     return (
       observed !== null &&
-      new Date(observed).getTime() === new Date(input.startedAt).getTime()
+      !processStartsDefinitelyDiffer(input.startedAt, observed)
     );
   } catch {
     return false;
