@@ -15,7 +15,7 @@ export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
 // 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
 // 0.1.8 declares the default provider acquisition budget to the host.
-const PLUGIN_VERSION = "0.1.11";
+const PLUGIN_VERSION = "0.1.10";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
