@@ -1341,4 +1341,146 @@ describe("issue execution policy routes", () => {
       }),
     );
   });
+
+  const stagedPolicyIssue = () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1010",
+      title: "Staged execution policy",
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            type: "review",
+            participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+          },
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            type: "approval",
+            participants: [{ type: "agent", agentId: "66666666-6666-4666-8666-666666666666" }],
+          },
+        ],
+      })!,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    return issue;
+  };
+  const assigneeAgentActor = {
+    type: "agent" as const,
+    agentId: "33333333-3333-4333-8333-333333333333",
+    companyId: "company-1",
+    runId: "55555555-5555-4555-8555-555555555555",
+  };
+
+  it("rejects an agent patch that removes an agent-only stage", async () => {
+    const issue = stagedPolicyIssue();
+
+    const res = await request(await createApp(assigneeAgentActor))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { stages: [issue.executionPolicy.stages[1]] } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("execution_stage_removal_locked");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent patch that nulls a staged policy", async () => {
+    stagedPolicyIssue();
+
+    const res = await request(await createApp(assigneeAgentActor))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: null });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("execution_stage_removal_locked");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a board user to remove stages", async () => {
+    stagedPolicyIssue();
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { stages: [] } });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ executionPolicy: null }),
+    );
+  });
+
+  it("allows an agent to change only the monitor of a staged policy", async () => {
+    const issue = stagedPolicyIssue();
+
+    const res = await request(await createApp(assigneeAgentActor))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          stages: issue.executionPolicy.stages,
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            scheduledBy: "assignee",
+            notes: "Wait for the reviewer.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({ stages: issue.executionPolicy.stages }),
+        monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("rejects an agent patch from a stale snapshot that would drop a stage added after it", async () => {
+    const issue = stagedPolicyIssue();
+    const savedPolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        ...issue.executionPolicy.stages,
+        {
+          id: "77777777-7777-4777-8777-777777777777",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    });
+    const { conflict } = await import("../errors.js");
+    const { isDeepStrictEqual } = await import("node:util");
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      if (!isDeepStrictEqual(patch.expectedExecutionPolicy, savedPolicy)) {
+        throw conflict("The task execution settings changed", { code: "execution_policy_changed" });
+      }
+      return { ...issue, ...patch, updatedAt: new Date() };
+    });
+
+    const res = await request(await createApp(assigneeAgentActor))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { stages: issue.executionPolicy.stages } });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ expectedExecutionPolicy: issue.executionPolicy }),
+    );
+  });
 });
