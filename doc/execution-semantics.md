@@ -1235,6 +1235,45 @@ a snapshot and belongs to the sandbox, so it moves into the restored root. Only 
 old preparation or restore receipt and export staging are dropped. A retained
 native continuation then reads its runner state at the same path.
 
+A sandbox resumed from its provider's saved image keeps earlier folders in a
+lower overlay layer. Without the overlay `redirect_dir` feature, the kernel
+refuses to rename such a directory with `EXDEV`, so the retired root cannot move
+aside. The restore then replaces the root in place: it removes the old saved
+files and export staging, moves the restored files in, and leaves the runtime
+state where it is without a copy.
+
+Restore commands take a sandbox-side SQLite OS lock keyed by the canonical root,
+outside the directories being replaced. The private lock file is permanent; it
+is never unlinked to recover ownership. A lost reply does not release it. The OS
+releases it when the command exits or dies. Contenders wait only for this active
+operation, for at most 120 seconds, without blocking the command event loop.
+This reuses the `node:sqlite` locking dependency of the qualified Node runtime.
+An expired lock wait remains retryable only while the caller still owns the same
+clean epoch and saved snapshot. It does not clear the predecessor's lock. A corrupt
+fence or receipt instead reports a closed refusal reason and is not retried.
+
+The caller supplies its existing workspace authority epoch. While holding the
+operation lock, the command atomically writes and syncs a private epoch fence
+before changing the root. That fence is outside SQLite's rollback transaction,
+so killing the process cannot erase its newer authority. Lower epochs, changed
+identities or digests within one epoch, and missing epochs for already fenced
+roots are refused. Opaque identity strings do not establish ordering. Legacy
+unfenced receipts remain readable, but destructive retired-root replacement
+requires an epoch; unknown or malformed authority records fail closed.
+
+An in-place replacement first publishes a versioned pending marker bound to the
+root, epoch, identity, saved digest and final directory mode. It has no completed
+`identity`, so an older reader cannot adopt it. Under the same lock, a matching
+retry finishes stale preparation-receipt removal and mode cleanup, then atomically
+publishes the ordinary completed receipt. An authorized higher-epoch replacement
+can reconcile an earlier pending root before restoring its selected save; a
+conflicting identity in the same epoch remains held. Completed adoption preserves
+later file and permission edits.
+
+These fences protect participating commands. A legacy command that never took
+the lock still needs actual stop evidence from the existing recovery owner before
+hosted recovery proceeds; a timeout alone never supplies that evidence.
+
 The provider's own idle auto-stop must not coincide with the warm runner idle
 window. The host forwards the run's effective warm idle window (environment
 `runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider
@@ -2266,8 +2305,20 @@ existing bounded disposition-only recovery policy.
 
 A bootstrap retry requires durable evidence that no provider session, provider
 event, or checkpoint exists. A runner report that `session.open` failed or was
-rejected qualifies, because that command runs before any prompt. An
-indeterminate `session.open` outcome does not qualify. Bootstrap retries back
+rejected qualifies, because that command runs before any prompt. A
+`session.open` that the controller stopped waiting for during runner startup
+(`<startup failure code>: PRP command session.open timed out`) also qualifies
+as `provider_session_open_timeout`: the controller sends a prompt only after
+`session.open` completes, and closing the failed transport stops that runner
+before the retry starts a new one. The runner can still open an empty provider
+session after the controller stops waiting, so the retry starts from clean
+state: a local runner root is quarantined only when the restart-recovery
+bootstrap proof shows that no turn began and its processes are gone, and a
+fresh ACPX open replaces a saved session record that holds no conversation. A
+root that fails the proof, a remote runner, and a provider session or provider
+event that became durable before the failure settled keep the state ambiguous.
+A runner-reported indeterminate `session.open` outcome, and a timeout after
+startup completed, do not qualify. Bootstrap retries back
 off: about 30 seconds after the first attempt and about 60 seconds after the
 second, with jitter that is persisted with the failure. Before it schedules a
 bootstrap retry, the executor looks for a known provider limit for the agent.
@@ -2520,6 +2571,15 @@ turn, or the runner reports it lost on restore, but Paperclip durably holds the
 result that exact turn proposed, recovery also settles the turn with that result. Either way, recovery finalizes the
 accepted result instead of failing and rerunning finished work. A missing turn
 without such a result still fails closed, because its outcome is unknown.
+
+Each admitted restart attempt that loses a turn this way gets its own continuation.
+When a later restart loses the continuation turn itself, its outcome is also
+unknown, so the marker re-arms and the next admitted attempt continues again. The
+provider-attempt budget bounds the repeats; an exhausted budget still blocks with
+Retry. A semantic result that reaches the driver before its turn start settles
+waits for that start, like a terminal, instead of failing the new turn. If this
+session's own protocol failure ends a pending turn start, the run reports
+`codex_turn_start_protocol_failure` with the cause instead of a runner exit.
 
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 

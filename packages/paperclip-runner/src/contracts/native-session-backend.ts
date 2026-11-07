@@ -103,6 +103,8 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
 >): string | null {
   // Runnerd records this cause for Codex app-server and ACPX sessions after
   // proving the old provider lifetime ended and restoring the conversation.
+  // A lost continuation re-arms the driver's marker before it is checkpointed,
+  // so a consumed marker here still means the allowance is used.
   if (!RESTART_CONTINUATION_DRIVER_KINDS.has(snapshot.driverKind ?? "") || snapshot.activeTurnId != null ||
       snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
       snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;

@@ -39,6 +39,8 @@ function stillQueued(runs: readonly RunSample[]): boolean {
   return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
 }
 export const TRIGGER_LATE_MS = 10_000;
+/** The run settles soon after acceptance; arming on the proposal keeps the window reachable. */
+const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accepted"]);
 
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
@@ -160,6 +162,7 @@ export class TaskObserver {
 
   private triggerWindowOpen(fault: ScheduledFault, now: number, dueAt: number): boolean {
     if (now - dueAt > TRIGGER_LATE_MS) return false;
+    if (fault.trigger === "result") return this.resultRunStillRunning(this.latestReachableRuns());
     if (fault.trigger !== "queued") return true;
     const latest = [...this.record.samples].reverse().find(sample => sample.reachable);
     return stillQueued(latest?.runs ?? []);
@@ -169,6 +172,11 @@ export class TaskObserver {
     if (!fault.trigger || fault.trigger === "time") return true;
     const armedAt = this.triggerArmedAt(fault);
     let open = typeof armedAt === "number" && now - (armedAt + (fault.delayMs ?? 0)) <= TRIGGER_LATE_MS;
+    if (open && fault.trigger === "result") {
+      const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
+        .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
+      open = runs !== null && this.resultRunStillRunning(runs);
+    }
     if (open && fault.trigger === "queued") {
       const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
         .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
@@ -176,6 +184,15 @@ export class TaskObserver {
     }
     if (!open) this.noteTriggerMissed(fault);
     return open;
+  }
+
+  private latestReachableRuns(): RunSample[] {
+    return [...this.record.samples].reverse().find(sample => sample.reachable)?.runs ?? [];
+  }
+
+  /** A `result` fault outside the accepted-but-unsettled window would test a different boundary. */
+  private resultRunStillRunning(runs: readonly RunSample[]): boolean {
+    return runs.some(run => run.id === this.record.resultRunId && run.status === "running");
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {
@@ -206,6 +223,14 @@ export class TaskObserver {
         return queued && !started ? first.at : "missed";
       }
       case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "result": {
+        // B8: the run that received the follow-up has accepted its result but
+        // has not settled yet. A follow-up posted at rest cannot cross it.
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        if (!followUp.commentId || !followUp.duringRun) return "missed";
+        return this.record.resultAcceptedAt ?? null;
+      }
     }
   }
 
@@ -294,6 +319,10 @@ export class TaskObserver {
       if (!events?.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
+        if (RESULT_TRIGGER_EVENTS.has(String(event.eventType)) && this.record.followUp?.duringRun && !this.record.resultAcceptedAt) {
+          this.record.resultAcceptedAt = Date.now();
+          this.record.resultRunId = run.id;
+        }
         cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
       }
       if (events.length < RUN_EVENT_PAGE) break;

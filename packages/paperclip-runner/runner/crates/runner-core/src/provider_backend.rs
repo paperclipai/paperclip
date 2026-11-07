@@ -1218,6 +1218,12 @@ struct CodexProviderState {
     config: CodexProviderConfig,
     #[serde(default)]
     opencode_launch_profile_digest: Option<String>,
+    /// SHA-256 of the qualified OpenCode executable: the upstream release that
+    /// owns the saved conversation. The launch-profile digest also covers the
+    /// controller's Node command and proxy bundle, which a rebuild or deploy
+    /// replaces; this field lets a settled session tell those apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opencode_release_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cursor_cloud_launch_profile_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1341,6 +1347,7 @@ impl CodexProviderState {
             lifecycle: "prepared".to_owned(),
             config,
             opencode_launch_profile_digest: None,
+            opencode_release_digest: None,
             cursor_cloud_launch_profile_digest: None,
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,
@@ -2007,6 +2014,51 @@ impl CodexCommandExecutor {
         Ok(Some(format!("sha256:{:x}", digest.finalize())))
     }
 
+    fn opencode_release_digest(&self, config: &CodexProviderConfig) -> Option<String> {
+        if config.provider != "opencode" {
+            return None;
+        }
+        self.opencode_launch_profile
+            .as_ref()
+            .map(|profile| profile.executable.sha256.clone())
+    }
+
+    // The launch-profile digest binds every artifact by path and bytes. Only
+    // the OpenCode executable owns the saved conversation; the Node command
+    // and proxy bundle are controller runtime that a rebuild or deploy
+    // replaces between a hard kill and recovery. The proxy keeps no state of
+    // its own. Re-bind a saved session to the current profile only when:
+    // - The saved release digest equals this startup's executable digest.
+    //   State written before that field existed stays exact.
+    // - The saved config names this startup's command and proxy paths
+    //   (bind_opencode_launch_profile has already checked this).
+    // - No provider work is in flight: no active or ambiguous turn, startup
+    //   attempt, receipt-limit interrupt, pending tool call, undelivered event
+    //   or working goal. The next launch only loads the conversation. An
+    //   observed provider exit with nothing in flight qualifies, because
+    //   restore restarts that provider the same way.
+    // Session start still verifies every artifact and the restored provider
+    // identity.
+    fn rebinds_settled_opencode_session(&self, state: &CodexProviderState) -> bool {
+        state.opencode_release_digest.is_some()
+            && state.opencode_release_digest == self.opencode_release_digest(&state.config)
+            && matches!(
+                state.lifecycle.as_str(),
+                "prepared" | "session_open" | "provider_exited"
+            )
+            && state.active_provider_turn_id.is_none()
+            && !state.ambiguous_turn_start_pending
+            && state.startup_attempt.is_none()
+            && !state.receipt_limit_interrupt_pending
+            && state.tool_bridge.pending_calls().next().is_none()
+            && state.pending_events.is_empty()
+            && state.queued_events.is_empty()
+            && state
+                .goal
+                .as_ref()
+                .is_none_or(|goal| goal.status != "active" && !goal.working_now)
+    }
+
     fn bind_cursor_cloud_launch_profile(
         &self,
         config: &CodexProviderConfig,
@@ -2286,6 +2338,11 @@ impl CodexCommandExecutor {
         })?;
         state.validate()?;
         let expected_launch_profile_digest = self.bind_opencode_launch_profile(&state.config)?;
+        if state.opencode_launch_profile_digest != expected_launch_profile_digest
+            && self.rebinds_settled_opencode_session(&state)
+        {
+            state.opencode_launch_profile_digest = expected_launch_profile_digest.clone();
+        }
         if state.opencode_launch_profile_digest != expected_launch_profile_digest {
             return Err(DurableRunnerError::invalid(
                 "OpenCode runner launch profile changed across durable recovery",
@@ -2888,6 +2945,7 @@ impl CodexCommandExecutor {
             })?;
             let mut state = CodexProviderState::new(config, completion_contract, tool_bridge);
             state.opencode_launch_profile_digest = opencode_launch_profile_digest;
+            state.opencode_release_digest = self.opencode_release_digest(&state.config);
             state.cursor_cloud_launch_profile_digest = cursor_cloud_launch_profile_digest;
             self.state = Some(state);
             self.save_state()?;
@@ -7414,6 +7472,7 @@ done
                 conversation_mode: None,
             },
             opencode_launch_profile_digest: None,
+            opencode_release_digest: None,
             cursor_cloud_launch_profile_digest: None,
             provider_termination_receipt: None,
             cursor_cloud_terminal_receipt: None,

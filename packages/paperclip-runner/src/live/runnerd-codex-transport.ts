@@ -864,6 +864,9 @@ function terminalMayBelongToPendingTurnStart(input: {
   );
 }
 
+/** Part of the turn-start bound kept for the accepted-turn adoption check. */
+const TURN_START_ADOPTION_CHECK_RESERVE_MS = 5_000;
+
 function turnStartNotificationDisposition(input: {
   responsePending: boolean;
   expectedProviderTurnId: string | null;
@@ -6756,6 +6759,35 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", () => this.#startTurnWork(params), {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : this.#startTurnWork(params);
   }
 
+  /**
+   * Live-turn proof for adopting an accepted turn whose start event is late:
+   * the runner still reports it active, the runner attributed no provider
+   * launch to a command after this turn.start, and, when the accepting provider is a
+   * local process, that exact process (pid and start time) is still alive.
+   */
+  #acceptedTurnProvablyLive(input: {
+    snapshot: Record<string, unknown> | null;
+    expectedProviderTurnId: string;
+    acceptingProviderPid: number | null;
+    acceptingProviderStartedAt: string | null;
+    acceptingCommandSeq: number;
+  }): boolean {
+    if (input.snapshot?.activeProviderTurnId !== input.expectedProviderTurnId) return false;
+    if (!Number.isSafeInteger(input.acceptingCommandSeq)) return false;
+    const relaunched = (this.#core?.store.state.committedEvents ?? []).some((event) => {
+      if (event.eventType !== "harness.diagnostic") return false;
+      const payload = record(record(event.envelope.payload).payload);
+      return payload.code === "provider_startup_ownership" &&
+        Number(record(record(payload.startup).command).controllerSeq) > input.acceptingCommandSeq;
+    });
+    if (relaunched) return false;
+    if (input.acceptingProviderPid === null || this.#evidence.providerPid !== input.acceptingProviderPid) return false;
+    // A remote provider's pid names no local process; the runner's own
+    // launch reports above are its replacement evidence.
+    if (input.acceptingProviderStartedAt === null) return true;
+    return readLocalProcessStartedAt(input.acceptingProviderPid) === input.acceptingProviderStartedAt;
+  }
+
   async #startTurnWork(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -6848,6 +6880,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         throw error;
       }
       this.#expectedProviderTurnId = expectedProviderTurnId;
+      // The exact local provider process that accepted this turn. Adoption
+      // below requires that same process to still be alive.
+      const acceptingProviderPid = this.#evidence.providerPid;
+      const acceptingProviderStartedAt = this.#evidence.providerProcessStartedAt;
+      // The durable controller sequence of this turn.start command. A provider
+      // launch the runner attributes to a later command replaced the provider.
+      const acceptingCommandSeq = Number(record([...(this.#core?.store.state.commands ?? [])]
+        .reverse().find((command) => command.type === "turn.start")?.result).controllerSeq);
       // Command completion only means runnerd accepted the command. Bind the
       // provider turn from the subsequent turn/started event before answering
       // the strict driver. Correlate that event with the exact identity in this
@@ -6865,8 +6905,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           expectedProviderTurnId,
           boundTurnId: this.#turnId,
         });
+      // Keep the adoption check inside the configured bound: stop waiting for
+      // the start event early enough to read the runner's snapshot before it.
+      const adoptionCheckAt = deadline - Math.min(
+        TURN_START_ADOPTION_CHECK_RESERVE_MS,
+        Math.floor(Math.max(0, deadline - Date.now()) / 4),
+      );
       const waitForStarted = async () => {
-      while (!providerTurnStarted() && Date.now() < deadline) {
+      while (!providerTurnStarted() && Date.now() < adoptionCheckAt) {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (providerTurnStarted()) break;
@@ -6874,8 +6920,48 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
-      if (!providerTurnStarted())
-        throw new Error("runnerd did not report the provider turn identity");
+      if (!providerTurnStarted()) {
+        // The durable command result already carries the provider's own
+        // acceptance and turn id. A loaded provider can start that turn after
+        // this bound, and it still runs it. Failing would abandon a live turn
+        // that no controller owns, so its tools and close could never settle.
+        // Bind the exact accepted identity when the runner proves it is live;
+        // its turn/started is then accepted in order, and the turn's own
+        // terminal, timeout and Stop paths own it from here.
+        this.#throwIfFailed();
+        if (await this.#runnerHasExited())
+          throw new Error("runnerd exited before provider turn startup");
+        const snapshot = await this.#commandResult(
+          "session.snapshot", {}, deadline,
+        ).catch(() => null);
+        // Ingest any runner-reported provider launch committed before it. A
+        // pump that rejected a stale start has failed the transport; never
+        // report a successful start on it.
+        this.#pumpEventsSafely();
+        this.#throwIfFailed();
+        if (!providerTurnStarted() && this.#acceptedTurnProvablyLive({
+          snapshot, expectedProviderTurnId, acceptingProviderPid,
+          acceptingProviderStartedAt, acceptingCommandSeq,
+        })) {
+          this.#turnId = expectedProviderTurnId;
+          this.#observedTurnStartEpoch = responseEpoch;
+          this.#diagnostic(
+            "provider turn start outlived its bound; adopting the durably accepted active provider turn",
+          );
+        }
+        // Not provably live: keep the original contract and wait for the
+        // start event until the configured bound, then fail as before.
+        while (!providerTurnStarted() && Date.now() < deadline) {
+          this.#throwIfFailed();
+          this.#pumpEvents();
+          if (providerTurnStarted()) break;
+          if (await this.#runnerHasExited())
+            throw new Error("runnerd exited before provider turn startup");
+          await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+        }
+        if (!providerTurnStarted())
+          throw new Error("runnerd did not report the provider turn identity");
+      }
       };
       if (this.options.measureOperation) await this.options.measureOperation("runner.transport.started_event", waitForStarted);
       else await waitForStarted();
@@ -8416,10 +8502,15 @@ export function resolveRunnerdCodexSkillInputs(
   });
 }
 
-/** Controller admission budget; ordinary command and turn deadlines are independent. */
+/**
+ * Controller admission budget; ordinary command and turn deadlines are independent.
+ * A cold ACPX Claude session.open timed out at the old 30 s bound on a loaded
+ * host (1-minute load 17-43), so it shares Pi's and OpenCode's 60 s cold budget.
+ * The runner's sidecar session.open bound matches.
+ */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
   if (!coldProcess) return 30_000;
-  return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
+  return (provider === "acpx" && (agent === "pi" || agent === "claude")) || provider === "opencode" ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {

@@ -1128,15 +1128,29 @@ export async function claimNativeRestartRecoveries(input: {
       const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
         && !durableAuthority && stagedAttachment === null
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
-        && row.coordinator.phase === "observed" && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
-        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid
-          && row.coordinator.controllerProcessStartedAt && row.coordinator.leaseOwner)
+        && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
+        // Either the executor still held the claim, or it settled a same-run
+        // bootstrap retry itself (for example after a shutdown closed its local
+        // runtime listener) and released the lease. That retry already proved
+        // no provider session, event or checkpoint; the checks below re-prove it.
+        && (row.coordinator.phase === "observed" ? Boolean(row.coordinator.leaseOwner)
+          : row.coordinator.phase === "retryable_failure" && row.run.status === "failed"
+            && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && !row.coordinator.leaseOwner)
         && !row.coordinator.failureDetail?.successorRunId
         && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
         && !row.run.sessionIdBefore && !row.run.sessionIdAfter
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
         && !hasCheckpoint && !hasProviderEvidence
         && !(await hasNativeExecutionStartEvidence(tx, row.run));
+      // A settled retry starts new work, so it needs the same current
+      // admission as the resumption reconciler: task pause, agent status,
+      // dependencies, ownership and competing runs. Keep it waiting otherwise.
+      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+        && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
+      }
 
       // A claimed remote bootstrap (runner launched, perhaps connected) has no
       // provider evidence when its controller dies before session.open

@@ -91,8 +91,10 @@ pub struct AcpxSidecarTransport {
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
 // Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+// A cold Claude session.open exceeded 30 s on a loaded host; it shares Pi's
+// 60 s bound, matching the controller's cold admission budget.
 fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
-    if agent == "pi" {
+    if agent == "pi" || agent == "claude" {
         Duration::from_secs(60)
     } else {
         ordinary
@@ -1202,13 +1204,15 @@ mod tests {
     }
 
     #[test]
-    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+    fn only_pi_and_claude_cold_open_get_the_longer_admission_budget() {
         let ordinary = Duration::from_secs(30);
-        assert_eq!(
-            session_open_timeout("pi", ordinary),
-            Duration::from_secs(60)
-        );
-        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+        for agent in ["pi", "claude"] {
+            assert_eq!(
+                session_open_timeout(agent, ordinary),
+                Duration::from_secs(60)
+            );
+        }
+        for agent in ["codex", "grok", "cursor", "copilot"] {
             assert_eq!(session_open_timeout(agent, ordinary), ordinary);
         }
     }

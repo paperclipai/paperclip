@@ -175,9 +175,16 @@ export function mapTerminalTurn(
     state.emit(eventType, payload, { turnId });
     finalize(state, status);
     if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
-        !state.dispositionOnlyRecoveryConsumed) {
+        (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId)) {
       // Orchestration may use the paid restart attempt for one same-thread
       // continuation. Its accepted turn id uses the existing durable marker.
+      // A later restart that loses that continuation turn itself leaves its
+      // outcome unknown too, so the next admitted restart attempt may
+      // continue again; the provider attempt budget bounds the repeats.
+      // Reset the marker so that continuation is submitted, checkpointed and
+      // adopted after a crash exactly like the first one.
+      state.dispositionOnlyRecoveryConsumed = false;
+      state.dispositionOnlyRecoveryTurnId = null;
       state.terminal = false;
       state.dispositionOnlyRecoveryAvailable = true;
     }
