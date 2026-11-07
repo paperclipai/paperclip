@@ -225,7 +225,44 @@ async function readSavedSessionCwd(input: {
   }
 }
 
+type PiProviderDispatch = { providerDispatchStarted: boolean };
+
+const TRANSIENT_SPAWN_CODES = new Set(["EAGAIN", "EMFILE", "ENFILE", "ENOMEM", "EBUSY"]);
+
+function piPreProviderFailure(error: unknown): AdapterExecutionResult {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  const transient = /timed out|temporarily/i.test(message)
+    || (typeof code === "string" && TRANSIENT_SPAWN_CODES.has(code));
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage: message,
+    errorCode: "pi_bootstrap_failed",
+    errorFamily: transient ? "transient_upstream" : "configuration",
+    usageComplete: false,
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    resultJson: { phase: "bootstrap", providerWorkStarted: false },
+    summary: message,
+    clearSession: false,
+  };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const dispatch: PiProviderDispatch = { providerDispatchStarted: false };
+  try {
+    return await executeProviderWork(ctx, dispatch);
+  } catch (error) {
+    if (dispatch.providerDispatchStarted) throw error;
+    return piPreProviderFailure(error);
+  }
+}
+
+async function executeProviderWork(
+  ctx: AdapterExecutionContext,
+  dispatch: PiProviderDispatch,
+): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
@@ -233,6 +270,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const providerSpawnReceiptIsProof = !executionTargetIsRemote;
+  const trackProviderDispatch = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+    dispatch.providerDispatchStarted = true;
+    await onSpawn?.(meta);
+  };
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -768,13 +810,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
       });
+      if (!providerSpawnReceiptIsProof) dispatch.providerDispatchStarted = true;
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
         timeoutSec,
         graceSec,
-        onSpawn,
+        onSpawn: trackProviderDispatch,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: accountingLog,
         runLogTail: paperclipBridge?.runLogTail,
