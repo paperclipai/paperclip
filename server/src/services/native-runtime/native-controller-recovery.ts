@@ -266,7 +266,8 @@ export async function importNativeControllerRecovery(db: Db, input: {
       eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
       eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId))).for("update");
     const profile = record(run?.runnerProfileJson), snapshot = record(profile.sessionCheckpoint), identity = record(snapshot.identity);
-    if (run?.runtimeMode !== "native" || !(run.status === "succeeded" || input.offline && ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) || !run.finishedAt
+    if (run?.runtimeMode !== "native" || !(run.status === "succeeded" || input.legacyCheckpoint && run.status === "failed"
+      || input.offline && ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) || !run.finishedAt
       || identity.runId !== input.runId || identity.companyId !== input.companyId || identity.issueId !== input.issueId
       || identity.agentId !== input.agentId || identity.sessionId !== input.normalizedSessionId
       || input.supervisor !== undefined && nativeSha256(snapshot) !== nativeSha256(redactRunnerApiPayloads(supervisor.snapshot))) {
