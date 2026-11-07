@@ -197,6 +197,7 @@ import {
   setHeartbeatRunRuntimeStatus,
 } from "../heartbeat-run-runtime-status.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
@@ -592,6 +593,8 @@ export async function persistHeartbeatRunProcessMetadata(
         legacyProcessSettlement: null,
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
+        // A sandbox PID never names a process in this PID space.
+        processHostHash: meta.targetKind === "remote" ? "remote" : currentProcessSpaceHash(),
         processStartedAt: Number.isNaN(startedAt.getTime())
           ? new Date()
           : startedAt,
