@@ -89,6 +89,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { runGitIsolated } from "./helpers/git.js";
 
 const RUNTIME_OWNED_GIT_BRANCH_METADATA = {
   createdByRuntime: true,
@@ -151,7 +152,7 @@ if (!embeddedPostgresSupport.supported) {
 const provisionWorktreeScriptPath = new URL("../../../scripts/provision-worktree.sh", import.meta.url);
 
 async function runGit(cwd: string, args: string[]) {
-  await execFileAsync("git", args, { cwd });
+  await runGitIsolated(cwd, args);
 }
 
 async function readGit(cwd: string, args: string[]) {
