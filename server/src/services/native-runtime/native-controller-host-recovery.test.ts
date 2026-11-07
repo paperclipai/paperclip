@@ -29,6 +29,8 @@ describe("native controller rows saved before their host was recorded", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Native task", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId, status: "running",
       runtimeMode: "native", contextSnapshot: { issueId } });
+    // Native admission binds its running source before exposing recovery.
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     // The shape the previous release saved: a local controller and no host.
     const [coordinator] = await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed",
       attempt: 1, leaseOwner: "old-controller", leaseExpiresAt: new Date(0), controllerBootId: randomUUID(),
@@ -109,5 +111,31 @@ describe("native controller rows saved before their host was recorded", () => {
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
       .toEqual([]);
   });
+
+  it.each(["newer-owner", "newer-source"] as const)(
+    "keeps a stale controller-only confirmation from changing %s", async kind => {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      const { companyId, agentId, issueId, runId, coordinator } = await seed();
+      await requestNativeControllerStopConfirmation(db, coordinator);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      if (kind === "newer-owner") {
+        await db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(),
+          controllerGeneration: coordinator.controllerGeneration + 1, leaseOwner: "new-controller" })
+          .where(eq(nativeRunFinalizations.runId, runId));
+      } else {
+        const nextRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, nativeIssueId: issueId,
+          runtimeMode: "native", status: "queued", contextSnapshot: { issueId } });
+        await db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, issueId));
+      }
+      const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      await expect(confirmNativeControllerStopped({ db, companyId, issueId, actionId: action!.id, runId,
+        stopEvidence: "The previous server stopped, but this dialog predates the current owner.", actorId: "board-user" }))
+        .rejects.toMatchObject({ status: 409 });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]).toEqual(before);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0])
+        .toMatchObject({ status: "active" });
+    },
+  );
 
 });

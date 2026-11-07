@@ -1,9 +1,11 @@
-import { and, eq, isNull } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { confirmNativeControllerStoppedSchema } from "@paperclipai/shared";
 import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { surfaceNativeControllerNamespaceAttention } from "./native-restart-recovery.js";
+import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 
 /**
  * An ephemeral (multi-host) server cannot judge a native controller row saved
@@ -46,33 +48,73 @@ export async function confirmNativeControllerStopped(input: {
   });
   const committed = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    // Match Native admission and containment lock order. This records only
+    // the previous controller stop, not provider containment or a new turn.
+    const [task] = await tx.select().from(issues).where(and(
+      eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
       eq(nativeRunFinalizations.runId, input.runId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId))).for("update");
     const [action] = await tx.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
       eq(issueRecoveryActions.id, input.actionId))).for("update");
-    const [run] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
     const recorded = (action?.evidence?.controller ?? {}) as Record<string, unknown>;
-    if (!coordinator || !action || !run || action.cause !== NATIVE_CONTROLLER_HOST_UNVERIFIED || action.ownerType !== "board"
+    if (!task || !coordinator || !action || !run || action.cause !== NATIVE_CONTROLLER_HOST_UNVERIFIED || action.ownerType !== "board"
       || !["active", "escalated"].includes(action.status) || action.evidence?.runId !== input.runId
       || coordinator.controllerHostHash !== null || coordinator.controllerPid !== recorded.pid
-      || coordinator.controllerBootId !== recorded.bootId) throw changed();
+      || coordinator.controllerBootId !== recorded.bootId
+      || (coordinator.controllerProcessStartedAt?.toISOString() ?? null) !== recorded.processStartedAt
+      || run.runtimeMode !== "native" || run.status !== "running" || coordinator.resultId !== null
+      || !["observed", "retryable_failure"].includes(coordinator.phase)
+      || task.assigneeAgentId !== run.agentId || task.executionRunId !== run.id
+      || (task.checkoutRunId !== null && task.checkoutRunId !== run.id)
+      || (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== task.id
+      || ["done", "cancelled"].includes(task.status)
+      || !coordinator.leaseOwner || !coordinator.leaseExpiresAt
+      || coordinator.leaseOwner.startsWith("native-finalizer:") || coordinator.leaseOwner.startsWith("native-cleanup:")
+      || await readPendingNativeRunStop(tx, run)) throw changed();
+    const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), ne(heartbeatRuns.id, run.id),
+      or(eq(heartbeatRuns.nativeIssueId, task.id), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}`,
+        sql`exists (select 1 from ${nativeRunFinalizations} newer_owner
+          where newer_owner.run_id = ${heartbeatRuns.id} and newer_owner.company_id = ${run.companyId}
+            and newer_owner.issue_id = ${task.id})`),
+      sql`${heartbeatRuns.createdAt} >= (select source.created_at from ${heartbeatRuns} source
+        where source.id = ${run.id} and source.company_id = ${run.companyId})`,
+    )).limit(1);
+    if (newer) throw changed();
+    // Use the DB's full precision, not a Date or session-dependent rendering.
+    const [expiry] = await tx.select({ epoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text` })
+      .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    if (!expiry?.epoch) throw changed();
     // Work intent before the write it announces (sleep-aware background work).
     await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId, agentId: run.agentId });
     const now = new Date();
-    const updated = await tx.update(nativeRunFinalizations).set({ controllerHostHash: OPERATOR_ATTESTED_CONTROLLER_HOST, updatedAt: now })
+    const [updated] = await tx.update(nativeRunFinalizations).set({ controllerHostHash: OPERATOR_ATTESTED_CONTROLLER_HOST, updatedAt: now })
       .where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.controllerHostHash),
         eq(nativeRunFinalizations.controllerPid, coordinator.controllerPid!),
-        eq(nativeRunFinalizations.controllerBootId, coordinator.controllerBootId!)))
-      .returning({ runId: nativeRunFinalizations.runId });
-    if (!updated.length) throw changed();
+        eq(nativeRunFinalizations.controllerBootId, coordinator.controllerBootId!),
+        eq(nativeRunFinalizations.leaseOwner, coordinator.leaseOwner),
+        eq(nativeRunFinalizations.controllerGeneration, coordinator.controllerGeneration),
+        eq(nativeRunFinalizations.attempt, coordinator.attempt),
+        sql`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text = ${expiry.epoch}`))
+      .returning();
+    if (!updated) throw changed();
     const proof = { controller: recorded, actorId: input.actorId, stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
       evidence: { ...action.evidence, controllerStop: proof },
       nextAction: "The previous server was confirmed stopped. Recovery will inspect the saved run. Separate provider containment may still be required.",
     }).where(eq(issueRecoveryActions.id, action.id));
+    // The controller-only action is now resolved. Publish its responsible
+    // next owner in this same transaction: an observed/no-checkpoint run is
+    // not necessarily admitted by any deferred recovery scanner.
+    const [plugin] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+      sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`)).limit(1);
+    await surfaceNativeControllerNamespaceAttention(tx, { run, coordinator: updated, expiryEpoch: expiry.epoch,
+      remoteProcess: run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null || !!plugin });
     const publication = await persistActivity(tx, { companyId: input.companyId, actorType: "user", actorId: input.actorId,
       action: "issue.native_controller_stop_confirmed", entityType: "issue", entityId: input.issueId, runId: input.runId,
       details: { recoveryActionId: input.actionId, ...proof } });
