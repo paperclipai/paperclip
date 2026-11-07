@@ -1189,15 +1189,14 @@ function StreamlinedInbox({
     [companyMembers?.users],
   );
 
-  // Tasks that need this viewer. In-review tasks outside it are not asks.
-  const { data: attentionTaskIndex } = useQuery({
+  const { data: attentionTaskIndex, error: attentionTaskIndexError } = useQuery({
     queryKey: coordinatorAttentionTasksQueryKey(selectedCompanyId!),
     queryFn: () => attentionApi.taskIndex(selectedCompanyId!),
     enabled: !!selectedCompanyId && !!currentUserId,
   });
   const attentionTaskIds = useMemo(
-    () => (attentionTaskIndex ? new Set(attentionTaskIndex.taskIds) : null),
-    [attentionTaskIndex],
+    () => (attentionTaskIndex && !attentionTaskIndexError ? new Set(attentionTaskIndex.taskIds) : null),
+    [attentionTaskIndex, attentionTaskIndexError],
   );
   const mineIssues = useMemo(
     () => filterInboxInReviewIssues(
@@ -2560,7 +2559,7 @@ function StreamlinedInbox({
     ?? (sourceView.kind === "error" ? sourceView.error : null)
     ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
   const rawOptionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
-    ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
+    ?? (tab === "mine" ? mineIssuesError : touchedIssuesError) ?? attentionTaskIndexError;
   const optionalSourceError = isTransientError(rawOptionalSourceError) ? null : rawOptionalSourceError;
   const retryFailedSources = () => {
     // Optional failures belong to the aggregate read, whose task rows stay usable.
