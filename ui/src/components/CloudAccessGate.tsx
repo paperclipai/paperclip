@@ -22,7 +22,7 @@ import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 
 /** Poll while the server reports `starting`; outages are polled by `lib/connectivity`. */
 const SERVER_STARTING_POLL_MS = 5_000;
-const deniedBootstrapAccounts = new WeakMap<QueryClient, Set<string>>();
+const deniedBootstrapAccounts = new WeakMap<QueryClient, Map<string, object>>();
 
 export function CloudAccessError({
   temporary,
@@ -129,20 +129,23 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
       () => {
         if (!sessionUserId) return;
         let denied = deniedBootstrapAccounts.get(queryClient);
-        if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Set());
-        denied.add(sessionUserId);
+        if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Map());
+        denied.set(sessionUserId, {});
       },
       (startedSnapshot) => {
         const denied = deniedBootstrapAccounts.get(queryClient);
         if (!sessionUserId || !denied?.has(sessionUserId)) return;
-        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
-        if (current?.user.id !== sessionUserId) return;
-        if (current.boardBootstrap === startedSnapshot && current.boardBootstrap?.userId === sessionUserId && current.boardBootstrap.boardAccess.userId === sessionUserId) {
-          markBootstrapSnapshotApplied(queryClient, [...queryKeys.access.currentBoardAccess, sessionUserId], current.boardBootstrap);
-        }
+        const started = startedSnapshot as { bootstrap: object | undefined; denial: object | undefined };
+        if (started.denial !== denied.get(sessionUserId)) return;
+        if (started.bootstrap) markBootstrapSnapshotApplied(queryClient, [...queryKeys.access.currentBoardAccess, sessionUserId], started.bootstrap);
         denied.delete(sessionUserId);
       },
-      () => queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session)?.boardBootstrap,
+      () => {
+        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+        const bootstrap = current?.user.id === sessionUserId && current.boardBootstrap?.userId === sessionUserId
+          && current.boardBootstrap.boardAccess.userId === sessionUserId ? current.boardBootstrap : undefined;
+        return { bootstrap, denial: sessionUserId ? deniedBootstrapAccounts.get(queryClient)?.get(sessionUserId) : undefined };
+      },
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: retryWhileTransient,

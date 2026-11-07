@@ -243,6 +243,37 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.textContent).toContain("No organization access");
   });
 
+  it("honors a revoked snapshot after a denied account's delayed success and account switch", async () => {
+    const session = responses["/api/auth/get-session"] as object;
+    let accessCalls = 0;
+    let finishRetry!: (response: Response) => void;
+    const retry = new Promise<Response>(resolve => { finishRetry = resolve; });
+    fetchMock.mockImplementation(async (path: string) => {
+      if (path === "/api/auth/get-session") return Response.json(session);
+      if (path === "/api/cli-auth/me") return ++accessCalls === 1 ? Response.json({ error: "Unauthorized" }, { status: 401 }) : retry;
+      return Response.json(responses[path]);
+    });
+    const boot = (userId: string, companyIds: string[]) => ({
+      session: { id: `session-${userId}`, userId },
+      user: { id: userId, name: "Operator", email: `${userId}@example.com`, image: null },
+      boardBootstrap: { userId, companies: [], boardAccess: { userId, isInstanceAdmin: false, companyIds } },
+    });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Unable to load Paperclip");
+    flushSync(() => container.querySelector("button")!.click());
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, boot("other", ["other-company"]));
+    await flushReact();
+    finishRetry(Response.json({ userId: "user", isInstanceAdmin: false, companyIds: ["old-company"] }));
+    await flushReact();
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, boot("user", []));
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("No organization access");
+  });
+
   it.each(["401", "success"])("ignores a late %s from the previous account after an account change", async outcome => {
     await render();
     let rejectOld!: (response: Response) => void;
