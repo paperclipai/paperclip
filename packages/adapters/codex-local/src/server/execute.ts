@@ -1,6 +1,6 @@
 import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
-import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
+import { prepareCodexObservabilityProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
@@ -785,17 +785,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let observabilityPreparationFailed = false;
   let managedMcpProfile: Awaited<ReturnType<typeof prepareManagedCodexMcpProfile>> | null = null;
   try {
-    if (ctx.observability) {
-      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
-        try {
-          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
-            launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
-        } catch {
-          observabilityPreparationFailed = true;
-          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
-        }
-      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
-    }
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
@@ -825,6 +814,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     for (const warning of managedMcp.warnings) {
       await onLog("stderr", `[paperclip] ${warning}\n`);
+    }
+    // The observability profile replaces the run profile in the arguments, so
+    // it is built from the run profile. It then keeps this run's managed MCP
+    // gateways and the settings of the profile that the agent selected.
+    if (ctx.observability) {
+      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+        try {
+          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
+            launch: ctx.observability, sourceProfile: managedMcp.profileName });
+        } catch {
+          observabilityPreparationFailed = true;
+          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
+        }
+      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
     }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).

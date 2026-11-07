@@ -11,6 +11,10 @@ async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 
+if (process.argv[2] === "--version" && process.env.PAPERCLIP_TEST_CODEX_VERSION) {
+  console.log(process.env.PAPERCLIP_TEST_CODEX_VERSION);
+  process.exit(0);
+}
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv: process.argv.slice(2),
@@ -338,6 +342,78 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the run's managed MCP gateways in the profile when company observability replaces it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-observability-mcp-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
+    await writeFakeCodexCommand(commandPath);
+    const saved = {
+      HOME: process.env.HOME, PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
+      PAPERCLIP_API_URL: process.env.PAPERCLIP_API_URL, PAPERCLIP_RUNTIME_API_URL: process.env.PAPERCLIP_RUNTIME_API_URL,
+      CODEX_HOME: process.env.CODEX_HOME,
+    };
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_API_URL = "http://paperclip.local:3100";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://paperclip.local:3100";
+    process.env.CODEX_HOME = sharedCodexHome;
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-observability-mcp",
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex Coder", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, PAPERCLIP_TEST_CODEX_VERSION: "codex-cli 0.160.0" },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        observability: {
+          kind: "codex",
+          compatibilityKey: "codex-cli-0.160.0",
+          otelConfig: { exporter: "none", trace_exporter: "none", metrics_exporter: "none" },
+          environment: {},
+        },
+        runtimeMcp: {
+          getServers: () => [{
+            name: "github",
+            url: "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp",
+            token: "pcgw_observability-run-token",
+            connectionId: "connection-github",
+          }],
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => { logs.push({ stream, chunk }); },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const profile = capture.argv[capture.argv.indexOf("--profile") + 1];
+      expect(profile).toBe("paperclip-observability-run-observability-mcp");
+      const configText = capture.codexConfigContents ?? "";
+      expect(configText).toContain("[otel]");
+      expect(configText).toContain("[mcp_servers.github]");
+      expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
+      expect(configText).toContain("Bearer pcgw_observability-run-token");
+      expect(JSON.stringify(logs)).not.toContain("Company observability was not applied");
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

@@ -1,3 +1,4 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -381,7 +382,12 @@ export async function prepareManagedCodexMcpProfile(input: { codexHome: string; 
   }
   const base = await writeManagedCodexMcpConfig({ ...input, gateways: [] });
   const baseText = await fs.readFile(base.configPath, "utf8");
-  const profileText = selectedProfile ? await fs.readFile(path.join(input.codexHome, `${selectedProfile}.config.toml`), "utf8") : "";
+  const profileText = selectedProfile
+    ? (await readOwnedRegularFile(path.join(input.codexHome, `${selectedProfile}.config.toml`), {
+      requirePrivate: false,
+      failure: "Selected Codex profile must be an owned regular file, not a link",
+    })).toString("utf8")
+    : "";
   const profileName = `paperclip-run-${randomUUID()}`;
   const configName = `${profileName}.config.toml`;
   const configPath = path.join(input.codexHome, configName);
@@ -407,6 +413,32 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+}
+
+/**
+ * Reads a file only when it is a regular file owned by this process, with one
+ * hard link and no symlink. A link could otherwise put the bytes of another
+ * host file into a run profile or into the sandbox home. With `requirePrivate`
+ * the file must also have no group or other permission bits.
+ */
+async function readOwnedRegularFile(filePath: string, options: { requirePrivate: boolean; failure: string }): Promise<Buffer> {
+  // O_NOFOLLOW refuses a symlink at open, and the checks use the opened file,
+  // so a swap after the check cannot change which file is read.
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(options.failure);
+    throw error;
+  });
+  try {
+    const stat = await handle.stat();
+    if (
+      !stat.isFile() || stat.nlink !== 1 ||
+      (typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
+      (options.requirePrivate && (stat.mode & 0o077) !== 0)
+    ) throw new Error(options.failure);
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
 }
 
 export interface StageCodexHomeForSyncOptions {
@@ -635,16 +667,23 @@ export async function stageCodexHomeForSync(
   try {
     for (const filename of options.additionalFiles ?? []) {
       if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
-      const source = path.join(effectiveCodexHome, filename);
-      const stat = await fs.lstat(source);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
-      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+      const bytes = await readOwnedRegularFile(path.join(effectiveCodexHome, filename), {
+        requirePrivate: true,
+        failure: "Managed observability profile must be an owned private regular file",
+      });
+      await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
       await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
     }
     if (options.profileName) {
-      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, `${options.profileName}.config.toml`);
+      if (!/^paperclip-run-[A-Za-z0-9-]+$/.test(options.profileName)) throw new Error("Invalid run-scoped Codex profile");
+      const filename = `${options.profileName}.config.toml`;
+      const bytes = await readOwnedRegularFile(path.join(effectiveCodexHome, filename), {
+        requirePrivate: true,
+        failure: "Run-scoped Codex profile must be an owned private regular file",
+      });
+      await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     return stagedHome;
   } catch (error) {
