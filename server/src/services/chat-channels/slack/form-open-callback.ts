@@ -1,9 +1,10 @@
+import { classifyChatPublicationError } from "../../chat-publication-errors.js";
 import { and, eq } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import type { ResolvedChatQuestionFormOpen } from "../../chat-question-forms.js";
-import type { SlackFormOpenContext } from "./cloud-forms.js";
 import { SlackCloudReceiptError } from "./cloud-event.js";
+import { sameSlackFormBinding, type SlackFormOpenContext } from "./cloud-forms.js";
 import { stageSlackFormSession, confirmSlackFormSessionUpdate } from "./form-session.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -32,4 +33,11 @@ export async function confirmSlackFormOpenCallback(tx: Tx, input: Omit<Scope, "c
   const updated = await confirmSlackFormSessionUpdate(tx, { companyId: input.companyId, endpointId: input.endpointId,
     principalId: input.principalId, operationId: context.operation.id }, context.operation.view, context.updatedView.hash);
   if (!updated) throw new SlackCloudReceiptError("form_update_settlement_changed", "retry");
+}
+
+export function isRetryableSlackFormUpdate(context: SlackFormOpenContext | undefined, error: unknown): boolean {
+  return Boolean(context?.sessionActionId && context.updateAttempted === true && !context.updatedView
+    && context.operation.phase === "confirmed" && context.operation.view && !context.operation.closed && !context.operation.rejection
+    && sameSlackFormBinding(context.operation.binding, context.currentBinding)
+    && classifyChatPublicationError(error, 1).kind === "retry");
 }

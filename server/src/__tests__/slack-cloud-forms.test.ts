@@ -1,3 +1,4 @@
+import { isRetryableSlackFormUpdate } from "../services/chat-channels/slack/form-open-callback.js";
 import { slackFormConnectorIdentity, selectSlackFormRetainedConsumer } from "../services/chat-channels/slack/cloud-consumer.js";
 import { createHash, createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -295,4 +296,35 @@ it("retained session selection keeps unfinished GC custody but completed exact r
   expect(result.owner !== null || result.attention.length > 0).toBe(true);
   const stillDue = { ...base, result: { ...base.result, nextAttemptAt: f.operation.acceptedAt } };
   expect(selectSlackFormRetainedConsumer([stillDue], identity).owner).not.toBeNull();
+});
+
+describe("Slack held-view retry boundary", () => {
+  const limited = () => Object.assign(new Error("controlled definite Slack rejection"), { code: "slack_webapi_platform_error", data: { error: "ratelimited" } });
+  const held = () => {
+    const f = fixture(), view = { id: "VRETRY", hash: "loading-hash", externalId: f.operation.externalId };
+    return { operation: { ...f.operation, phase: "confirmed" as const, view }, currentBinding: f.current.binding,
+      environment: "test", sessionActionId: "held-session", updateAttempted: true };
+  };
+  it("retains the exact held attempt on a definite retryable update refusal", () => {
+    const context = held(), before = structuredClone(context);
+    expect(isRetryableSlackFormUpdate(context, limited())).toBe(true);
+    expect(context).toEqual(before);
+  });
+  it("does not replay an ambiguous update or an accepted update whose local commit failed", () => {
+    const context = held();
+    expect(isRetryableSlackFormUpdate(context, new Error("response lost after possible update"))).toBe(false);
+    expect(isRetryableSlackFormUpdate({ ...context, updatedView: { ...context.operation.view, hash: "accepted-hash" } }, limited())).toBe(false);
+  });
+  it("does not reopen a native trigger, unprepared session, stale binding, or closed view", () => {
+    const context = held(), f = fixture();
+    expect(isRetryableSlackFormUpdate(undefined, limited())).toBe(false);
+    expect(isRetryableSlackFormUpdate({ ...context, sessionActionId: undefined }, limited())).toBe(false);
+    expect(isRetryableSlackFormUpdate({ ...context, updateAttempted: false }, limited())).toBe(false);
+    expect(isRetryableSlackFormUpdate({ ...context, currentBinding: { ...context.currentBinding, runtimeGeneration: 2 } }, limited())).toBe(false);
+    expect(isRetryableSlackFormUpdate({ ...context, operation: { ...context.operation, closed: f.close(context.operation.view) } }, limited())).toBe(false);
+  });
+  it("preserves definite invalid-view and stale-hash refusals as nonretryable", () => {
+    for (const error of ["invalid_arguments", "hash_conflict"]) expect(isRetryableSlackFormUpdate(held(),
+      Object.assign(new Error("controlled definite view refusal"), { code: "slack_webapi_platform_error", data: { error } }))).toBe(false);
+  });
 });

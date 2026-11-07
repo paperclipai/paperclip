@@ -1,7 +1,7 @@
 import { stageSlackFormSubmission } from "../slack/form-session.js";
 import { slackFormSubmissionEvidence } from "../slack/cloud-forms.js";
 import { slackFormOpenContext } from "../slack/cloud-forms.js";
-import { stageSlackFormOpenCallback, confirmSlackFormOpenCallback } from "../slack/form-open-callback.js";
+import { stageSlackFormOpenCallback, confirmSlackFormOpenCallback, isRetryableSlackFormUpdate } from "../slack/form-open-callback.js";
 import { SlackCloudReceiptError } from "../slack/cloud-event.js";
 import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
@@ -1140,6 +1140,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           return deny(safelyKnown);
         }
         if (!providerAttempted) throw error;
+        if (isRetryableSlackFormUpdate(cloudForm, error)) throw error;
         await recordModalOpenFailure(
           record.endpoint,
           event,
