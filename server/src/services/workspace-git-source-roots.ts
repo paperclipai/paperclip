@@ -129,7 +129,7 @@ export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<Wo
       roots.push(source); inRepository = true;
     } else if (children.some(child => child.name === "objects") && children.some(child => child.name === "HEAD")) throw invalid();
     for (const child of children) {
-      if (!child.isDirectory() || child.name === ".git" || child.name === ".paperclip-runtime") continue;
+      if (!child.isDirectory() || child.name === ".git" || depth === 0 && child.name === ".paperclip-runtime") continue;
       const next = path.join(directory, child.name);
       if (!inRepository) {
         const marker = await entry(child.name === "node_modules" ? path.join(directory, "package.json") : path.join(next, "pyvenv.cfg"));
@@ -140,4 +140,41 @@ export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<Wo
   };
   await visit(path.resolve(cwd), 0, false);
   return roots;
+}
+
+export async function readWorkspaceGitLinkedRoots(source: WorkspaceGitSourceRoots) {
+  const commonDirectories = new Map([[source.commonDirectory.path, source.commonDirectory]]);
+  for (const objects of source.objectDirectories) {
+    if (path.basename(objects.path) !== "objects" || commonDirectories.has(path.dirname(objects.path))) continue;
+    const common = await directoryIdentity(path.dirname(objects.path)); commonDirectories.set(common.path, common);
+  }
+  const results: Array<{ commonDirectory: Identity; directory: Identity | null;
+    links: Array<{ root: Identity; gitDirectory: Identity }>; metadata: Metadata[] }> = [];
+  for (const commonDirectory of [...commonDirectories.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+    const target = path.join(commonDirectory.path, "worktrees"), present = await entry(target);
+    if (!present) { results.push({ commonDirectory, directory: null, links: [], metadata: [] }); continue; }
+    const directory = await directoryIdentity(target), names = (await fs.readdir(directory.path)).sort();
+    if (names.length > 256) throw invalid();
+    const links: Array<{ root: Identity; gitDirectory: Identity }> = [], metadata: Metadata[] = [];
+    for (const name of names) {
+      const gitDirectory = await directoryIdentity(path.join(directory.path, name));
+      const backlink = await readMetadata(path.join(gitDirectory.path, "gitdir"), 4096);
+      const common = await readMetadata(path.join(gitDirectory.path, "commondir"), 4096);
+      if (!backlink || !common || path.resolve(gitDirectory.path, metadataPath(common.text)) !== commonDirectory.path) throw invalid();
+      const marker = path.resolve(gitDirectory.path, metadataPath(backlink.text));
+      if (path.basename(marker) !== ".git") throw invalid();
+      const root = await directoryIdentity(path.dirname(marker)), pointer = await readMetadata(marker, 4096);
+      if (marker !== path.join(root.path, ".git") || !pointer?.text.startsWith("gitdir: ")
+        || path.resolve(root.path, metadataPath(pointer.text.slice(8))) !== gitDirectory.path) throw invalid();
+      links.push({ root, gitDirectory }); metadata.push(backlink.metadata, common.metadata, pointer.metadata);
+    }
+    if (JSON.stringify(names) !== JSON.stringify((await fs.readdir(directory.path)).sort())
+      || JSON.stringify(directory) !== JSON.stringify(await directoryIdentity(target))) throw invalid();
+    for (const receipt of metadata) {
+      const current = await readMetadata(receipt.path, 4096);
+      if (JSON.stringify(current?.metadata) !== JSON.stringify(receipt)) throw invalid();
+    }
+    results.push({ commonDirectory, directory, links, metadata: metadata.sort((a, b) => a.path.localeCompare(b.path)) });
+  }
+  return results;
 }

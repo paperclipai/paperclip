@@ -6,7 +6,7 @@ import { executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } fro
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { inspectImportedWorkspaceSourcePaths, inspectOnlineOrdinarySource, physicalPath, requiresOnlineOrdinarySource, type WorkspaceSourceScope } from "./remote-workspace-migration-tree.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
-import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitSourceRoots, type WorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
+import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitLinkedRoots, readWorkspaceGitSourceRoots, type WorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { inspectOnlineLegacyWorkspaceRecoveryHold, inspectOnlineLegacyWorkspaceRecoverySource, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import type { LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { hasPendingGitExpiration } from "./git-workspace-expiration.js";
@@ -97,7 +97,27 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
     });
     if (!head || !head.isFile() && !head.isSymbolicLink()) return null;
   }
-  const nestedFingerprint = nestedGit.length ? createHash("sha256").update(JSON.stringify(nestedGit)).digest("hex") : null;
+  const linkedSources = new Map<string, Awaited<ReturnType<typeof readWorkspaceGitLinkedRoots>>[number]>();
+  try {
+    for (const source of gitSources) {
+      for (const proof of await readWorkspaceGitLinkedRoots(source)) {
+        const existing = linkedSources.get(proof.commonDirectory.path);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(proof)) return null;
+        linkedSources.set(proof.commonDirectory.path, proof);
+      }
+    }
+    for (const proof of linkedSources.values()) {
+      for (const link of proof.links) {
+        const linked = await workspaceSourceIdentities(workspace.companyId, link.root.path);
+        if (!linked.git || linked.git.gitDirectory.path !== link.gitDirectory.path) return null;
+        selected.projectIds = [...new Set([...selected.projectIds, ...linked.projectIds])].sort();
+        selected.issueIds = [...new Set([...selected.issueIds, ...linked.issueIds])].sort();
+        selected.unownedPaths = [...new Set([...selected.unownedPaths, ...linked.unownedPaths])].sort();
+      }
+    }
+  } catch { return null; }
+  if (selected.unownedPaths.length) return null;
+  const selectedFingerprint = createHash("sha256").update(JSON.stringify([gitSources, [...linkedSources.values()]])).digest("hex");
   const entry = await fs.lstat(cwd);
   const rows = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, workspace.companyId),
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]))).orderBy(executionWorkspaces.id).limit(1001);
@@ -114,7 +134,7 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
         identities.projectIds = [...new Set([...identities.projectIds, ...alternate.projectIds])].sort();
         identities.issueIds = [...new Set([...identities.issueIds, ...alternate.issueIds])].sort();
       }
-      nodes.push({ row, identities, fingerprint: paths[0] === captureRoot && nestedFingerprint ? nestedFingerprint : identities.git?.fingerprint ?? null });
+      nodes.push({ row, identities, fingerprint: paths[0] === captureRoot ? selectedFingerprint : identities.git?.fingerprint ?? null });
     } catch { return null; }
   }
   const projectIds = new Set(selected.projectIds), physicalIssueIds = new Set(selected.issueIds), aliases = new Set<string>();
@@ -148,6 +168,9 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   if (!aliases.has(workspace.id) || aliases.size > 256) return null;
   const included = nodes.filter(node => aliases.has(node.row.id));
+  const registeredRoots = await Promise.all(included.flatMap(node => localWorkspaceSourcePaths(node.row)).map(physicalPath));
+  if ([...linkedSources.values()].some(proof => proof.links.some(link => !registeredRoots.some(root =>
+    link.root.path === root || link.root.path.startsWith(root + path.sep))))) return null;
   const issueIds = [...new Set([...physicalIssueIds, ...included.map(node => node.row.sourceIssueId!)])].sort();
   if (issueIds.length + projectIds.size > 128) return null;
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
