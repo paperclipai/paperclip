@@ -458,6 +458,42 @@ export function aiConnectionService(db: Db) {
     }
     return { ...row, provider };
   }
+  /**
+   * A native run's image tool reuses the exact AI connection the run was
+   * admitted with. Recheck the same permissions as runtime selection on every
+   * call: an OpenAI API key sent directly to OpenAI, active and healthy, shared
+   * with the responsible user and installed for this agent.
+   */
+  async function selectImageGeneration(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId: string;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row) throw unprocessable("AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "api_key" || metadata.data.routing)
+      throw unprocessable("Image generation needs an OpenAI API-key connection", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    if (!input.userId || !(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+    if (row.grant.kind === "user" && !(await membership(input.companyId, row.grant.subjectUserId)))
+      throw forbidden("The account owner is no longer an active company member");
+    const audience = await db.select().from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+    ));
+    if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+      eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+      or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+        and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+    )).limit(1);
+    if (!install) throw forbidden("Connection is not permitted for this agent");
+    return row;
+  }
   /** Internal fast-response use has its own capability check, never a pretend CLI harness. */
   async function selectFastResponse(input: {
     companyId: string; connectionId: string; grantId: string;
@@ -1239,5 +1275,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }

@@ -80,6 +80,7 @@ import {
 
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -397,11 +398,14 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     return false;
 
   const resultJson = parseObject(run.resultJson);
+  // A refused exact resume names its interrupted attempt in `error`; the
+  // retry decision follows the current refusal only.
+  const error = currentRunFailureText(run);
   return (
-    isSpawnLikeFailureMessage(run.error) ||
+    isSpawnLikeFailureMessage(error) ||
     isSpawnLikeFailureMessage(resultJson.errorMessage) ||
     isSpawnLikeFailureMessage(resultJson.message) ||
-    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(error) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
   );

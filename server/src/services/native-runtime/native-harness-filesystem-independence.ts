@@ -28,7 +28,7 @@ import { assertOriginalHarnessVolumeSource, type OriginalHarnessVolumeCapability
 import { isKnownNativeSessionRootEntry } from "./native-session-root-entries.js";
 import { readLegacyNativeControllerArchiveSource, readLegacyNativeControllerArchiveDigests } from "./native-controller-migration.js";
 import { archiveNativeControllerSourceEvidence, legacyNativeControllerArchive, nativeControllerEvidenceDescriptor,
-  nativeControllerHistoryManifest, nativeControllerWebManifest, type NativeControllerWebEntry,
+  nativeControllerHistoryManifest, nativeControllerWebManifest, NATIVE_CONTROLLER_WEB_LIMITS, type NativeControllerWebEntry,
   type NativeControllerHistoryEntry, type NativeControllerHistoryManifestEntry } from "./native-controller-archive.js";
 import { nativeControllerArchiveCoordinatorDigest, nativeControllerArchiveProfileDigest, type SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
 import { loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader } from "./native-runner-checkpoint.js";
@@ -479,12 +479,14 @@ function webProfile(facts: Awaited<ReturnType<typeof databaseFacts>>) {
 function validWebBinding(facts: Awaited<ReturnType<typeof databaseFacts>>, web: WebBinding): boolean {
   try {
     if (!web || typeof web.rootPresent !== "boolean" || typeof web.controllerAbsent !== "boolean" || !Array.isArray(web.entries)
-      || !Array.isArray(web.skills) || !Array.isArray(web.excluded) || web.entries.length > 128 || web.excluded.length > 128
+      || !Array.isArray(web.skills) || !Array.isArray(web.excluded)
+      || web.entries.length + web.excluded.length > NATIVE_CONTROLLER_WEB_LIMITS.entries
       || web.profileDigest !== digest(webProfile(facts)) || digest(web.skills) !== digest(webSkills(facts))) return false;
     const profiles = webProfile(facts), manifests = new Map(web.skills.map(skill => [skill.bundleDigest, skill.manifestDigest]));
     for (const [bundle, manifest] of manifests) if (!web.entries.some(entry => entry.path === `web-manifests/${bundle}.json`
       && entry.type === "file" && entry.sha256 === manifest)) return false;
     if (web.entries.some(entry => {
+      if (Buffer.byteLength(entry.path) > NATIVE_CONTROLLER_WEB_LIMITS.pathBytes) return true;
       const [prefix, name, ...rest] = entry.path.split("/");
       if (prefix === "web-supervisor.json") return name !== undefined || entry.type !== "file";
       if (prefix === "web-manifests") return name === undefined ? entry.type !== "directory"
@@ -499,10 +501,11 @@ function validWebBinding(facts: Awaited<ReturnType<typeof databaseFacts>>, web: 
     return web.excluded.every(entry => {
       const [name, ...rest] = entry.path.split("/"), rel = rest.join("/"), profile = profiles.find(profile => profile.name === name);
       assertSkillSnapshotPath(entry.path);
-      return profile?.excludeEntries.some(excluded => rel === excluded || rel.startsWith(`${excluded}/`))
+      return Buffer.byteLength(entry.path) <= NATIVE_CONTROLLER_WEB_LIMITS.pathBytes
+        && profile?.excludeEntries.some(excluded => rel === excluded || rel.startsWith(`${excluded}/`))
         && ["directory", "file"].includes(entry.type) && Number.isInteger(entry.mode) && (entry.mode & ~0o777) === 0
         && Number.isSafeInteger(entry.size) && entry.size >= 0;
-    });
+    }) && Buffer.byteLength(JSON.stringify({ entries: web.entries, excluded: web.excluded })) <= NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes;
   } catch { return false; }
 }
 
@@ -513,7 +516,7 @@ async function captureWebEvidence(facts: Awaited<ReturnType<typeof databaseFacts
   const directoryNames = async (path: string) => {
     const names: string[] = [];
     for await (const entry of await opendir(path)) {
-      signal.throwIfAborted(); if (names.length >= 128) fail(); names.push(entry.name);
+      signal.throwIfAborted(); if (names.length >= NATIVE_CONTROLLER_WEB_LIMITS.entries) fail(); names.push(entry.name);
     }
     return names.sort();
   };
@@ -540,7 +543,8 @@ async function captureWebEvidence(facts: Awaited<ReturnType<typeof databaseFacts
     } finally { await handle.close(); }
   };
   const visit = async (file: string, path: string, relative: string): Promise<void> => {
-    signal.throwIfAborted(); if (++count > 128) fail(); assertSkillSnapshotPath(path);
+    signal.throwIfAborted(); if (++count > NATIVE_CONTROLLER_WEB_LIMITS.entries
+      || Buffer.byteLength(path) > NATIVE_CONTROLLER_WEB_LIMITS.pathBytes) fail(); assertSkillSnapshotPath(path);
     const s = await lstat(file);
     if (s.isSymbolicLink() || !s.isDirectory() && !s.isFile() || s.dev !== instance.dev || s.uid !== instance.uid || (s.mode & 0o7000) !== 0) fail();
     metadata.push([path, s.dev, s.ino, s.size, s.mode, s.mtimeMs, s.ctimeMs]);
@@ -590,7 +594,7 @@ async function captureWebEvidence(facts: Awaited<ReturnType<typeof databaseFacts
     runtimeFiles({ bundle: { digest: skill.bundleDigest, manifestDigest: skill.manifestDigest, fileCount: skill.fileCount, totalBytes: skill.totalBytes } }, content.toString("utf8"));
     entries.push({ path: `web-manifests/${skill.bundleDigest}.json`, type: "file", mode: s.mode & 0o777, content });
   }
-  if (entries.length > 128) fail();
+  if (entries.length + excluded.length > NATIVE_CONTROLLER_WEB_LIMITS.entries) fail();
   const material = await readLegacyNativeControllerArchiveDigests(facts.source);
   const binding: WebBinding = { entries: nativeControllerWebManifest(entries), skills, rootPresent: rootStat !== null,
     profileDigest: digest(profiles), controllerAbsent: material.controllerDigest === undefined, excluded };

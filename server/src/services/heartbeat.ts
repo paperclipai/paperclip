@@ -1,6 +1,7 @@
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isContextCompactionRun } from "./context-compaction.js";
+import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -2218,11 +2219,14 @@ export function heartbeatService(
           // Claim the issue under the same active-status predicate used by the
           // queued-run staleness gate. This is the final atomic guard before
           // dispatch: an operator parking the issue after claim but before this
-          // checkout must not be overwritten by the continuation.
+          // checkout must not be overwritten by the continuation. A todo task
+          // that has never started has nothing parked, so it may start here.
+          const startsUnstartedTask = issueContext.status === "todo" &&
+            await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
           await issuesSvc.checkout(
             issueId,
             agent.id,
-            [...resolvedInteractionCheckoutExpectedStatuses()],
+            [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
             run.id,
           );
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;

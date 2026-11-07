@@ -3078,8 +3078,22 @@
     {
       "idx": 441,
       "version": "7",
-      "when": 1794055804787,
-      "tag": "0441_rare_sabretooth",
+      "when": 1794069983192,
+      "tag": "0441_lucky_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 442,
+      "version": "7",
+      "when": 1794071961340,
+      "tag": "0442_low_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 443,
+      "version": "7",
+      "when": 1794082011799,
+      "tag": "0443_low_human_torch",
       "breakpoints": true
     }
   ]

@@ -13,7 +13,14 @@ import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-recovery.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork, subscribeDeliveryWork } from "../delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import {
+  createOwnershipReportState,
+  ownershipReportFingerprint,
+  runOwnershipReconciliationPass,
+  type OwnershipReport,
+} from "../recovery/ownership-invariant-report.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -772,4 +779,126 @@ async function reconcileNativeFinalizationsPass(
     }
   }
   return results;
+}
+
+/** Existing settled-work topics whose producers write registered kinds:
+ * run lifecycle and controller renewal, environment leases, settled native
+ * processes, legacy shutdown fences, native process sessions, deferred
+ * receipts, stale issue locks, queued dispatch and accounting. */
+const OWNERSHIP_REPORT_WAKE_QUEUES = [
+  DELIVERY_QUEUES.activeExecutionRecovery,
+  DELIVERY_QUEUES.orphanActiveLeases,
+  DELIVERY_QUEUES.settledNativeProcesses,
+  DELIVERY_QUEUES.legacyShutdownSettlement,
+  DELIVERY_QUEUES.nativeProcessSessions,
+  DELIVERY_QUEUES.deferredExecutionReceipts,
+  DELIVERY_QUEUES.staleIssueLocks,
+  DELIVERY_QUEUES.queuedRunDispatch,
+  DELIVERY_QUEUES.accounting,
+] as const;
+
+/** Interval between report passes while in-progress records keep changing. */
+export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * The ownership reconciliation pass of this reconciler (plan section C,
+ * Phase 1). It is report-only: it classifies the owner of every registered
+ * in-progress record and records invariant violations, and never settles.
+ *
+ * Trigger and quiet condition (rules/sleep-aware-background-work.mdc):
+ * - one pass when the worker registers at startup, from durable truth;
+ * - a pass after any settled `active-execution-recovery` signal, which run
+ *   lifecycle, controller renewal and process-evidence writes already emit,
+ *   coalesced to at most one pass per 30 s;
+ * - a 30 s follow-up only while the last pass saw in-progress records whose
+ *   set changed, or owners proven gone for the first time (rule I2 needs a
+ *   second pass);
+ * - the end of rule I7's grace window for an issue that is still inside it.
+ * A pass that finds nothing in progress, or the same stuck set twice, sets no
+ * deadline: an idle instance runs no SQL here. The pass runs in the shared
+ * scheduler only, never on the path before `turn.start`.
+ */
+export function registerOwnershipReconciliationWork(
+  db: Db,
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  canRun: () => boolean,
+  options: {
+    onReport?: (report: OwnershipReport) => void;
+    /** False while heartbeat scheduling is suppressed for this instance. */
+    enabled?: () => Promise<boolean>;
+  } = {},
+) {
+  const state = createOwnershipReportState();
+  let nextRunAt: number | null = null;
+  let lastFingerprint: string | null = null;
+  let lastReport: OwnershipReport | null = null;
+  // A wake is consumed only by a pass that actually ran, so a wake that lands
+  // during idle drain survives until dispatch reopens.
+  let pendingWake = true;
+  // While scheduling is suppressed the worker parks with no deadline and runs
+  // no SQL; the next producer signal re-checks suppression.
+  let parked = false;
+  let lastPassAt: number | null = null;
+  const unsubscribers: Array<() => void> = [];
+  const worker = coordinator.register(DELIVERY_QUEUES.ownershipInvariantReport, {
+    retryMs: OWNERSHIP_REPORT_INTERVAL_MS,
+    // A wake is handled at once, so a suppressed instance parks immediately;
+    // full passes are throttled below without SQL.
+    coalesceMs: 0,
+    pausePassiveMaintenance: true,
+    run: async () => {
+      if (!canRun()) return;
+      if (options.enabled && !(await options.enabled())) {
+        parked = true;
+        nextRunAt = null;
+        return;
+      }
+      parked = false;
+      // At most one full pass per interval; a wake inside it waits for the
+      // interval's end (in memory, no SQL).
+      if (lastPassAt !== null && Date.now() - lastPassAt < OWNERSHIP_REPORT_INTERVAL_MS) {
+        nextRunAt = lastPassAt + OWNERSHIP_REPORT_INTERVAL_MS;
+        return;
+      }
+      lastPassAt = Date.now();
+      pendingWake = false;
+      const report = await runOwnershipReconciliationPass(db, { state });
+      const fingerprint = ownershipReportFingerprint(report);
+      const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
+      const followUp = changing || report.awaitingSecondProof > 0 || report.retryNeeded
+        ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      // A record inside a grace window (rule I7) is a real future obligation.
+      const graceDue = report.nextDueAt?.getTime() ?? null;
+      nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
+      if (fingerprint !== lastFingerprint) {
+        // One line per change of the in-progress set: the verdict counts per
+        // kind are the Phase 1 data (server log only, never Telemetry).
+        logger.info({
+          inProgress: report.inProgress,
+          violations: report.violations.length,
+          kinds: Object.fromEntries(report.kinds.filter(kind => kind.inProgress > 0 || kind.error)
+            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.truncated ? { truncated: true } : {}),
+              ...(kind.error ? { error: kind.error } : {}) }])),
+        }, "ownership reconciliation pass");
+      }
+      lastFingerprint = fingerprint;
+      lastReport = report;
+      options.onReport?.(report);
+    },
+    hasPending: async () => pendingWake && !parked,
+    nextRunAt: () => nextRunAt,
+    onStop: () => { for (const unsubscribe of unsubscribers.splice(0)) unsubscribe(); },
+  });
+  // Producers of the registered kinds that already publish settled work
+  // signals. Kinds whose writers publish none are read on any of these
+  // wakes and at startup (named in the report's coverage gaps).
+  for (const queue of OWNERSHIP_REPORT_WAKE_QUEUES) {
+    unsubscribers.push(subscribeDeliveryWork(db, queue, () => { pendingWake = true; parked = false; worker.wake(); }));
+  }
+  return {
+    ready: worker.ready,
+    wake: worker.wake,
+    lastReport: () => lastReport,
+    stop: worker.stop,
+  };
 }

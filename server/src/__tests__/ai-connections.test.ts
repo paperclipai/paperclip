@@ -2480,6 +2480,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const personal = await service.select({ ...input, userId: "alice" });
     const base = `/api/companies/${companyId}/ai-connections`;
+    const ownerList = await request(app).get(base);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.connections.find((account: { grantId: string }) => account.grantId === personal.grant.id)?.canSetDefault).toBe(true);
+    const viewerList = await request(app).get(base).set("x-test-role", "viewer");
+    expect(viewerList.status).toBe(200);
+    expect(viewerList.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault === false)).toBe(true);
+    const otherUserList = await request(app).get(base).set("x-test-user", "bob");
+    expect(otherUserList.status).toBe(200);
+    expect(otherUserList.body.connections.some((account: { grantId: string; canSetDefault: boolean }) => account.grantId === personal.grant.id && account.canSetDefault)).toBe(false);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connections`)).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-user", "bob").send({ grantId: personal.grant.id })).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-role", "viewer").send({ grantId: personal.grant.id })).status).toBe(403);
@@ -2492,6 +2501,60 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
   });
+  it("keeps personal-default list queries constant and other reads responsive with a blocked membership read", async () => {
+    const testCompany = randomUUID(), owner = "default-list-cost";
+    await db.insert(companies).values({ id: testCompany, name: "Default list cost", issuePrefix: "DLC" });
+    await db.insert(companyMemberships).values({ companyId: testCompany, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const first = await service.save(testCompany, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Default cost", agentIds: [], allAgents: false }, "fixture-cost");
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: owner, companyIds: [testCompany], memberships: [{ companyId: testCompany, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    app.get("/probe", async (_req, res) => { await db.execute(sql`select 1`); res.sendStatus(200); });
+    app.use("/api", aiConnectionRoutes(db));
+    const url = `/api/companies/${testCompany}/ai-connections`;
+    const selects = vi.spyOn(db, "select");
+    let smallQueries: number, largeQueries: number;
+    try {
+      expect((await request(app).get(url)).status).toBe(200);
+      smallQueries = selects.mock.calls.length;
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
+      const ids = Array.from({ length: 199 }, () => randomUUID());
+      await db.insert(toolConnections).values(ids.map(id => ({ ...connection, id, uid: id, name: `Cost ${id}` })));
+      await db.insert(connectionGrants).values(ids.map(connectionId => ({ ...grant, id: randomUUID(), connectionId })));
+      selects.mockClear();
+      const large = await request(app).get(url);
+      largeQueries = selects.mock.calls.length;
+      expect(large.status).toBe(200);
+      expect(large.body.connections).toHaveLength(200);
+      expect(large.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault)).toBe(true);
+      expect(largeQueries).toBe(smallQueries);
+      expect(largeQueries).toBeLessThan(30);
+    } finally { selects.mockRestore(); }
+
+    const held = deferredSignal(), release = deferredSignal();
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`lock table company_memberships in access exclusive mode`);
+      held.resolve(); await release.promise;
+    });
+    await held.promise;
+    const pending = request(app).get(url).then(response => response);
+    try {
+      let blocked = false;
+      const deadline = Date.now() + 5_000;
+      while (!blocked && Date.now() < deadline) {
+        const rows = await db.execute(sql`select pid from pg_stat_activity where wait_event_type = 'Lock' and query like '%company_memberships%'`);
+        blocked = rows.length > 0;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      expect((await request(app).get("/probe").timeout(2_000)).status).toBe(200);
+    } finally { release.resolve(); await holder; }
+    expect((await pending).status).toBe(200);
+  });
+
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();

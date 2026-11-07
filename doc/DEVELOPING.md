@@ -648,6 +648,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
@@ -3558,6 +3562,13 @@ that classification finishes.
   conflicting histories, changed profiles, and live or unverifiable owners do.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
+
+A warm local runner outlives its turn, so it carries a 7-minute reconnect grace
+(`localRunnerProcessReconnectGraceMs`, the same grace remote runners use). If its
+controller dies without suspending it, runnerd proves after the grace that no
+controller re-authenticated, stops its provider, keeps its durable state for a
+cold resume, and exits. A graceful controller shutdown suspends idle warm
+sessions first. A per-turn local runner keeps its connection-lease bound.
 
 Only successful turns retain a live warm provider session. A structured failed
 or cancelled result must retire that session and collect its managed files before

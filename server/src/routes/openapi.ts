@@ -261,6 +261,7 @@ import {
   retryWorkspaceExportSchema,
   reconstructWorkspaceSchema,
   resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1687,7 +1688,8 @@ function resolveOperationAuthLevel(
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
-  if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "board";
+  // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
+  if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -5811,7 +5813,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary",
   tags: ["agents"],
   summary: "Browse agent suggestions and complaints",
-  description: "Board-only. Requires company membership and commentary:view, granted by default to all human company roles. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
+  description: "Board members need company membership and commentary:view, granted by default to all human company roles. An agent may list only its own commentary (agentId set to itself) unless it holds commentary:view, which is never a default agent grant; otherwise it gets 403 with a remediation naming the Commentary page. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
   request: { params: z.object({ companyId: z.string() }), query: agentCommentaryQuerySchema },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -5821,7 +5823,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary/{id}",
   tags: ["agents"],
   summary: "Read a full agent commentary message",
-  description: "Same board, permission and task-privacy gates as the list. Returns the full body with agent, task and run context. Foreign-company and invisible entries return 404.",
+  description: "Same permission and task-privacy gates as the list. An agent may read its own entry, or any entry with commentary:view; another agent's entry returns 403 with a remediation. Returns the full body with agent, task and run context. Foreign-company and invisible entries return 404.",
   request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -11023,6 +11025,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Resume a saved native result after operator verification of the prior workspace owner's stop",
   body: resumeWorkspaceFinalizationSchema,
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-controller-stopped",
+  tags: ["issues"],
+  summary: "Confirm that a native run's previous server stopped when its host was not recorded",
+  body: confirmNativeControllerStoppedSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

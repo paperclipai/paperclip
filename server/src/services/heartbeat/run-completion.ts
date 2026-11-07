@@ -9,6 +9,7 @@ import { extractClaudeRetryNotBefore, isClaudeProviderQuotaError } from "@paperc
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { poolFailureKind, POOL_ACCOUNT_DEFAULT_COOLDOWN_MS, hasCompanyPoolAffinity } from "./pool-failover.js";
 import { effectiveRunAgent } from "./effective-run-adapter.js";
+import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
@@ -420,9 +421,9 @@ export function isConfigurationIncompleteFailedRun(
 }
 
 /**
- * Failure signatures from sandbox→host git workspace reconciliation. These
+ * Failure signatures from sandboxâ†’host git workspace reconciliation. These
  * describe the state of the SHARED workspace (divergent histories written by
- * different runs), not a defect in the agent that happened to run last —
+ * different runs), not a defect in the agent that happened to run last â€”
  * putting the agent into a sticky `error` state over them removes a healthy
  * agent from rotation while leaving the actual problem (the workspace)
  * untouched. The run still fails and carries the full message.
@@ -1207,10 +1208,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await processRunCancellationSettlements.get(run.id)?.settled;
     const providerFailure = providerFailureFromError(err);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const message = redactCurrentUserText(
-      identityRedactor.redact(err instanceof Error ? err.message : "Unknown adapter failure"),
-      currentUserRedactionOptions,
-    );
+    const redactFailureText = (text: string) =>
+      redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
+    const thrownMessage = redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure");
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err
       : null;
@@ -1227,23 +1227,39 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // durable coordinator is also the stronger authority here: legacy
     // runs simply have no row, while native result-less exhaustion keeps
     // its named failure instead of being flattened to `adapter_failed`.
-    const nativeTerminalFailureCode = await db
+    const nativeCoordinator = await db
       .select({
         phase: nativeRunFinalizations.phase,
         resultId: nativeRunFinalizations.resultId,
         failureCode: nativeRunFinalizations.failureCode,
+        attempt: nativeRunFinalizations.attempt,
+        recoveryHistory: nativeRunFinalizations.recoveryHistory,
       })
       .from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, run.id))
       .limit(1)
-      .then((rows) => {
-        const coordinator = rows[0];
-        return coordinator?.phase === "terminal_failure" &&
-          coordinator.resultId === null
-          ? coordinator.failureCode
-          : null;
-      })
+      .then((rows) => rows[0] ?? null)
       .catch(() => null);
+    const nativeTerminalFailureCode =
+      nativeCoordinator?.phase === "terminal_failure" &&
+      nativeCoordinator.resultId === null
+        ? nativeCoordinator.failureCode
+        : null;
+    // A same-run exact-checkpoint retry can fail closed before the executor
+    // claims a provider attempt, for example when the interrupted attempt left
+    // its checkpoint unresumable. The refusal alone hides why the run retried,
+    // so the reported failure names the interrupted attempt first. Failure
+    // classification reads only the thrown error (here and, through
+    // `nativeExactResumeRefusal.refusal`, in the retry and recovery
+    // classifiers). Both texts are masked whole before any length budget cuts
+    // them, so a cut cannot leave an unmasked username prefix.
+    const exactResumeCause = interruptedExactResumeCause(nativeCoordinator);
+    const interruptedExactResume = exactResumeCause
+      ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
+      : null;
+    const message = interruptedExactResume
+      ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      : thrownMessage;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1288,11 +1304,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       finishedAt: new Date(),
       resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
         errorCode: failureErrorCode,
-        errorMessage: message,
+        errorMessage: thrownMessage,
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
+          ...(interruptedExactResume ? { nativeExactResumeRefusal: {
+            originalFailureCode: interruptedExactResume.originalFailureCode,
+            originalMessage: boundOriginalMessage(interruptedExactResume.originalMessage),
+            interruptedAttempt: interruptedExactResume.interruptedAttempt,
+            refusal: thrownMessage,
+          } } : {}),
           ...requiredWorkspaceRestoreEvidence,
           ...(workspaceValidationFailure?.resultJson ??
             configurationIncompleteFailure?.resultJson ??
@@ -1342,7 +1364,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       keepIdleOnFailure:
         Boolean(nonRetryablePreflightFailureCode(err)) ||
-        isWorkspaceSyncConflictFailure(message),
+        isWorkspaceSyncConflictFailure(thrownMessage),
     });
     await setWakeupStatus(run.wakeupRequestId, "failed", {
       finishedAt: new Date(),

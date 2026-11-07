@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { NATIVE_POOL_FAILURE_CODES, DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
+import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
@@ -99,6 +100,7 @@ import { resolveGitHubOperationCredentials } from "../github-operation-credentia
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
+import { imageGenerationBindingForRun } from "./generate-image-tool.js";
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -142,7 +144,7 @@ import {
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type {
@@ -284,16 +286,20 @@ import {
   isNativeRunRootHistoricalSpan,
   nativeRunPreparationStarts,
   recordNativeProviderPerformanceSpans,
+  recordNativeRunnerStartupStep,
+  resolveNativeTimeToFirstTokenStart,
   type NativeRunHistoricalSpan,
   type NativeRunSpanScope,
   type NativeRunTrace,
 } from "./native-run-trace.js";
 import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { readNativeRunWakeRequestedAtMs } from "./native-run-wake-anchor.js";
 import { noteNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.js";
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { processExists, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
@@ -305,6 +311,8 @@ import {
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  recordLegacyHostFallbackProof,
+  type NativeControllerTakeoverDecision,
   proveNativeLocalRunnerStopped,
   nativeProviderProcessIdentities,
   NATIVE_PROVIDER_PROCESS_EVENT_TYPES,
@@ -579,21 +587,21 @@ const nativeRuntimeRequestResolutions = new Map<
   NativeRuntimeRequestResolution
 >();
 
-async function verifiedRecoveryProcessIsAlive(input: {
+/**
+ * True when the recorded runner still owns its PID. A start time within the
+ * shared precision window is the same process: `ps -o lstart` on macOS has
+ * whole-second precision, so an exact match would call a live runner gone.
+ */
+export async function verifiedRecoveryProcessIsAlive(input: {
   pid: number;
   startedAt: string;
 }): Promise<boolean> {
-  try {
-    process.kill(input.pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM")
-      return false;
-  }
+  if (!processExists(input.pid)) return false;
   try {
     const observed = await readProcessStartedAt(input.pid);
     return (
       observed !== null &&
-      new Date(observed).getTime() === new Date(input.startedAt).getTime()
+      !processStartsDefinitelyDiffer(input.startedAt, observed)
     );
   } catch {
     return false;
@@ -3154,9 +3162,14 @@ export async function verifyStoppedNativeSessionForContinuation(
           !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(retained.status) ||
           !retained.finishedAt || retained.finishedAt > run.createdAt ||
           retained.controllerLeaseExpiresAt && retained.controllerLeaseExpiresAt > new Date() ||
-          !retained.processStartedAt || !run.processStartedAt ||
-          retained.processStartedAt.getTime() !== run.processStartedAt.getTime() ||
-          retained.processPid !== run.processPid || retained.processGroupId !== run.processGroupId) return null;
+          // A run refused before launch (no launch event, checked above) and
+          // with no process record owns no process: only the previous owner's
+          // stop evidence below can certify the session. A source that does
+          // carry a process identity must still match the owner's exactly.
+          (run.processPid || run.processGroupId || run.processStartedAt) &&
+            (!retained.processStartedAt || !run.processStartedAt ||
+              retained.processStartedAt.getTime() !== run.processStartedAt.getTime() ||
+              retained.processPid !== run.processPid || retained.processGroupId !== run.processGroupId)) return null;
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, run.nativeIssueId),
         eq(nativeRunFinalizations.runId, retained.id),
@@ -5457,7 +5470,8 @@ const RETIREMENT_REASON_NAMES = {
     "recovery_needed"]),
   recoveryState: new Set(["blocked", "resuming_session", "awaiting_evidence", "awaiting_runner_reattach"]),
   controllerReason: new Set(["controller_still_alive", "coordinated_controller_still_alive", "remote_controller_lease_live",
-    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity"]),
+    "expired_lease_without_controller_identity", "live_legacy_lease_without_controller_identity",
+    "controller_host_unprovable", "controller_host_unrecorded"]),
   sandboxOutcome: new Set(["created", "resumed", "replacement"]),
 } as const;
 
@@ -5545,10 +5559,11 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   const finishedHere = () => isCurrentNativeControllerProcess(prior!.owner) &&
     !activeNativeSessions.has(identity.runId) && !nativeSessionStartups.has(identity.runId);
   const profile = record(prior.run.runnerProfileJson);
-  const stopped: { allowed: boolean; reason?: string } = finishedHere() ? { allowed: true } : await evaluateNativeControllerTakeover({ owner: prior.owner,
+  const stopped: NativeControllerTakeoverDecision = finishedHere() ? { allowed: true, reason: "finished_here" } : await evaluateNativeControllerTakeover({ owner: prior.owner,
     now: new Date(), requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return refuse(`controller_${retirementReasonName("controllerReason", stopped.reason)}`);
+  await recordLegacyHostFallbackProof(input.db, prior.run, stopped, "native_retirement");
   const provenFinishedHere = finishedHere();
   const proveLocalRunnerStopped = async (): Promise<NativeLocalRunnerStopProof> => {
     const run = prior!.run;
@@ -5924,9 +5939,14 @@ async function recoverQuiescentRunnerdState(input: {
       const control = record(JSON.parse(controlBytes));
       const provider = record(JSON.parse(providerBytes));
       const events = control.committedEvents;
+      // A warm runner whose controller died exits after its reconnect grace
+      // with settled, preserved state; it is as recoverable as a dead "ready"
+      // runner. Any other recoverable failure stays unproven.
+      const graceExpired = runner.lifecycle === "recoverable_failure"
+        && runner.recoverableFailure === "transport_reconnect_grace_exceeded";
       if (
         runner.schema !== RUNNERD_STATE_SCHEMA ||
-        !["ready", "suspended"].includes(String(runner.lifecycle)) ||
+        (!["ready", "suspended"].includes(String(runner.lifecycle)) && !graceExpired) ||
         (!currentEmpty && runner.lifecycle === "suspended") ||
         [
           "runId",
@@ -6118,7 +6138,9 @@ async function recoverQuiescentRunnerdState(input: {
   const temporary = `${statePath}.${randomUUID()}.tmp`;
   writeFileSync(
     temporary,
-    JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
+    // A grace-expired runner's failure cause is resolved by this proof.
+    JSON.stringify({ ...candidate.runner, lifecycle: "suspended",
+      ...(candidate.runner.recoverableFailure === "transport_reconnect_grace_exceeded" ? { recoverableFailure: null } : {}) }),
     { encoding: "utf8", mode: 0o600, flag: "wx" },
   );
   renameSync(temporary, statePath);
@@ -8012,7 +8034,7 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
   "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
-  "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
+  "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
 const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
@@ -9875,6 +9897,7 @@ async function executePaperclipNativeSessionWithinScope(
               leaseExpiresAt: sql`clock_timestamp() + ${executionLeaseTtlMs} * interval '1 millisecond'`,
               controllerBootId: controller.bootId,
               controllerPid: controller.pid,
+              controllerHostHash: controller.hostHash ?? null,
               controllerProcessStartedAt: controller.processStartedAt,
               controllerGeneration: nextControllerGeneration,
               failureCode: null,
@@ -10256,12 +10279,21 @@ async function executePaperclipNativeSessionWithinScope(
           firstTokenRecorded = true;
           const textAt = Date.now();
           await trace.record({name:"response.first_nonempty_text",parentName:"native.session.execute",startedAtMs:textAt,endedAtMs:textAt});
-          await trace.record({
-            name: "task.time_to_first_token",
-            parentName: "task.provider_session",
-            startedAtMs: trace.traceStartedAtMs,
-            endedAtMs: Date.now(),
-            attributes: { eventKind: textKind },
+          // Detached: the anchor read never delays this event, later events,
+          // or turn.start (invariant 8). The trace settles it at finish.
+          trace.defer(async () => {
+            const ttftStart = resolveNativeTimeToFirstTokenStart({
+              traceStartedAtMs: trace.traceStartedAtMs,
+              preparationSpans,
+              wakeRequestedAtMs: await readNativeRunWakeRequestedAtMs(input.db, input.execution.binding.runId),
+            });
+            await trace.record({
+              name: "task.time_to_first_token",
+              parentName: "task.provider_session",
+              startedAtMs: ttftStart.startedAtMs,
+              endedAtMs: textAt,
+              attributes: { eventKind: textKind, anchor: ttftStart.anchor },
+            });
           });
         }
         await observeAccountingEvent(event);
@@ -13425,21 +13457,17 @@ export async function verifyRemoteRunnerReattachment(input: {
   recoveryDeadline?: number;
 }) {
   const { claim, target, identity } = input;
-  if (
-    claim.remote.kind === "plugin_task" ||
-    target?.kind !== "remote" ||
-    target.transport !== "sandbox" ||
-    !target.runner ||
-    claim.runId !== input.runId ||
-    identity.runId !== input.runId ||
-    identity.normalizedSessionId !== input.normalizedSessionId ||
-    claim.remote.providerLeaseId !==
-      target.sandboxLeaseAcquisition?.providerLeaseId ||
-    target.sandboxLeaseAcquisition.outcome === "replacement" ||
-    claim.remote.remoteCwd !== target.remoteCwd
-  ) {
-    throw new Error("native_remote_recovery_lease_mismatch");
+  if (claim.remote.kind === "plugin_task") throw remoteRecoveryLeaseMismatch("runner_verification", "plugin_task");
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+    throw remoteRecoveryLeaseMismatch("runner_verification", "target");
   }
+  const mismatch = claim.runId !== input.runId ? "run_id" as const
+    : identity.runId !== input.runId ? "identity_run_id" as const
+    : identity.normalizedSessionId !== input.normalizedSessionId ? "identity_session_id" as const
+    : claim.remote.providerLeaseId !== target.sandboxLeaseAcquisition?.providerLeaseId ? "provider_lease_id" as const
+    : target.sandboxLeaseAcquisition?.outcome === "replacement" ? "replacement_sandbox" as const
+    : claim.remote.remoteCwd !== target.remoteCwd ? "remote_cwd" as const : null;
+  if (mismatch) throw remoteRecoveryLeaseMismatch("runner_verification", mismatch);
   const runner = target.runner;
   const probeDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -14351,6 +14379,8 @@ async function createRunnerdBackendWithinSessionClaim(
     executionTargetKind: target.kind,
     installRemoteArtifact: !pluginTask && remoteTarget && remoteCommandRunner
       ? createArtifactInstaller(remoteTarget.remoteCwd, remoteCommandRunner) : undefined,
+    imageGeneration: nativeReview || pluginTask ? undefined
+      : imageGenerationBindingForRun({ providerKind: input.execution.provider.kind, contextSnapshot: reviewRun?.contextSnapshot }),
     readRemoteWorkspaceFile: !pluginTask && remoteTarget && remoteCommandRunner
       ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
       : undefined,
@@ -16050,6 +16080,8 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
+        // Remote launchers record their own stage and launch spans.
+        ...(remoteTarget ? {} : { onStartupStep: (step: Parameters<typeof recordNativeRunnerStartupStep>[1]) => recordNativeRunnerStartupStep(input.trace, step) }),
         onSpawn: input.onSpawn,
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
@@ -16199,7 +16231,8 @@ async function createRunnerdBackendWithinSessionClaim(
         // A controller's bounded reconnect attempt is not the remote owner's
         // lifetime. Retain it through restarts until its authenticated lease
         // expires or explicit Stop/suspension proves that execution ended.
-        runnerProcessReconnectGraceMs: remoteTarget ? null : undefined,
+        // A warm local runner outlives its turn; bound it if its controller dies.
+        runnerProcessReconnectGraceMs: remoteTarget ? null : localRunnerProcessReconnectGraceMs(input.execution.session.lifecyclePolicy),
         environment: effectiveRunnerEnvironment,
         observability: input.observability,
         onDiagnostic: message => diagnostics.record(
