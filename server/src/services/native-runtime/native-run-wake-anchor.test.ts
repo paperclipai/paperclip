@@ -3,25 +3,30 @@ import type { Db } from "@paperclipai/db";
 
 import { readNativeRunWakeRequestedAtMs } from "./native-run-wake-anchor.js";
 
-function fakeDb(result: () => Promise<unknown[]>): Db {
+function fakeDb(result: () => Promise<unknown[]>, statements: string[] = []): Db {
   const chain = {
     select: () => chain, from: () => chain, innerJoin: () => chain, where: () => chain,
     limit: () => result(),
+    execute: async (query: { queryChunks?: unknown[] }) => { statements.push(JSON.stringify(query.queryChunks ?? query)); return []; },
   };
-  return chain as unknown as Db;
+  return { transaction: async (fn: (tx: typeof chain) => Promise<unknown>) => fn(chain) } as unknown as Db;
 }
 
 describe("readNativeRunWakeRequestedAtMs", () => {
-  it("returns the wake request acceptance time", async () => {
+  it("returns the wake request acceptance time under a transaction-local statement timeout", async () => {
     const at = new Date("2026-11-07T10:00:00.000Z");
-    await expect(readNativeRunWakeRequestedAtMs(fakeDb(async () => [{ requestedAt: at }]), "run")).resolves.toBe(at.getTime());
+    const statements: string[] = [];
+    await expect(readNativeRunWakeRequestedAtMs(fakeDb(async () => [{ requestedAt: at }], statements), "run", 250))
+      .resolves.toBe(at.getTime());
+    expect(statements.join(" ")).toContain("statement_timeout");
+    expect(statements.join(" ")).toContain("250ms");
   });
 
   it("returns null when the run has no wake request", async () => {
     await expect(readNativeRunWakeRequestedAtMs(fakeDb(async () => []), "run")).resolves.toBeNull();
   });
 
-  it("returns null when the read stays pending past the timeout", async () => {
+  it("stops waiting at the timeout even before the database answers", async () => {
     const pending = new Promise<unknown[]>(() => {});
     const startedAt = Date.now();
     await expect(readNativeRunWakeRequestedAtMs(fakeDb(() => pending), "run", 20)).resolves.toBeNull();

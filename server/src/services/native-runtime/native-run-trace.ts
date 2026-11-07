@@ -134,12 +134,16 @@ export function resolveNativeTimeToFirstTokenStart(input: {
       span.name === "question_response.to_run_created" ||
       span.name === "comment.to_run_created",
   );
+  // The trace starts at the earliest preparation span. A comment coalesced
+  // into an already-queued run starts after run creation, so it names the
+  // start only when it is that earliest span.
+  const ingressIsStart = ingress !== undefined && ingress.startedAtMs <= input.traceStartedAtMs;
   let anchor: NativeTimeToFirstTokenAnchor =
-    ingress?.name === "question_response.to_run_created"
-      ? "question_response"
-      : ingress
-        ? "comment"
-        : "run_created";
+    !ingressIsStart
+      ? "run_created"
+      : ingress.name === "question_response.to_run_created"
+        ? "question_response"
+        : "comment";
   let startedAtMs = input.traceStartedAtMs;
   const wakeAt = input.wakeRequestedAtMs;
   if (

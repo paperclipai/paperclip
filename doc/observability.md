@@ -751,7 +751,8 @@ question response when present, or the durable wake request's acceptance time wh
 it is earlier (deferred, coalesced and retried wakes); otherwise run creation from
 the queue span. The `anchor` attribute (`comment`, `question_response`,
 `wake_request`, `run_created`) names which one. The wake request time is read
-after the first text in detached diagnostic work bounded to 2 s, so it never adds a
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
 wait before `turn.start` and never delays event delivery. Callers without preparation history start at native
 dispatch. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends

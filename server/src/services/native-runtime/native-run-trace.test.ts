@@ -526,6 +526,14 @@ describe("time to first token anchor", () => {
     })).toEqual({ startedAtMs: 800, anchor: "question_response" });
   });
 
+  it("names run creation when a comment was coalesced into an already-queued run", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 1_000,
+      preparationSpans: [prep("heartbeat.queue", 1_000), prep("comment.to_run_created", 1_400)],
+      wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 1_000, anchor: "run_created" });
+  });
+
   it("moves back to an earlier accepted wake request (deferred or coalesced wakes)", () => {
     expect(resolveNativeTimeToFirstTokenStart({
       traceStartedAtMs: 5_000, preparationSpans: [prep("heartbeat.queue", 5_000)], wakeRequestedAtMs: 2_000,
