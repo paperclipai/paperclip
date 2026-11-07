@@ -673,7 +673,7 @@ async function resolveCloudTenantActorOnce(
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
         await notifyChatCompanyAuthorityChange(tx, { companyId });
-        if(membershipRole!=="viewer")await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
+        await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
       }
       return tx
         .insert(companyMemberships)
