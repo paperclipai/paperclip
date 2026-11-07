@@ -515,6 +515,86 @@ describePostgres("heartbeat run state database wiring", () => {
     expect(decision.handoffMarkdown).not.toContain("omit this");
   });
 
+  it("does not rotate OpenCode sessions on cumulative cache-read sums", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "opencode-cache",
+      usageJson: {
+        rawInputTokens: 150_000,
+        rawCachedInputTokens: 3_000_000,
+        rawInputIncludesCached: false,
+        rawOutputTokens: 40_000,
+        rawContextTokens: 90_000,
+      },
+    });
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "opencode_local" },
+      sessionId: "opencode-cache", issueId: issue.id,
+    });
+    expect(decision).toMatchObject({ rotate: false, reason: null });
+  });
+
+  it("rotates OpenCode sessions when the effective context high-water mark crosses the threshold", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "opencode-context",
+      usageJson: {
+        rawInputTokens: 120_000,
+        rawCachedInputTokens: 2_500_000,
+        rawInputIncludesCached: false,
+        rawOutputTokens: 30_000,
+        rawContextTokens: 240_000,
+      },
+    }).returning();
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "opencode_local" },
+      sessionId: "opencode-context", issueId: issue.id,
+    });
+    expect(decision).toMatchObject({
+      rotate: true,
+      reason: "session effective context reached 240,000 tokens (threshold 200,000)",
+      previousRunId: run.id,
+    });
+  });
+
+  it("honors explicit context-threshold overrides for OpenCode", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "opencode-override",
+      usageJson: { rawInputTokens: 1_000, rawCachedInputTokens: 50_000, rawInputIncludesCached: false, rawContextTokens: 40_000 },
+    });
+    const override = await state.evaluateSessionCompaction({
+      agent: {
+        ...agent,
+        adapterType: "opencode_local",
+        runtimeConfig: { heartbeat: { sessionCompaction: { maxContextTokens: 30_000 } } },
+      },
+      sessionId: "opencode-override", issueId: issue.id,
+    });
+    expect(override).toMatchObject({ rotate: true, reason: "session effective context reached 40,000 tokens (threshold 30,000)" });
+  });
+
+  it("keeps cumulative raw-input rotation for legacy adapters", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, invocationSource: "assignment", sessionIdAfter: "gemini-cache",
+      usageJson: {
+        rawInputTokens: 150_000,
+        rawCachedInputTokens: 3_000_000,
+        rawInputIncludesCached: false,
+        rawOutputTokens: 40_000,
+      },
+    });
+    const decision = await state.evaluateSessionCompaction({
+      agent: { ...agent, adapterType: "gemini_local" },
+      sessionId: "gemini-cache", issueId: issue.id,
+    });
+    expect(decision).toMatchObject({
+      rotate: true,
+      reason: "session raw input reached 3,150,000 tokens (threshold 2,000,000)",
+    });
+  });
+
   it.each(["superseded", "cancelled"] as const)("fences %s conversation session writes and clears", async (scenario) => {
     const { companyId, agent, issue, state } = await fixture();
     await db.update(issues).set({

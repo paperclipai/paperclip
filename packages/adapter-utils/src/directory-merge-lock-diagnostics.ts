@@ -6,6 +6,7 @@ const OPERATIONS = [
   "agent_directory_collect",
   "agent_directory_checkpoint",
   "agent_directory_handoff",
+  "task_workspace_cycle",
 ] as const satisfies readonly DirectoryMergeLockOperation[];
 // Fails to compile when the lock module adds an operation this list omits.
 const OPERATIONS_COMPLETE: [Exclude<DirectoryMergeLockOperation, typeof OPERATIONS[number]>] extends [never] ? true : false = true;

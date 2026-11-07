@@ -672,6 +672,7 @@ describe("adapter routes", () => {
         enabled: true,
         maxSessionRuns: 10,
         maxRawInputTokens: 100_000,
+        maxContextTokens: 0,
         maxSessionAgeHours: 24,
       },
     };

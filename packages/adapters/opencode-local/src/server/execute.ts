@@ -64,6 +64,11 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
+
+// Retry delay advertised to the heartbeat scheduler when a concurrent run of
+// the same task holds the stable-workspace cycle lock past the acquire wait.
+const STABLE_TASK_WORKSPACE_LOCK_RETRY_DELAY_MS = 60_000;
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -386,40 +391,111 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let localSkillsDir: string | null = null;
     let remoteRuntimeRootDir: string | null = null;
+    let stableTaskWorkspaceActive = false;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+    // A setup failure after the remote workspace was prepared leaves the
+    // stable-task cycle lock held. Tear the remote side down before rethrowing
+    // so later wakes of the same task are not blocked. Both steps are
+    // idempotent; the runAttempt finally may repeat them on the normal path.
+    const teardownRemoteWorkspaceOnSetupFailure = async (error: unknown): Promise<never> => {
+      await (paperclipBridge?.stop() ?? Promise.resolve()).catch(() => undefined);
+      await (restoreRemoteWorkspace?.() ?? Promise.resolve()).catch(() => undefined);
+      throw error;
+    };
 
     if (executionTarget?.kind === "remote") {
       localSkillsDir = await buildOpenCodeSkillsDir(config);
+      // Stable per-task workspace (opt-in, SSH transport only): the remote
+      // workspace directory persists across runs of the same task so the
+      // OpenCode session can be resumed in place. Disabled by default; the
+      // legacy per-run workspace remains the rollback path.
+      // An explicit config value wins in both directions so the documented
+      // rollback (stableTaskWorkspace=false) stays effective even when the
+      // environment flag is still set.
+      const stableTaskWorkspaceEnabled =
+        config.stableTaskWorkspace === true
+          ? true
+          : config.stableTaskWorkspace === false
+            ? false
+            : isTruthyEnvFlag(env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE ?? process.env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE);
+      const stableTaskWorkspaceIdentity =
+        stableTaskWorkspaceEnabled && executionTarget.transport === "ssh" && wakeTaskId && agent?.id && agent?.companyId
+          ? { companyId: agent.companyId, agentId: agent.id, issueId: wakeTaskId }
+          : null;
+      if (stableTaskWorkspaceEnabled && !stableTaskWorkspaceIdentity) {
+        await onLog(
+          "stdout",
+          "[paperclip] Stable task workspace requested but unavailable (requires the SSH transport plus company, agent, and task identity); falling back to the per-run workspace.\n",
+        );
+      } else if (stableTaskWorkspaceIdentity) {
+        await onLog(
+          "stdout",
+          `[paperclip] Stable task workspace enabled for task ${stableTaskWorkspaceIdentity.issueId} of agent ${stableTaskWorkspaceIdentity.agentId}.\n`,
+        );
+      }
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
-      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
-        runId,
-        target: executionTarget,
-        adapterKey: "opencode",
-        timeoutSec,
-        workspaceLocalDir: cwd,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: command,
-        onProgress: (line) => onLog("stdout", line),
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        assets: [
-          {
-            key: "skills",
-            localDir: localSkillsDir,
-            followSymlinks: true,
-          },
-          ...(localRuntimeConfigHome
-            ? [{
-              key: "xdgConfig",
-              localDir: localRuntimeConfigHome,
-            }]
-            : []),
-        ],
-      });
+      let preparedExecutionTargetRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>>;
+      try {
+        preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+          runId,
+          target: executionTarget,
+          adapterKey: "opencode",
+          timeoutSec,
+          workspaceLocalDir: cwd,
+          ...(stableTaskWorkspaceIdentity ? { taskWorkspace: stableTaskWorkspaceIdentity } : {}),
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          assets: [
+            {
+              key: "skills",
+              localDir: localSkillsDir,
+              followSymlinks: true,
+            },
+            ...(localRuntimeConfigHome
+              ? [{
+                key: "xdgConfig",
+                localDir: localRuntimeConfigHome,
+              }]
+              : []),
+          ],
+        });
+      } catch (error) {
+        // A concurrent run of the same task holds the stable-workspace cycle
+        // lock. Fail fast, but advertise a bounded transient retry so the
+        // heartbeat scheduler re-runs the wake instead of recording a
+        // terminal setup failure. The timeout is raised during remote runtime
+        // preparation, strictly before any provider work, so the bootstrap
+        // recovery evidence keeps the retry free of legacy-execution
+        // reconciliation holds.
+        if ((error as NodeJS.ErrnoException | null)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
+          const retryNotBefore = new Date(Date.now() + STABLE_TASK_WORKSPACE_LOCK_RETRY_DELAY_MS).toISOString();
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+            errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+            retryNotBefore,
+            resultJson: {
+              executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+              retryNotBefore,
+              transientRetryNotBefore: retryNotBefore,
+            },
+            clearSession: false,
+          } satisfies AdapterExecutionResult;
+        }
+        throw error;
+      }
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      stableTaskWorkspaceActive = preparedExecutionTargetRuntime.taskWorkspaceIdentity != null;
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env: preparedRuntimeConfig.env,
@@ -448,51 +524,60 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runtimeRootDir: preparedExecutionTargetRuntime.runtimeRootDir,
         runId,
         configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
+        stableTaskHomes: stableTaskWorkspaceActive,
       });
-      const remoteHomeDir = config.managedAiConnection
-        ? preparedRuntimeConfig.env.HOME
-        : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
-            cwd,
-            env: preparedRuntimeConfig.env,
-            timeoutSec,
-            graceSec,
-            onLog,
-          });
-      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
-        await runAdapterExecutionTargetShellCommand(
+      try {
+        const remoteHomeDir = config.managedAiConnection
+          ? preparedRuntimeConfig.env.HOME
+          : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+            ? preparedExecutionTargetRuntime.runtimeRootDir
+            : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+              cwd,
+              env: preparedRuntimeConfig.env,
+              timeoutSec,
+              graceSec,
+              onLog,
+            });
+        if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+          const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
+          await runAdapterExecutionTargetShellCommand(
+            runId,
+            executionTarget,
+            `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+            { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+          );
+        }
+        await ensureRemoteOpenCodeModelConfiguredAndAvailable({
           runId,
           executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
-          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
-        );
+          command,
+          model,
+          cwd,
+          env: preparedRuntimeConfig.env,
+          timeoutSec,
+          graceSec,
+        });
+      } catch (error) {
+        await teardownRemoteWorkspaceOnSetupFailure(error);
       }
-      await ensureRemoteOpenCodeModelConfiguredAndAvailable({
-        runId,
-        executionTarget,
-        command,
-        model,
-        cwd,
-        env: preparedRuntimeConfig.env,
-        timeoutSec,
-        graceSec,
-      });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
-      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-        runId,
-        target: runtimeExecutionTarget,
-        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
-        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
-        runtimeRootDir: remoteRuntimeRootDir,
-        adapterKey: "opencode",
-        timeoutSec,
-        hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
-        onLog,
-      });
+      try {
+        paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+          runId,
+          target: runtimeExecutionTarget,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
+          runtimeRootDir: remoteRuntimeRootDir,
+          adapterKey: "opencode",
+          timeoutSec,
+          hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
+          onLog,
+        });
+      } catch (error) {
+        await teardownRemoteWorkspaceOnSetupFailure(error);
+      }
       if (paperclipBridge) {
         Object.assign(preparedRuntimeConfig.env, paperclipBridge.env);
         loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
@@ -510,13 +595,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionParams = parseObject(runtime.sessionParams);
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeSessionWorkspaceId = asString(runtimeSessionParams.workspaceId, "");
+    const runtimeSessionRepoUrl = asString(runtimeSessionParams.repoUrl, "");
+    const runtimeSessionRepoRef = asString(runtimeSessionParams.repoRef, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    // In stable-workspace mode the directory alone no longer proves session
+    // compatibility: the same task can be rebound to a different workspace or
+    // repository over time, and resuming a session saved for another
+    // repository would replay stale context onto unrelated files. Empty saved
+    // fields (older sessions) are treated as unknown and never block resume.
+    const stableWorkspaceIdentityMatches = !stableTaskWorkspaceActive
+      || (
+        (runtimeSessionWorkspaceId.length === 0 || workspaceId.length === 0 || runtimeSessionWorkspaceId === workspaceId) &&
+        (runtimeSessionRepoUrl.length === 0 || workspaceRepoUrl.length === 0 || runtimeSessionRepoUrl === workspaceRepoUrl) &&
+        (runtimeSessionRepoRef.length === 0 || workspaceRepoRef.length === 0 || runtimeSessionRepoRef === workspaceRepoRef)
+      );
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      stableWorkspaceIdentityMatches &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (stableTaskWorkspaceActive && runtimeSessionId && !stableWorkspaceIdentityMatches) {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode session "${runtimeSessionId}" was saved for a different workspace (workspaceId/repo changed) and will not be resumed in the stable task workspace. Starting a fresh session.\n`,
+      );
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] OpenCode session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,

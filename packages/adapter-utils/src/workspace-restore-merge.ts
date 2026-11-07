@@ -246,7 +246,8 @@ export type DirectoryMergeLockOperation =
   | "agent_directory_release"
   | "agent_directory_collect"
   | "agent_directory_checkpoint"
-  | "agent_directory_handoff";
+  | "agent_directory_handoff"
+  | "task_workspace_cycle";
 
 /** Evidence only: neither process age nor this module's holder set can prove
  * that a lock in another process or PID namespace is safe to reclaim. */
@@ -579,6 +580,30 @@ export async function tryWithDirectoryMergeLock<T>(targetDir: string, fn: () => 
     if ((error as NodeJS.ErrnoException).code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return undefined;
     throw error;
   }
+}
+
+/**
+ * Acquire a directory merge lock for an arbitrary stable string key instead of
+ * a local directory path. Used by callers that must serialize a whole
+ * prepare/execute/restore cycle around a resource that has no local canonical
+ * path (for example a per-task remote workspace directory identified by
+ * company, agent, issue, and SSH target). The lock itself is identical to the
+ * directory-keyed variant: same SQLite authority, same owner diagnostics, same
+ * OS-released-on-crash semantics. The release closure must always be called,
+ * including on error paths; a process crash releases it via the OS.
+ */
+export async function acquireKeyedDirectoryMergeLock(
+  lockKey: string,
+  operation?: DirectoryMergeLockOperation,
+  waitMs: number = LOCK_WAIT_MS,
+): Promise<() => Promise<void>> {
+  const trimmedKey = typeof lockKey === "string" ? lockKey.trim() : "";
+  if (trimmedKey.length === 0) {
+    throw new Error("Keyed directory merge lock requires a non-empty key.");
+  }
+  const lockRoot = await resolveDirectoryMergeLockRoot();
+  const lockName = createHash("sha256").update(`keyed:${trimmedKey}`).digest("hex");
+  return acquireDirectoryMergeLock(path.join(lockRoot, `${lockName}.lock`), operation, waitMs);
 }
 
 async function withCanonicalDirectoryMergeLock<T>(

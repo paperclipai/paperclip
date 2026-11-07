@@ -38,10 +38,13 @@ describe("opencode_local parser", () => {
     const parsed = parseOpenCodeJsonl(stdout);
     expect(parsed.sessionId).toBe("ses_123");
     expect(parsed.summary).toBe("hello");
+    // The largest single-step footprint (100 input + 20 cache read + 40 output
+    // = 160) is the effective context high-water mark used for rotation.
     expect(parsed.usage).toEqual({
       inputTokens: 150,
       cachedInputTokens: 30,
       outputTokens: 65,
+      contextTokens: 160,
     });
     expect(parsed.costUsd).toBeCloseTo(0.003, 6);
     expect(parsed.errorMessage).toBe("model access denied");

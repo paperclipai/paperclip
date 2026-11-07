@@ -105,6 +105,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- stableTaskWorkspace (boolean, optional, default false): opt in to a stable remote per-task workspace (SSH transport only). The remote workspace directory becomes .paperclip-runtime/tasks/<companyId>/<agentId>/<issueId>/workspace and persists across runs of the same task, so OpenCode resumes its session in place (identical session id, session cwd preserved) instead of starting fresh every wake. Runtime assets and session storage live under the workspace's .paperclip-runtime subtree, which survives per-run syncs and restores. Concurrent runs of the same task are serialized by a workspace cycle lock (a concurrent attempt fails fast with a recoverable lock-timeout error). Resuming is additionally guarded by workspace/repo identity: rebinding the task to an incompatible workspace or repository starts a fresh session instead of resuming a stale one. Can also be enabled per run with the PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE env flag. Rollback: unset the flag (or set stableTaskWorkspace=false) — runs fall back to the legacy per-run workspace immediately; the stable directory is simply no longer used.
 
 Notes:
 - OpenCode supports multiple providers and models. Use \
