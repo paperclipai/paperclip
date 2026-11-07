@@ -109,9 +109,6 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     try {
       if (req.actor.type === "none") throw unauthorized("Authentication required");
       assertCompanyAccess(req, String(req.params.companyId));
-      // Skill routes accept either the skill UUID or its slug/key. Resolve the
-      // route ref (UUID lookups only run for UUID-like values) and hand
-      // downstream handlers the canonical skill id so they can use getById.
       const skill = await svc.getByRouteRef(String(req.params.companyId), id);
       if (!skill) throw notFound("Skill not found");
       req.params.skillId = skill.id;
