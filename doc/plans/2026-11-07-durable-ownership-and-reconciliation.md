@@ -69,6 +69,61 @@ Each metric is reported by adapter (Codex, Claude/ACPX, OpenCode) and environmen
    - RC-27: a 5-minute orphan reaper.
 4. **Phase 0 measures, then sets budgets.** It records a baseline for every metric above. Phase 1 sets p50/p95 budgets per adapter and environment. From then on, every phase's exit criteria include "no regression against the baseline". The on-demand crash-point suite and the chaos soak also report TTFT and restart recovery latency.
 
+### Speed budgets (Phase 1)
+
+Phase 1 sets these budgets from the local baseline in `2026-11-07-ttft-baseline.md`. Each budget is the baseline value times 1.2, rounded up to 0.5 s. The 20% headroom covers the small samples and the shared host of the baseline. Daytona and other remote environments get budgets after their own baseline.
+
+A single run is checked against its p95 budget. When a run exceeds it, the run log gets one `run.performance.budget_exceeded` row (`doc/run-log-events.md`). The p50 budgets apply to aggregates: chaos waves, the baseline driver, and staging. Every later phase's exit criteria include "no regression against these budgets". The table lives in code at `server/src/services/native-runtime/native-speed-budgets.ts`.
+
+Time to first token (s, p50 / p95):
+
+| Adapter | Cold | Warm |
+|---|---|---|
+| claude | 16.5 / 30.0 | 9.5 / 28.5 |
+| codex | 6.0 / 17.0 | 10.0 / 28.5 |
+| opencode | 17.5 / 49.0 | 26.5 / 88.0 |
+
+Agent boot (s, p50 / p95):
+
+| Adapter | Cold | Warm |
+|---|---|---|
+| claude | 9.0 / 20.5 | 3.5 / 16.5 |
+| codex | 2.5 / 7.0 | 5.0 / 16.5 |
+| opencode | 12.0 / 37.0 | 22.0 / 65.5 |
+
+Restart recovery latency, from `ready` to the recovered run's next provider event (s, p50 / p95). The source is the baseline's run 4, which has 2 samples per adapter and disposition, so the largest disposition row is used:
+
+| Adapter | Budget |
+|---|---|
+| claude | 15.0 / 22.5 |
+| codex | 6.5 / 8.0 |
+| opencode | 25.5 / 38.5 |
+
+These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
+
+### Phase 1 report-only data: local chaos waves (2026-11-07)
+
+Three local waves (`tests/restart-chaos`, `--env local`, one adapter each, 6 tasks, faults K1 and K2, seed 62) ran on the Phase 1 stack at `9fe186de36`. All 18 tasks passed R1–R6 and crossed a restart. The ownership report ran 13 passes per wave and saw at most 19–23 in-progress records at once.
+
+| Kind | Owner verdicts (record-passes, three waves) |
+|---|---|
+| `environment_run_lease_active` | alive 196 |
+| `issue_execution_lock` | alive 80 |
+| `issue_checkout_lock` | alive 80 |
+| `wake_request_claimed` | alive 80 |
+| `native_restart_recovery_claim` | alive 64 (re-stamped by the new boot) |
+| `native_executor_claim` | alive 16 |
+| `run_accounting_debt` | unprovable 4 (no owner stamp; transient) |
+
+Invariant violations: **0** for every rule and kind (I1, I2, I3, I4 and I7). No owner was ever proven gone, so I2 never fired.
+
+What the data does and does not show:
+
+- The existing per-subsystem paths settle dead-owner records within about 1 s of `ready`, before the first report pass. A pass every 30 s, triggered by work signals, does not catch those short windows. The crash-point suite (Phase 5) is the tool for them; the report measures records that stay stuck.
+- These waves exercise only the run-lifecycle kinds. Remote, workspace and accounting kinds need Daytona waves, K4 and K6 faults, and longer storms. The overnight campaign's failures came mostly from those.
+- Track 1 now stamps the PID space on `native_run_finalizations` (#19868) and `heartbeat_runs` (#19871), and the registry reads those stamps. Rows written before them stay `unprovable`. Phase 2 needs the same stamp on every kind it moves before that kind can settle by proof.
+- Restart-crossing dispatches exceeded the TTFT and boot budgets because those metrics spanned the outage. The budget check now judges such dispatches only on restart-recovery latency.
+
 ## Relationship to the zero-downtime upgrade work
 
 Separate work moves the control plane toward zero-downtime upgrades on an ephemeral filesystem. PostgreSQL holds execution authority and durable protocol state. Object storage holds workspace archives, provider checkpoints, logs, traces and skill assets. Replacement servers reuse stable encryption and signing secrets. Most of the foundations are on master; #19830 is still open. Entry points:
