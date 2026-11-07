@@ -38,6 +38,8 @@ export type LocalOwnerStamp = {
   processGroupStartedAt?: string | null;
   /** The platform deployment that ran the owner, when the platform names one. */
   worker?: WorkspaceWorker | null;
+  /** The platform volume mounted by that deployment, when the stamp recorded one. */
+  volumeId?: string | null;
 };
 
 export type RemoteOwnerStamp = {
@@ -101,7 +103,7 @@ export type ProcessProbe = {
   /** This process's platform deployment. `exclusiveVolume` is true only when
    * the platform stops every earlier deployment of the service before it
    * starts this one (a Railway service with an attached volume). */
-  deployment?: { worker: WorkspaceWorker; exclusiveVolume: boolean } | null;
+  deployment?: { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId?: string | null } | null;
 };
 
 function processGroupExists(processGroupId: number): boolean {
@@ -121,7 +123,8 @@ function processGroupExists(processGroupId: number): boolean {
 export function currentDeploymentIdentity(env: NodeJS.ProcessEnv = process.env): ProcessProbe["deployment"] {
   const worker = currentWorkspaceWorker(env);
   if (!worker) return null;
-  return { worker, exclusiveVolume: Boolean(env.RAILWAY_VOLUME_ID?.trim() && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()) };
+  const volumeId = env.RAILWAY_VOLUME_ID?.trim() || null;
+  return { worker, exclusiveVolume: Boolean(volumeId && env.RAILWAY_VOLUME_MOUNT_PATH?.trim()), volumeId };
 }
 
 export function currentProcessProbe(): ProcessProbe {
@@ -202,7 +205,7 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
   if (stamp.bootId && stamp.bootId === probe.bootId) return { verdict: "alive", reason: "current_process" };
   // The platform stopped the owner's whole deployment, with every process and
   // orphaned child in it, before it started this one. Host and PID are moot.
-  if (deploymentReplaced(stamp.worker, probe.deployment)) return { verdict: "gone", reason: "deployment_replaced" };
+  if (deploymentReplaced(stamp, probe.deployment)) return { verdict: "gone", reason: "deployment_replaced" };
   if (!validPid(stamp.pid) || !stamp.processSpace) return { verdict: "unprovable", reason: "missing_identity" };
   if (stamp.processSpace === UNKNOWN_PROCESS_SPACE || probe.processSpace === UNKNOWN_PROCESS_SPACE) {
     return { verdict: "unprovable", reason: "unknown_process_space" };
@@ -245,8 +248,12 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
   return { verdict: "gone", reason: processReason };
 }
 
-function deploymentReplaced(stamped: WorkspaceWorker | null | undefined, current: ProcessProbe["deployment"]): boolean {
+function deploymentReplaced(stamp: LocalOwnerStamp, current: ProcessProbe["deployment"]): boolean {
+  const stamped = stamp.worker;
   if (!stamped || !current?.exclusiveVolume) return false;
+  // A stamp that recorded its volume must name this same volume. Older stamps
+  // predate the field; the service and environment then name the volume.
+  if (stamp.volumeId != null && stamp.volumeId !== current.volumeId) return false;
   const worker = current.worker;
   return stamped.provider === worker.provider && stamped.projectId === worker.projectId
     && stamped.environmentId === worker.environmentId && stamped.serviceId === worker.serviceId

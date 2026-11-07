@@ -197,9 +197,20 @@ describe("proveOwnerGone: replaced platform deployment", () => {
   it("reads the deployment and volume from the Railway environment", () => {
     const env = { RAILWAY_PROJECT_ID: "p", RAILWAY_ENVIRONMENT_ID: "e", RAILWAY_SERVICE_ID: "s", RAILWAY_DEPLOYMENT_ID: "d" };
     expect(currentDeploymentIdentity(env)).toEqual({ worker: { provider: "railway", projectId: "p", environmentId: "e",
-      serviceId: "s", deploymentId: "d" }, exclusiveVolume: false });
+      serviceId: "s", deploymentId: "d" }, exclusiveVolume: false, volumeId: null });
     expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_ID: "v", RAILWAY_VOLUME_MOUNT_PATH: "/data" })?.exclusiveVolume).toBe(true);
     expect(currentDeploymentIdentity({})).toBeNull();
+    // A half-configured volume is not exclusivity: fall back to other proof.
+    expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_ID: "v" })?.exclusiveVolume).toBe(false);
+    expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_MOUNT_PATH: "/data" })?.exclusiveVolume).toBe(false);
+  });
+
+  it("binds a stamp that recorded its volume to that same volume", async () => {
+    const withVolume = (volumeId: string) => probe({ host: "new-container", deployment: {
+      worker: { ...worker, deploymentId: "new" }, exclusiveVolume: true, volumeId } });
+    expect(await proveOwnerGone(stamp({ worker, volumeId: "vol-a" }), withVolume("vol-a")))
+      .toEqual({ verdict: "gone", reason: "deployment_replaced" });
+    expect((await proveOwnerGone(stamp({ worker, host: "old", volumeId: "vol-a" }), withVolume("vol-b"))).verdict).toBe("unprovable");
   });
 });
 

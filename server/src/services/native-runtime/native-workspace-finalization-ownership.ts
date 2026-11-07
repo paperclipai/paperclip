@@ -49,6 +49,8 @@ type Owner = {
   /** Copyback children inherit this group; a successor uses it to prove they stopped. */
   processGroupId?: number;
   worker?: WorkspaceWorker;
+  /** The platform volume this deployment mounted; it binds a later deployment proof. */
+  volumeId?: string;
 };
 export type NativeWorkspaceFinalizationWaitReason =
   | "busy"
@@ -109,6 +111,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     token: randomUUID(), controllerBootId: identity.bootId, hostname: os.hostname(), pid: identity.pid,
     processStartedAt: identity.processStartedAt.toISOString(),
     ...(processGroupId ? { processGroupId } : {}), worker: currentWorkspaceWorker(),
+    ...(process.env.RAILWAY_VOLUME_ID?.trim() ? { volumeId: process.env.RAILWAY_VOLUME_ID.trim() } : {}),
   };
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
     input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
@@ -217,7 +220,8 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
             // proof by itself: the platform stopped the old deployment first.
             const replaced = await proveOwnerGone({ kind: "local", scope: "native_workspace_finalization", generation: null,
               host: prior.hostname, processSpace: null, bootId: prior.controllerBootId ?? null, pid: prior.pid,
-              processStartedAt: prior.processStartedAt, worker: prior.worker });
+              processStartedAt: prior.processStartedAt, worker: prior.worker,
+              volumeId: typeof prior.volumeId === "string" ? prior.volumeId : null });
             if (replaced.verdict === "gone" && replaced.reason === "deployment_replaced")
               deploymentProof = { reason: "deployment_replaced", previousDeploymentId: prior.worker.deploymentId, worker: prior.worker };
             if (!deploymentProof) {

@@ -226,11 +226,27 @@ describe("native workspace owner recovery after a restart", () => {
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toHaveLength(0);
     });
 
+    it("keeps the save fenced when the receipt names a different volume", async () => {
+      currentDeployment();
+      const seed = await previousDeploymentOwner();
+      const owner = { ...seed.owner, volumeId: randomUUID() };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } })
+        .where(eq(heartbeatRuns.id, seed.runId));
+      const work = vi.fn(async () => "second physical writer");
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "owner_unverified" });
+      expect(work).not.toHaveBeenCalled();
+      const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, seed.issueId),
+        eq(issueRecoveryActions.fingerprint, nativeSha256({ runId: seed.runId, owner }))));
+      expect(action.nextAction).toContain("Resume saved result");
+      expect(action.nextAction).not.toMatch(/\bverify\b|\binspect\b/i);
+    });
+
     it.each([
       ["the same deployment", () => ({ RAILWAY_DEPLOYMENT_ID: worker.deploymentId })],
       ["a service without a volume", () => ({ RAILWAY_VOLUME_ID: "", RAILWAY_VOLUME_MOUNT_PATH: "" })],
       ["another service", () => ({ RAILWAY_SERVICE_ID: randomUUID() })],
       ["another environment", () => ({ RAILWAY_ENVIRONMENT_ID: randomUUID() })],
+      ["a half-configured volume", () => ({ RAILWAY_VOLUME_MOUNT_PATH: "" })],
     ] as const)("keeps the save fenced on %s", async (_case, overrides) => {
       currentDeployment(overrides());
       const seed = await previousDeploymentOwner();

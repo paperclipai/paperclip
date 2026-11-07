@@ -206,9 +206,14 @@ exact receipt as it does for a harness receipt, logs
 `issue.workspace_owner_stop_verified` with `deploymentProof`, marks the
 recovery `resuming`, and resumes the save with no provider turn. The same
 deployment ID, another service or environment, or a server without a volume
-gives no proof; the harness request below still applies. Receipts saved by
-earlier releases already record the deployment, so they take this path after
-an upgrade.
+gives no proof; the harness request below still applies. New receipts also
+record the mounted volume ID, and the proof then requires this server to mount
+that same volume. Receipts saved by earlier releases already record the
+deployment, so they take this path after an upgrade. The finalizer reaches this
+check only after it holds the run's copyback advisory lock, so the previous
+owner's lock session has also ended. A wait that this rule and the harness
+cannot settle names the Resume saved result action; its text never asks a
+person to inspect a server.
 
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
