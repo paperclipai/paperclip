@@ -3783,6 +3783,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #eventSourceSeq = 0;
   #eventIdentity: DurableRecoveryIdentity | null = null;
   #sourceRecoveryIdentity: DurableRecoveryIdentity | null = null;
+  // Set when this transport's core starts while a later run already owns the
+  // session (ordinary source recovery). The owner also moves ahead during a
+  // live warm run attachment; that alone never makes the prior run a source.
+  #startedRetainingSource = false;
   #sourceAttachmentDeadline: number | null = null;
   #pendingWarmRecoveryCompletion: {
     transitionId: string;
@@ -4023,6 +4027,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const identity = this.#eventIdentity ?? this.options.prpIdentity;
     return this.#authorityRunId() !== undefined && identity !== undefined && identity !== null
       && this.#authorityRunId() !== identity.runId;
+  }
+
+  /** The source run whose committed events need recovery accounting, if any. */
+  #sourceAccountingIdentity(): DurableRecoveryIdentity | undefined {
+    if (this.#sourceRecoveryIdentity) return this.#sourceRecoveryIdentity;
+    // A live warm attachment keeps this transport's prior run on ordinary
+    // accounting. The executor drains that run's usage under the new owner.
+    if (!this.#startedRetainingSource || !this.#retainsSourceInputs()) return undefined;
+    return this.#eventIdentity ?? this.options.prpIdentity;
   }
 
   evidence(): CapabilityRunnerdProcessEvidence {
@@ -4596,6 +4609,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#assertStartupOpen();
       if (retainingSource) await core.flushCheckpoint();
       this.#eventIdentity = structuredClone(desired);
+      this.#startedRetainingSource = false;
       this.#eventSourceSeq = 0;
       this.#deferredTurnStartEvents = [];
       this.#durableTurnId = desired.turnId;
@@ -5567,6 +5581,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? params.dynamicTools.map(record)
       : [];
     const authorityRunId = this.#authorityRunId;
+    this.#startedRetainingSource = this.#retainsSourceInputs();
     const core = new DurablePrpControlPlane({
       stateDirectory: resolve(this.#root, "control-plane"),
       identity,
@@ -5578,7 +5593,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
-        const source = this.#sourceRecoveryIdentity ?? (this.#retainsSourceInputs() ? this.#eventIdentity ?? this.options.prpIdentity : undefined);
+        const source = this.#sourceAccountingIdentity();
         if (source && event.runId === source.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");
           await this.options.onRecoveryAccountingEvent?.(event, source);
@@ -6078,6 +6093,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           )
         : undefined;
     const authorityRunId = this.#authorityRunId;
+    this.#startedRetainingSource = this.#retainsSourceInputs();
     const core = new DurablePrpControlPlane({
       stateDirectory: controlPlaneDirectory,
       identity,
@@ -6089,7 +6105,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
-        const source = this.#sourceRecoveryIdentity ?? (this.#retainsSourceInputs() ? this.#eventIdentity ?? this.options.prpIdentity : undefined);
+        const source = this.#sourceAccountingIdentity();
         if (source && event.runId === source.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");
           await this.options.onRecoveryAccountingEvent?.(event, source);

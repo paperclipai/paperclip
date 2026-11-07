@@ -8345,6 +8345,47 @@ describe("native terminal-turn accounting", () => {
     }
   });
 
+  it("acknowledges source lifecycle events without a proven recovery usage source", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "native-plugin-recovery-lifecycle-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = directory;
+    const current = { ...execution, provider: { kind: "codex", model: "gpt-6-astra" },
+      binding: { ...execution.binding, runId: "plugin-lifecycle-run", executionWorkspaceId: "plugin-lifecycle-workspace" },
+      session: { ...execution.session, normalizedSessionId: "plugin-lifecycle-session" } } as NativeExecutionInput;
+    const launcher = vi.fn(), registration = vi.fn();
+    const driver = { authorityRunId: current.binding.runId, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+    const task = vi.fn(async (operation: unknown) => {
+      environmentTaskOperationSchema.parse(operation);
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
+        runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    const capture = vi.fn(async (_event: PrpEvent) => {});
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    try {
+      // A fresh session has no durable source identity, so it has no recovery usage delivery.
+      await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "plugin-producer", runnerIngressAuthorized: true,
+        onAccountingEvent: capture, runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin",
+          leaseId: "plugin-lifecycle-lease", remoteCwd: "/unused", runnerTask: task } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const recover = state.createTransport.mock.calls.at(-1)![0].onRecoveryAccountingEvent as
+        (event: PrpEvent, source: Record<string, string>) => Promise<void>;
+      const source = { runnerInstanceId: "plugin-producer", environmentLeaseId: "plugin-lifecycle-lease", runId: "plugin-lifecycle-source",
+        normalizedSessionId: "plugin-lifecycle-session", turnId: "turn-source", itemId: "item-source" };
+      for (const eventType of ["session.resumed", "session.capabilities.updated", "session.goal.snapshot", "run.attached"]) {
+        await expect(recover({ eventType, runId: source.runId, sourceInstanceId: "plugin-producer" } as PrpEvent, source)).resolves.toBeUndefined();
+      }
+      await expect(recover({ eventType: "usage.reported", runId: source.runId, sourceInstanceId: "plugin-producer" } as PrpEvent, source))
+        .rejects.toThrow("native_recovery_usage_source_unproven");
+      expect(capture).not.toHaveBeenCalled();
+    } finally {
+      owner.mockRestore();
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("uses the canonical recorder for partial and completed usage when no onUsage callback is supplied", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.execute.mockReset().mockImplementationOnce(async () => {

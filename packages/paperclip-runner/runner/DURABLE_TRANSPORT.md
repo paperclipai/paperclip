@@ -115,6 +115,10 @@ run, normalized session, turn and item. History reads require A’s thread. A
 resume request returns saved state without asking Codex to resume twice. Retained events and usage
 belong to A. The authenticated `authorityRunId` identifies the current owner
 (A for same-run recovery). Losing that owner blocks new commands and dispatch.
+Only a transport that starts under a later owner sends A's events to recovery
+accounting. A live warm `run.attach` also moves `authorityRunId` to B before
+the Runner flushes A's outbox. Those events use ordinary accounting, which
+drains A's usage under B.
 
 If Core loses its cached preparation, the preparer uses A’s frozen
 `recoveryLaunch.requirements`, exact identity and authenticated owner. It
