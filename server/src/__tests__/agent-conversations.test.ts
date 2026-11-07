@@ -1006,7 +1006,15 @@ describe("chat prompt policy", () => {
   it("tells chat how to link execution runs to the registered run route and name their agents", () => {
     const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
     expect(app).toContain('<Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />');
-    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId and id");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<agentId>/runs/<runId> using the run's returned agentId.");
+    // Issue run listings expose the run ID as runId, not id; the guidance must name the field each response returns.
+    const activity = readFileSync(new URL("../services/activity.ts", import.meta.url), "utf8");
+    const listing = activity.slice(activity.indexOf("runsForIssue"), activity.indexOf("runsForIssue") + 4000);
+    expect(listing).toContain("runId: heartbeatRuns.id,");
+    expect(listing).not.toMatch(/\bid: heartbeatRuns\.id\b/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Issue run listings (GET /api/issues/{id}/runs) return the run ID as runId");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("use id only from responses that return the run itself, such as GET /api/heartbeat-runs/{runId}");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("returned agentId and id");
     expect(AGENT_CHAT_DIRECTIVE).toContain("read the agent and name it rather than showing a raw ID");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
