@@ -3,7 +3,7 @@ name: paperclip-board
 description: >
   Manage a Paperclip company as a board member via chat. Use when the user wants
   onboarding, company or agent management, approvals, task monitoring, cost
-  oversight, or work product review in the Paperclip control plane.
+  oversight, work product review, or help finding things in the Paperclip web UI.
 ---
 
 # Paperclip Board Skill
@@ -557,6 +557,17 @@ curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision
   }'
 ```
 2. Also update the local file at `./artifacts/decision-log.md`.
+
+## Finding Things in the Web UI
+
+When someone asks how to find, search for, or jump to tasks, projects, or agents themselves (for example "how do I quickly find X without leaving what I'm doing?"), tell them about quick search before or alongside listing results here:
+
+- **Quick search:** press **Cmd+K** (macOS) or **Ctrl+K** (Windows/Linux) on any board page, or click the search icon at the top of the sidebar. It opens over the current page, so they do not lose their place; Esc closes it.
+- Type words to match tasks, projects, and agents. Search operators narrow the results, for example `status:backlog`, `status:todo`, `assignee:me`, `project:"Launch"`, `label:bug`, `priority:high`, or `updated:>7d`.
+- Choose **Search all** (or press Cmd/Ctrl+Enter) to open the full search page (`/{prefix}/search`). It keeps the typed text and operators as filters and adds comments, documents, and artifacts.
+- Results only include what that person is allowed to see.
+
+You cannot press keys, focus fields, or open the palette in their browser; describe the steps for them to take. You may also offer to list the matching items in chat with links.
 
 ## Presentation Rules
 
