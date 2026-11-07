@@ -658,4 +658,54 @@ describe("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Execution workspace not found");
     expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith(executionWorkspaceId);
   });
+
+  it("rejects agent keys that set the workspace default completion requirement", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true, action: "project:write_workspace", explanation: "Allowed by test mock." });
+    mockProjectService.getById.mockResolvedValue(buildProject({ id: projectId }));
+    const app = await createProjectApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const createRes = await request(app)
+      .post(`/api/projects/${projectId}/workspaces`)
+      .send({ cwd: "/tmp/ws", defaultCompletionRequirement: "workspace_delivery" });
+
+    expect(createRes.status).toBe(403);
+    expect(createRes.body.error).toContain("cannot set the workspace default completion requirement");
+    expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
+
+    const patchRes = await request(app)
+      .patch(`/api/projects/${projectId}/workspaces/${workspaceId}`)
+      .send({ defaultCompletionRequirement: null });
+
+    expect(patchRes.status).toBe(403);
+    expect(patchRes.body.error).toContain("cannot set the workspace default completion requirement");
+    expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("lets board callers set the workspace default completion requirement", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: true, action: "project:write_workspace", explanation: "Allowed by test mock." });
+    mockProjectService.getById.mockResolvedValue(buildProject({ id: projectId }));
+    mockProjectService.createWorkspace.mockResolvedValue({ id: "workspace-2", name: "ws", cwd: "/tmp/ws", isPrimary: false });
+    const app = await createProjectApp({
+      type: "board",
+      userId: "board-1",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${projectId}/workspaces`)
+      .send({ cwd: "/tmp/ws", defaultCompletionRequirement: "workspace_delivery" });
+
+    expect(res.status).toBe(201);
+    expect(mockProjectService.createWorkspace).toHaveBeenCalledWith(projectId, expect.objectContaining({
+      defaultCompletionRequirement: "workspace_delivery",
+    }));
+  });
 });
