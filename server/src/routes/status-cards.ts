@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { companies, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   createStatusCardSchema,
   listStatusCardsQuerySchema,
@@ -29,6 +30,13 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
   const service = statusCardService(db);
   const issueSvc = issueService(db);
   const heartbeat = opts.heartbeat ?? heartbeatService(db);
+
+  // People view, restore and refresh a card on the company's Status page. Single-card responses carry that
+  // route so an agent can give the person a usable link instead of an API instruction.
+  async function withHref<T extends { id: string; companyId: string }>(card: T) {
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, card.companyId)).limit(1);
+    return company ? { ...card, href: `/${company.issuePrefix}/status/${card.id}` } : card;
+  }
 
   async function assertStatusCardsEnabled() {
     const experimental = await settings.getExperimental();
@@ -168,7 +176,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     try {
       const compile = await enqueueCompile(req, card.id);
       await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
-      res.status(201).json(publicCard(compile.card));
+      res.status(201).json(await withHref(publicCard(compile.card)));
     } catch (error) {
       await service.remove(card.id);
       throw error;
@@ -179,9 +187,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    res.json(publicCard(await service.hydrate(card, {
+    res.json(await withHref(publicCard(await service.hydrate(card, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
-    })));
+    }))));
   });
 
   router.patch("/status-cards/:id", validate(patchStatusCardSchema), async (req, res) => {
@@ -203,7 +211,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       fields: Object.keys(req.body),
       archived: Boolean(updated.archivedAt),
     });
-    res.json(publicCard(compile?.card ?? restore?.card ?? updated));
+    res.json(await withHref(publicCard(compile?.card ?? restore?.card ?? updated)));
   });
 
   router.delete("/status-cards/:id", async (req, res) => {

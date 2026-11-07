@@ -3461,6 +3461,9 @@ registerCurrentRoute({
   path: "/api/status-cards/{id}",
   tags: ["status-cards"],
   summary: "Update, archive, or restore a status card",
+  description: "Archiving (archived: true) hides the card from the active list but keeps the card, its summary and its update history; it is not deleted. "
+    + "A person views and restores archived cards on the company's Status page (Show archived, then Restore); give them the returned href as a Markdown link. "
+    + "Restoring (archived: false) starts a fresh full summary for a card with a compiled query, so restored content is regenerated before it is current.",
   body: patchStatusCardSchema,
 });
 
