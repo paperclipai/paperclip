@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { IssueRecoveryAction } from "@paperclipai/shared";
+import type { IssueRecoveryAction, WorkspaceSourceInspection } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { isTransientError } from "../api/errors";
 import { useQueryView } from "./QueryView";
@@ -15,37 +15,53 @@ import { createUuid } from "../lib/uuid";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
+/** Reports whether this surface owns the task's next recovery action. The task's
+ * generic Retry stays hidden only while this surface offers its own control. */
+function ReportRecoveryControl({ owns, onChange }: { owns: boolean; onChange?: (owns: boolean) => void }) {
+  useLayoutEffect(() => {
+    onChange?.(owns);
+    return () => onChange?.(false);
+  }, [owns, onChange]);
+  return null;
+}
+
 /** Requests preservation; the existing worker owns stop, copyback and verification. */
-export function WorkspaceExportRecovery({ action, className, issueId, companyId, showStatus = true }: {
+export function WorkspaceExportRecovery({ action, className, issueId, companyId, showStatus = true, onRecoveryControlChange }: {
   className?: string; action: IssueRecoveryAction | null; issueId?: string; companyId?: string; showStatus?: boolean;
+  onRecoveryControlChange?: (owns: boolean) => void;
 }) {
   // A restart killed the copyback owner of retained saved-work recovery. Recovery
   // and any accepted Retry wait on its receipt; the confirmation is the one action.
   const retainedOwnerToken = action && issueId && companyId && isRetainedExport(action, issueId, companyId)
     ? retainedOwnerStopToken(action) : null;
   if (action && issueId && companyId && retainedOwnerToken) {
-    return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}:${retainedOwnerToken}`}
-      action={action} ownerToken={retainedOwnerToken} issueId={issueId} companyId={companyId} className={className} />;
+    return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}:${retainedOwnerToken}`}
+        action={action} ownerToken={retainedOwnerToken} issueId={issueId} companyId={companyId} className={className} /></>;
   }
   if (action && issueId && companyId && isRetainedExport(action, issueId, companyId)) {
     return <RetainedFilesRecovery key={`${companyId}:${issueId}:${action.id}:${action.evidence.runId}`}
-      action={action} issueId={issueId} companyId={companyId} className={className} />;
+      action={action} issueId={issueId} companyId={companyId} className={className}
+      onRecoveryControlChange={onRecoveryControlChange} />;
   }
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
   // The task's interruption names this wait; the confirmation is its one action.
   if (ownerRecovery && issueId && companyId && isOwnerStopRequired(action, issueId, companyId)) {
-    return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}`}
-      action={action} ownerToken={asObject(action.evidence.owner).token as string}
-      issueId={issueId} companyId={companyId} className={className} />;
+    return <><ReportRecoveryControl owns onChange={onRecoveryControlChange} />
+      <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}`}
+        action={action} ownerToken={asObject(action.evidence.owner).token as string}
+        issueId={issueId} companyId={companyId} className={className} /></>;
   }
-  if (!showStatus) return null;
+  if (!showStatus) return <ReportRecoveryControl owns={false} onChange={onRecoveryControlChange} />;
   if (!action || (!ownerRecovery && !isNativeWorkspaceExportRepairCause(action.cause)) || action.ownerType !== "board"
-    || !["active", "escalated"].includes(action.status) || typeof action.evidence.runId !== "string") return null;
+    || !["active", "escalated"].includes(action.status) || typeof action.evidence.runId !== "string")
+    return <ReportRecoveryControl owns={false} onChange={onRecoveryControlChange} />;
   const queued = !!action.evidence.workspaceOwnerStop || action.wakePolicy?.kind === "resume_native_run";
   const automatic = queued || (ownerRecovery && asObject(action.evidence.workspaceOwnerRecovery).state === "resuming");
-  return <p role="status" className={cn("text-sm text-muted-foreground", className)}>
-    {automatic ? "Restoring saved work…" : "Workspace recovery needs operator assistance. The agent’s result is saved."}
-  </p>;
+  return <><ReportRecoveryControl owns={false} onChange={onRecoveryControlChange} />
+    <p role="status" className={cn("text-sm text-muted-foreground", className)}>
+      {automatic ? "Restoring saved work…" : "Saved work is not recovered yet. The agent’s result is saved."}
+    </p></>;
 }
 
 function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyId: string) {
@@ -99,7 +115,7 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
       : "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
     {confirm.isSuccess ? null : !canConfirm
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
-        ? "Checking access…" : "A company owner or administrator can confirm that the previous server stopped."}</p>
+        ? "Checking access…" : "Paperclip is waiting to confirm that the previous server stopped."}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
         Confirm the previous server stopped</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
@@ -120,8 +136,20 @@ function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId
 
 type RecoveryInput = { actionId: string; runId: string };
 
-function RetainedFilesRecovery({ action, issueId, companyId, className }: {
+/** Plain wording for a source inspection that did not verify. The code stays visible for support. */
+function unverifiedSourceText(inspected: WorkspaceSourceInspection | undefined): string {
+  if (!inspected || inspected.status === "verified") return "";
+  if (inspected.status === "not_inspected")
+    return "Paperclip can’t check the saved files’ source here because the run recorded too many sources.";
+  const code = inspected.sourceVerification?.reason ?? inspected.failureCode;
+  return code === "allocation_ownership_ambiguous"
+    ? "Paperclip can’t confirm that this run alone used the sandbox that holds the saved files."
+    : `Paperclip can’t verify the saved files’ recorded source (${code}).`;
+}
+
+function RetainedFilesRecovery({ action, issueId, companyId, className, onRecoveryControlChange }: {
   action: IssueRecoveryAction; issueId: string; companyId: string; className?: string;
+  onRecoveryControlChange?: (owns: boolean) => void;
 }) {
   const runId = action.evidence.runId as string;
   const owner = useDraftOwner();
@@ -148,15 +176,21 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     return input.actionId === action.id && input.runId === runId;
   };
   const pending = storageKey ? readPendingSend(storageKey, matchesInput) : null;
+  // The recovery record is bound by its own identity. Source inspection is a
+  // separate read-only probe: it gates only the physical file-recovery request.
+  // It legitimately reports "blocked" after files were recovered, or when a
+  // sandbox predates ownership receipts; the recorded state stays authoritative.
   function boundAction(data: typeof source.data) {
     const current = data?.actions.find(item => item.id === action.id);
     const inspected = data?.sourceInspection;
     const state = asObject(current?.evidence.workspaceRecovery);
     return current && isRetainedExport(current, issueId, companyId) && current.evidence.runId === runId
       && state.runId === runId && state.schema === "paperclip.workspace-recovery.v1"
-      && inspected?.actionId === action.id && inspected.runId === runId && inspected.status === "verified" ? current : null;
+      && inspected?.actionId === action.id && inspected.runId === runId ? current : null;
   }
+  const sourceVerified = (data: typeof source.data) => Boolean(boundAction(data)) && data?.sourceInspection?.status === "verified";
   const current = sourceReady ? boundAction(source.data) : null;
+  const verified = sourceReady && sourceVerified(source.data);
   const recovery = asObject(current?.evidence.workspaceRecovery);
   const system = asObject(current?.evidence.systemRecovery);
   const serverAcknowledged = Boolean(pending && Array.isArray(recovery.requestIds) && recovery.requestIds.includes(pending.idempotencyKey));
@@ -182,6 +216,8 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
       const state = asObject(fresh?.evidence.workspaceRecovery);
       if (observed.error || !fresh || state.status !== "blocked" || state.retryable !== true)
         throw new Error("File recovery changed. Inspect its current status before requesting recovery.");
+      if (!sourceVerified(observed.data))
+        throw new Error(unverifiedSourceText(observed.data?.sourceInspection) || "The saved files’ source could not be verified.");
       if (!canMutate || !owner || readOwner() !== owner || !storageKey)
         throw new Error("Your account changed. Refresh before requesting file recovery.");
       const previous = readPendingSend(storageKey, matchesInput);
@@ -217,7 +253,12 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     const observed = await source.refetch();
     if (observed.error) throw observed.error;
     const fresh = boundAction(observed.data);
-    if (!fresh) throw new Error("File recovery changed. Refresh the task to inspect the current recovery.");
+    if (!fresh) {
+      // The task's current recovery replaced this record. Reload the task so it
+      // shows that recovery, instead of asking for a refresh that changes nothing.
+      invalidate();
+      throw new Error("This file recovery was replaced. Showing the task’s current recovery.");
+    }
     const state = asObject(fresh.evidence.workspaceRecovery);
     const ids = state.requestIds;
     const unconfirmed = Boolean(pending && Array.isArray(ids) && !ids.includes(pending.idempotencyKey));
@@ -230,14 +271,22 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
   const confirmedFailedAttempt = failedReceipt && retryable && system.state === "exhausted";
   const waiting = !failedReceipt && !saved && (restoring || acknowledged || serverAcknowledged);
   const unconfirmed = Boolean(pending && !acknowledged && !serverAcknowledged);
+  const sourceLoading = sourceView.kind === "loading" || sourceView.kind === "reconnecting";
+  // A verified source makes this panel the governed recovery path. Otherwise the
+  // task's own Retry (renewed, re-verified recovery) remains the next action.
+  const ownsRecoveryControl = canMutate && (sourceLoading || Boolean(current && verified && !saved));
+  // `waiting` already excludes a failed accepted request, so the reason stays
+  // visible after a failed attempt and hides only while recovery is running.
+  const unverified = Boolean(current && !verified && !saved && !waiting);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
+    <ReportRecoveryControl owns={ownsRecoveryControl} onChange={onRecoveryControlChange} />
     <p role="status">{saved ? "Saved files recovered. Task recovery is still being checked."
       : failedReceipt ? "File recovery has not finished. The saved source remains protected."
       : restoring ? "Recovering saved files. Work remains paused until recovery is verified."
         : waiting ? "File recovery is queued. Waiting for verified saved files."
           : "The saved files need recovery before work can continue."}</p>
     {canMutate ? <>
-      {current && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
+      {current && verified && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
         className="self-start" disabled={request.isPending || check.isPending}
         onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
           : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}
@@ -250,8 +299,11 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
         {notice ?? (checkError instanceof Error ? checkError.message : "File recovery could not be inspected. Check its status again.")}
       </p> : null}
       {current && recovery.status === "blocked" && (serverAcknowledged || recovery.retryable !== true)
-        ? <p role="alert">File recovery has not finished. The saved source remains protected; service assistance is needed.</p> : null}
-      {sourceReady && !current ? <p role="alert">The recorded source is unavailable or has changed. Inspect recovery before continuing.</p> : null}
+        ? <p role="alert">File recovery has not finished. The saved files remain protected and are not applied.</p> : null}
+      {unverified ? <p role="status" className="text-muted-foreground">
+        {unverifiedSourceText(source.data?.sourceInspection)} Paperclip does not apply files it can’t verify.
+      </p> : null}
+      {sourceReady && !current ? <p role="alert">This file recovery was replaced. Check its status to show the task’s current recovery.</p> : null}
     </> : accessView.kind === "error" ? <p role="alert" className="text-sm text-destructive">Task access could not be checked. Refresh before requesting file recovery.</p>
       : accessView.kind === "loading" || accessView.kind === "reconnecting" || !owner ? <p role="status" className="text-xs text-muted-foreground">Checking file recovery access…</p>
         : <p className="text-xs text-muted-foreground">A board member with task access can request file recovery.</p>}
