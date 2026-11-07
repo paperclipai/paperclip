@@ -2,11 +2,30 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 export type ExternalConversationSettlementScope = { companyId: string; issueId?: string };
+
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export async function latestTaskRun(db: Pick<Db, "select">, companyId: string, issueId: string) {
+  const contextIssueId = sql`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const contextTaskId = sql`${heartbeatRuns.contextSnapshot}->>'taskId'`;
+  const [run] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
+    finishedAt: heartbeatRuns.finishedAt, scheduledRetryAt: heartbeatRuns.scheduledRetryAt, livenessState: heartbeatRuns.livenessState,
+    runtimeMode: heartbeatRuns.runtimeMode, resultJson: heartbeatRuns.resultJson, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), or(
+      sql`${contextIssueId} = ${issueId}`,
+      and(isNull(contextIssueId), sql`${contextTaskId} = ${issueId}`),
+      CANONICAL_UUID.test(issueId)
+        ? and(isNull(contextIssueId), isNull(contextTaskId), eq(heartbeatRuns.nativeIssueId, issueId))
+        : sql`false`,
+    )))
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  return run ?? null;
+}
 
 
 
@@ -39,12 +58,7 @@ async function readSettlement(db: Pick<Db, "select" | "execute">, companyId: str
   const monitor = issue.executionState?.monitor;
   if (monitor && typeof monitor === "object" && "status" in monitor &&
     ["scheduled", "triggered"].includes(String(monitor.status))) return null;
-  const [run] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
-    finishedAt: heartbeatRuns.finishedAt, scheduledRetryAt: heartbeatRuns.scheduledRetryAt, livenessState: heartbeatRuns.livenessState,
-    runtimeMode: heartbeatRuns.runtimeMode, resultJson: heartbeatRuns.resultJson, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.companyId, companyId),
-      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${issueId}`))
-    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  const run = await latestTaskRun(db, companyId, issueId);
   if (!run || run.status !== "succeeded" || run.agentId !== issue.assigneeAgentId ||
     !run.finishedAt ||
     run.scheduledRetryAt || ["plan_only", "empty_response"].includes(run.livenessState ?? "")) return null;
