@@ -9,8 +9,10 @@ import { githubAutomaticReviewEvent, githubAutomaticIssueEvent, githubAutomaticA
 import { githubReviewPrompt, GITHUB_CONFIGURED_SKILL_GUIDANCE } from "../../chat-github-review-policy.js";
 import { createHash } from "node:crypto";
 
+import { and, eq, notExists, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { chatDeliveries } from "@paperclipai/db";
+import { chatConversations, chatDeliveries } from "@paperclipai/db";
 import type { EndpointRow, RuntimeContext, InboundRuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 import type { ChatEndpointRuntime } from "../../voice/voice-runtime.js";
 import type { Thread, Message } from "chat";
@@ -25,6 +27,20 @@ type EventOptions = Pick<Parameters<typeof createGitHubMessageProvenance>[0], "g
 };
 export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
   const { processMessage, recordLifecycleDelivery, githubAutomaticMessages, githubIssueMessages, fetchImpl, runtimeCallbackEndpoint } = options;
+  async function adoptLegacyThreadCasing(endpoint: EndpointRow, thread: Thread) {
+    const legacyThreadId = thread.id.toLowerCase();
+    if (legacyThreadId === thread.id) return;
+    const current = alias(chatConversations, "current_thread");
+    await db.update(chatConversations).set({
+      externalConversationId: thread.channelId, externalThreadId: thread.id, updatedAt: new Date(),
+    }).where(and(
+      eq(chatConversations.companyId, endpoint.companyId), eq(chatConversations.endpointId, endpoint.id),
+      sql`lower(${chatConversations.externalConversationId}) = ${thread.channelId.toLowerCase()}`,
+      eq(chatConversations.externalThreadId, legacyThreadId),
+      notExists(db.select({ id: current.id }).from(current).where(and(
+        eq(current.endpointId, endpoint.id), eq(current.externalThreadId, thread.id)))),
+    ));
+  }
   async function recordGitHubAutomaticSkip(
     endpoint: EndpointRow, deliveryId: string, event: string, reason: string | undefined, runtimeContext: LifecycleRuntimeFence,
   ) {
@@ -124,6 +140,7 @@ export function createGitHubWebhookEvents(db: Db, options: EventOptions) {
       const previousAssessment = await githubPreviousAssessment(db, endpoint, event.repositoryId, event.pullNumber);
       if (previousAssessment) event.priorReviewedHeadSha = previousAssessment.headSha;
       const thread = endpointRuntime.thread(`github:${event.repository}:${event.pullNumber}`);
+      await adoptLegacyThreadCasing(endpoint, thread);
       const message = {
         id: `pr-event:${event.deliveryId}`, threadId: thread.id, text: githubReviewPrompt(event, admission.policy, admission.revision),
         formatted: { type: "root", children: [] }, raw: {},

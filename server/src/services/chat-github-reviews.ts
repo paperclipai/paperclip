@@ -302,7 +302,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       issue,
       access,
       repositoryId,
-      repository,
+      repository: match[1]!,
       number: Number(match[3]),
       isIssue: !!match[2],
       replyId: match[4] ?? null,
