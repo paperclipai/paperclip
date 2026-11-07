@@ -1795,6 +1795,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
                     }}))?;
                 }
+                // A notification for a turn the runner never owned fails the
+                // accepted turn before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--foreign-usage-before-turn-started")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": "provider-turn-foreign",
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
                 // A loaded host can accept a turn long before it starts it.
                 if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));

@@ -867,6 +867,34 @@ function terminalMayBelongToPendingTurnStart(input: {
 /** Part of the turn-start bound kept for the accepted-turn adoption check. */
 const TURN_START_ADOPTION_CHECK_RESERVE_MS = 5_000;
 
+/**
+ * The runner's own final failure of a turn whose start is still pending: a
+ * non-recoverable turn terminal held for that start, or a failed run terminal.
+ * Neither can be followed by a live start, so the start reports it at once.
+ */
+export function runnerdPendingTurnStartFailure(
+  events: ReadonlyArray<{ eventType: string; envelope: { payload?: unknown } }>,
+): string | null {
+  for (const event of events) {
+    const payload = record(record(event.envelope.payload).payload);
+    const error = record(payload.error);
+    if (
+      event.eventType === "turn.failed" &&
+      (payload.recoverable === false || error.recoverable === false)
+    ) {
+      const code = typeof error.code === "string" ? error.code
+        : typeof payload.code === "string" ? payload.code : "provider_turn_failed";
+      const message = typeof error.message === "string" ? error.message
+        : typeof payload.message === "string" ? payload.message : null;
+      return message ? `${code}: ${message}` : code;
+    }
+    if (event.eventType === "run.terminal" && payload.runTerminalState === "failed") {
+      return "run_terminal_failed";
+    }
+  }
+  return null;
+}
+
 function turnStartNotificationDisposition(input: {
   responsePending: boolean;
   expectedProviderTurnId: string | null;
@@ -7107,11 +7135,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         TURN_START_ADOPTION_CHECK_RESERVE_MS,
         Math.floor(Math.max(0, deadline - Date.now()) / 4),
       );
+      // The runner can end the accepted turn before it starts. Its terminal is
+      // held for the pending start, so report that real cause at once.
+      const throwIfRunnerFailedStart = () => {
+        const failure = runnerdPendingTurnStartFailure([
+          ...this.#deferredTurnStartEvents,
+          ...(this.#core?.store.state.committedEvents ?? []).filter(
+            (event) => event.sourceSeq > this.#eventSourceSeq,
+          ),
+        ]);
+        if (failure !== null)
+          throw new Error(`runnerd failed the provider turn before it started: ${failure}`);
+      };
       const waitForStarted = async () => {
       while (!providerTurnStarted() && Date.now() < adoptionCheckAt) {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (providerTurnStarted()) break;
+        throwIfRunnerFailedStart();
         if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
@@ -7135,6 +7176,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // report a successful start on it.
         this.#pumpEventsSafely();
         this.#throwIfFailed();
+        if (!providerTurnStarted()) throwIfRunnerFailedStart();
         if (!providerTurnStarted() && this.#acceptedTurnProvablyLive({
           snapshot, expectedProviderTurnId, acceptingProviderPid,
           acceptingProviderStartedAt, acceptingCommandSeq,
@@ -7151,6 +7193,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#throwIfFailed();
           this.#pumpEvents();
           if (providerTurnStarted()) break;
+          throwIfRunnerFailedStart();
           if (await this.#runnerHasExited())
             throw new Error("runnerd exited before provider turn startup");
           await new Promise((resolveWait) => setTimeout(resolveWait, 10));
