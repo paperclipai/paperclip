@@ -120,7 +120,8 @@ export function executionBlockerPredicate() {
     ))`,
     or(unreconciledNativeExportPredicate(), and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-      sql`(${issueRecoveryActions.status} in ('active', 'escalated') or (${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked' and ${issueRecoveryActions.evidence}->'executionReconciliation' is null))`,
+      or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
     )),
   );
 }

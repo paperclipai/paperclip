@@ -53,7 +53,6 @@ import { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
-  deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
 import {
   storedSteeringAcknowledgement,
@@ -10644,14 +10643,6 @@ export function issueRoutes(
 
         return { issue, recoveryAction, chatRetry };
       });
-      if (result.recoveryAction.evidence.executionReconciliation) {
-        await deliverReconciledExecutions(db, heartbeat.wakeup, result.recoveryAction.id);
-        const [receipt] = await db.select().from(issueRecoveryActions).where(and(
-          eq(issueRecoveryActions.companyId, existing.companyId),
-          eq(issueRecoveryActions.id, result.recoveryAction.id),
-        ));
-        if (receipt) result.recoveryAction = issueRecoveryActionReadModel(receipt);
-      }
       if (result.replayed) {
         res.json({
           issue: "workspaceRepairOnly" in result

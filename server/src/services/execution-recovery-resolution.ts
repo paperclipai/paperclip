@@ -243,6 +243,7 @@ export async function markExecutionReconciliation(
       .set({
         evidence: {
           ...action.evidence,
+          automaticRecovery: undefined,
           executionReconciliation: {
             ...decision,
             actorId,
@@ -303,7 +304,6 @@ export async function markExecutionReconciliation(
 export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
-  actionId?: string,
 ) {
   const pending = await db
     .select()
@@ -311,7 +311,6 @@ export async function deliverReconciledExecutions(
     .where(
       and(
         eq(issueRecoveryActions.status, "resolved"),
-        actionId ? eq(issueRecoveryActions.id, actionId) : undefined,
         sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
       ),
     )

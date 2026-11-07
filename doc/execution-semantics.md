@@ -2278,32 +2278,34 @@ The category and retryability describe provider evidence; they do not grant
 retry authority, prove stopped execution, or change the existing recovery budget.
 An HTTP 429 alone does not establish a quota reset time or a safe retry.
 
-The canonical recovery-resolution API can accept new board or authorized
-recovery-owner agent execution
-evidence for that settled hold. When no active recovery action remains and the
-request carries `executionReconciliation`, the server selects the current
+The canonical recovery-resolution API accepts new execution evidence for a
+settled hold from the board or from an agent that may mutate the issue. When
+no active recovery action remains and the request carries
+`executionReconciliation`, the server selects the current
 `executionBlocker.recoveryActionId` under the issue lock. The same source,
-ownership, termination and action-outcome validation applies as for an explicit
-`actionId`; rejected evidence leaves the settled record and hold intact.
+ownership, termination and action-outcome validation applies as for an
+explicit `actionId`. Rejected evidence leaves the settled record and the hold
+intact.
 
 An explicit reconciliation may record `actionOutcome: "unknown"` when the
 audit cannot establish an outcome. It authorizes one fresh observable attempt,
-never replay of an uncertain external action. The prior `automaticRecovery`
-record remains immutable history alongside `executionReconciliation`; only
-unreconciled automatic no-replay records remain effective guards. The receipt
-records the source run, provider stop confirmation, action outcome, evidence,
-actor and timestamp, with `continuationDelivery` and `continuationRunId`
-tracking delivery through the existing idempotent wake path. The continuation
-prompt includes these recovery outcomes as evidence. Existing task execution
-state, assignee, workspace binding and work products are retained.
+never a replay of an uncertain external action. The receipt records the source
+run, the provider stop confirmation, the action outcome, the evidence, the
+actor, the user who recorded it (null for an agent) and the time.
+`continuationDelivery` and `continuationRunId` track delivery through the
+existing execution-continuation delivery work and its idempotent wake. The
+continuation prompt includes these recovery outcomes as evidence. Existing
+task execution state, assignee, workspace binding and work products stay as
+they are.
 
-Matching duplicate resolution requests select the reconciled source receipt
-even without `actionId`, return `replayed: true`, and finish pending delivery
-with the same wake idempotency key. A different run or outcome returns 409.
-Local runs without process identity require a verified unused admission,
-pre-invocation cancellation, server-authored local stop receipt or historical
-suspended native session. Current launch evidence invalidates an older stop
-receipt. Terminal status and an operator assertion alone do not prove exit.
+A matching duplicate resolution request selects the reconciled source receipt
+even without `actionId` and returns `replayed: true`. A request with a
+different run or outcome for that receipt returns 409. A local run without a
+process identity needs one of these proofs that it stopped: a verified unused
+admission, a cancellation before invocation, a server-authored local stop
+receipt (`native.local_process_stopped`) or a historical suspended native
+session. Terminal status and an operator assertion alone do not prove that
+the provider exited.
 
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
