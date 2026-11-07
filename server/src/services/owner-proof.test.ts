@@ -102,23 +102,42 @@ describe("proveOwnerGone: local owners", () => {
     expect(processExists(4242)).toBe(false);
   });
 
-  it("keeps the owner alive while its process group still has members", async () => {
+  it("keeps the owner alive while its own process group still has members", async () => {
+    // The leader exited; its children keep the group alive.
     expect(await proveOwnerGone(stamp({ processGroupId: 4242 }), probe({ groups: [4242] })))
       .toEqual({ verdict: "alive", reason: "process_group_alive" });
-    // The leader is a different process, but it started before the stamp: it
-    // is the original group, so the work may still run.
-    expect(await proveOwnerGone(stamp({ processGroupId: 5000 }), probe({ groups: [5000], alive: [5000], starts: { 5000: at(-10_000) } })))
+    // The recorded leader still leads the group.
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: STARTED }),
+      probe({ groups: [5000], alive: [5000], starts: { 5000: at(500) } })))
       .toEqual({ verdict: "alive", reason: "process_group_alive" });
   });
 
-  it("proves the owner gone when its process group is empty or led by a newer process", async () => {
+  it("never proves gone a surviving child group that started after its parent", async () => {
+    // The owner started at 10:00, spawned a detached group at 10:01 and exited.
+    // Without the group leader's recorded start time, the group may be its own.
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000 }),
+      probe({ groups: [5000], alive: [5000], starts: { 5000: at(60_000) } })))
+      .toEqual({ verdict: "unprovable", reason: "process_group_ambiguous" });
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: at(60_000).toISOString() }),
+      probe({ groups: [5000], alive: [5000], starts: { 5000: at(60_000) } })))
+      .toEqual({ verdict: "alive", reason: "process_group_alive" });
+  });
+
+  it("proves the owner gone when its process group is empty or led by a different process", async () => {
     expect(await proveOwnerGone(stamp({ processGroupId: 4242 }), probe())).toEqual({ verdict: "gone", reason: "pid_dead" });
-    expect(await proveOwnerGone(stamp({ processGroupId: 5000 }), probe({ groups: [5000], alive: [5000], starts: { 5000: at(30_000) } })))
+    // A reused owner PID now leads group 4242: the kernel does not reuse a PID
+    // while its old group has members, so the old group is empty.
+    expect(await proveOwnerGone(stamp({ processGroupId: 4242 }),
+      probe({ groups: [4242], alive: [4242], starts: { 4242: at(30_000) } })))
+      .toEqual({ verdict: "gone", reason: "pid_reused" });
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: at(-10_000).toISOString() }),
+      probe({ groups: [5000], alive: [5000], starts: { 5000: at(30_000) } })))
       .toEqual({ verdict: "gone", reason: "pid_dead" });
   });
 
   it("treats a non-empty group with an unreadable leader as unprovable", async () => {
-    expect(await proveOwnerGone(stamp({ processGroupId: 5000 }), probe({ groups: [5000], alive: [5000] })))
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: STARTED }),
+      probe({ groups: [5000], alive: [5000] })))
       .toEqual({ verdict: "unprovable", reason: "process_group_ambiguous" });
   });
 

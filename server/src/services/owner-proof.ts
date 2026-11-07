@@ -31,6 +31,9 @@ export type LocalOwnerStamp = {
   pid: number | null;
   processStartedAt: string | null;
   processGroupId?: number | null;
+  /** Start time of the process group's leader (PID = `processGroupId`). When
+   * the owner leads its own group this is `processStartedAt`. */
+  processGroupStartedAt?: string | null;
 };
 
 export type RemoteOwnerStamp = {
@@ -141,8 +144,9 @@ const validPid = (pid: number | null | undefined): pid is number =>
  *   different host or namespace is never proof;
  * - the PID must be dead, or reused: a live PID whose start time differs from
  *   the stamp by at least 1 s (`ps lstart` has 1 s precision). EPERM is alive;
- * - the recorded process group must be empty, or now led by a different
- *   process (its leader started at least 1 s after the stamp).
+ * - the recorded process group must be empty, or led by a process that is
+ *   definitely not the recorded group leader. A non-empty group without a
+ *   recorded leader start time is unprovable: it may hold surviving children.
  *
  * Remote rules: a superseded fence token or generation, or a provider proof
  * that the stamped lease stopped, is gone. A matching live fence is alive. A
@@ -191,16 +195,17 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
 
   const group = stamp.processGroupId;
   if (validPid(group) && probe.processGroupExists(group)) {
-    // A non-empty group can hold the owner's surviving children. It proves
-    // nothing only when its leader is a definitely newer process.
+    // A non-empty group can hold the owner's surviving children, including
+    // detached ones started after the owner. The kernel never reuses a PID
+    // while a group with that id has members, so the group is a different one
+    // only when its leader is alive and is definitely not the recorded leader.
     if (!probe.pidExists(group)) return { verdict: "alive", reason: "process_group_alive" };
+    const recordedLeaderStart = group === stamp.pid ? stamp.processStartedAt : stamp.processGroupStartedAt ?? null;
     const leaderStartedAt = await probe.readStartedAt(group);
-    const stampStartedAt = Date.parse(stamp.processStartedAt ?? "");
-    if (leaderStartedAt === null || !Number.isFinite(stampStartedAt)) {
+    if (!recordedLeaderStart || leaderStartedAt === null) {
       return { verdict: "unprovable", reason: "process_group_ambiguous" };
     }
-    if (!processStartsDefinitelyDiffer(stamp.processStartedAt, leaderStartedAt) ||
-        leaderStartedAt.getTime() < stampStartedAt) {
+    if (!processStartsDefinitelyDiffer(recordedLeaderStart, leaderStartedAt)) {
       return { verdict: "alive", reason: "process_group_alive" };
     }
   }
