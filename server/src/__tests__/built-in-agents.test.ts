@@ -222,8 +222,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
+      defaultRuntimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     });
-    expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -1405,6 +1405,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       reportsTo: root.id,
       adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-haiku-4-5" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");
