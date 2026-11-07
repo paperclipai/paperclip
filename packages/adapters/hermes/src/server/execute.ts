@@ -17,6 +17,8 @@
  *   --yolo             bypass dangerous-command approval prompts (agents have no TTY)
  *   --source           session source tag for filtering
  */
+import { findLedgerForSession, readRunUsageWhenComplete, readSessionUsage } from "./ledger-usage.js";
+import type { UsageTotals } from "./ledger-usage.js";
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -279,9 +281,67 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+interface StreamJsonResult {
+  sessionId?: string;
+  response?: string;
+  errorMessage?: string;
+}
+
+/**
+ * Read the final `result` event from Hermes `--format stream-json` output.
+ *
+ * Each line is one JSON event. The last `result` event describes the finished
+ * turn: response text, session id and the tokens of the final API call.
+ *
+ * Its `tokens.input` is the total context of that call, cache included — on a
+ * measured run it equalled the ledger's fresh input plus its cached input
+ * exactly. It is therefore not a fresh-input count and is not used for usage;
+ * the ledger read in `ledger-usage.ts` supplies the numbers instead.
+ */
+function parseStreamJsonResult(stdout: string): StreamJsonResult | null {
+  if (typeof stdout !== "string" || !stdout.includes('"type"')) return null;
+  const lines = stdout.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line || !line.startsWith("{") || !line.includes('"result"')) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const record = asRecord(event);
+    if (!record || record.type !== "result") continue;
+    return {
+      sessionId: readString(record.session_id),
+      response: readString(record.text),
+      errorMessage: readString(record.error),
+    };
+  }
+  return null;
+}
+
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
+
+  const streamed = parseStreamJsonResult(stdout);
+  if (streamed) {
+    if (streamed.sessionId) result.sessionId = streamed.sessionId;
+    if (streamed.response) result.response = cleanResponse(streamed.response);
+    if (streamed.errorMessage) result.errorMessage = streamed.errorMessage;
+    return result;
+  }
 
   // In quiet mode, Hermes outputs:
   //   <response text>
@@ -450,6 +510,19 @@ export async function execute(
   }
 
   const sessionId = persistSession ? prevSessionId : undefined;
+
+  // A resumed session accumulates ledger rows, so the pre-run total is the
+  // baseline for the delta. A fresh run has no prior rows and needs none.
+  // The effective home is the child's own HERMES_HOME when the adapter config
+  // sets one; the parent environment is only the fallback.
+  const childHermesHome =
+    typeof (config.env as Record<string, unknown> | undefined)?.HERMES_HOME === "string"
+      ? ((config.env as Record<string, unknown>).HERMES_HOME as string)
+      : undefined;
+  const usageBefore = sessionId ? readSessionUsage(sessionId, findLedgerForSession(sessionId, childHermesHome)) : null;
+  // A resumed run whose starting total is unknown must not charge the whole
+  // session: report no usage for it at all.
+  const usageBaselineMissing = Boolean(sessionId) && usageBefore === null;
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
@@ -493,6 +566,13 @@ export async function execute(
 
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) args.push("--resume", sessionId);
+
+  // Hermes can report machine-readable events; the final `result` event carries
+  // the response text and the session id. Its token fields fold the cache into
+  // the input count, so usage comes from the ledger read below, not from here.
+  // Verbose mode keeps the human log, and the two output modes are exclusive.
+  if (cfgBoolean(config.verbose) !== true) args.push("--format", "stream-json");
+
   if (extraArgs?.length) args.push(...extraArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
@@ -615,6 +695,31 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  }
+
+  // Tokens come from Hermes' own ledger: stream-json's `tokens.input` folds the
+  // cache into the input count. When the session id or the ledger is missing we
+  // report no usage rather than a wrong or zeroed number.
+  if (parsed.sessionId && !usageBaselineMissing) {
+    const ledger = await readRunUsageWhenComplete(parsed.sessionId, {
+      before: usageBefore,
+      preferredHome: childHermesHome,
+    });
+    const runUsage = ledger.usage;
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Ledger ${ledger.ledgerPath ?? "not found"}: ${runUsage ? `input ${runUsage.inputTokens}, cached ${runUsage.cachedInputTokens}, output ${runUsage.outputTokens}` : "unavailable"}\n`,
+    );
+    if (runUsage) {
+      // Paperclip's UsageSummary contract: inputTokens is uncached input plus
+      // cache writes, cachedInputTokens is cache reads only.
+      parsed.usage = {
+        inputTokens: runUsage.inputTokens + runUsage.cacheWriteTokens,
+        outputTokens: runUsage.outputTokens,
+        cachedInputTokens: runUsage.cachedInputTokens,
+        cacheWriteTokens: runUsage.cacheWriteTokens,
+      };
+    }
   }
 
   if (parsed.usage) {
