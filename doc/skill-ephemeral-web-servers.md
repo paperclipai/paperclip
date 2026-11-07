@@ -40,6 +40,16 @@ Native recovery resolves the version, reconstructs its v1 projection and require
 the admitted digest, manifest digest, file count and byte count to match. Adjacent
 compatible releases must preserve that projection contract.
 
+Dynamic connector skills include run-specific resources and tool definitions.
+They retain null version IDs because their bytes differ from the static company
+skill. With S3 configured, native runtime selection stages and verifies their exact
+packages before its admission transaction. That transaction checks the frozen input
+and cancellation state, locks the package rows against collection, and publishes
+the input and its preservation receipt together. Storage failure leaves the input
+unpublished. Existing receipts retain their capture provenance on same-run recovery;
+hot cache reads can continue during a storage outage. Local storage keeps its
+existing volume-backed behavior.
+
 Older native inputs can contain immutable skill bundles without a version ID.
 Retained recovery obligations and current task sessions keep those bundles as
 local durability dependencies until the `runtime-assets` maintenance phase copies
