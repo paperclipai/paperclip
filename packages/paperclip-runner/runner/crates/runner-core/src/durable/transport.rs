@@ -2442,9 +2442,11 @@ mod tests {
         server.join().unwrap();
         let (transport, greeting) = result.unwrap().unwrap();
         assert_eq!(greeting.lease.unwrap().expose().unwrap(), "lease-secret");
-        assert_eq!(
-            transport.socket.read_timeout().unwrap(),
-            Some(RUNTIME_READ_TIMEOUT)
+        let read_timeout = transport.socket.read_timeout().unwrap();
+        assert!(
+            is_read_timeout_set_to(read_timeout, RUNTIME_READ_TIMEOUT),
+            "steady-state read timeout {read_timeout:?} is not {RUNTIME_READ_TIMEOUT:?} \
+             (rounded up to at most one kernel tick)",
         );
     }
 
