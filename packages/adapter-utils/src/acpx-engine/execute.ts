@@ -79,6 +79,7 @@ import {
   materializePaperclipSkillCopy,
   parseObject,
   isPaperclipSkillSourceMissing,
+  managedAiHomeEnvironment,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
@@ -109,6 +110,7 @@ import {
   type AcpRuntimeTurnResult,
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
+  type AcpSessionStore,
 } from "acpx/runtime";
 import {
   ACP_TOOL_KINDS,
@@ -1605,6 +1607,12 @@ function isCompatibleSession(
   return stableJson(savedRemote) === stableJson(runtime.remoteExecutionIdentity ?? {});
 }
 
+export async function evictStaleSessionRecord(store: AcpSessionStore, sessionKey: string): Promise<void> {
+  const stale = await store.load(sessionKey);
+  if (!stale || stale.acpx?.reset_on_next_ensure === true) return;
+  await store.save({ ...stale, acpx: { ...stale.acpx, reset_on_next_ensure: true } });
+}
+
 function buildSessionParams(input: {
   prepared: AcpxPreparedRuntime;
   handle: AcpRuntimeHandle;
@@ -2077,6 +2085,8 @@ async function buildRuntime(input: {
       ...(Array.isArray(scratch.tempKeysApplied) ? scratch.tempKeysApplied.filter((key): key is string =>
         typeof key === "string" && ["TMPDIR", "TEMP", "TMP"].includes(key)) : [])])
     : new Set<string>();
+  const managedAiRetainedHome = typeof context.managedAiRetainedHome === "string" ? context.managedAiRetainedHome : undefined;
+  const managedAiHomeEnv = managedAiRetainedHome ? managedAiHomeEnvironment(managedAiRetainedHome) : undefined;
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
@@ -2087,6 +2097,7 @@ async function buildRuntime(input: {
     if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
+    if (managedAiHomeEnv?.[key] === value) continue;
     // The server rotates run-owned scratch paths on every wake. Still forward
     // them, but only hash actual adapter settings. User-supplied temp overrides
     // are absent from tempKeysApplied and keep their compatibility protection.
@@ -4647,6 +4658,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         try {
           if (!handle) {
+            if (!resumeSessionId) await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
             try {
               // Step 7 — acp.handshake: ACP session establishment (session/new or
               // resume). A throwing handshake still reports its duration before the
@@ -4688,6 +4700,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 "stdout",
                 `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
               );
+              await evictStaleSessionRecord(runtimeStore, prepared.sessionKey);
               // Fresh-session retry: the runtime was already constructed on the
               // first attempt (never re-created), so this event reports only its
               // own `ensureSessionMs` — no `createRuntimeMs`.

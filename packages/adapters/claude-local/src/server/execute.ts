@@ -584,6 +584,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+  const managedTranscriptDir = filesystemScope && !executionTargetIsRemote && config.managedAiConnection && sharedClaudeConfigDir
+    ? await fs.realpath(path.join(sharedClaudeConfigDir, "projects")).catch(() => null)
+    : null;
   const localProcessSandbox: LocalProcessSandboxOptions | null =
     (filesystemScope || networkScope) && !executionTargetIsRemote
       ? {
@@ -592,6 +595,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           managedPaths: [
             { path: sharedClaudeConfigDir, access: "rw" },
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
+            ...(managedTranscriptDir ? [{ path: managedTranscriptDir, access: "rw" as const }] : []),
             { path: promptBundle.addDir, access: "ro" },
             { path: localMcpConfigDir, access: "ro" },
           ],
