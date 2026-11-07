@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
@@ -807,6 +808,15 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     }
   }, 360_000);
 
+  // These historical controllers belong to the same kernel/PID namespace as
+  // the real local processes this fixture starts. Other-space/legacy NULL
+  // authority has separate explicit negatives; do not invent a constant hash.
+  async function knownFixtureControllerHostHash() {
+    const current = await currentControllerProcess();
+    expect(current.hostHash, "Same-host recovery fixture requires actual known process space").not.toBe("unknown");
+    return current.hostHash;
+  }
+
   async function persistRestartEvidence(input: {
     fixture: Awaited<ReturnType<typeof seedRun>>;
     runnerPid: number;
@@ -860,6 +870,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         leaseOwner: "dead-controller",
         leaseExpiresAt: new Date(now.getTime() + 60_000),
         controllerBootId: "dead-controller-boot",
+        controllerHostHash: await knownFixtureControllerHostHash(),
         controllerPid: 2_000_000_000,
         controllerProcessStartedAt: new Date("2026-09-04T11:00:00.000Z"),
         controllerGeneration: 1,
@@ -892,6 +903,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         leaseOwner: "dead-controller",
         leaseExpiresAt: new Date(now.getTime() + 60_000),
         controllerBootId: "dead-controller-boot",
+        controllerHostHash: await knownFixtureControllerHostHash(),
         controllerPid: 2_000_000_003,
         controllerProcessStartedAt: new Date("2026-09-04T11:00:00.000Z"),
         controllerGeneration: 1,
@@ -2235,6 +2247,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         leaseOwner: "dead-controller",
         leaseExpiresAt: new Date(now.getTime() + 60_000),
         controllerBootId: "dead-controller-boot",
+        controllerHostHash: await knownFixtureControllerHostHash(),
         controllerPid: 2_000_000_002,
         controllerProcessStartedAt: new Date("2026-09-04T10:00:00.000Z"),
         controllerGeneration: 4,
@@ -2434,7 +2447,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const bootId = randomUUID();
     const leaseOwner = `${bootId}:1:${randomUUID()}`;
     await fixture.db.update(nativeRunFinalizations).set({
-      attempt: options.attempt ?? 1, controllerGeneration: 1, controllerBootId: bootId, controllerPid: 2_000_000_001,
+      attempt: options.attempt ?? 1, controllerGeneration: 1, controllerBootId: bootId,
+      controllerHostHash: await knownFixtureControllerHostHash(), controllerPid: 2_000_000_001,
       controllerProcessStartedAt: new Date(Date.now() - 60_000), leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
     }).where(eq(nativeRunFinalizations.runId, runId));
     if (options.checkpoint !== false) {
@@ -2641,6 +2655,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     await fixture.db.update(nativeRunFinalizations).set({
       attempt: options.attempt ?? 1, controllerGeneration: 1,
       controllerBootId: options.liveController ? current.bootId : randomUUID(),
+      controllerHostHash: await knownFixtureControllerHostHash(),
       controllerPid: options.liveController ? current.pid : 2_000_000_001,
       controllerProcessStartedAt: options.liveController ? current.processStartedAt : new Date(Date.now() - 60_000),
       leaseOwner: `previous:${randomUUID()}`,

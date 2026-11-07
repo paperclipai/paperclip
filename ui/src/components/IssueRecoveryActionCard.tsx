@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { describeError } from "../api/errors";
 import { Checkbox } from "./ui/checkbox";
 import { NativeSelect } from "./ui/select";
 import type { Issue } from "@paperclipai/shared";
@@ -1526,10 +1527,10 @@ export function NativeControllerContainmentRecovery({ issue, canManage, onRecord
   const [providerStopped, setProviderStopped] = useState(false);
   const [outcome, setOutcome] = useState<"" | "completed" | "not_performed" | "mixed">("");
   const [evidence, setEvidence] = useState("");
-  const authority = action?.evidence.controllerAuthority;
+  const authority = action?.evidence?.controllerAuthority;
   const digest = authority && typeof authority === "object" && !Array.isArray(authority)
     ? (authority as Record<string, unknown>).digest : undefined;
-  const runId = action?.evidence.runId;
+  const runId = action?.evidence?.runId;
   const submit = useMutation({ mutationFn: async () => {
     if (!action || typeof runId !== "string" || typeof digest !== "string" || !outcome
       || !controllerStopped || !providerStopped) throw new Error("Confirm both original-host stops and review the action outcomes.");
@@ -1538,7 +1539,7 @@ export function NativeControllerContainmentRecovery({ issue, canManage, onRecord
         controllerAuthorityDigest: digest, actionOutcome: outcome, outcomeEvidence: evidence.trim() } });
   }, onSuccess: onRecorded });
   if (!action || action.kind !== "active_run_watchdog" || action.ownerType !== "board"
-    || action.cause !== "native_restart_recovery_blocked" || action.evidence.reason !== "controller_process_space_unverified"
+    || action.cause !== "native_restart_recovery_blocked" || action.evidence?.reason !== "controller_process_space_unverified"
     || !["active", "escalated"].includes(action.status) || typeof digest !== "string") return null;
   return <section aria-label="Original controller recovery">
     <h3>Verify the original execution stopped</h3>
@@ -1563,7 +1564,7 @@ export function NativeControllerContainmentRecovery({ issue, canManage, onRecord
       <p>If any action outcome is still unknown, keep this hold. After evidence and cleanup settle, use the task’s ordinary Retry action separately.</p>
       <Button disabled={submit.isPending || !controllerStopped || !providerStopped || !outcome || evidence.trim().length < 20}
         onClick={() => submit.mutate()}>{submit.isPending ? "Recording…" : "Record containment"}</Button>
-      {submit.error && <p role="alert">{submit.error.message}</p>}
+      {submit.error && <p role="alert">{describeError(submit.error).body}</p>}
     </> : <p>A board operator with runtime access must review this original-host execution.</p>}
   </section>;
 }

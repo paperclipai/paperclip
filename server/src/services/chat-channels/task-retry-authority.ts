@@ -1,3 +1,4 @@
+import { hasCommittedNativeControllerContainment } from "../native-runtime/native-failed-run-owner-release.js";
 import { and, eq, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, issues, type Db } from "@paperclipai/db";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -75,7 +76,8 @@ async function taskChatRetryExecutionContained(db: Db, run: typeof heartbeatRuns
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   )).for("share", { noWait: true });
   if (leases.some(lease => lease.provider !== "local")) return leases.every(hasRemoteTerminationReceipt);
-  return await recordedLocalExecutionStopped(db, run) ||
+  return await hasCommittedNativeControllerContainment(db, run, run.nativeIssueId ?? "") ||
+    await recordedLocalExecutionStopped(db, run) ||
     await hasNativeLocalProcessStop(db, run.companyId, run.id) ||
     await hasHistoricalSuspendedNativeSession(db, run);
 }

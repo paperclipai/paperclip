@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../services/controller-process-identity.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
@@ -310,8 +311,15 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
 
   it.each(["before_pin", "after_pin"] as const)("serializes the real ephemeral checkpoint claim %s", async order => {
     const f = await seedSource(`CLAIM-${order}`);
-    if (order === "before_pin") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
-    else expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
+    if (order === "before_pin") {
+      // This branch exercises a same-host checkpoint claim, not a legacy or
+      // foreign namespace. Keep every other historical preservation fixture unchanged.
+      const controller = await currentControllerProcess();
+      expect(controller.hostHash).not.toBe("unknown");
+      await f.db.update(nativeRunFinalizations).set({ controllerHostHash: controller.hostHash })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    } else expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
     const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], controller: fixture.current.successor });
     if (order === "before_pin") {
       expect(dispositions).toMatchObject([{ kind: "reattach_remote_runner", runId: f.runId }]);

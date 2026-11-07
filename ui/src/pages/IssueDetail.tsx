@@ -8497,7 +8497,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : null,
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
-                <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence.controllerAuthority)}`} issue={issue}
+                <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence?.controllerAuthority)}`} issue={issue}
                   canManage={canResolveBoardRecoveryAction} onRecorded={() => {
                     invalidateIssueCollections();
                     void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
