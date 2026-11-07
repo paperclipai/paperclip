@@ -16,6 +16,29 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
+/**
+ * Where the agent workspace is mounted in the pod. The value is also declared
+ * to git as a safe directory, because the mount root belongs to root while the
+ * container runs as uid 1000.
+ */
+const WORKSPACE_MOUNT_PATH = "/workspace";
+
+/**
+ * Marks the workspace mount as a git safe directory, in the pod's own HOME.
+ *
+ * The mount root belongs to root, because `fsGroup` sets the group and leaves
+ * the owner, while the container runs as uid 1000. Git refuses to work in a
+ * repository whose worktree belongs to another user, so the export step of a
+ * run fails with "detected dubious ownership".
+ *
+ * The setting is written to the config file rather than passed through
+ * `GIT_CONFIG_*`: those variables replace or interfere with the configuration
+ * an adapter supplies for credentials or URL rewriting. `--add` appends, so an
+ * adapter that declares its own safe directories keeps them. A failure here
+ * never blocks the container, which is why the command tolerates it.
+ */
+const GIT_SAFE_DIRECTORY_COMMAND = `git config --global --add safe.directory ${WORKSPACE_MOUNT_PATH} || true`;
+
 export interface BuildSandboxCrManifestInput {
   namespace: string;
   sandboxName: string;
@@ -94,7 +117,7 @@ export function buildSandboxCrManifest(
                 "--",
                 "/bin/sh",
                 "-c",
-                "sleep infinity",
+                `${GIT_SAFE_DIRECTORY_COMMAND}; exec sleep infinity`,
               ],
               // HOME must point at a writable mount; the image's default
                // HOME=/home/node is inside the readOnly root filesystem.
@@ -121,7 +144,7 @@ export function buildSandboxCrManifest(
                 },
               },
               volumeMounts: [
-                { name: "workspace", mountPath: "/workspace" },
+                { name: "workspace", mountPath: WORKSPACE_MOUNT_PATH },
                 { name: "home", mountPath: "/home/paperclip" },
                 { name: "cache", mountPath: "/home/paperclip/.cache" },
                 { name: "tmp", mountPath: "/tmp" },
