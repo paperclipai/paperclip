@@ -645,8 +645,6 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
   async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true, maxBytes = Number.MAX_SAFE_INTEGER) {
     assertSkillSnapshotPath(relativePath);
     if (!version.packageSnapshotId) {
-      // Select only the requested legacy file. Apply the bound in PostgreSQL so
-      // an oversized inline body never crosses into the server process.
       const [row] = await db.select({ ...skillVersionMetadataColumns,
         file: sql<(CompanySkillVersionFileInventoryEntry & { tooLarge?: boolean }) | null>`(
           select case when octet_length(f->>'content')::bigint > ${maxBytes}::bigint

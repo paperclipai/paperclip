@@ -13,7 +13,6 @@ import { settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 
 const MAX_TEXT_FILE_BYTES = 16 * 1024 * 1024;
 type SkillText = { text: string; sha256: string; byteSize: number };
-/** Owned by one run authority. Retain at most 64 MiB of text and 64 entries. */
 export class SkillLibraryReadCache {
   #entries = new Map<string, SkillText>();
   #bytes = 0;

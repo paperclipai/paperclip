@@ -38,8 +38,6 @@ function originalFiles(version: StoredSkillVersion, manifest: SkillPackageManife
 export function skillPackageRuntime(db: Db) {
   const store = skillPackageStore(db);
   function readOriginalFile(version: StoredSkillVersion, sourcePath: string, maxBytes?: number, projected?: ProjectedFile) {
-    // Use verified warm reads and isolated recovery, without the company-wide
-    // preparation lock. The projection has already resolved the source path.
     return store.readVersionFile({ ...version, packageSnapshotId: version.repositorySnapshotId ?? version.packageSnapshotId,
       packageFileMap: projected ? [{ path: sourcePath, sourcePath, kind: projected.kind, encoding: projected.encoding }] : null }, sourcePath, true, maxBytes);
   }
@@ -119,7 +117,6 @@ export function skillPackageRuntime(db: Db) {
   async function readFile(version: StoredSkillVersion, relative: string, maxBytes?: number) {
     const id = (version.repositorySnapshotId ?? version.packageSnapshotId)!;
     const manifest = await store.manifest(version.companyId, id);
-    // Original references need no wrapper generation or entrypoint-body read.
     const file = originalFiles(version, manifest).find(file => file.path === relative)
       ?? (await projection(version, maxBytes)).find(file => file.path === relative);
     if (!file) return null;
