@@ -30,6 +30,24 @@ export function restartProcessStartMatches(observed: string, expected: string, p
 
 export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
 
+/**
+ * Under load or during a graceful drain a whole group can turn over between
+ * two inspections: its observed members exit and a member nobody saw start
+ * is left for a moment, reparented away from every owned anchor. Its identity
+ * is unproven, so the owner refuses to signal anything. Re-run the step until
+ * a later inspection settles it or the deadline passes, never signaling
+ * meanwhile; a straggler that outlives the deadline keeps the original error.
+ */
+export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: () => number, pollMs = 100): Promise<T> {
+  for (;;) {
+    try { return await step(); }
+    catch (error) {
+      if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+}
+
 export function createProcessTreeOwner(root: ChildProcess, options: {
   readTable?: () => Promise<ProcessObservation[] | null>;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
@@ -69,7 +87,13 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       const lost = groups.filter(group => !retained.includes(group) && next.some(row => row.processGroupId === group.processGroupId && running(row)));
       const uncertain = lost.filter(group => next.some(row => row.processGroupId === group.processGroupId
         && running(row) && !ownedNow.has(row.pid)));
-      if (uncertain.length) throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: ${uncertain.map(group => group.processGroupId).join(",")}`);
+      if (uncertain.length) {
+        // Name the unproven members so the next occurrence identifies the process.
+        const ids = new Set(uncertain.map(group => group.processGroupId));
+        const members = next.filter(row => ids.has(row.processGroupId) && running(row) && !ownedNow.has(row.pid))
+          .map(row => `pid=${row.pid} ppid=${row.parentPid} pgid=${row.processGroupId} kind=${row.kind} started=${row.started}`);
+        throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: ${[...ids].join(",")} (unowned members: ${members.join("; ")})`);
+      }
       const refreshed = refreshContinuouslyLiveProcessGroups([...retained, ...lost], next)
         .filter(group => group.processGroupId !== callerGroup);
       const anchors = refreshed.flatMap(group => group.members.map(member => member.pid));
@@ -260,15 +284,7 @@ export async function stopOwnedProcessTree(
   // straggler exits with its group), so wait within the same deadline for a
   // later inspection to settle it, never signaling meanwhile. If it persists,
   // the original error stands.
-  const settled = async <T>(step: () => Promise<T>, until: () => number): Promise<T> => {
-    for (;;) {
-      try { return await step(); }
-      catch (error) {
-        if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
-        await wait(100);
-      }
-    }
-  };
+  const settled = settleUncertainIdentity;
   try {
     if (process.platform === "win32") {
       await stopKnownDirectChild(child, phase, deadline, forcedMs, gracefulSignal);
