@@ -648,6 +648,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
@@ -3421,6 +3425,13 @@ keeps its 15-second deadline. Run `packages/adapter-utils/src/github-launcher-en
 and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contracts.
 
 ### Native runner restart recovery
+
+An explicit Retry can continue a recovered setup failure that began as a
+scheduled retry. Its settlement proof accepts the host-authored promotion event
+only when its deadline, reason and attempt match the run and its saved retry
+context. The exact failure and durable measurement must still follow. Provider
+dispatch evidence, an active controller, unsafe files or changed user authority
+keep the Retry held. This adds no automatic replay or recovery loop.
 
 For remote controller disk-loss work, use the existing control-plane snapshot
 transaction and `native-controller-recovery.ts`; do not add a second snapshot

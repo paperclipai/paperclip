@@ -11,6 +11,7 @@ import { conflict } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 import { createCostEventInTransaction } from "./costs.js";
+import { settleChargedImageReceiptsInTransaction } from "./native-runtime/generate-image-tool.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
@@ -101,12 +102,14 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * settled, not one usage receipt was ever journaled for the run (a provider
  * turn journals one as soon as it starts), and its local process either never
  * launched or was verified stopped. Settle it at once, like a pre-provider
- * failure, instead of holding company work. */
+ * failure, instead of holding company work. A usage recorder binds every run
+ * with an empty fence map; only a replaced receipt source (a non-empty map)
+ * shows that provider work began. */
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
   and coalesce((${heartbeatRuns.usageJson}->>'accountingReceiptSequence')::int, 0) = 0
-  and ${heartbeatRuns.usageJson}->'accountingReceiptSourceFences' is null
+  and coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb) = '{}'::jsonb
   and not exists (select 1 from ${runUsageReceipts} journaled_receipt
     where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
@@ -216,6 +219,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     )).for("key share");
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
+    // Tool-side image spend is separate from the provider receipt; settle any
+    // paid image whose own accounting write did not complete.
+    for (const projectId of new Set(await settleChargedImageReceiptsInTransaction(tx, run, publications))) {
+      await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId });
+    }
     if (run.costAccountedAt) {
       if (object(run.usageJson).accountingLateReceiptPending === true) {
         // Clearing late debt can release an admission hold too.

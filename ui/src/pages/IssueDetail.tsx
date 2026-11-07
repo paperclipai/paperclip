@@ -3757,6 +3757,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     selectedCompanyId,
     boardAccess,
   );
+  // Retained-file recovery reports whether it offers its own control. The task's
+  // Retry stays visible whenever it does not, so a retryable hold never dead-ends.
+  const [retainedRecoveryOwnsRetry, setRetainedRecoveryOwnsRetry] = useState(true);
   // The break-glass override reconcile is `runtime:manage`-gated server-side, not gated on the
   // recovery-resolution permission — so hide its affordance behind the matching client check.
   const canManageBoardRuntime = canBoardManageRuntime(
@@ -8181,13 +8184,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               className={shellSectionClass}
               issueId={issue.id} companyId={issue.companyId}
               showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
+              onRecoveryControlChange={setRetainedRecoveryOwnsRetry}
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
-                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause))} onRetry={taskRetry.retry}
+                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
               optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 

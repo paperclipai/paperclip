@@ -240,6 +240,18 @@ test.describe("Onboarding wizard", () => {
       await route.fulfill({ response });
     });
 
+    let persistedAgentId = "";
+    let persistedAgentStatus = 0;
+    await page.route("**/api/agents/*", async route => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      const body = route.request().postDataJSON();
+      if (body.defaultEnvironmentId !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, defaultEnvironmentId: null }) });
+      persistedAgentId = new URL(route.request().url()).pathname.split("/").at(-1)!;
+      persistedAgentStatus = response.status();
+      await route.fulfill({ response });
+    });
+
     // The sign-in Connect now starts. Stubbed so the card is deterministic:
     // the session start answers, and the guarded prompt read hands back an
     // authorization URL for the card's link row.
@@ -346,6 +358,10 @@ test.describe("Onboarding wizard", () => {
     const cardLink = page.getByRole("link", { name: /^Sign in to / });
     await expect(cardLink).toBeVisible({ timeout: 15_000 });
     await expect(cardLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
+    await expect.poll(() => persistedAgentStatus).toBe(200);
+    const persisted = await page.request.get(`/api/agents/${persistedAgentId}`);
+    expect(persisted.ok()).toBe(true);
+    expect(await persisted.json()).toMatchObject({ id: persistedAgentId, name: "Ada", defaultEnvironmentId: null });
     await expect(
       page.getByRole("button", { name: /^Sign in to / }),
     ).toBeEnabled({ timeout: 15_000 });

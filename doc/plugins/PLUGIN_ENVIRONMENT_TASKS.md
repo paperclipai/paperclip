@@ -152,6 +152,16 @@ selection remains blocked until guarded retirement/recovery; it does not imply
 that a cold launch is safe. Confirmed claim or physical cleanup clears only the
 matching proof. Raw tickets are never stored in this record.
 
+When graceful host eviction has saved a suspended session and Core has recorded
+physical stop, a later allocation can use ordinary `resumeFrom` recovery. Core
+checks the old task, source identity and current scope before detaching a cached
+released controller. Cached and detached paths then use the same retained-state
+checks. Missing state, a foreign identity or an unsettled checkpoint refuses
+continuation; Core does not replace the provider session on that refusal. This
+covers eviction before allocation and stopped-task inspection during `describe`.
+A later loss during claim still needs reconciliation. Abrupt process death without
+a suspended checkpoint remains a separate recovery path.
+
 These Core paths do not advertise the capability or opt ordinary tasks into a
 private host channel. Existing durable lease and plugin-worker idle checks still
 apply; retaining a released Runner does not by itself make a tenant safe to sleep.

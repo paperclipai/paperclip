@@ -7,9 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, QUALIFIED_ACPX_PROFILES } from "@paperclipai/paperclip-runner";
 import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "@paperclipai/paperclip-runner/live";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -152,7 +152,24 @@ child.on("exit", code => process.exit(code ?? 1));
 process.on("SIGTERM", () => child.kill("SIGTERM"));
 `;
     await writeFile(shim, script);
-    const nodeDigest = digest(await readFile(process.execPath));
+    // Runnerd refuses a group- or world-writable qualified ACPX launch. A
+    // hosted CI image can ship such a Node, or run under umask 0002.
+    await chmod(shim, 0o600);
+    let sidecarNode = process.execPath;
+    if ((await stat(sidecarNode)).mode & 0o022) {
+      // Same approach as the runner's copyOwnedNodeRuntime test helper.
+      const owned = join(root, "sidecar-node");
+      await mkdir(owned);
+      sidecarNode = join(owned, "runtime");
+      await copyFile(process.execPath, sidecarNode);
+      await chmod(sidecarNode, 0o700);
+      // Homebrew Node resolves its libnode dylib next to the relocated executable.
+      const libraries = join(dirname(process.execPath), "..", "lib");
+      for (const name of (await readdir(libraries).catch(() => [] as string[])).filter(name => /^libnode\..*\.dylib$/.test(name))) {
+        await copyFile(join(libraries, name), join(owned, name));
+      }
+    }
+    const nodeDigest = digest(await readFile(sidecarNode));
     const identity = { runId: "fresh-resume-run", normalizedSessionId: "checkpointed-session", runnerInstanceId: "fresh-runner",
       environmentLeaseId: "same-lease", turnId: "same-turn", itemId: "same-item" };
     const stateDirectory = join(root, ".paperclip-runtime", "paperclip-runner", "sessions",
@@ -172,11 +189,11 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         },
         prepareLaunch: async input => ({ configurationId: "qualified-fixture", requirementsDigest: runnerLaunchRequirementsDigest(input),
           provider: createRunnerProviderLaunch(input, { options: {}, root: directory, cwd: root, codexHome: root,
-            codexCommand: "", providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
+            codexCommand: "", providerNodeCommand: sidecarNode, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
         runnerProcessLauncher: spec => {
           launches(adoptExistingRunner);
           const child = spawn(binary, [...spec.args, "--acpx-launch-authority-digest", digest("fixture authority"),
-            "--acpx-sidecar-command", process.execPath, "--acpx-sidecar-command-sha256", nodeDigest,
+            "--acpx-sidecar-command", sidecarNode, "--acpx-sidecar-command-sha256", nodeDigest,
             "--acpx-sidecar-script", shim, "--acpx-sidecar-script-sha256", digest(script)],
           { env: { PATH: process.env.PATH, ...spec.environment }, stdio: ["ignore", "ignore", "pipe"], detached: true });
           children.push(child);
@@ -191,12 +208,21 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       bundles.push(bundle);
       return bundle;
     };
-    const expectCompleted = async (bundle: ReturnType<typeof create>) => {
+    const expectCompleted = async (bundle: ReturnType<typeof create>, expectedTurnId: string) => {
+      expect(expectedTurnId).toEqual(expect.any(String));
+      expect(expectedTurnId).not.toBe("");
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           (async () => {
-            for await (const event of bundle.transport.notifications()) if (event.method === "turn/completed") return;
+            for await (const event of bundle.transport.notifications()) {
+              if (event.method !== "turn/completed") continue;
+              const turn = event.params?.turn as { id?: string; status?: string; error?: unknown } | undefined;
+              if (turn?.id !== expectedTurnId) continue;
+              expect(turn).toMatchObject({ id: expectedTurnId, status: "completed" });
+              expect(turn?.error ?? null).toBeNull();
+              return;
+            }
             throw new Error("Fixture turn ended without completion");
           })(),
           new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Fixture turn completion timed out")), 5_000); }),
@@ -208,8 +234,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const seed = create(seedDirectory);
       const opened = await seed.transport.request("thread/start", { cwd: root, model: "fixture-model", dynamicTools: [] });
       const thread = opened.thread as { id: string; sessionId: string };
-      await seed.transport.request("turn/start", { input: [{ type: "text", text: "Save the provider checkpoint." }] });
-      await expectCompleted(seed);
+      const seedStarted = await seed.transport.request("turn/start", { input: [{ type: "text", text: "Save the provider checkpoint." }] });
+      await expectCompleted(seed, (seedStarted.turn as { id: string }).id);
       await seed.transport.close();
       const provider = JSON.parse(await readFile(join(seedDirectory, "runner", "acpx-provider-state.json"), "utf8"));
       const resume = { driverSessionId: thread.id, providerSessionId: thread.sessionId, providerIdentity: provider.identity };
@@ -230,6 +256,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         `fixture_nonce\n${pid}\n${new Date().toISOString()}\n${identity.runnerInstanceId}\n${fingerprint}\n`);
       await expect(fresh.transport.request("turn/start", { input: [{ type: "text", text: "Resume saved work." }] }))
         .rejects.toThrow("classification=session_resume_required");
+      const rejectedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(rejectedCheckpoint).toMatchObject({ lifecycle: "prepared", providerExitUnconfirmed: false, identity: provider.identity });
       await fresh.transport.close();
       await vi.waitFor(() => expect(child.exitCode).not.toBeNull(), { timeout: 5_000 });
       const resumedControl = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
@@ -239,6 +267,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       expect(saved.pendingTerminalDelivery ?? null).toBeNull();
       expect(saved.pendingProviderCleanup ?? null).toBeNull();
       expect(saved.warmTransition ?? null).toBeNull();
+      const suspendedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(suspendedCheckpoint).toMatchObject({ lifecycle: "suspended", providerExitUnconfirmed: false,
+        activeTurnId: null, pendingEvents: [], pendingRuntimeRequests: {}, identity: provider.identity });
       const runner = { execute: async (request: { command: string; args: string[]; timeoutMs?: number }) =>
         new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolveResult => {
           execFile(request.command, request.args, { timeout: request.timeoutMs }, (error, stdout, stderr) => resolveResult({
@@ -256,6 +287,16 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const retried = create(stateDirectory, resume, adopted);
       await retried.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
       await retried.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      const retryStarted = await retried.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the bounded retry." }] });
+      const retryTurnId = (retryStarted.turn as { id: string }).id;
+      await expectCompleted(retried, retryTurnId);
+      const calls = (await readFile(journal, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      const turnStarts = calls.filter(call => call.command === "turn.start");
+      expect(turnStarts).toHaveLength(3);
+      expect(new Set(turnStarts.map(call => call.params.turnId)).size).toBe(3);
+      expect(turnStarts.at(-1).params.turnId).toBe(retryTurnId);
+      expect(calls.filter(call => call.command === "session.open").map(call => call.params.expectedIdentity))
+        .toEqual([null, provider.identity, provider.identity]);
       expect(launches.mock.calls).toEqual([[undefined], [undefined], [undefined]]);
       expect(retried.evidence().runnerPid).toBeGreaterThan(0);
       expect(retried.evidence().runnerPid).not.toBe(pid);

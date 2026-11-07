@@ -582,6 +582,12 @@ export interface HarnessSession {
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     /** Queued follow-ups remain distinct from active-turn steering. */
