@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, truncate, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -32,7 +32,7 @@ import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-stora
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { nativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { nativeSha256 } from "./canonical.js";
-import { nativeControllerEvidenceDescriptor } from "./native-controller-archive.js";
+import { nativeControllerEvidenceDescriptor, NATIVE_CONTROLLER_WEB_LIMITS, type NativeControllerHistoryManifestEntry } from "./native-controller-archive.js";
 
 vi.mock("../../build-commit.js", () => ({ readBuildCommit: () => "a".repeat(40) }));
 
@@ -43,7 +43,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
   afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await db.delete(agentTaskSessions); for (const root of roots.splice(0)) await removeRuntimeAssetTree(root); });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
-  async function fixture(kind: "unversioned" | "repository" | "package" | "none" = "unversioned", managedWorkspace = false) {
+  async function fixture(kind: "unversioned" | "repository" | "package" | "deleted" | "none" | "many-web-files" = "unversioned", managedWorkspace = false) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "61".repeat(32));
     const mount = await realpath(await mkdtemp(join(tmpdir(), "native-harness-original-"))); roots.push(mount);
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
@@ -60,9 +60,10 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       mountIdentity: { dev: m.dev, ino: m.ino }, instanceIdentity: { dev: instance.dev, ino: instance.ino },
       createdFrom: { deploymentId: randomUUID(), commit: "c".repeat(40), providerWitnessSha256: "d".repeat(64) }, createdAt: new Date().toISOString() };
     const bytes = Buffer.from(JSON.stringify(anchor)); await writeFile(originalHarnessVolumeAnchorPath(), bytes, { mode: 0o600 });
+    const observed = Date.now();
     const witness: ReviewedOriginalHarnessVolumeWitness = { projectId, serviceId, environmentId, volumeId, volumeInstanceId: anchor.volumeInstanceId,
       mountPath: mount, currentDeploymentId: deploymentId, currentCommit: "a".repeat(40), currentMountIdentity: anchor.mountIdentity,
-      currentInstanceIdentity: anchor.instanceIdentity, observedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      currentInstanceIdentity: anchor.instanceIdentity, observedAt: new Date(observed).toISOString(), expiresAt: new Date(observed + 120_000).toISOString(),
       anchorSha256: createHash("sha256").update(bytes).digest("hex"), providerWitnessSha256: "e".repeat(64) };
     const source = await verifyOriginalHarnessVolumeSource(witness);
     const storage = createStorageService({ ...createLocalDiskStorageProvider(join(mount, "objects")), id: "s3" });
@@ -70,16 +71,27 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     await db.insert(agents).values({ id: agentId, companyId, name: "Retained source" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Retain prior failure", status: "blocked" });
     const runtimeContext = nativeRuntimeContextFixture();
-    if (kind !== "none") {
+    if (kind === "many-web-files") {
+      runtimeContext.skills = [];
+      for (const [name, count] of [["first", 462], ["second", 462], ["third", 3]] as const) {
+        const bundle = await materializeAsset(Array.from({ length: count }, (_, index) => ({
+          path: `file-${index}.md`, content: Buffer.from(`${name}-${index}\n`.padEnd(20_000, "x")), mode: 0o444,
+        })));
+        runtimeContext.skills.push({ key: name, runtimeName: name, versionId: null, bundle });
+      }
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+    } else if (kind !== "none") {
       let versionId: string | null = null;
-      const files: CompanySkillVersionFileInventoryEntry[] = [{ path: "SKILL.md", kind: "skill", content: "# original immutable skill\n" },
-        { path: "tool.sh", kind: "other" as const, content: "#!/bin/sh\nexit 0\n", executable: true }];
+      const files: CompanySkillVersionFileInventoryEntry[] = kind === "deleted"
+        ? [{ path: "SKILL.md", kind: "skill", content: "# Historical acceptance skill\n\n".padEnd(281, "x") }]
+        : [{ path: "SKILL.md", kind: "skill", content: "# original immutable skill\n" },
+          { path: "tool.sh", kind: "other" as const, content: "#!/bin/sh\nexit 0\n", executable: true }];
       let projected = files;
       if (kind === "repository") {
         files[0]!.content = "---\nname: retained\ndescription: retained\n---\n# original immutable skill\n";
         projected = repositorySkillProjection(files, "SKILL.md");
       }
-      if (kind === "repository" || kind === "package") {
+      if (kind === "repository" || kind === "package" || kind === "deleted") {
         const packageId = await skillPackageStore(db, storage).prepare(companyId, files, true);
         const [skill] = await db.insert(companySkills).values({ companyId, key: "retained", slug: "retained", name: "Retained", markdown: projected[0]!.content }).returning();
         const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 1,
@@ -119,14 +131,16 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     if (kind !== "none") {
       if (kind === "unversioned") await preserveRuntimeSkillAssets(db, { companyId, runId }, storage);
       await mkdir(join(scopedRunnerdStateRoot(execution), "codex-home/skills"), { recursive: true, mode: 0o700 });
-      await cp(runtimeContext.skills[0]!.bundle.rootPath, join(scopedRunnerdStateRoot(execution), "codex-home/skills/retained"), { recursive: true });
+      for (const skill of runtimeContext.skills) {
+        await cp(skill.bundle.rootPath, join(scopedRunnerdStateRoot(execution), "codex-home/skills", skill.runtimeName), { recursive: true });
+      }
     }
     const input = { companyId, selectedSessionId: selection!.id, scopeDigest, source, storage, signal: AbortSignal.timeout(60_000) };
     return { input, runId, issueId, agentId, leaseId, execution, witness, storage, mount, sourceRoot: scopedRunnerdStateRoot(execution) };
   }
 
-  async function controllerFixture(managedWorkspace = false) {
-    const f = await fixture("unversioned", managedWorkspace);
+  async function controllerFixture(managedWorkspace = false, kind: Parameters<typeof fixture>[0] = "unversioned", checkpointParts?: number) {
+    const f = await fixture(kind, managedWorkspace);
     const completion = await ensureNativeCompletionContract({ db, companyId: f.input.companyId,
       issue: { id: f.issueId, title: "Retain controller evidence", description: null }, actorId: f.agentId });
     const execution = parseNativeExecutionInput({ ...f.execution, session: { ...f.execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
@@ -152,6 +166,13 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     { sourceSeq: 2, sourceEventId: "raw-terminal", eventType: "run.terminal", priority: 0,
       envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
     control.store.state.ackedSourceSeq = 2;
+    if (checkpointParts) {
+      const artifact = { version: "raw-evidence-fixture", digest: `sha256:${"a".repeat(64)}` };
+      for (let count = 0; count < 512 && captureLegacyDurablePrpCheckpoint(JSON.stringify(control.store.state), identity, artifact).records.size < checkpointParts; count++) {
+        Object.assign(control.queueCommand("runner.suspend"), { status: "completed", result: { status: "completed" } });
+      }
+      expect(captureLegacyDurablePrpCheckpoint(JSON.stringify(control.store.state), identity, artifact).records.size).toBe(checkpointParts);
+    }
     const raw = JSON.stringify(control.store.state);
     control.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, { companyId: f.input.companyId, issueId: f.issueId,
       runId: f.runId, authorityRunId: f.runId, bootId, generation: 1, leaseOwner }));
@@ -173,6 +194,286 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     return { ...f, execution, controllerPath, raw, supervisor, supervisorPath: descriptor.supervisorPath, identity };
   }
+
+  it("preserves WEB-only evidence with a succeeded source and unresolved external lease", async () => {
+    const f = await controllerFixture(true, "deleted");
+    if (!("runtimeContext" in f.execution)) throw new Error("fixture runtime context missing");
+    const versionId = f.execution.runtimeContext.skills[0]!.versionId!;
+    await db.delete(companySkillVersions).where(eq(companySkillVersions.id, versionId));
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    const metadata = { ...lease!.metadata }; delete metadata.remoteExecutionTermination;
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.leaseId));
+    const beforeLeases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
+    const beforeRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId));
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("unverified");
+    const result = await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, mode: "web_evidence" });
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(await hasLocalNativeHarnessObligations(db)).toBe(false);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as { schema: string; controller: { archive: { id: string } } };
+    expect(receipt.schema).toBe("paperclip.native-harness-web-evidence.v1");
+    const [archive] = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, receipt.controller.archive.id));
+    const target = join(f.mount, "isolated-web-evidence");
+    expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
+      scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
+    expect(await readFile(join(target, "current/control-plane-state.json"), "utf8")).toBe(f.raw);
+    expect(await readFile(join(target, "current/supervisor.json"), "utf8")).toBe(f.supervisor);
+    const original = join(f.sourceRoot, "codex-home/skills/retained/SKILL.md"), restored = join(target, "current/web-home/codex-home/skills/retained/SKILL.md");
+    expect(await readFile(restored)).toEqual(await readFile(original));
+    expect((await lstat(restored)).mode & 0o777).toBe(0o444);
+    expect((await readFile(restored)).length).toBe(281);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, versionId))).toEqual([]);
+    expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.input.scopeDigest))).toEqual([]);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId))).toEqual(beforeLeases);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId))).toEqual(beforeRuns.map(r => ({ ...r,
+      runnerProfileJson: { ...r.runnerProfileJson, nativeHarnessFilesystemIndependence: run!.runnerProfileJson!.nativeHarnessFilesystemIndependence } })));
+    vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-web")); vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-web/state"));
+    vi.stubEnv("RAILWAY_VOLUME_ID", ""); vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("replacement must not read storage"));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(result.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  async function webFixture(checkpointParts?: number) {
+    const f = await controllerFixture(true, "unversioned", checkpointParts);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    const metadata = { ...lease!.metadata }; delete metadata.remoteExecutionTermination;
+    await db.update(environmentLeases).set({ status: "retained", cleanupStatus: "failed", releasedAt: null, metadata })
+      .where(eq(environmentLeases.id, f.leaseId));
+    return { ...f, input: { ...f.input, mode: "web_evidence" as const } };
+  }
+
+  it("preserves all 927 local WEB skill files and validates their archive on a cold replacement", async () => {
+    const f = await controllerFixture(true, "many-web-files");
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    const metadata = { ...lease!.metadata }; delete metadata.remoteExecutionTermination;
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.leaseId));
+    const originalLeases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
+    const result = await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, mode: "web_evidence" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as {
+      web: { entries: Array<{ path: string; type: string }> }; controller: { archive: { id: string } };
+    };
+    expect(receipt.web.entries.length).toBeGreaterThan(927);
+    const [archive] = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, receipt.controller.archive.id));
+    const target = join(f.mount, "cold-many-web-files");
+    expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
+      scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
+    if (!("runtimeContext" in f.execution)) throw new Error("fixture runtime context missing");
+    const files: Array<{ relative: string; sha256: string }> = [];
+    for (const skill of f.execution.runtimeContext.skills) {
+      const manifest = JSON.parse(await readFile(join(f.mount, "instances/default/runtime-context-assets/manifests", `${skill.bundle.digest}.json`), "utf8"));
+      for (const file of manifest.files as Array<{ path: string; sha256: string }>) {
+        files.push({ relative: join("codex-home/skills", skill.runtimeName, file.path), sha256: file.sha256 });
+      }
+    }
+    expect(files).toHaveLength(927);
+    for (let offset = 0; offset < files.length; offset += 16) {
+      await Promise.all(files.slice(offset, offset + 16).map(async file => {
+        const restored = join(target, "current/web-home", file.relative);
+        const [originalBytes, restoredBytes, stat] = await Promise.all([
+          readFile(join(f.sourceRoot, file.relative)), readFile(restored), lstat(restored),
+        ]);
+        expect(restoredBytes).toEqual(originalBytes);
+        expect(createHash("sha256").update(originalBytes).digest("hex")).toBe(file.sha256);
+        expect(stat.mode & 0o777).toBe(0o444);
+      }));
+    }
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId))).toEqual(originalLeases);
+    vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-many-web-files"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-many-web-files/state")); vi.stubEnv("RAILWAY_VOLUME_ID", "");
+    vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("database validation must not read storage"));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(result.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+  }, 120_000);
+
+  function webDescriptor(entries: NativeControllerHistoryManifestEntry[]) {
+    return nativeControllerEvidenceDescriptor({ companyId: "company", issueId: "issue", runId: "run", controllerDigest: null,
+      supervisorDigest: null, purpose: "filesystem_independence", web: { bindingDigest: "a".repeat(64), entries } });
+  }
+
+  it("keeps the existing 128-entry WEB manifest bytes unchanged", () => {
+    const entries: NativeControllerHistoryManifestEntry[] = [{ path: "web-home", mode: 0o700, type: "directory" },
+      ...Array.from({ length: 127 }, (_, index) => ({ path: `web-home/entry-${index}`, mode: 0o700, type: "directory" as const }))];
+    const descriptor = webDescriptor(entries);
+    const manifest = JSON.stringify({ schema: "paperclip.legacy-controller-archive.v1", companyId: "company", issueId: "issue",
+      runId: "run", reason: "original_volume_source_evidence", files: {}, web: { entries, bindingDigest: "a".repeat(64), controllerAbsent: true } });
+    expect(descriptor.manifest).toBe(manifest);
+    expect(descriptor.manifestSha256).toBe(`sha256:${createHash("sha256").update(manifest).digest("hex")}`);
+  });
+
+  it.each(["entry-count", "metadata-bytes", "manifest-bytes", "path-bytes", "file-bytes", "total-bytes"])("refuses a WEB manifest beyond its %s bound", control => {
+    const entries: NativeControllerHistoryManifestEntry[] = [{ path: "web-home", mode: 0o700, type: "directory" }];
+    if (control === "entry-count") entries.push(...Array.from({ length: NATIVE_CONTROLLER_WEB_LIMITS.entries }, (_, index) => ({
+      path: `web-home/entry-${index}`, mode: 0o700, type: "directory" as const,
+    })));
+    if (control === "metadata-bytes") entries.push(...Array.from({ length: 1_050 }, (_, index) => ({
+      path: `web-home/${index}-${"x".repeat(3_990)}`, mode: 0o700, type: "directory" as const,
+    })));
+    if (control === "manifest-bytes") {
+      entries.push(...Array.from({ length: NATIVE_CONTROLLER_WEB_LIMITS.entries - 1 }, (_, index) => ({
+        path: `web-home/${index}-${"x".repeat(240)}`, mode: 0o444, type: "file" as const, size: 0, sha256: "b".repeat(64),
+      })));
+      expect(Buffer.byteLength(JSON.stringify(entries))).toBeLessThan(NATIVE_CONTROLLER_WEB_LIMITS.metadataBytes);
+    }
+    if (control === "path-bytes") entries.push({ path: `web-home/${"x".repeat(NATIVE_CONTROLLER_WEB_LIMITS.pathBytes)}`, mode: 0o700, type: "directory" });
+    if (control === "file-bytes") entries.push({ path: "web-home/oversized", mode: 0o600, type: "file", size: 16 * 1024 * 1024 + 1, sha256: "b".repeat(64) });
+    if (control === "total-bytes") entries.push(...Array.from({ length: 5 }, (_, index) => ({ path: `web-home/file-${index}`,
+      mode: 0o600, type: "file" as const, size: 16 * 1024 * 1024, sha256: "b".repeat(64) })));
+    expect(() => webDescriptor(entries)).toThrow("native_controller_archive_authority_invalid");
+  });
+
+  it.each(["entry-count", "file-bytes"])("retains oversized WEB filesystem evidence without publication for %s", async control => {
+    const f = await webFixture(), directory = join(f.sourceRoot, "codex-home/oversized");
+    await mkdir(directory, { mode: 0o700 });
+    if (control === "entry-count") {
+      for (let offset = 0; offset <= NATIVE_CONTROLLER_WEB_LIMITS.entries; offset += 32) {
+        await Promise.all(Array.from({ length: Math.min(32, NATIVE_CONTROLLER_WEB_LIMITS.entries + 1 - offset) }, (_, index) =>
+          writeFile(join(directory, `entry-${offset + index}`), "", { mode: 0o600 })));
+      }
+    } else {
+      const file = join(directory, "oversized"); await writeFile(file, "", { mode: 0o600 });
+      await truncate(file, 16 * 1024 * 1024 + 1);
+    }
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("unverified");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run!.runnerProfileJson!.nativeHarnessFilesystemIndependence).toBeUndefined();
+    expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.runId, f.runId))).toEqual([]);
+    expect(await readFile(f.controllerPath, "utf8")).toBe(f.raw);
+  });
+
+  it("preserves a genuinely absent controller with its supervisor and 267 durable checkpoint parts", async () => {
+    const f = await webFixture(267);
+    await rm(f.controllerPath);
+    const before = await db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    expect(before).toHaveLength(267);
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const lastRunId = randomUUID(), execution = parseNativeExecutionInput({ ...f.execution, binding: { ...f.execution.binding, runId: lastRunId } });
+    await db.insert(heartbeatRuns).values({ ...source!, id: lastRunId, status: "failed", processPid: null, processStartedAt: null,
+      createdAt: new Date(source!.createdAt.getTime() + 1_000), runnerProfileJson: { nativeExecutionInput: execution, retainedWarning: "existing failed admission" } });
+    await db.insert(nativeRunFinalizations).values({ companyId: f.input.companyId, issueId: f.issueId, runId: lastRunId,
+      phase: "terminal_failure", recoveryState: "blocked" });
+    await db.update(agentTaskSessions).set({ lastRunId }).where(eq(agentTaskSessions.id, f.input.selectedSessionId));
+    await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRunId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as { web: { controllerAbsent: boolean };
+      controller: { archive: { id: string; controllerDigest: null } } };
+    expect(receipt.web.controllerAbsent).toBe(true);
+    expect(receipt.controller.archive.controllerDigest).toBeNull();
+    const [archive] = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, receipt.controller.archive.id));
+    const target = join(f.mount, "isolated-supervisor-only");
+    expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
+      scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
+    await expect(lstat(join(target, "current/control-plane-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(target, "current/supervisor.json"), "utf8")).toBe(f.supervisor);
+    expect(await db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(before);
+    vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-supervisor-host"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-supervisor-host/state")); vi.stubEnv("RAILWAY_VOLUME_ID", "");
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+  });
+
+  it("keeps WEB coverage valid through external cleanup observations without changing recovery authority", async () => {
+    const f = await webFixture();
+    const result = await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "pending", expiresAt: new Date(),
+      lastUsedAt: new Date(), releasedAt: new Date(), metadata: { ...lease!.metadata, sandboxState: "archived",
+        pendingCleanupRetryAfterMs: Date.now(), pendingCleanupManualAttemptId: randomUUID(),
+        pendingCleanupController: { attemptId: randomUUID(), countedAttempt: true }, remoteExecutionTermination: { observation: "not a stop receipt" } } })
+      .where(eq(environmentLeases.id, f.leaseId));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect((await preserveNativeHarnessFilesystemIndependence(db, f.input)).receiptDigest).toBe(result.receiptDigest);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+      eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
+    await db.update(environmentLeases).set({ providerLeaseId: "different-allocation" }).where(eq(environmentLeases.id, f.leaseId));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
+  });
+
+  it.each(["active-web", "owned-finalizer", "physical-writer", "foreign-supervisor", "missing-manifest", "symlink", "foreign-controller"])(
+    "refuses WEB evidence with %s and retains the original recovery state", async control => {
+      const f = await webFixture(), where = eq(heartbeatRuns.id, f.runId);
+      if (control === "active-web") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(where);
+      if (control === "owned-finalizer") await db.update(nativeRunFinalizations).set({ leaseOwner: "expired-but-still-owned", leaseExpiresAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      if (control === "physical-writer") { const [run] = await db.select().from(heartbeatRuns).where(where);
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run!.runnerProfileJson, nativeWorkspaceFinalizationOwner: { token: "owned" } } }).where(where); }
+      if (control === "foreign-supervisor") { const saved = JSON.parse(f.supervisor); saved.snapshot.identity.runId = randomUUID();
+        await writeFile(f.supervisorPath, JSON.stringify(saved)); }
+      if (control === "foreign-controller") { const saved = JSON.parse(f.raw); saved.identity.runId = randomUUID(); await writeFile(f.controllerPath, JSON.stringify(saved)); }
+      if (control === "missing-manifest") { if (!("runtimeContext" in f.execution)) throw new Error("fixture runtime context missing");
+        await rm(join(f.mount, "instances/default/runtime-context-assets/manifests", `${f.execution.runtimeContext.skills[0]!.bundle.digest}.json`)); }
+      if (control === "symlink") { const file = join(f.sourceRoot, "codex-home/history.jsonl"); await symlink(f.controllerPath, file); }
+      try {
+        const before = await db.select().from(heartbeatRuns).where(where);
+        await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow();
+        expect(await db.select().from(heartbeatRuns).where(where)).toEqual(before);
+        expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
+      } finally { if (control === "symlink") await rm(join(f.sourceRoot, "codex-home/history.jsonl")); }
+    });
+
+  it.each(["changed-byte", "changed-mode", "added-file", "controller-appeared", "changed-source"])(
+    "does not publish WEB evidence after %s changes during encrypted upload", async control => {
+      const f = await webFixture();
+      const originalMode = (await lstat(f.supervisorPath)).mode & 0o777;
+      if (control === "controller-appeared") await rm(f.controllerPath);
+      const put = f.storage.putFile.bind(f.storage); let changed = false;
+      vi.spyOn(f.storage, "putFile").mockImplementation(async (...args) => {
+        const result = await put(...args);
+        if (!changed) { changed = true;
+          if (control === "changed-byte") await writeFile(f.supervisorPath, `${f.supervisor} `);
+          if (control === "changed-mode") await chmod(f.supervisorPath, originalMode === 0o400 ? 0o600 : 0o400);
+          if (control === "added-file") await writeFile(join(f.sourceRoot, "codex-home/history.jsonl"), "new uncovered bytes");
+          if (control === "controller-appeared") await writeFile(f.controllerPath, f.raw);
+          if (control === "changed-source") { const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+            await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run!.runnerProfileJson, retainedWarning: "new source binding" } }).where(eq(heartbeatRuns.id, f.runId)); }
+        } return result;
+      });
+      await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow();
+      expect(changed).toBe(true);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
+        .not.toHaveProperty("nativeHarnessFilesystemIndependence");
+      expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
+    });
+
+  it.each([false, true])("retains the authenticated WEB publication winner after a late upload (invalid: %s)", async invalid => {
+    const f = await webFixture();
+    let release!: () => void, entered!: () => void, delay = true;
+    const blocked = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    const get = f.storage.getObject.bind(f.storage);
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      if (delay) { delay = false; entered(); await blocked; } return get(...args);
+    });
+    const late = preserveNativeHarnessFilesystemIndependence(db, f.input);
+    try {
+      await ready;
+      const winner = await preserveNativeHarnessFilesystemIndependence(db, f.input);
+      let [published] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      if (invalid) {
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...published!.runnerProfileJson,
+          nativeHarnessFilesystemIndependence: { ...(published!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown>), assetsDigest: "0".repeat(64) } } })
+          .where(eq(heartbeatRuns.id, f.runId));
+        [published] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      }
+      release();
+      if (invalid) await expect(late).rejects.toThrow("unverified");
+      else expect((await late).receiptDigest).toBe(winner.receiptDigest);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(published);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.input.companyId),
+        eq(activityLog.action, "native_harness_filesystem_independence_verified")))).toHaveLength(1);
+    } finally { release(); await late.catch(() => undefined); }
+  });
+
+  it.each(["missing-entry", "changed-source"])("refuses existing WEB coverage after %s without replacing its receipt", async control => {
+    const f = await webFixture(); await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as Record<string, unknown> & { web: { entries: Array<{ path: string }> } };
+    const profile = control === "missing-entry" ? { ...run!.runnerProfileJson, nativeHarnessFilesystemIndependence: { ...receipt,
+      web: { ...receipt.web, entries: receipt.web.entries.filter(entry => entry.path !== "web-supervisor.json") } } }
+      : { ...run!.runnerProfileJson, sessionCheckpoint: { changed: true } };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(false);
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson).toEqual(profile);
+  });
 
   async function historyFixture(keepHistoricalHeaders = false, includeRunnerState = false) {
     const f = await controllerFixture(true);

@@ -91,8 +91,36 @@ validate the published receipt using only database bindings, without the old
 volume, a fresh source witness, or storage reads. Changed or missing bindings
 invalidate it. Existing resume and replacement policies remain authoritative,
 including governed-wait failures and warm-session refusals. No provider history
-is reconstructed or declared recovered, and uncertain provider sources remain
-enrollment blockers.
+is reconstructed or declared recovered.
+
+The same original-volume maintenance owner has a separate `web_evidence` mode.
+It stores a `paperclip.native-harness-web-evidence.v1` receipt. This mode proves
+that the web server's retained files have durable byte coverage. It does not
+require an external VM's termination receipt and does not settle that VM's
+recovery obligation. It requires the same settled web controller, finalizer,
+task and physical-writer fences. The encrypted `original_volume_source_evidence`
+archive includes a closed inventory of all nonexcluded files under the canonical
+session root, the separate warm supervisor, and each admitted skill manifest.
+Files retain their bytes and modes, including local edits and a skill whose
+version row was deleted. Such a skill remains forensic evidence: the owner does
+not recreate its version or make it executable. Canonical credential exclusions
+stay excluded. Unknown directories, symlinks, incomplete manifests, active web
+writers and changed source facts fail closed. This WEB inventory permits at most
+10,000 entries, 4 MiB of manifest metadata, and 4,096 bytes per path. The 16-MiB
+per-file and 64-MiB total payload limits remain unchanged. Authority history keeps
+its separate 128-entry and 32-epoch bounds.
+
+A genuinely absent raw controller stays absent. A supervisor-only archive still
+requires the exact durable controller checkpoint and source identity. Old
+terminated-provider receipts and history-free manifests keep their existing
+shape. External lease status and cleanup observations can change without
+creating a new web filesystem dependency. Allocation, stamp, selected source,
+checkpoint and admitted-input changes invalidate coverage. VM references,
+recovery actions, warnings and continuation policies stay unchanged. Replacement
+validation uses only the published archive and database bindings; it needs no
+original-volume anchor or filesystem read. These validations add bounded
+per-retained-scope database reads during startup. They do not add a worker or a
+poll. Missing or invalid byte evidence remains an enrollment blocker.
 
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
