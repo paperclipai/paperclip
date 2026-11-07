@@ -38,6 +38,8 @@ import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecut
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { sweepOrphanedRunScratch, type RunScratchSweepRunState } from "../run-scratch.js";
+import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
   and,
   asc,
@@ -2719,6 +2721,25 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     });
     await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit, skipDirectoryCleanup: opts?.skipInstructionDirectoryCleanup }).catch(error => {
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
+    });
+
+    await sweepOrphanedRunScratch({
+      resolveRunStates: async (runIds) => {
+        // Markers are untrusted: only well-formed UUIDs reach the query.
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const validIds = runIds.filter((id) => uuid.test(id));
+        // A run absent from this database may belong to another instance sharing the temp root.
+        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
+        if (validIds.length === 0) return states;
+        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
+        for (const row of rows) states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
+        return states;
+      },
+    }).then((swept) => {
+      if (swept.removed.length > 0) logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");
+    }).catch(error => {
+      logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
     });
 
     // Complete persisted native results before generic orphan recovery. The

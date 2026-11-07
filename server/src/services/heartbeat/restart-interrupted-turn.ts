@@ -10,7 +10,7 @@ import { logger } from "../../middleware/logger.js";
  * sandbox lease or plugin task is gone, or the remote runner process is not
  * there to verify. This is infrastructure, not the task's own failure. */
 const REATTACHMENT_LOST_ERRORS = ["native_remote_recovery_lease_mismatch", "native_plugin_recovery_lease_mismatch",
-  "runner_remote_process_identity_unavailable"];
+  "runner_remote_process_identity_unavailable", "runner_continuity_break_archive_failed"];
 
 const TURN_STARTED_EVENTS = ["turn.submitted", "turn.started", "turn.accepted"];
 const TURN_SETTLED_EVENTS = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];

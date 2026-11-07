@@ -1,3 +1,4 @@
+import { imagePreparationReceiptIds } from "./task-chat/image-resources";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -909,9 +910,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Historical placeholder comments remain untouched in storage. Projection
   // prefers the accepted semantic result so runs such as DOT-20 recover their
   // real upstream response without a data migration.
+  const imageReceipts = useMemo(
+    () => imagePreparationReceiptIds(comments, attachments, workProducts),
+    [comments, attachments, workProducts],
+  );
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
+        if (imageReceipts.has(comment.id)) return [];
         if (comment.authorType === "system" && comment.metadata?.recoveryResponsibility === "system") return [];
         if (statusRelevance.isHistoricalNotice(comment)) return [];
         if (isRedundantAiRecoveryNotice(comment, interactions)) return [];
@@ -927,7 +933,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         const summary = acceptedSemanticResultSummary(resultJson);
         return [summary ? { ...comment, body: summary } : comment];
       }),
-    [comments, interactions, linkedRunMetaById, statusRelevance],
+    [comments, interactions, linkedRunMetaById, statusRelevance, imageReceipts],
   );
 
   const commentItems = useMemo(

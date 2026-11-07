@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRunEvents, heartbeatRuns, issues,
+  agents, budgetIncidents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, environments,
+  heartbeatRunEvents, heartbeatRuns, issues,
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork, recheckAdmittedRunBudgetReadOnly } from "../services/budgets.js";
 import { accountRunCost, reconcileRunCosts } from "../services/run-cost-accounting.js";
 import { persistUsageReceipt } from "../services/usage-receipts.js";
+import { recheckRunBudgetReservationInTransaction, reserveRunBudget } from "../services/budget-reservations.js";
 
 // A control-plane SIGKILL during a provider turn that reports usage only at
 // turn end leaves the run terminal with an incomplete receipt. Once native
@@ -114,9 +116,121 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
-  it("keeps a blocking policy for lost-receipt usage that has tokens but no price", async () => {
+  // RC-06d: a crash loop killed a Codex turn whose observed usage was complete
+  // token counts. The lost receipt settled as unpriced and, under the default
+  // blocking policy, hard-stopped the company at 0.38 of 3000 cents.
+  async function lostUsage(f: Awaited<ReturnType<typeof fixture>>, usage: Record<string, unknown>) {
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify(usage)}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+
+  it.each([
+    ["Codex", { provider: "openai", biller: "openai", model: "gpt-6.1-sol", billingType: "metered_api",
+      inputTokens: 28690, cachedInputTokens: 0, outputTokens: 220 }],
+    ["Claude", { provider: "anthropic", biller: "anthropic", model: "claude-sonnet-5", billingType: "metered_api",
+      inputTokens: 1200, cachedInputTokens: 300, cacheWriteTokens: 100, outputTokens: 80 }],
+  ] as const)("prices a lost %s receipt's observed usage from the rate card", async (_label, usage) => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
-    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"inputTokens":1200,"outputTokens":80}'::jsonb` })
+    await lostUsage(f, usage);
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const [charge] = await f.charges();
+    expect(charge).toMatchObject({ costStatus: "estimated", model: usage.model });
+    expect(Number(charge.costCents)).toBeGreaterThan(0);
+    // Observed usage before the loss is a lower bound, and says so.
+    expect(charge.pricingProvenance).toMatchObject({ source: "rate_card",
+      evidence: expect.stringContaining("observed usage is a lower bound") });
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await f.block()).toBeNull();
+  });
+
+  it("leaves a lost multi-model receipt unpriced instead of applying one model's rate", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await lostUsage(f, { provider: "openai", biller: "openai", model: "gpt-6.1-sol", billingType: "metered_api",
+      inputTokens: 28690, cachedInputTokens: 0, outputTokens: 220,
+      usageByModel: [{ model: "gpt-6.1-sol", usage: { inputTokens: 20000 } }, { model: "gpt-6-luna", usage: { inputTokens: 8690 } }] });
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    expect(await f.block()).toBeNull();
+  });
+
+  it("never hard-stops a company for a lost receipt whose usage has no rate card", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await lostUsage(f, { provider: "openai", biller: "openai", model: "unlisted-model", inputTokens: 1200, outputTokens: 80 });
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  // RC-06e: a resumed run's own continuation was refused by the accounting hold
+  // of its task's interrupted run, so the task could never settle itself.
+  it("admits a task's continuation past its own recovering accounting, but not other tasks", async () => {
+    const f = await fixture({ phase: "observed" });
+    expect(await f.block()).toMatchObject({ reason: "New work must wait while a native run recovers its unfinished accounting." });
+    const continuation = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: continuation, companyId: f.companyId, agentId: f.agentId, status: "queued",
+      runtimeMode: "native", scopeKind: "issue", issueId: f.issue.id, nativeIssueId: f.issue.id });
+    const reservation = await reserveRunBudget(db, f.companyId, continuation, null);
+    expect(reservation).toMatchObject({ reused: false });
+    // The later dispatch gates must agree, or the continuation fails there instead.
+    const [continuationRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuation));
+    expect(await db.transaction(tx => recheckRunBudgetReservationInTransaction(tx as unknown as typeof db, [],
+      continuationRun, reservation.id))).toBeNull();
+    expect(await recheckAdmittedRunBudgetReadOnly(db, { companyId: f.companyId, agentId: f.agentId, runId: continuation,
+      projectId: null, reservationId: reservation.id })).toBeNull();
+    // A legacy run without a task identity is not exempt from another task's hold.
+    const legacy = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: legacy, companyId: f.companyId, agentId: f.otherAgentId, status: "queued" });
+    await expect(reserveRunBudget(db, f.companyId, legacy, null)).rejects.toThrow(/recovers its unfinished accounting/);
+    const [otherIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Other task", status: "todo",
+      assigneeAgentId: f.otherAgentId }).returning();
+    const other = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: other, companyId: f.companyId, agentId: f.otherAgentId, status: "queued",
+      runtimeMode: "native", scopeKind: "issue", issueId: otherIssue.id, nativeIssueId: otherIssue.id });
+    await expect(reserveRunBudget(db, f.companyId, other, null)).rejects.toThrow(/recovers its unfinished accounting/);
+  });
+
+  // RC-06e: unpriced charges with no observed usage, or with a known partial
+  // cost, hard-stopped a company at 120 of 2000 cents.
+  it.each([
+    ["no observed tokens on metered billing", { billingType: "metered_api", inputTokens: 0, outputTokens: 0, costUsdExact: null }],
+    ["a known partial cost", { billingType: "metered_api", inputTokens: 900, outputTokens: 40, costUsdExact: "0.0081" }],
+  ] as const)("does not hard-stop a blocking policy for an unpriced charge with %s", async (_label, usage) => {
+    const f = await fixture({ unpricedUsagePolicy: "block", stopEvidence: false });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      ...usage, model: "unlisted-model", costStatus: "unpriced", accountingReceiptReady: true })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await f.block()).toBeNull();
+  });
+
+  it("keeps the blocking policy for fixed or credit billing with no observed tokens", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block", stopEvidence: false });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      billingType: "credits", inputTokens: 0, outputTokens: 0, model: "unlisted-model", costStatus: "unpriced",
+      accountingReceiptReady: true })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("keeps the blocking policy for complete-receipt usage with no price", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptReady":true,"inputTokens":1200,"outputTokens":80,"model":"unlisted-model"}'::jsonb` })
       .where(eq(heartbeatRuns.id, f.run.id));
     expect(await accountRunCost(db, f.run.id)).toBe(true);
     await flushBudgetEvaluationWork(db);
@@ -208,6 +322,57 @@ const support = await getEmbeddedPostgresTestSupport();
     const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, f.policy.id));
     expect((await budgetService(db).overview(f.companyId)).policies[0]?.status).not.toBe("hard_stop");
     expect(policy.id).toBe(f.policy.id);
+  });
+
+  // Daytona wave: a remote run's lost receipt held all new company work even
+  // after its sandbox was destroyed. A remote run has no local stop event and
+  // keeps its recorded remote process identity.
+  async function remoteFixture(options: { status?: "failed" | "cancelled"; leases?: Array<{
+    receipt?: "destroyed" | "stopped" | "none" | "foreign"; released?: boolean;
+  }> } = {}) {
+    const f = await fixture({ processPid: 443, stopEvidence: false });
+    if (options.status) await db.update(heartbeatRuns).set({ status: options.status }).where(eq(heartbeatRuns.id, f.run.id));
+    const [environment] = await db.insert(environments).values({ name: `Daytona ${f.run.id}`, driver: "sandbox",
+      config: { provider: "daytona" } }).returning();
+    for (const lease of options.leases ?? [{ receipt: "destroyed" }]) {
+      const id = randomUUID(), providerLeaseId = randomUUID(), released = lease.released !== false;
+      const receipt = lease.receipt ?? "destroyed";
+      await db.insert(environmentLeases).values({ id, environmentId: environment.id, companyId: f.companyId,
+        issueId: f.issue.id, heartbeatRunId: f.run.id, provider: "daytona", providerLeaseId, leasePolicy: "ephemeral",
+        status: released ? "expired" : "active", cleanupStatus: released ? "success" : null,
+        releasedAt: released ? new Date() : null,
+        metadata: receipt === "none" ? {} : { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+          companyId: f.companyId, runId: f.run.id, leaseId: id, provider: "daytona",
+          providerLeaseId: receipt === "foreign" ? randomUUID() : providerLeaseId,
+          state: receipt === "foreign" ? "destroyed" : receipt, confirmedAt: new Date().toISOString() } } });
+    }
+    return f;
+  }
+
+  it.each(["failed", "cancelled"] as const)("settles a %s remote run once every sandbox has a termination receipt", async status => {
+    const f = await remoteFixture({ status, leases: [{ receipt: "destroyed" }, { receipt: "stopped" }] });
+    expect(await f.block()).not.toBeNull();
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    expect((await f.reservation()).state).toBe("settled");
+    expect(await f.block()).toBeNull();
+  });
+
+  it.each([
+    ["a sandbox that may still run", [{ receipt: "none", released: false }]],
+    // Older plugins release successfully without returning a receipt.
+    ["a released sandbox without a termination receipt", [{ receipt: "none" }]],
+    ["one of two sandboxes without a receipt", [{ receipt: "destroyed" }, { receipt: "none", released: false }]],
+    ["a receipt for another sandbox", [{ receipt: "foreign" }]],
+    ["no sandbox at all", []],
+  ] as const)("keeps a remote run's debt pending with %s", async (_label, leases) => {
+    const f = await remoteFixture({ leases: [...leases] });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect(await accountRunCost(db, f.run.id)).toBe(false);
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    expect(await f.charges()).toHaveLength(0);
   });
 
   it("keeps the debt pending while native recovery can still produce a result", async () => {

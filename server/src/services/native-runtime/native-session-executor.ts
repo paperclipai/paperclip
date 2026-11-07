@@ -90,7 +90,7 @@ import { createNativeProviderFailureObservation } from "./native-provider-failur
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
-  runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
+  runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -5597,7 +5597,10 @@ async function migrateRunnerdStateRootForExecution(input: {
       savePluginRunnerCheckpoint(scoped, result.state, identity);
     }
     if (input.restartRecovery?.kind === "bootstrap_incomplete") {
-      if (runnerdStateProvesIncompleteBootstrap(scoped)) {
+      // A local runner's process ids belong to this host, so a fresh provider
+      // session it opened before any turn can be proven gone here.
+      const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
+      if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })) {
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
       }
@@ -6080,9 +6083,18 @@ export async function restoreRemoteBootstrapCheckpointForRecovery(input: {
   await restoreNativeRunnerCheckpoint(input.db, input.execution.binding, input.root, nativeSessionKey(input.execution));
 }
 
-export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
+export function runnerdStateProvesIncompleteBootstrap(
+  root: string,
+  options: { localProcesses: boolean } = { localProcesses: false },
+): boolean {
   try {
-    return runnerdStateIsIncompleteBootstrap(readRunnerdControlPlaneState(root), readRunnerdBootstrapJournal(root));
+    const state = readRunnerdControlPlaneState(root);
+    const journal = readRunnerdBootstrapJournal(root);
+    return runnerdStateIsIncompleteBootstrap(state, journal) ||
+      runnerdStateIsOpenedSessionBeforeTurn(state, journal, {
+        localProcesses: options.localProcesses,
+        processGone: (id, group) => localProcessDefinitelyGone(id, group),
+      });
   } catch {
     return false;
   }
@@ -9330,6 +9342,7 @@ async function executePaperclipNativeSessionWithinScope(
           const nextAttempt = nextNativeProviderAttempt(
             incidentAttempts,
             recovering?.kind,
+            !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");
@@ -15229,8 +15242,6 @@ async function createRunnerdBackendWithinSessionClaim(
     const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
     mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
     await cursorCloudRuntime?.archiveCheckpoint(archiveRoot, previous);
-    noteNativeRunnerEvidence(archivedAt);
-    moveNativeContinuityState(root, archiveRoot);
     if (remoteCommandRunner && remoteSessionRoot) {
       const escapedSource = remoteSessionRoot.replaceAll("'", "'\\''");
       const archivedRemote = `${remoteSessionRoot}.continuity-break-${archiveToken}`;
@@ -15248,6 +15259,8 @@ async function createRunnerdBackendWithinSessionClaim(
         throw new Error("runner_continuity_break_archive_failed");
       }
     }
+    noteNativeRunnerEvidence(archivedAt);
+    moveNativeContinuityState(root, archiveRoot);
     remotePrepared = false;
     retainProviderPack = false;
     legacyProviderContinuity = false;

@@ -472,6 +472,7 @@ import {
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
@@ -3979,6 +3980,16 @@ export function heartbeatService(
                 "failed to record heartbeat run scratch cleanup event",
               );
             });
+            // Earlier process attempts of this run (before a restart) left their
+            // own scratch directories; the run is terminal, so remove them too.
+            if (scratchCleanup.removed) {
+              await sweepOrphanedRunScratch({
+                runId: run.id,
+                resolveRunStates: async (ids) => new Map(ids.map((id) => [id, "terminal" as const])),
+              }).catch((sweepError) => {
+                logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
+              });
+            }
           }
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&

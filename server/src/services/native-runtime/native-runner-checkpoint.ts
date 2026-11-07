@@ -155,7 +155,7 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
   };
 }
 
-const authorities = new WeakMap<DurablePrpControlPlane, Map<string, ReturnType<typeof nativeRunnerCheckpointWriter>>>();
+const authorities = new WeakMap<DurablePrpControlPlane, Map<string, { fence: string; write: ReturnType<typeof nativeRunnerCheckpointWriter> }>>();
 
 export function nativeRunnerCheckpointPersistence(db: Db, bootId: string, authorityRunId: string | (() => string),
   detach: (runIds: readonly string[], leaseOwner?: string) => Promise<unknown>) {
@@ -198,21 +198,22 @@ export async function registerNativeRunnerCheckpoint(input: {
     input.authority.setCheckpointPersistence(async snapshot => {
       const writer = boundWriters.get(snapshot.runId);
       if (!writer) throw new Error("native_runner_checkpoint_owner_lost");
-      await writer(snapshot);
+      await writer.write(snapshot);
     });
     authorities.set(input.authority, writers);
   }
-  if (!writers.has(input.binding.runId)) {
+  const fence = JSON.stringify([authorityRunId, input.bootId, owner.controllerGeneration, owner.leaseOwner]);
+  if (writers.get(input.binding.runId)?.fence !== fence) {
     const write = nativeRunnerCheckpointWriter(input.db, {
       ...input.binding, authorityRunId, bootId: input.bootId, generation: owner.controllerGeneration, leaseOwner: owner.leaseOwner,
     });
-    writers.set(input.binding.runId, async checkpoint => {
+    writers.set(input.binding.runId, { fence, write: async checkpoint => {
       try { await write(checkpoint); }
       catch (error) {
         void input.onFailure?.(authorityRunId, owner.leaseOwner!).catch(() => undefined);
         throw error;
       }
-    });
+    } });
   }
   await input.authority.flushCheckpoint();
 }

@@ -22,6 +22,7 @@ import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js
 import { pinNativeProviderArtifactsForBackup, releaseRetiredNativeProviderArtifacts, restoreNativeProviderArtifacts, retainNativeProviderArtifacts,
   type NativeProviderArtifactReceipt, type NativeProviderArtifactSource } from "./native-provider-artifacts.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import type { SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
 type Binding = { companyId: string; scopeDigest: string; id: string };
@@ -96,9 +97,13 @@ export async function nativeHarnessBackupOwner(db: Db, input: { companyId: strin
   if (!row || !row.leaseOwner && (row.phase !== "committed" || !row.resultId)) fail("owner_missing");
   return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointFenceOwner;
 }
-async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner,
+async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner,
   inactiveSource?: InactiveSource) {
   if (inactiveSource && "kind" in owner) fail("prestage_requires_runtime_owner");
+  if ("kind" in owner && owner.kind === "settled_controller_archive") {
+    await (await import("./native-controller-archive-source.js")).assertSettledControllerArchiveSource(tx as unknown as Db, owner);
+    return;
+  }
   const checkpointOwner = "kind" in owner ? null : await lockNativeRunnerCheckpointOwner(tx, owner);
   const [task] = await tx.select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues)
     .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("share");
@@ -183,7 +188,7 @@ export async function assertNativeHarnessBackupOwner(db: Db, owner: NativeRunner
 }
 
 export async function persistNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
+  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
   providerArtifacts?: NativeProviderArtifactSource;

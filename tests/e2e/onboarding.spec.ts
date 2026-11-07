@@ -175,7 +175,7 @@ test.describe("Onboarding wizard", () => {
     // its provider's login pseudo-terminal capability — this reproduces the
     // gate a real sandbox-backed instance would already pass, without
     // changing any other field the rest of the page depends on.
-    const FAKE_SANDBOX_ENVIRONMENT_ID = "e2e-fake-sandbox-environment";
+    const FAKE_SANDBOX_ENVIRONMENT_ID = "c0e01740-05eb-41ea-bdbe-6358b712e26f";
     const FAKE_SANDBOX_PROVIDER = "e2e-fake-provider";
 
     await page.route("**/environments", async (route) => {
@@ -230,6 +230,15 @@ test.describe("Onboarding wizard", () => {
         body: JSON.stringify({ status: "absent" }),
       }),
     );
+
+    await page.route("**/api/adapters?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("environmentId") !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      url.searchParams.delete("environmentId");
+      const response = await route.fetch({ url: url.toString() });
+      expect(response.ok()).toBe(true);
+      await route.fulfill({ response });
+    });
 
     // The sign-in Connect now starts. Stubbed so the card is deterministic:
     // the session start answers, and the guarded prompt read hands back an

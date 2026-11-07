@@ -1718,6 +1718,145 @@ describe("native incomplete-bootstrap evidence", () => {
   it("stays fail-closed when the runner journal is unreadable", async () => {
     expect(await provesWith(connectedBeforeSessionOpen(), "torn")).toBe(false);
   });
+
+  // A graceful drain (SIGTERM) during ACPX bootstrap: session.open failed when
+  // the sidecar timed out, then the drain sent runner.drain and runner.suspend.
+  // No event was emitted, so nothing reached the provider.
+  const drainedBeforeSessionOpened = (sessionOpenStatus = "failed") => {
+    const fixture = connectedBeforeSessionOpen();
+    const lifecycle = [
+      { type: "runner.drain", status: "completed", result: { result: { retainedEventsDrained: true, status: "completed" } } },
+      { type: "runner.suspend", status: "completed", result: { result: { status: "completed" } } },
+    ];
+    fixture.controlPlane.commands = [
+      { type: "run.prepare", status: "completed", result: { result: { status: "prepared" } } },
+      { type: "session.open", status: sessionOpenStatus, result: { result: { code: "command_execution_failed" } } },
+      ...lifecycle,
+    ];
+    fixture.controlPlane.duplicateCommandResults = 2;
+    fixture.runner.lifecycle = "suspended";
+    fixture.runner.processedCommands = {
+      command_prp_00000001: { commandType: "run.prepare", status: "completed" },
+      command_prp_00000002: { commandType: "session.open", status: sessionOpenStatus },
+      command_close_drain: { commandType: "runner.drain", status: "completed" },
+      command_close_suspend: { commandType: "runner.suspend", status: "completed" },
+    };
+    return fixture;
+  };
+
+  it("allows a fresh bootstrap after a drain suspended a runner whose session.open failed", async () => {
+    expect(await provesWith(drainedBeforeSessionOpened())).toBe(true);
+    expect(await provesWith(drainedBeforeSessionOpened("pending"))).toBe(true);
+    const shutdown = drainedBeforeSessionOpened();
+    (shutdown.controlPlane.commands as unknown[]).push({ type: "runner.shutdown", status: "pending" });
+    expect(await provesWith(shutdown)).toBe(true);
+  });
+
+  it.each<[string, (fixture: ReturnType<typeof connectedBeforeSessionOpen>) => void]>([
+    ["session.open completed", f => {
+      (f.controlPlane.commands as Array<Record<string, unknown>>)[1]!.status = "completed";
+      (f.runner.processedCommands as Record<string, Record<string, unknown>>).command_prp_00000002!.status = "completed";
+    }],
+    ["an event was committed", f => { f.controlPlane.committedEvents = [{ sourceSeq: 1, eventType: "runner.suspended" }]; }],
+    ["an event was acknowledged", f => { f.controlPlane.ackedSourceSeq = 1; }],
+    ["a turn was issued", f => { (f.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" }); }],
+    ["the drain stopped a turn", f => { (f.controlPlane.commands as unknown[]).push({ type: "turn.stop", status: "completed" }); }],
+    ["the runner queued an event", f => { f.runner.nextSourceSeq = 2; f.runner.outbox = [{ sourceSeq: 1, eventType: "runner.suspended" }]; }],
+    ["the runner processed a turn", f => { (f.runner.processedCommands as Record<string, unknown>).command_prp_00000005 = { commandType: "turn.start", status: "pending" }; }],
+  ])("stays fail-closed after a drain when %s", async (_label, mutate) => {
+    const fixture = drainedBeforeSessionOpened();
+    mutate(fixture);
+    expect(await provesWith(fixture)).toBe(false);
+  });
+
+  // A graceful drain (SIGTERM) can land after session.open started a fresh
+  // provider session but before the controller issued any turn. The committed
+  // events are session setup only, and the session's provider process is gone.
+  const deadPid = async () => {
+    const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    await new Promise(resolve => child.once("exit", resolve));
+    return child.pid!;
+  };
+  const sessionEvent = (sourceSeq: number, eventType: string, payload: Record<string, unknown> = {}) => ({
+    sourceSeq, eventType, priority: 0,
+    envelope: { kind: "event", payload: { eventType, payload } },
+  });
+  const drainedAfterSessionOpen = (pid: number) => {
+    const fixture = connectedBeforeSessionOpen();
+    const commands = fixture.controlPlane.commands as Array<Record<string, unknown>>;
+    commands[1] = { type: "session.open", status: "completed", result: {
+      commandType: "session.open", status: "completed",
+      result: { driver: "acpx_runtime", processId: pid, provider: "acpx", providerSessionId: "provider-session",
+        sessionId: "account-session", status: "started" },
+    } };
+    fixture.controlPlane.committedEvents = [
+      sessionEvent(1, "session.started", { driver: "acpx_runtime", processId: pid, provider: "acpx" }),
+      sessionEvent(2, "session.capabilities.updated"),
+      sessionEvent(3, "session.goal.snapshot", { goal: null }),
+    ];
+    fixture.controlPlane.ackedSourceSeq = 3;
+    fixture.runner.nextSourceSeq = 5;
+    fixture.runner.ackedSourceSeq = 3;
+    fixture.runner.outbox = [{ sourceSeq: 4, priority: 1, eventType: "harness.diagnostic", envelope: { kind: "event",
+      payload: { eventType: "harness.diagnostic", payload: { code: "acpx_process",
+        details: { pid, processGroupId: null, role: "sidecar" } } } } }];
+    (fixture.runner.processedCommands as Record<string, Record<string, unknown>>).command_prp_00000002 = {
+      commandType: "session.open", status: "completed", result: { processId: pid, status: "started" } };
+    return fixture;
+  };
+  async function provesLocally(fixture: ReturnType<typeof connectedBeforeSessionOpen>, localProcesses = true) {
+    const root = await mkdtemp(join(tmpdir(), "native-bootstrap-drained-"));
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(fixture.controlPlane));
+      await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify(fixture.runner));
+      return runnerdStateProvesIncompleteBootstrap(root, { localProcesses });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it("allows a fresh bootstrap after a drain that landed between session.open and the first turn", async () => {
+    const pid = await deadPid();
+    expect(await provesLocally(drainedAfterSessionOpen(pid))).toBe(true);
+    const suspended = drainedAfterSessionOpen(pid);
+    (suspended.controlPlane.commands as unknown[]).push({ type: "runner.suspend", status: "completed" });
+    (suspended.controlPlane.committedEvents as unknown[]).push(sessionEvent(4, "runner.suspended"));
+    suspended.controlPlane.ackedSourceSeq = 4;
+    (suspended.runner.processedCommands as Record<string, unknown>).command_prp_00000003 = {
+      commandType: "runner.suspend", status: "completed" };
+    expect(await provesLocally(suspended)).toBe(true);
+  });
+
+  it.each<[string, (fixture: ReturnType<typeof connectedBeforeSessionOpen>) => void]>([
+    ["a turn was issued", f => { (f.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" }); }],
+    ["a turn started", f => { (f.controlPlane.committedEvents as unknown[]).push(sessionEvent(4, "turn.started")); f.controlPlane.ackedSourceSeq = 4; }],
+    ["the runner queued provider output", f => { (f.runner.outbox as unknown[]).push(sessionEvent(5, "provider.event")); }],
+    ["the runner processed a turn", f => { (f.runner.processedCommands as Record<string, unknown>).command_prp_00000003 = { commandType: "turn.start", status: "pending" }; }],
+    ["the session resumed an earlier conversation", f => {
+      const open = (f.controlPlane.commands as Array<Record<string, unknown>>)[1]!;
+      (open.result as { result: Record<string, unknown> }).result.status = "resumed";
+    }],
+    ["committed events were compacted", f => { f.controlPlane.ackedSourceSeq = 7; }],
+    ["session.open recorded no provider process", f => {
+      const open = (f.controlPlane.commands as Array<Record<string, unknown>>)[1]!;
+      delete (open.result as { result: Record<string, unknown> }).result.processId;
+    }],
+    ["the runner journal is missing", f => { f.runner = null as unknown as Record<string, unknown>; }],
+  ])("stays fail-closed after session.open when %s", async (_label, mutate) => {
+    const fixture = drainedAfterSessionOpen(await deadPid());
+    mutate(fixture);
+    expect(await provesLocally(fixture)).toBe(false);
+  });
+
+  it("stays fail-closed after session.open while the provider process is alive", async () => {
+    expect(await provesLocally(drainedAfterSessionOpen(process.pid))).toBe(false);
+  });
+
+  it("stays fail-closed after session.open for a runner whose processes are on another host", async () => {
+    expect(await provesLocally(drainedAfterSessionOpen(await deadPid()), false)).toBe(false);
+  });
 });
 
 describe("native provider usage normalization", () => {
@@ -15179,6 +15318,40 @@ describe("runnerd provider runtime wiring", () => {
     await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
     expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch")
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
+  });
+
+  it.each(["failed", "timeout", "succeeded"] as const)("retains the local controller checkpoint until remote continuity archiving succeeds: %s", async mode => {
+    const current = scopedNativeExecution("failed-remote-continuity-archive");
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    const openSession = vi.fn(async () => ({ close: async () => undefined }));
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession } as never);
+    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: request.args[1]?.includes(".continuity-break-") && mode === "failed" ? 1 : 0,
+      stdout: "", stderr: "", timedOut: Boolean(request.args[1]?.includes(".continuity-break-") && mode === "timeout") }));
+    const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "archive-controller",
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
+        leaseId: "lease", providerKey: "daytona", sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "sandbox" },
+        runner: { execute } } as never });
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls[0]![0].stateDirectory!;
+    await mkdir(join(root, "runner"), { recursive: true });
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "runner", "retained.txt"), "Retained provider checkpoint");
+    await writeFile(join(root, "control-plane", "retained.txt"), "Retained controller journal");
+    const replacement = backend.openReplacementSession!({ identity: current.binding } as never, {} as never);
+    if (mode === "succeeded") {
+      await replacement;
+      expect(openSession).toHaveBeenCalledOnce();
+      const archives = await readdir(join(root, "continuity-breaks"));
+      expect(archives).toHaveLength(1);
+      expect(await readFile(join(root, "continuity-breaks", archives[0]!, "runner", "retained.txt"), "utf8"))
+        .toBe("Retained provider checkpoint");
+      expect(existsSync(join(root, "runner"))).toBe(false);
+    } else {
+      await expect(replacement).rejects.toThrow("runner_continuity_break_archive_failed");
+      expect(await readFile(join(root, "runner", "retained.txt"), "utf8")).toBe("Retained provider checkpoint");
+      expect(await readFile(join(root, "control-plane", "retained.txt"), "utf8")).toBe("Retained controller journal");
+      expect(openSession).not.toHaveBeenCalled();
+    }
   });
 
   it.each(["verified", "no-proof", "dead", "stale"] as const)("reuses only verified idle warm process during actual remote preparation: %s", async mode => {

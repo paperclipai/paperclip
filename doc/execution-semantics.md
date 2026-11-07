@@ -774,6 +774,19 @@ durable wake and an admitted successor run. The old run must no longer own the
 task's checkout or execution. This settlement preserves the task and successor
 ownership, and neither re-arms the timer nor starts another provider turn.
 Workspace persistence must still succeed first.
+
+When the old monitor wait is no longer eligible, a newer ordinary user-comment
+wake can supersede that old saved wait.
+The finalizer requires the canonical unedited user comment, the matching user wake,
+and the accepted old result with its server-issued monitor receipt. An admitted
+successor must retain the exact task, comment revision, and source-run lineage.
+The finalizer rechecks this proof under the task lock. Assessment fingerprints
+include the exact superseding request proof, so a prior failed assessment remains
+immutable when the finalization decision changes. It records a passive
+settlement and preserves the current task status, assignment, checkout, schedule,
+and newer request. It does not re-arm the old monitor, publish its old waiting
+summary, or start another provider turn. Missing, cancelled, foreign, or conflicting
+proof keeps the old result held. Source Stop and workspace persistence gates remain.
 If a saved monitor expires during workspace recovery, settlement releases the
 old run into the still-persisted schedule. The scheduler then applies its timeout
 or attempt-limit recovery policy. Expiration still rejects new monitor-wait
@@ -2210,7 +2223,7 @@ unknown operations or partial transcripts do not. Replacement uses a fresh
 session and retires only the exact predecessor's obsolete recovery hold while
 recording the proof and successor lineage. Retained provider files are not edited.
 
-Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. A resume after a graceful shutdown drain suspended the run for reattachment does not consume an attempt, because the run did not cause that restart. A resume after a crash, which leaves no drain record, still consumes one. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
 A due failed remote retry can retain its provider PID after heartbeat completion
 releases the task execution lock. Both remote workspace reference formats and
@@ -2498,6 +2511,15 @@ is checkpointed before submission. Real provider failures, accepted semantic
 results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
+
+A restart can also land after the agent proposed its result but before the
+provider turn ended. When the restored runner proves that turn ended with the
+result Paperclip accepted, it records a reconciliation and the run terminal,
+which settle that turn. When provider history no longer contains the checkpointed
+turn, or the runner reports it lost on restore, but Paperclip durably holds the
+result that exact turn proposed, recovery also settles the turn with that result. Either way, recovery finalizes the
+accepted result instead of failing and rerunning finished work. A missing turn
+without such a result still fails closed, because its outcome is unknown.
 
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
@@ -3354,11 +3376,17 @@ its normalized current run ID does not prove that the current controller attache
 Fenced remote Runner recovery requires a matching database controller checkpoint
 or a valid staged attachment for the target run before selecting exact-checkpoint
 resume. Local Runner recovery keeps its existing local controller checks.
-If the first attachment finds the retained runner gone before the new turn starts, ordinary failure settlement requests one normal Retry under the
+If the first attachment finds the retained runner gone, or replacement cannot
+archive its remote state before the new turn starts, ordinary failure settlement
+requests one normal Retry under the
 original user's saved wake and comment authority. Current authorization, Stop,
 provider-turn settlement, workspace preservation and cleanup gates still apply.
 The same request remains idempotent, and an automatic successor does not request
 another automatic Retry. System wakes and unsettled provider turns remain held.
+
+Continuity replacement confirms remote state archiving before moving the local
+controller journal and provider checkpoint. A failed or timed-out remote archive
+retains those local recovery files and does not start a replacement provider.
 
 Both graceful and hot restarts detach the old controller from native sessions.
 A graceful shutdown can also suspend a restart-recovery claim whose execution

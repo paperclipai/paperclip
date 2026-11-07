@@ -17,7 +17,7 @@ import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
-import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
@@ -490,7 +490,17 @@ export async function admitExplicitNativeContinuation(input: {
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }
     }
-    if (!remote && run.runtimeMode === "native" && run.errorCode === "native_session_cleanup_quarantined") {
+    // The runner keeps a closing or quarantined provider session in process
+    // memory, keyed by this task. Its admission gate would refuse a successor
+    // at once, so hold the input here with the matching reason instead of
+    // dispatching a run that can only fail. A pending close settles by itself
+    // and its release wakes deferred execution; the held input then starts.
+    const retainedCleanup = !remote && run.runtimeMode === "native"
+      ? nativeSessionCleanupBlock({ companyId, issueId }) : null;
+    if (retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
+      return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
+    if (!remote && run.runtimeMode === "native" &&
+        (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
       // This is new user input, never permission to retry the interrupted turn.
       if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
       const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
