@@ -211,6 +211,18 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies multi-word limit names and the 'reached your' wording as provider quota", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const creditLimit = "You've hit your usage credit limit · resets Oct 14, 5pm (Europe/Amsterdam)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage: creditLimit })).toBe(true);
+    expect(extractClaudeRetryNotBefore({ errorMessage: creditLimit }, now)?.toISOString()).toBe(
+      "2026-10-14T15:00:00.000Z",
+    );
+    expect(isClaudeProviderQuotaError({ errorMessage: "You've reached your Fable limit." })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage: "You've reached your Fable limit." })).toBe(false);
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -483,6 +495,44 @@ describe("extractClaudeRetryNotBefore", () => {
       now,
     );
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
+  });
+
+  it("parses a weekly-limit reset date and time in its explicit timezone", () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your weekly limit · resets Oct 14, 5pm (Europe/Amsterdam)" },
+        now,
+      )?.toISOString(),
+    ).toBe("2026-10-14T15:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your Opus limit · resets Oct 14, 5:30pm (Europe/Amsterdam)" },
+        now,
+      )?.toISOString(),
+    ).toBe("2026-10-14T15:30:00.000Z");
+  });
+
+  it("parses a reset date with an explicit year or no time, and rolls a past date into next year", () => {
+    const now = new Date("2026-12-30T12:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your weekly limit · resets Jan 2, 2027, 9am (UTC)" },
+        now,
+      )?.toISOString(),
+    ).toBe("2027-01-02T09:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your weekly limit · resets Jan 2, 9am (UTC)" },
+        now,
+      )?.toISOString(),
+    ).toBe("2027-01-02T09:00:00.000Z");
+    expect(
+      extractClaudeRetryNotBefore(
+        { errorMessage: "You've hit your weekly limit · resets Jan 2 (UTC)" },
+        now,
+      )?.toISOString(),
+    ).toBe("2027-01-02T00:00:00.000Z");
   });
 
   it("returns null when no reset hint is present", () => {
