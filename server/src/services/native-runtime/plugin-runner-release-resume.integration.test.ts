@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import https, { createServer } from "node:https";
 import { createServer as createTcpServer } from "node:net";
@@ -15,7 +16,7 @@ import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, canonicalNativeRuntimeContextDigest } from "@paperclipai/paperclip-runner";
 import { materializeAsset } from "./runtime-context.js";
 import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
-import { describeEmbeddedPostgres, nativeRestartFixture, fakeCodexAppServer, waitForCondition } from "../../__tests__/helpers/native-restart.js";
+import { describeEmbeddedPostgres, nativeRestartFixture, realProcessIt, fakeCodexAppServer, waitForCondition } from "../../__tests__/helpers/native-restart.js";
 import { executePaperclipNativeSession, cancelNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "./native-session-executor.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import * as remoteWarmRecovery from "./remote-warm-session-recovery.js";
@@ -31,6 +32,7 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
   };
 };
 
+const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
@@ -38,7 +40,9 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
 describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
   const environment = nativeRestartFixture();
-  it.skipIf(process.platform === "win32").each([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const])("completes %s runs through a retained %s process", async (harness, mode) => {
+  const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
+    if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const adopted = mode.startsWith("adopted"), cancellation = mode.includes("cancellation"), qualifiedCancellation = mode === "adopted cancellation";
     const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
     const { db, runId, issueId, native } = first;
@@ -76,9 +80,8 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
     const sidecar = join(root, "sidecar"), sidecarScript = join(root, "sidecar-entry");
     if (harness === "claude") {
       const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
-      const fake = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
       await writeFile(sidecarScript, "qualified fixture entry");
-      await writeFile(sidecar, `#!/bin/sh\nexec ${quote(fake)} --mode source-reconcile --profile-digest ${quote(claudeProfile.commandDigest)} --journal ${quote(calls)} --source-fault ${quote(join(root, "fault"))} --wait-completion-feedback\n`, { mode: 0o700 });
+      await writeFile(sidecar, `#!/bin/sh\nexec ${quote(fakeAcpxSidecar)} --mode source-reconcile --profile-digest ${quote(claudeProfile.commandDigest)} --journal ${quote(calls)} --source-fault ${quote(join(root, "fault"))} --wait-completion-feedback\n`, { mode: 0o700 });
     }
     const key = join(root, "tls.key"), certificate = join(root, "tls.crt");
     execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
@@ -308,5 +311,5 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
       }
     }
-  }, 60_000);
+  });
 });
