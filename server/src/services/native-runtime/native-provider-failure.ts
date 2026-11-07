@@ -216,6 +216,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
   let overloadedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
   const providerFailures = new Map<string, ProviderFailure>();
+  /** A driver-classified, action-required model rejection; `forTerminal` classifies it, so it is not "unclassified". */
+  const modelUnavailableTurn = (turnId: string) => {
+    const failure = providerFailures.get(turnId);
+    return failure?.category === "model_unavailable" && failure.retryability === "requires_action";
+  };
   return {
     observe(event: PrpEvent) {
       if (event.sourceKind === "runner" && event.eventType === "turn.failed" && event.turnId
@@ -270,8 +275,8 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       if (turnId !== rejectedTurnId) {
         // A driver's closed category marks a rejected model for any provider. Only an
         // action-required rejection qualifies; a transient one may succeed on retry.
-        const failure = providerFailures.get(turnId);
-        if (failure?.category !== "model_unavailable" || failure.retryability !== "requires_action") return null;
+        if (!modelUnavailableTurn(turnId)) return null;
+        const failure = providerFailures.get(turnId)!;
         return {
           errorCode: "native_provider_model_rejected" as const,
           errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
@@ -287,7 +292,7 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed" ||
-          turnId === overloadedTurnId || turnId === rejectedTurnId) return null;
+          turnId === overloadedTurnId || turnId === rejectedTurnId || modelUnavailableTurn(turnId)) return null;
       const diagnostic = failedTurns.get(turnId);
       return diagnostic ? { ...diagnostic } : null;
     },
