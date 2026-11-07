@@ -2119,6 +2119,50 @@ function runnerdStateBase(): string {
   );
 }
 
+/**
+ * A runner launch requested without a recorded process identity leaves no PID
+ * to verify. On this host it is proven absent when no process carries the
+ * run's runner arguments and no saved runner state belongs to the run: a
+ * provider starts only after its runner connects and writes that state.
+ */
+export function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): boolean {
+  let execution: NativeExecutionInput;
+  try {
+    execution = parseNativeExecutionInput(input.execution);
+  } catch {
+    return false;
+  }
+  if (execution.binding.runId !== input.runId) return false;
+  let processes: string;
+  try {
+    processes = execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return false;
+  }
+  if (processes.split("\n").some(line => line.includes(`--run-id ${input.runId}`))) return false;
+  const root = scopedRunnerdStateRoot(execution);
+  const candidates = [root];
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  try {
+    if (existsSync(quarantine)) {
+      for (const name of readdirSync(quarantine)) {
+        if (name.startsWith(`${basename(root)}.`)) candidates.push(resolve(quarantine, name));
+      }
+    }
+  } catch {
+    return false;
+  }
+  for (const candidate of candidates) {
+    if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
+    try {
+      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   // Antigravity's first release owns a fresh per-turn daemon. Its native
   // conversation is stored separately and may load under each new run's grant.
@@ -5563,6 +5607,16 @@ async function migrateRunnerdStateRootForExecution(input: {
     }
     await assertCleanupActivationCommitted(input.db, scoped, input.execution);
     const identity = readRunnerdDurableIdentity(scoped);
+    if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
+        (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
+        !existsSync(resolve(scoped, "control-plane", "control-plane-state.json"))) {
+      // The server was killed between creating the root and the local runner's
+      // first state write. No runner connected, so no provider started and no
+      // command was acknowledged. Keep the partial root for inspection and
+      // start the same-run bootstrap again.
+      quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      return;
+    }
     if (!identity) {
       if (input.restartRecovery?.kind !== "reattach_existing_runner" &&
           input.restartRecovery?.kind !== "reattach_remote_runner") {

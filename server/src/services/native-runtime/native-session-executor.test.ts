@@ -17,6 +17,7 @@ import { configuredEnvironment, configuredEnvironmentProjection } from "../../ve
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { readFileSync } from "node:fs";
+import { once } from "node:events";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 import {
@@ -392,6 +393,7 @@ import {
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
+  unidentifiedLocalRunnerProvenAbsent,
   executePaperclipNativeSession,
   detachNativeSessionsForRestart,
   NativeControllerDetachedForRestartError,
@@ -13823,6 +13825,51 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mock.calls[0]![1].codexTransportFactory!();
     return state.createTransport.mock.calls[0]![0].stateDirectory!;
   }
+
+  it.each(["absent", "unreadable"] as const)("restarts a local bootstrap whose runner state is %s only when no state was written", async mode => {
+    // RC-42: the server was killed after creating the root and before the
+    // runner's first state write. Nothing connected, so no provider started.
+    const current = scopedNativeExecution(`bootstrap-state-${mode}`);
+    const root = await initializeScopedRunnerRoot(current, "runner");
+    await mkdir(join(root, "diagnostics"), { recursive: true });
+    if (mode === "unreadable") {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane/control-plane-state.json"), "{");
+    }
+    const quarantine = join(dirname(root), "quarantine");
+    const before = existsSync(quarantine) ? (await readdir(quarantine)).length : 0;
+    const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "runner",
+      restartRecovery: { kind: "bootstrap_incomplete" as const, runId: current.binding.runId, leaseOwner: "controller",
+        controllerGeneration: 2, providerAttempt: 1, restartKind: "hard" as const, recoveryRequestId: null } });
+    if (mode === "absent") {
+      await expect(backend).resolves.toBeDefined();
+      expect((await readdir(quarantine)).length).toBe(before + 1);
+    } else {
+      // Written but unreadable state keeps failing closed.
+      await expect(backend).rejects.toThrow("durable_identity_unreadable");
+    }
+  });
+
+  it("proves an unidentified local runner absent only without a runner process or saved state", async () => {
+    const current = scopedNativeExecution("unidentified-runner");
+    const runId = current.binding.runId;
+    const root = await initializeScopedRunnerRoot(current, "runner");
+    expect(unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(true);
+    // Another run's binding is not this run's proof.
+    expect(unidentifiedLocalRunnerProvenAbsent({ runId: "another-run", execution: current })).toBe(false);
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", runId], { stdio: "ignore" });
+    try {
+      await vi.waitFor(() => expect(unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false));
+    } finally {
+      const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+    }
+    expect(unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(true);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify(durableControlPlaneState({
+      runId, normalizedSessionId: current.session.normalizedSessionId!, runnerInstanceId: "runner",
+      environmentLeaseId: "lease", turnId: "turn", itemId: "item" })));
+    expect(unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false);
+  });
 
   it("keeps physical task cleanup binding after the startup context finishes", async () => {
     const current = scopedNativeExecution("physical-task-cleanup");

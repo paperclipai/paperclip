@@ -97,6 +97,42 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
   return event?.eventType === LOCAL_PROCESS_STOPPED;
 }
 
+/**
+ * A local runner launch can be requested and the server killed before the
+ * runner's process identity is recorded. With no PID to check, prove on this
+ * host that no runner for the run exists and that it never wrote runner state
+ * (no provider can start before that), then record the stop like a verified
+ * PID. A later launch request invalidates the receipt as usual.
+ */
+export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" | "runnerProfileJson">,
+  options: { record: boolean } = { record: true }): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.processPid || run.processGroupId) return false;
+  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  if (latest?.eventType !== PROCESS_START_REQUESTED) return false;
+  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
+    .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+  if (leases.some(lease => lease.provider !== "local")) return false;
+  const { unidentifiedLocalRunnerProvenAbsent } = await import("./native-runtime/native-session-executor.js");
+  if (!unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput })) return false;
+  if (!options.record) return true;
+  await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId,
+    runId: run.id,
+    agentId: run.agentId,
+    eventType: LOCAL_PROCESS_STOPPED,
+    stream: "system",
+    level: "info",
+    message: "Verified that no runner for this run exists on this host and none saved runner state.",
+    payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" },
+  });
+  return true;
+}
+
 /** Pre-receipt native runs can retain an exact suspended session after their
  * mutable process fields were cleared. This is admission evidence for a new
  * user turn only, never permission to replay the old run or infer its outcomes.
