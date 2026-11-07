@@ -1767,8 +1767,9 @@ conservative admission restriction. Runs that ended without succeeding and
 await accounting hold new work only: they never open a hard-stop incident, pause
 a scope, or stop running work. Only spend at the limit, or unpriced usage under
 a blocking policy, does that. A succeeded run with only its usage report
-outstanding does not hold new work: its provider work is over, so it is bounded
-like a running run. Its observed cost counts toward spend and reservation
+outstanding, whose provider already reported observed usage, does not hold new
+work: its provider work is over, so it is bounded like a running run. A
+succeeded run with no observed cost still holds new work. Its observed cost counts toward spend and reservation
 capacity, and its settled charge can still reach the hard stop. A run that
 failed, was cancelled, timed out or was interrupted still holds new work,
 because its provider may not have stopped. Temporary holds (accounting that awaits

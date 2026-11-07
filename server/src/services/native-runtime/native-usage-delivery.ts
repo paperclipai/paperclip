@@ -8,7 +8,7 @@ import { priceCodexReceipt } from "../codex-pricing.js";
 import { liveRunUsageCostCents } from "../budget-live-usage.js";
 import { receiptFingerprint } from "../receipt-fingerprint.js";
 import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipts.js";
-import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, NATIVE_TURN_LOST_ON_RESTORE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
 
 const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 const uuid = (identity: string) => {
@@ -126,7 +126,8 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       && (input.provider.kind !== "codex" || fact.usage.runDeltaBasis === "run") } : undefined;
     const event = { sourceInstanceId: input.runnerInstanceId, sourceSeq: envelope.sequence,
       turnId: accountingTurn, eventType: fact.eventType,
-      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage } : {} } as PrpEvent;
+      payload: interpretedUsage ? { kind: "usage", usage: interpretedUsage }
+        : fact.lostOnRestore ? { error: { code: NATIVE_TURN_LOST_ON_RESTORE } } : {} } as PrpEvent;
     if (turnAccounting) {
       turnAccounting.observe(event);
       return turnAccounting.snapshot();
@@ -163,10 +164,15 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
       ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true, runDeltaBasis: payload.runDeltaBasis,
         ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}) } } : {}),
+      ...(event.eventType === "turn.failed" && payload.error && typeof payload.error === "object"
+        && (payload.error as Record<string, unknown>).code === NATIVE_TURN_LOST_ON_RESTORE ? { lostOnRestore: true as const } : {}),
     };
     const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
+    // A receipt saved before the marker existed replays without it.
+    const { lostOnRestore: _marker, ...unmarked } = fact;
+    const comparable = previous?.producerEvent?.lostOnRestore ? fact : unmarked;
     if (previous && (previous.sequence !== event.sourceSeq || previous.receivedAt !== event.emittedAt
-      || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(fact))) throw new Error("native_usage_source_conflict");
+      || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(comparable))) throw new Error("native_usage_source_conflict");
     if (accepted.has(event.sourceEventId)) return;
     if (pending && pending.producerEvent?.sourceEventId !== event.sourceEventId) throw new Error("native_usage_report_pending");
     if (!pending) {

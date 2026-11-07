@@ -166,7 +166,8 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     const restartDerived = (alias: string) => sql.raw(`(${alias}.usage_json ? 'accountingReceiptSourceFences'
         or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
         or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
-          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'))`);
+          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'
+          and restart_event.payload->>'trigger' is distinct from 'same_run_retry'))`);
     const closureTimedOutCharge = sql`(${finalCharge}
       and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
         and timed_out_run.company_id = ${costEvents.companyId}
@@ -188,11 +189,14 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
     runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
-    // A succeeded run's provider work is over; only its usage report is
-    // outstanding. Like a running run, its observed cost counts toward spend
-    // and reservation capacity, and its settled charge can still reach the
-    // hard stop, but it does not hold the whole scope's new work.
-    runColumns[`waiting${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.status} <> 'succeeded'
+    // A succeeded run whose provider reported observed usage has only its
+    // final usage report outstanding. Like a running run, that observed cost
+    // counts toward spend and reservation capacity, and its settled charge can
+    // still reach the hard stop, but it does not hold the whole scope's new
+    // work. A succeeded run with no observed cost (for example an unproven
+    // Cursor Cloud terminal) still holds new work.
+    const boundedSucceeded = sql`${heartbeatRuns.status} = 'succeeded' and ${usage}->'budgetExposure'->>'costCents' is not null`;
+    runColumns[`waiting${index}`] = sql`count(*) filter (where ${terminal} and not (${boundedSucceeded})
       and not (${heartbeatRuns.runtimeMode} = 'native' and ${recovering}))::int`;
   }
   // A single statement preserves hold-to-ledger atomicity even when a caller

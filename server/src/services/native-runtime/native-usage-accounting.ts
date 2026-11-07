@@ -60,7 +60,8 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
  * restore. That turn's usage can never be reported, so the receipt is final
  * but its usage and price are a lower bound. */
 export const NATIVE_LOST_TURN_USAGE_EVIDENCE = "a provider turn was lost on restore and never reported its usage; observed usage is a lower bound";
-const LOST_ON_RESTORE = "provider_turn_lost_on_restore";
+export const NATIVE_TURN_LOST_ON_RESTORE = "provider_turn_lost_on_restore";
+const LOST_ON_RESTORE = NATIVE_TURN_LOST_ON_RESTORE;
 
 export function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
   const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean; lost?: boolean }>();
