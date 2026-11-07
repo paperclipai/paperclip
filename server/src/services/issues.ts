@@ -2576,21 +2576,36 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
     with candidate_workspaces as materialized (
       select distinct workspace_id from (${workspaceScope}) scoped_workspaces(workspace_id)
     ), workspace_facts as materialized (
-      select candidate.workspace_id, finalized.started_at as finalized_at,
-        legacy.phase, legacy.status, legacy.started_at
+      select candidate.workspace_id,
+        case
+          when latest_finalize.status = 'succeeded' then latest_finalize.started_at
+          when latest_finalize.status is null then null
+          else (
+            select started_at from (
+              select phase, status, started_at from workspace_operations
+              where company_id = ${companyId}::uuid
+                and execution_workspace_id = candidate.workspace_id
+              order by started_at desc offset 0
+            ) workspace_history
+            where phase = 'workspace_finalize' and status = 'succeeded'
+            order by started_at desc limit 1
+          )
+        end as finalized_at,
+        latest_finalize.status is not null as has_finalize,
+        legacy.phase, legacy.status, legacy.started_at, legacy.heartbeat_run_id
       from candidate_workspaces candidate
       left join lateral (
-        select started_at from (
+        select status, started_at from (
           select phase, status, started_at from workspace_operations
           where company_id = ${companyId}::uuid
             and execution_workspace_id = candidate.workspace_id
           order by started_at desc offset 0
         ) workspace_history
-        where phase = 'workspace_finalize' and status = 'succeeded'
+        where phase = 'workspace_finalize'
         order by started_at desc limit 1
-      ) finalized on true
+      ) latest_finalize on true
       left join lateral (
-        select phase, status, started_at from workspace_operations
+        select phase, status, started_at, heartbeat_run_id from workspace_operations
         where company_id = ${companyId}::uuid
           and execution_workspace_id = candidate.workspace_id and issue_id is null
         order by started_at desc limit 1
@@ -2629,6 +2644,15 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and owning_finalize.phase = 'workspace_finalize' and owning_finalize.status = 'succeeded'
             and owning_finalize.started_at <= latest_blocker_operation.started_at
             and owning_finalize.finished_at >= latest_blocker_operation.finished_at
+        )
+      )
+      and not (
+        not blocker_workspace_facts.has_finalize
+        and (case when latest_blocker_operation.started_at is not null then latest_blocker_operation.heartbeat_run_id else blocker_workspace_facts.heartbeat_run_id end) is not null
+        and exists (
+          select 1 from heartbeat_runs terminal_run
+          where terminal_run.id = (case when latest_blocker_operation.started_at is not null then latest_blocker_operation.heartbeat_run_id else blocker_workspace_facts.heartbeat_run_id end)
+            and terminal_run.status in (${sql.join([...TERMINAL_HEARTBEAT_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)})
         )
       )
   )`;
