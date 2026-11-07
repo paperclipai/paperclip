@@ -118,15 +118,19 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * holds new company work: its debt settles as unpriced, flagged so the
  * blocking policy still counts it and the board sees which run it was. */
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
-const closureEvidenceTimedOut = sql`${heartbeatRuns.runtimeMode} = 'native'
+/** `at` is one shared cutoff, so the actionable scan and the wake query
+ * cannot both miss a run whose bound falls between them. */
+function closureEvidenceTimedOut(at: Date = new Date()) {
+  return sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
   and coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
-    <= now() - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`;
+    <= ${at.toISOString()}::timestamptz - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`;
+}
 
 async function readNativeReceiptClosure(db: Db, runId: string) {
   const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}`,
-    timedOut: sql<boolean>`${closureEvidenceTimedOut}`, neverStarted: sql<boolean>`${nativeProviderWorkNeverStarted}` }).from(heartbeatRuns)
+    timedOut: sql<boolean>`${closureEvidenceTimedOut()}`, neverStarted: sql<boolean>`${nativeProviderWorkNeverStarted}` }).from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId));
   if (row?.neverStarted === true) return "no_provider_work" as const;
   if (row?.closed === true) return "closed" as const;
@@ -340,7 +344,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
   return accounted;
 }
 
-function actionableRunAccounting() {
+function actionableRunAccounting(at: Date = new Date()) {
   return and(
     eq(heartbeatRuns.costAccountingPending, true), inArray(heartbeatRuns.status, terminalStatuses),
     or(and(sql`${heartbeatRuns.costAccountedAt} is not null`,
@@ -354,7 +358,7 @@ function actionableRunAccounting() {
         and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
       sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
-        or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut}) or (${nativeProviderWorkNeverStarted}))`,
+        or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted}))`,
     )),
   );
 }
@@ -362,7 +366,8 @@ function actionableRunAccounting() {
 /** Only unfinished, actionable debt warrants retries. Incomplete provider
  * receipts retain their accounting/idle hold and wake when evidence arrives. */
 export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDirectory?: string) {
-  const [pending] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting()).limit(1);
+  const cutoff = new Date(now);
+  const [pending] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting(cutoff)).limit(1);
   const [deadline] = await db.execute<{ at: Date | string | null }>(sql`
     select min(started_at) + interval '120 seconds 1 millisecond' as at from (
       select ${decisionInvocations.startedAt} as started_at from ${decisionInvocations}
@@ -381,7 +386,7 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
       // Only future bounds: a run already past it is in the actionable scan,
       // and a past deadline must never schedule an immediate pass again.
       sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
-        > now() - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`));
+        > ${cutoff.toISOString()}::timestamptz - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`));
   const closureAt = closure?.at == null ? null : new Date(closure.at).getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1;
   const serviceAt = deadline?.at == null ? null : new Date(deadline.at).getTime();
   const nextRunAt = serviceAt === null ? closureAt : closureAt === null ? serviceAt : Math.min(serviceAt, closureAt);

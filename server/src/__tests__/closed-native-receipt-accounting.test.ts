@@ -441,6 +441,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const work = await readCostAccountingWork(db, Date.now());
     expect(work.nextRunAt).not.toBeNull();
     expect(work.nextRunAt!).toBeGreaterThan(Date.now());
+    // One cutoff decides both: past the bound the run is actionable now.
+    const later = await readCostAccountingWork(db, work.nextRunAt! + 1);
+    expect(later.pending).toBe(true);
 
     await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(heartbeatRuns.id, recent.run.id));
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });

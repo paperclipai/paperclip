@@ -344,8 +344,10 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
           accountingReconciledReceiptSequence: late!.sequence } : {}),
         // A complete receipt now accounts for the usage a closure timeout
         // could not see, so its unknown-spend charge stops blocking.
-        ...(reconciled && late?.receipt.complete && previous.accountingClosureTimedOut === true
-          ? { accountingClosureTimedOut: false } : {}),
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }
