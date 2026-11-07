@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -9,6 +12,8 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { recoveryService } from "../recovery/service.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -19,6 +24,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
 // run when its retry delay ends.
 (support.supported ? describe : describe.skip)("scheduled remote native resume and the task execution lock", () => {
   let db: ReturnType<typeof createDb>;
+  let runtimeRoot: string;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   beforeAll(async () => {
     if (externalUrl) {
@@ -28,10 +34,16 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       temporary = await startEmbeddedPostgresTestDatabase("native-scheduled-resume-lock-");
       db = createDb(temporary.connectionString);
     }
+    runtimeRoot = await mkdtemp(resolve(tmpdir(), "scheduled-resume-authority-"));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "83".repeat(32));
   }, 30_000);
-  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
+  afterAll(async () => {
+    await db?.$client.end(); await temporary?.cleanup();
+    if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
 
-  async function seed(options: { lockedBy?: "self" | "none" } = {}) {
+  async function seed(options: { lockedBy?: "self" | "none"; durableAuthority?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID();
     const failedAt = new Date(Date.now() - 5 * 60_000);
@@ -64,12 +76,28 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     } }).where(eq(heartbeatRuns.id, runId));
     await db.update(issues).set({ executionRunId: lock, checkoutRunId: lock, executionLockedAt: lock ? failedAt : null })
       .where(eq(issues.id, issueId));
+    const owner = { bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "retryable_failure", attempt: 1,
+      controllerBootId: owner.bootId, controllerGeneration: owner.generation,
+      leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
       nextAttemptAt: new Date(Date.now() - 60_000), recoveryState: "resuming_session",
       failureCode: "native_session_interrupted",
       failureDetail: { recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
         providerSessionEstablished: true, providerEventsExist: false },
     });
+    if (options.durableAuthority !== false) {
+      const authority = new DurablePrpControlPlane({ stateDirectory: resolve(runtimeRoot, runId),
+        identity: { runId, normalizedSessionId: sessionId, runnerInstanceId: randomUUID(),
+          environmentLeaseId: lease.id, turnId: randomUUID(), itemId: randomUUID() },
+        expectedRunnerVersion: "scheduled-resume-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      authority.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, {
+        companyId, issueId, runId, authorityRunId: runId, ...owner,
+      }));
+      await authority.flushCheckpoint();
+      await authority.stop();
+    }
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, runId));
     return { companyId, agentId, issueId, runId };
   }
 
@@ -112,12 +140,23 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const dispositions = await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] });
     expect(dispositions).toEqual([expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
     expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: f.runId });
-    expect(await readCoordinator(f.runId)).toMatchObject({ phase: "observed", attempt: 1, nextAttemptAt: null });
+    expect(await readCoordinator(f.runId)).toMatchObject({ phase: "observed", attempt: 2, nextAttemptAt: null });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
       .toMatchObject({ status: "running", nativePhase: "observed" });
     const events = await db.select({ eventType: heartbeatRunEvents.eventType }).from(heartbeatRunEvents)
       .where(and(eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")));
     expect(events).toHaveLength(1);
+  });
+
+  it("keeps a due remote resume held when only the provider snapshot is present", async () => {
+    const f = await seed({ lockedBy: "none", durableAuthority: false });
+    expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] }))
+      .toMatchObject([{ kind: "blocked", runId: f.runId, reason: "native_retry_remote_authority_unverified" }]);
+    expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: null, checkoutRunId: null });
+    expect(await readCoordinator(f.runId)).toMatchObject({ phase: "retryable_failure", attempt: 1 });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toMatchObject({ status: "failed" });
+    expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(0);
   });
 
   it("does not reclaim a task that another run owns or has admitted", async () => {
@@ -128,10 +167,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         issueId: f.issueId, status: competitor === "lock" ? "running" : "queued", contextSnapshot: { issueId: f.issueId } });
       if (competitor === "lock") await db.update(issues).set({ executionRunId: otherRunId }).where(eq(issues.id, f.issueId));
       expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", runIds: [f.runId] })).toEqual([
-        { kind: "blocked", runId: f.runId, reason: "issue_execution_lock_changed" },
+        { kind: "blocked", runId: f.runId, reason: "native_retry_source_superseded" },
       ]);
       expect((await readIssue(f.issueId)).executionRunId).toBe(competitor === "lock" ? otherRunId : null);
-      expect(await readCoordinator(f.runId)).toMatchObject({ phase: "retryable_failure", attempt: 1 });
+      expect(await readCoordinator(f.runId)).toMatchObject({ phase: "terminal_failure", attempt: 1 });
     }
   });
 });

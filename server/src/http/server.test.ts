@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 import { registerRunnerPrpAuthority, runnerPrpWebSocketInternals } from "../realtime/runner-prp-ws.js";
-import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
+import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { createPaperclipHttpServer } from "./server.js";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 
@@ -203,6 +203,30 @@ describe("Paperclip HTTP server runner transport", () => {
         .rejects.toThrow("local_runtime_api_listener_ambiguous");
     } finally {
       await Promise.all([first, second].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+    }
+  });
+
+  it("distinguishes a listener closed for shutdown from one that never served", async () => {
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow("local_runtime_api_listener_unavailable");
+    expect(() => resolveLocalRuntimeApiUrl()).not.toThrow(LocalRuntimeApiListenerClosedError);
+    const server = createPaperclipHttpServer((_req, res) => res.end("closing"), { apiUrl: "http://ignored.example.test" });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const client = await fetch(resolveLocalRuntimeApiUrl(), { keepalive: true });
+    // `close()` stops admission at once; its close event waits for open requests.
+    const closed = new Promise<void>(resolve => server.close(() => resolve()));
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow(LocalRuntimeApiListenerClosedError);
+    await client.text();
+    server.closeAllConnections();
+    await closed;
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow(LocalRuntimeApiListenerClosedError);
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow("local_runtime_api_listener_unavailable");
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      expect(resolveLocalRuntimeApiUrl()).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
 

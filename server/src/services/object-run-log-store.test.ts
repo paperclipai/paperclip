@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { StorageProvider } from "../storage/types.js";
+import { ObjectJournalBusyError } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -318,6 +319,93 @@ describe("S3 run log store", () => {
     const [size, result] = await Promise.all([pending, finalizing]);
     expect(result.bytes).toBe(size);
   });
+  it.each(["commit", "storage failure", "Stop"] as const)("settles pre-close bounded admission through %s and fences new producers", async mode => {
+    const m = memory(), original = m.provider.putObjectConditional!;
+    let release!: () => void, entered = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancellation = new AbortController();
+    m.provider.putObjectConditional = async value => {
+      if (value.objectKey.includes("/objects/") && !entered) {
+        entered = true;
+        await gate;
+        value.signal?.throwIfAborted();
+        if (mode === "storage failure") throw new Error("controlled upload failure");
+      }
+      return original(value);
+    };
+    const store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+    const handle = await store.begin({ ...input, signal: cancellation.signal });
+    const first = await store.enqueue!(handle, { ...event(1), chunk: "a".repeat(7 * 1024 * 1024) });
+    const committed = first.committed.catch(error => error);
+    await vi.waitFor(() => expect(entered).toBe(true));
+    let admitted = false;
+    const waiting = store.enqueue!(handle, { ...event(2), chunk: "b".repeat(2 * 1024 * 1024) })
+      .then(receipt => { admitted = true; return receipt.committed; }).catch(error => error);
+    let finalized = false;
+    const finalizing = store.finalize(handle).then(value => { finalized = true; return value; });
+    try {
+      await expect(store.enqueue!(handle, event(3))).rejects.toThrow("closed");
+      const peer = await store.begin({ ...input, runId: "peer" });
+      await store.append(peer, { ...event(1), chunk: "peer output" });
+      expect((await store.finalize(peer)).bytes).toBeGreaterThan(0);
+      expect(admitted).toBe(false);
+      expect(finalized).toBe(false);
+      if (mode === "Stop") cancellation.abort(new Error("controlled Stop"));
+    } finally { release(); }
+    const [firstResult, secondResult, summary] = await Promise.all([committed, waiting, finalizing]);
+    if (mode === "commit") {
+      expect(admitted).toBe(true);
+      expect(summary.bytes).toBe(Number(firstResult) + Number(secondResult));
+      const hash = createHash("sha256");
+      let offset = 0, chunks = 0;
+      for (;;) {
+        const page = await store.read(handle, { offset, limitBytes: 1024 * 1024 });
+        hash.update(page.content);
+        chunks += (page.content.match(/"chunk":/g) ?? []).length;
+        if (page.nextOffset === undefined) break;
+        offset = page.nextOffset;
+      }
+      expect(chunks).toBe(2);
+      expect(summary.sha256).toBe(hash.digest("hex"));
+    } else {
+      expect(firstResult).toBeInstanceOf(Error);
+      expect(secondResult).toBeInstanceOf(Error);
+      expect(admitted).toBe(false);
+      expect(summary).toMatchObject({ bytes: null, sha256: null });
+    }
+  });
+  it("drains an admission waiting on global capacity while other writers flush", async () => {
+    const m = memory(), original = m.provider.putObjectConditional!;
+    let release!: () => void, uploads = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    m.provider.putObjectConditional = async value => {
+      if (value.objectKey.includes("/objects/")) { uploads++; await gate; }
+      return original(value);
+    };
+    const store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+    const handles = [], committed = [];
+    for (let index = 0; index < 9; index++) {
+      const handle = await store.begin({ ...input, runId: `full-${index}` });
+      handles.push(handle);
+      committed.push((await store.enqueue!(handle, { ...event(1), chunk: "x".repeat(7 * 1024 * 1024) })).committed);
+    }
+    await vi.waitFor(() => expect(uploads).toBe(4));
+    const target = await store.begin({ ...input, runId: "waiting" });
+    let admitted = false, finalized = false;
+    const waiting = store.enqueue!(target, { ...event(1), chunk: "y".repeat(2 * 1024 * 1024) })
+      .then(receipt => { admitted = true; return receipt.committed; });
+    const finalizing = store.finalize(target).then(value => { finalized = true; return value; });
+    try {
+      await expect(store.enqueue!(target, event(2))).rejects.toThrow("closed");
+      expect(admitted).toBe(false);
+      expect(finalized).toBe(false);
+    } finally { release(); }
+    const [bytes, summary] = await Promise.all([waiting, finalizing]);
+    expect(admitted).toBe(true);
+    expect(summary.bytes).toBe(bytes);
+    await Promise.all(committed);
+    await Promise.all(handles.map(handle => store.finalize(handle)));
+  });
   it("does not acknowledge a batch when storage fails", async () => {
     const m = memory(),
       store = createObjectRunLogStore({
@@ -394,5 +482,41 @@ describe("S3 run log store", () => {
     await Promise.all([first.committed, second]);
     await store.append(h, event(3));
     expect((await store.finalize(h)).bytes).toBeGreaterThan(9 * 1024 * 1024);
+  });
+  it("bounds ordinary reads while explicit internal reads keep queuing", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({
+        provider: m.provider,
+        keyPrefix: "logs",
+        assertWriterAuthority: async () => undefined,
+      });
+    const handle = await store.begin(input);
+    await store.append(handle, event(1));
+    await store.finalize(handle);
+    const get = m.provider.getObject;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    m.provider.getObject = async (i) => {
+      await gate;
+      return get(i);
+    };
+    const polls = Array.from({ length: 40 }, () => store.read(handle));
+    const excess = store.read(handle);
+    let rejected: unknown;
+    void excess.catch((error) => { rejected = error; });
+    let internal: ReturnType<typeof store.read> | undefined;
+    try {
+      await vi.waitFor(() => expect(rejected).toBeInstanceOf(ObjectJournalBusyError));
+      internal = store.read(handle, { priority: "background" });
+      open();
+      for (const poll of await Promise.allSettled(polls))
+        if (poll.status === "rejected") expect(poll.reason).toBeInstanceOf(ObjectJournalBusyError);
+      expect((await internal).content.trim().split("\n")).toHaveLength(1);
+    } finally {
+      open();
+      await Promise.allSettled([...polls, excess, ...(internal ? [internal] : [])]);
+    }
   });
 });

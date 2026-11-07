@@ -2,7 +2,7 @@ import { and, eq, getTableColumns, inArray, isNull, sql, type SQL } from "drizzl
 import { agents, decisionRetention, decisions, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, approvals, type Db } from "@paperclipai/db";
 import { evaluateAgentInvokability } from "./agent-invokability.js";
-import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
+import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, loadNewestSettledConfirmationAt, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "./decision-retention.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -116,7 +116,8 @@ export function attentionRetentionService(db: Db) {
         eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, confirmationIssueIds),
         eq(issueThreadInteractions.status, "pending"), eq(issueThreadInteractions.kind, "request_confirmation"),
         isNull(issueThreadInteractions.addresseeUserId))) : [];
-      const newest = new Set(collapsePendingConfirmationsToNewest(siblings.filter(boardAddressed)).map(row => row.id));
+      const newest = new Set(collapsePendingConfirmationsToNewest(siblings.filter(boardAddressed),
+        await loadNewestSettledConfirmationAt(database, companyId, confirmationIssueIds)).map(row => row.id));
       for (const row of rows) result.set(row.id, visibleIds.has(row.issueId) && boardAddressed(row)
         && (row.kind !== "request_confirmation" || newest.has(row.id)));
     }

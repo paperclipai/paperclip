@@ -255,7 +255,7 @@ export function agentInstructionRevisionService(db: Db) {
         actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
         agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
         responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
-        details: { path: input.entryFile, contentHash: row.contentHash, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
+        details: { path: input.entryFile, contentHash: row.contentHash, created: current === null, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
       const bindEntry = async () => {
         if (
           !state.agent.adapterConfig.instructionsRootPath ||

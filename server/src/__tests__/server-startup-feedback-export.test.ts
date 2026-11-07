@@ -37,6 +37,10 @@ vi.mock("../services/adapter-settings.js", async () => ({
   initializeAdapterSettings: vi.fn(async () => null),
 }));
 vi.mock("../services/cloud-runtime-config.js", () => ({ initializeCloudRuntimeConfig: cloudRuntimeStartupMocks.initialize }));
+const managedEnvironmentMocks = vi.hoisted(() => {
+  const recovery = { run: vi.fn(), onStop: vi.fn(), stop: vi.fn(async () => {}) };
+  return { recovery, apply: vi.fn(async () => null), factory: vi.fn(() => recovery) };
+});
 const cloudMigrationMocks = vi.hoisted(() => ({ migrate: vi.fn(async () => null), qualify: vi.fn(async () => null) }));
 vi.mock("../services/cloud-configuration-migration.js", () => ({ migrateCloudConfiguration: cloudMigrationMocks.migrate }));
 vi.mock("../services/cloud-configuration-qualification.js", () => ({ qualifyCloudConfigurationForCurrentImage: cloudMigrationMocks.qualify }));
@@ -96,7 +100,8 @@ const {
     nextRunAt?: () => number | null;
     run: (signal?: AbortSignal) => Promise<unknown>;
     hasPending?: () => Promise<boolean>;
-  }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn(), stop: vi.fn(async () => {}) }));
+  }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn(), stop: vi.fn(async () => {}),
+    reconciliationSnapshot: () => ({ revision: "startup-coordinator:1", reconciled: true }) }));
   const createAppMock = vi.fn(async (_db: unknown, _options: unknown) => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
@@ -149,9 +154,11 @@ const {
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     registerResidualRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerActiveRunSilenceWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
-    registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerIssueStateRecoveryWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
+      watchdogs: { reconciliationSnapshot: () => ({ revision: "startup-watchdogs:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerDeferredReceiptWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
-    registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerRunDispatchWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(),
+      retries: { reconciliationSnapshot: () => ({ revision: "startup-retries:1", reconciled: true }), stop: vi.fn(async () => {}) } })),
     registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerStoppedInstructionCollectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     registerRetainedNativeSessionCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
@@ -390,7 +397,8 @@ vi.mock("../services/run-cost-accounting.js", () => ({
 // This suite exercises startup coordination; source persistence and authority
 // are covered by the database-backed source worker tests.
 vi.mock("../services/skill-source-sync.js", () => ({
-  skillSourceSyncService: () => ({ start: vi.fn(), stop: vi.fn(async () => {}) }),
+  skillSourceSyncService: () => ({ start: vi.fn(), stop: vi.fn(async () => {}),
+    reconciliationSnapshot: () => ({ revision: "startup-skills:1", reconciled: true }) }),
 }));
 
 vi.mock("../services/native-runtime/native-session-executor.js", () => ({
@@ -482,7 +490,8 @@ vi.mock("../services/index.js", () => ({
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
-  applyManagedEnvironments: vi.fn(async () => null),
+  applyManagedEnvironments: managedEnvironmentMocks.apply,
+  createManagedEnvironmentRecovery: managedEnvironmentMocks.factory,
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
@@ -591,6 +600,7 @@ vi.mock("../services/status-card-evaluation.js", () => ({
   statusCardEvaluationService: vi.fn(() => ({ run: vi.fn(async () => {}), next: vi.fn(async () => null), changed: vi.fn() })),
   registerStatusCardEvaluationWork: vi.fn((_coordinator, service, canRun) => ({
     ready: canRun() ? service.run(new AbortController().signal) : Promise.resolve(), wake: vi.fn(), stop: vi.fn(async () => {}),
+    reconciliationSnapshot: () => ({ revision: "startup-status:1", reconciled: true }),
   })),
 }));
 
@@ -1369,6 +1379,14 @@ describe("startServer feedback export wiring", () => {
     expect(createAppMock).not.toHaveBeenCalled();
   });
 
+  it("stops managed environment recovery when a later startup step fails", async () => {
+    managedEnvironmentMocks.recovery.stop.mockClear();
+    managedEnvironmentMocks.apply.mockRejectedValueOnce(new Error("managed environments refused"));
+    await expect(startServer()).rejects.toThrow("managed environments refused");
+    expect(managedEnvironmentMocks.factory).toHaveBeenCalled();
+    expect(managedEnvironmentMocks.recovery.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
     const started = await startServer();
 
@@ -1601,6 +1619,7 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
     externalObjectsServiceMock.registerRefreshWork.mockReturnValueOnce({
       ready: new Promise<void>(() => {}), wake: vi.fn(), stop: vi.fn(async () => {}),
+      reconciliationSnapshot: () => ({ revision: "startup-external:1", reconciled: false }),
     });
     await startServer();
     expect(externalObjectsServiceMock.registerRefreshWork).toHaveBeenCalledOnce();
