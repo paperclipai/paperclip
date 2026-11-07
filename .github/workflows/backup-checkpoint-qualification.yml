@@ -12,6 +12,7 @@ on:
       - 'server/scripts/lib/backup-qualification.ts'
       - 'server/vitest.backup-qualification.config.ts'
       - '.github/workflows/backup-checkpoint-qualification.yml'
+      - '.github/actions/setup-ci-dependencies/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
   push:
@@ -41,12 +42,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         with:
-          version: 9.15.4
+          version: 11.27.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+          package-manager-cache: false
+      - uses: ./.github/actions/setup-ci-dependencies
       - name: Build workspace import prerequisites
         run: |
           pnpm --filter @paperclipai/shared build

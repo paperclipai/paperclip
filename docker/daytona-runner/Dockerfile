@@ -21,7 +21,7 @@ RUN cargo build --locked --release -j 2 -p paperclip-runner-core --bin paperclip
     && rm -rf target /usr/local/cargo/registry /usr/local/cargo/git
 
 FROM node:24.21.0-bookworm@sha256:5a750d3be5e5c80275f8c9a5367c3aed99c2875656590c8d0701c7ee687f5f0a AS provider-pack-build
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
 # Bound build-time memory on hosts that expose many CPUs but little RAM.
 # These settings belong only to this build stage, never the runtime image.
 ENV NODE_OPTIONS=--max-old-space-size=1024 \
@@ -46,7 +46,7 @@ ARG PAPERCLIP_RUNNER_LOCK_SHA256
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
-# pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
+# pnpm subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
 # Subtract all available CPUs to select its minimum (one tarball worker).
 # Install and build in one layer so the disposable workspace and package store
 # do not remain in an earlier snapshot while BuildKit exports the portable pack.

@@ -50,16 +50,16 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 9.15.4
+          version: 11.27.0
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/setup-ci-dependencies
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

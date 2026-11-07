@@ -37,7 +37,7 @@ jobs:
           package-manager-cache: false
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
         with:
-          version: 9.15.4
+          version: 11.27.0
       - uses: ./.github/actions/setup-ci-dependencies
       - name: Prove conservative graphs, exact partitions, manifests and failure fallbacks
         run: node --test scripts/ci/test-selection*.test.mjs scripts/ci/vitest-impact-report.integration.test.mjs
@@ -82,7 +82,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Install isolated qualification tools
-        run: npm install --prefix "$RUNNER_TEMP/ci-tools" --no-audit --no-fund turbo@2.11.10 pnpm@9.15.4
+        run: npm install --prefix "$RUNNER_TEMP/ci-tools" --no-audit --no-fund turbo@2.11.10 pnpm@11.27.0
       - name: Prove planning and required checks
         run: node --test .github/scripts/tests/ci-plan.test.mjs .github/scripts/tests/ci-routing.test.mjs
       - name: Prove real cache reuse and invalidation

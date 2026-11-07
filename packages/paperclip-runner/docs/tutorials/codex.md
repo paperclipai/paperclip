@@ -18,7 +18,7 @@ keep clear session identities and safe diagnostics.
 ## Before you start
 
 - Run commands from the repository root.
-- Install Node.js 20+, pnpm 9+, Rust, and the `codex` CLI.
+- Install Node.js 20+, pnpm 11+, Rust, and the `codex` CLI.
 - Sign in to Codex with the normal local Codex setup.
 - Do not add a Paperclip or OpenAI API key for this tutorial.
 
