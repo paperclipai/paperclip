@@ -2179,6 +2179,23 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
+Local snapshot hashing, encryption, and decryption use bounded 1 MiB filesystem
+stream buffers to reduce event-loop handoffs under background load. Each stream
+retains its existing integrity and cancellation checks; archive contents and
+saved snapshot formats are unchanged. Reproduce the scheduling effect with:
+
+```sh
+node --expose-gc scripts/benchmark-workspace-archive-io.mjs
+```
+
+This bounded benchmark alternates three baseline/treatment pairs over the same
+32 MiB archive with 5 ms of competing main-thread work per turn. It runs real
+hashing and encryption file passes, compares plaintext and ciphertext digests,
+and reports callback counts and diagnostic peak memory growth. Larger buffers
+trade additional bounded stream memory for fewer scheduling handoffs. The result
+is synthetic; it does not identify the competing workload or establish hosted
+finalization latency, and excludes sandbox, database, and object-storage time.
+
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
@@ -3162,7 +3179,8 @@ and model.
 
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
-selection uses `allow` permissions and a `per_turn` lifecycle. Native `ask` and
+selection uses `allow` permissions and leaves the lifecycle unset (see "Runner
+lifecycle default" below). Native `ask` and
 `deny` policies remain available in agent configuration. Legacy custom commands,
 extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
@@ -3574,6 +3592,20 @@ that classification finishes.
   conflicting histories, changed profiles, and live or unverifiable owners do.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
+
+### Runner lifecycle default
+
+New native Codex, Claude and OpenCode agents store no `lifecycleMode`. For Codex
+and OpenCode on a local target, the controller resolves that to `warm` with the default 5-minute idle
+window (`resolveHeartbeatNativeLifecyclePolicy`), so a follow-up turn on the same
+task reuses the live runner and provider session instead of launching and
+loading them again. Claude (ACPX) relaunches its provider process on every
+follow-up turn by design, so warm does not shorten its follow-up and it resolves
+to `per_turn`, as do remote targets, other harnesses and managed providers
+without warm support. An explicit `per_turn` or `warm` choice
+("Turn by turn" or "Warm session" in the agent's Runner lifecycle field) always
+wins, and a session keeps the policy it was admitted with. The measurements are
+in [`plans/2026-11-07-warm-follow-up-ttft.md`](plans/2026-11-07-warm-follow-up-ttft.md).
 
 A warm local runner outlives its turn, so it carries a 7-minute reconnect grace
 (`localRunnerProcessReconnectGraceMs`, the same grace remote runners use). If its
@@ -4053,6 +4085,13 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+  A resumed session restores its failover backup from durable storage before the
+  provider starts. Each read has a five-minute idle limit instead of a short total
+  limit: a large or slow backup keeps restoring while bytes flow. A read that makes
+  no progress for five minutes fails with `native_harness_storage_download_stalled`
+  and publishes no partial backup. The whole restore, including local decrypt,
+  digest and extraction, has a 30-minute outer limit
+  (`native_harness_storage_restore_deadline_exceeded`). Stop ends the restore.
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
