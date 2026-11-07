@@ -647,7 +647,8 @@ describe("executeNativeSession recovery", () => {
     };
     const lostTerminal = { turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) };
     const completedTerminal = (turnId: string) => ({ turnId, fingerprint: JSON.stringify({ terminalState: "completed", error: null, result: null }) });
-    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => startTurn.mock.calls.length === 1
+    let starts = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ++starts === 1
       ? { turnId: "turn-continuation", borrowedDispositionMarker: true as const } : { turnId: "turn-disposition" });
     let continuationDone = false;
     const session: NativeSession = {
@@ -728,7 +729,8 @@ describe("executeNativeSession recovery", () => {
     let releaseStartCheckpoint!: () => void;
     const startCheckpointHeld = new Promise<void>(resolve => { releaseStartCheckpoint = resolve; });
     let continuationCompletionSeen = false;
-    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => startTurn.mock.calls.length === 1
+    let starts = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ++starts === 1
       ? { turnId: "turn-continuation", borrowedDispositionMarker: true as const } : { turnId: "turn-disposition" });
     let wakeEvents!: () => void;
     let eventsWoken = new Promise<void>(resolve => { wakeEvents = resolve; });
