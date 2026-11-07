@@ -6248,7 +6248,7 @@ export function createToolGatewayService(
       workspaceTarget && status !== "ok" ? Promise.resolve() : markRemoteConnectionHealth(connection, status, message);
     if (connection.config.sourceTemplateKey === "google-workspace"
       && (!workspaceTarget || !isGoogleWorkspaceToolGranted(entry.toolName, googleWorkspaceGrantedScopes(grant)))) {
-      throw new ToolGatewayHttpError(403, "This Google action needs a permission you have not granted. Reconnect Google Workspace to change access.", "oauth_insufficient_scope");
+      throw new ToolGatewayHttpError(403, "This connection does not include the Google service or access this action needs. Reconnecting keeps its current services. To use this service, select Add account for Google Workspace in Apps and choose it there.", "oauth_insufficient_scope");
     }
     const endpoint = workspaceTarget?.serverUrl ?? await resolvedRemoteEndpoint(session, connection, grant);
     const upstreamToolName = workspaceTarget?.upstreamName ?? entry.toolName;

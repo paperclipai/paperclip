@@ -75,6 +75,11 @@ export function installEnvironmentFixture(
   return prepareFixtureApi(
     [
       {
+        path: "/api/cli-auth/me",
+        state: "ready",
+        read: () => ({ source: "session", isInstanceAdmin: true }),
+      },
+      {
         path: "/api/instance/settings/experimental",
         state: "ready",
         read: () => ({

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { BUILTIN_ADAPTER_TYPES } from "../../adapters/builtin-adapter-types.js";
+import { resolveNewAgentRunner } from "../agent-runner-selection.js";
 import {
   NativeRunnerSelectionError,
   NativeRuntimeEligibilityError,
@@ -61,7 +62,7 @@ describe("resolveNativeRuntimeMode", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, enabled: false,
       adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
     })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
-    for (const acpxAgent of ["grok", "cursor", "codex"]) {
+    for (const acpxAgent of ["cursor", "codex"]) {
       expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false,
         adapterConfig: { provider: "acpx", acpxAgent, model: "gpt-5.6-luna" },
       })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
@@ -103,14 +104,19 @@ describe("resolveNativeRuntimeMode", () => {
     })).toMatchObject({ kind: "native", profile: { backend: "opencode_server" } });
   });
 
-  it("still rejects Grok while the rollout flag is disabled", () => {
-    expect(() => resolveNativeRuntimeMode({
-      ...eligible,
-      enabled: false,
-      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_rollout_disabled",
-    }));
+  it("runs a new Grok Build agent with the rollout flag disabled", () => {
+    const { adapterType, adapterConfig } = resolveNewAgentRunner({
+      adapterType: "grok_local",
+      adapterConfig: {},
+      disabledTypes: [],
+      target: { driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" },
+    });
+    expect(adapterType).toBe("paperclip_runner");
+    expect(adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "grok" });
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig })).toMatchObject({
+      kind: "native",
+      profile: { backend: "acpx_runtime" },
+    });
   });
 
   it("admits Pi without the generic rollout flag", () => {
@@ -263,7 +269,7 @@ describe("resolveNativeRuntimeMode", () => {
 
   it("keeps a persisted experimental run native while the flag rejects a fresh start", () => {
     const disabled = { ...eligible, enabled: false,
-      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+      adapterConfig: { provider: "acpx", acpxAgent: "cursor", model: "gpt-5.6-luna" },
     };
     expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
@@ -541,12 +547,12 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
       ...compatibilityInput,
       enabled: false,
       adapterType: "paperclip_runner",
-      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/anthropic/claude-sonnet-4.6" },
+      adapterConfig: { provider: "acpx", acpxAgent: "cursor", model: "gpt-5.6-luna" },
     })).toThrow(NativeRunnerSelectionError);
   });
   it("admits native Claude without enabling other ACPX providers", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "claude" } })).toMatchObject({ kind: "native", profile: { backend: "acpx_runtime" } });
-    expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "grok" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
+    expect(() => resolveNativeRuntimeMode({ ...eligible, enabled: false, adapterConfig: { provider: "acpx", acpxAgent: "cursor", model: "gpt-5.6-luna" } })).toThrow(expect.objectContaining({ code: "paperclip_runner_rollout_disabled" }));
   });
 });
 

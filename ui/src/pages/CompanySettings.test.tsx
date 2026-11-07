@@ -14,6 +14,7 @@ const mockCompaniesApi = vi.hoisted(() => ({
 }));
 
 const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
   createOpenClawInvitePrompt: vi.fn(),
   getInviteOnboarding: vi.fn(),
 }));
@@ -168,6 +169,7 @@ describe("CompanyEnvironments", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
 
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableEnvironments: true,
     });

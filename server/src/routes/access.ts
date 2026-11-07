@@ -2892,7 +2892,7 @@ export function accessRoutes(
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
+      isInstanceAdmin: accessSnapshot.isInstanceAdmin || req.actor.isInstanceAdmin === true,
       companyIds: accessSnapshot.companyIds,
       memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
