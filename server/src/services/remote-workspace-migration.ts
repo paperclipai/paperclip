@@ -33,10 +33,11 @@ const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
 type OnlineRecoveryHold = OnlineLegacyWorkspaceRecoveryHold & { actionId: string };
-async function lockMigrationParents(db: ReadDb, companyId: string, issueId: string | null) {
+async function lockMigrationParents(db: ReadDb, companyId: string, issueId: string | null, recoveryIssueIds: readonly string[] = []) {
   await db.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("key share");
-  if (issueId) await db.select({ id: issues.id }).from(issues).where(and(
-    eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+  for (const id of [...new Set([...(issueId ? [issueId] : []), ...recoveryIssueIds])].sort())
+    await db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, id))).for("update", recoveryIssueIds.length ? { noWait: true } : undefined);
 }
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -401,7 +402,7 @@ export async function migrateRemoteWorkspace(input: {
     }
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.companyId, workspaceId: input.workspaceId,
       operationId: operation.id, generation: 1, epoch: 1 });
-    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-"));
+    const scratch = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-")));
     try {
       input.signal?.throwIfAborted();
       const retained = reserved.retainedDirectory?.restorePoint;
@@ -434,15 +435,18 @@ export async function migrateRemoteWorkspace(input: {
       }
       const exclude = nested.map(child => child.relativePath);
       const captured = recovered ?? await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary", gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal });
+      const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
+      const verifiedArchivePath = process.platform === "win32" ? undefined : restoredArchive;
       const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
         companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal,
+        verifiedArchivePath,
         // Private Git reconstruction can change administrative bytes between
         // attempts. Its journaled logical recipe is checked at reservation and
         // again under source locks before authority publication below.
         ...(reserved.archivedGitSource ? { unpublishedRecapture: { sourceOperationId: operation.id } } : {}),
       });
-      const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
-      await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: restoredArchive, signal: input.signal });
+      if (!verifiedArchivePath) await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref,
+        targetPath: restoredArchive, signal: input.signal });
       await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });
       if (!recovered) {
         const currentArchive = path.join(scratch, "current.pcws");
@@ -458,7 +462,10 @@ export async function migrateRemoteWorkspace(input: {
       await lock.execute(sql`select 1`);
       const publicationDb = onlineSource ? lock as unknown as Db : input.db;
       const publication = await publicationDb.transaction(async tx => {
-        await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId);
+        await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource ? [
+          ...reserved.legacyRecoverySources.map(source => source.issueId),
+          ...onlineSource.companions.flatMap(proof => proof.sources.map(source => source.issueId)),
+        ] : []);
         for (const actionId of [...new Set([...reserved.finalizedRecoveryHolds, ...reserved.onlineRecoveryHolds].map(held => held.actionId))].sort()) {
           await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
             eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, actionId))).for("update", { noWait: true });

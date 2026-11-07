@@ -1,3 +1,4 @@
+import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
@@ -97,6 +98,7 @@ import { resolveGitHubOperationCredentials } from "../github-operation-credentia
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
+import { imageGenerationBindingForRun } from "./generate-image-tool.js";
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
@@ -3144,9 +3146,14 @@ export async function verifyStoppedNativeSessionForContinuation(
           !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(retained.status) ||
           !retained.finishedAt || retained.finishedAt > run.createdAt ||
           retained.controllerLeaseExpiresAt && retained.controllerLeaseExpiresAt > new Date() ||
-          !retained.processStartedAt || !run.processStartedAt ||
-          retained.processStartedAt.getTime() !== run.processStartedAt.getTime() ||
-          retained.processPid !== run.processPid || retained.processGroupId !== run.processGroupId) return null;
+          // A run refused before launch (no launch event, checked above) and
+          // with no process record owns no process: only the previous owner's
+          // stop evidence below can certify the session. A source that does
+          // carry a process identity must still match the owner's exactly.
+          (run.processPid || run.processGroupId || run.processStartedAt) &&
+            (!retained.processStartedAt || !run.processStartedAt ||
+              retained.processStartedAt.getTime() !== run.processStartedAt.getTime() ||
+              retained.processPid !== run.processPid || retained.processGroupId !== run.processGroupId)) return null;
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, run.nativeIssueId),
         eq(nativeRunFinalizations.runId, retained.id),
@@ -13362,21 +13369,17 @@ export async function verifyRemoteRunnerReattachment(input: {
   recoveryDeadline?: number;
 }) {
   const { claim, target, identity } = input;
-  if (
-    claim.remote.kind === "plugin_task" ||
-    target?.kind !== "remote" ||
-    target.transport !== "sandbox" ||
-    !target.runner ||
-    claim.runId !== input.runId ||
-    identity.runId !== input.runId ||
-    identity.normalizedSessionId !== input.normalizedSessionId ||
-    claim.remote.providerLeaseId !==
-      target.sandboxLeaseAcquisition?.providerLeaseId ||
-    target.sandboxLeaseAcquisition.outcome === "replacement" ||
-    claim.remote.remoteCwd !== target.remoteCwd
-  ) {
-    throw new Error("native_remote_recovery_lease_mismatch");
+  if (claim.remote.kind === "plugin_task") throw remoteRecoveryLeaseMismatch("runner_verification", "plugin_task");
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
+    throw remoteRecoveryLeaseMismatch("runner_verification", "target");
   }
+  const mismatch = claim.runId !== input.runId ? "run_id" as const
+    : identity.runId !== input.runId ? "identity_run_id" as const
+    : identity.normalizedSessionId !== input.normalizedSessionId ? "identity_session_id" as const
+    : claim.remote.providerLeaseId !== target.sandboxLeaseAcquisition?.providerLeaseId ? "provider_lease_id" as const
+    : target.sandboxLeaseAcquisition?.outcome === "replacement" ? "replacement_sandbox" as const
+    : claim.remote.remoteCwd !== target.remoteCwd ? "remote_cwd" as const : null;
+  if (mismatch) throw remoteRecoveryLeaseMismatch("runner_verification", mismatch);
   const runner = target.runner;
   const probeDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -14288,6 +14291,8 @@ async function createRunnerdBackendWithinSessionClaim(
     executionTargetKind: target.kind,
     installRemoteArtifact: !pluginTask && remoteTarget && remoteCommandRunner
       ? createArtifactInstaller(remoteTarget.remoteCwd, remoteCommandRunner) : undefined,
+    imageGeneration: nativeReview || pluginTask ? undefined
+      : imageGenerationBindingForRun({ providerKind: input.execution.provider.kind, contextSnapshot: reviewRun?.contextSnapshot }),
     readRemoteWorkspaceFile: !pluginTask && remoteTarget && remoteCommandRunner
       ? (file) => readVerifiedRemoteWorkspaceFile({ runner: remoteCommandRunner, workspaceRoot: remoteTarget.remoteCwd, ...file })
       : undefined,

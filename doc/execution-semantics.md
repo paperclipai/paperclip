@@ -302,6 +302,25 @@ Messages from the same conversation still coalesce into one run. Messages from
 different conversations queue separately and run one after the other. Wakes
 without a conversation keep their normal coalescing.
 
+If reviewed chat attestation exhausts its short lock or delivery wait before
+provider dispatch, the run records `reviewed_chat_execution_binding_not_ready`.
+The existing durable retry scheduler permits at most two further attempts. Each
+attempt retains the admitted comment batch and checks current execution ownership,
+provider access and principal permissions again. An answered interaction retains
+its own bounded continuation retry. A denied authorization, Stop, pause or blocked
+dependency cannot use this wait as permission to execute. No retry budget resets,
+new background poller or provider replay are introduced.
+
+Question-answer delivery records its interaction marker in the wake context.
+Queue enrichment backfills that marker for older question-answer payloads only.
+Plan confirmations retain their existing admission and handoff lifecycle.
+
+An answered retry proves at most two saved pre-dispatch failure ancestors before
+reading the original user-owned answer receipt. It rechecks that receipt, its
+original delivery target and current chat permissions. The original receipt and
+delivery remain unchanged. New comments and control wakes queue separately from
+a retained chat retry, including while the retry waits for its scheduled time.
+
 For a truncated external-chat wake, native completion feedback requires the
 run-bound complete comment-read receipt before accepting a finish report. An
 unread, partial, stale or foreign receipt returns a corrective
@@ -1451,6 +1470,14 @@ recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
 
+`native_remote_recovery_lease_mismatch` carries a closed detail:
+`native_remote_recovery_lease_mismatch: stage=<stage> field=<field>`. The stage
+is `workspace_preparation`, `environment_acquire`, `environment_resume`,
+`workspace_sync` or `runner_verification`. The field names the identity that
+differed, for example `lease_status`, `adapter_type`, `provider_lease_id`, `remote_cwd` or
+`identity_run_id`. The detail contains no identifiers. Consumers match the code
+exactly or as the `code: ` prefix.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
@@ -1724,6 +1751,10 @@ This keeps the post-decomposition umbrella (§7) on a real waiting path instead 
 Status-only operational recovery can update task liveness, clear bad status, record a disposition, or ask for human or manager intervention. Those wakes must carry guard context such as `allowDeliverableWork: false`, `allowDocumentUpdates: false`, and `resumeRequiresNormalModel: true`. The recovery work class does not select or change the agent model.
 
 Automatic retries that can continue source work use the agent's configured model. This includes failed source-work retries, process-loss retries, transient or scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, task documents, plans, work products, or attachments. When status-only recovery determines that actual work remains, it must hand back to a worker run before source work or persistent deliverable updates resume.
+
+### 9.4 Release compatibility of saved run state
+
+Deploys and restarts routinely separate saving run state from resuming it. Saved launch configuration, provider and runner pack identity, leases and listeners, session or checkpoint schema, and workspace authority must either carry forward to the next release or be refused with a permanent, named error code. Recovery does not retry that refusal or replace the saved state over it, and it is never reported as a generic retryable interruption such as `native_session_interrupted`. See [`rules/upgrade-safe-run-state.mdc`](../rules/upgrade-safe-run-state.mdc).
 
 ## 10. Startup and Periodic Reconciliation
 
@@ -2467,6 +2498,17 @@ completion result. The existing lease-transfer policy must verify the company,
 agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
+
+These checks can refuse the exact checkpoint before the retry claims a new
+provider attempt. For example, the interrupted attempt can leave the provider
+state not suspended. The run error then names the interrupted attempt first, as
+`<original failure code>: <original message>; exact checkpoint resume refused:
+<refusal>`. The run result keeps the same facts in `nativeExactResumeRefusal`.
+The error code, recovery owner, and retry eligibility do not change: retry,
+recovery and stop-reason checks read the refusal, not the earlier failure text.
+Both texts are masked before they are cut to fit the 2,000-character bound.
+The interrupted attempt's text stays in company-scoped run records; a Sentry
+run-failure report carries only the refusal.
 
 Reattachment readies the exact retained sandbox lease through the provider's
 bounded lifecycle resume before running short preparation commands such as the
