@@ -2058,10 +2058,81 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       remote: { providerLeaseId: "original-provider-lease", remoteCwd: "/original" },
     };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
+      new Error("native_remote_recovery_lease_mismatch: stage=workspace_preparation field=workspace_reference"));
     expect(acquire).not.toHaveBeenCalled();
     expect(await leases(input.run.id)).toHaveLength(0);
     expect(input.nativeRunnerPreparationSpans).toMatchObject([{ name: "environment.acquire", outcome: "failed" }]);
+  });
+
+  // A same-run resume whose inherited runner identity was retired keeps the
+  // run's own retained sandbox. When that sandbox is gone, it acquires as an
+  // ordinary resume does.
+  function retiredInheritedRunner(input: Awaited<ReturnType<typeof fixture>>["input"]) {
+    const location = { leaseId: randomUUID(), providerLeaseId: "retained-sandbox", remoteCwd: "/retained" };
+    input.run.runnerProfileJson = { ...(input.run.runnerProfileJson ?? {}),
+      remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId: randomUUID(), epoch: 2,
+        state: "saved", snapshotId: randomUUID(), ...location },
+      nativeInheritedRunnerRetirement: { schema: "paperclip.native-inherited-runner-retirement.v1",
+        predecessorRunId: randomUUID(), retainedSandbox: location } };
+    input.reuse.runOptions = { nativeLeaseOwner: "resume-owner" };
+    return location;
+  }
+
+  it("resumes a retired inherited runner in its own retained sandbox", async () => {
+    const { input, envOrchestrator } = await fixture();
+    const location = retiredInheritedRunner(input);
+    const reached = new Error("Reached the retained sandbox");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reattachRemoteLease: location }));
+  });
+
+  it("acquires as an ordinary resume when the retained sandbox is gone", async () => {
+    const { input, envOrchestrator } = await fixture();
+    retiredInheritedRunner(input);
+    const reached = new Error("Reached ordinary acquisition");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun")
+      .mockRejectedValueOnce(new Error("native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_status"))
+      .mockRejectedValueOnce(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(acquire.mock.calls[1]![0]).not.toHaveProperty("reattachRemoteLease");
+  });
+
+  it("keeps a live retained lease's scope failure instead of acquiring another sandbox", async () => {
+    const { input, envOrchestrator } = await fixture();
+    retiredInheritedRunner(input);
+    const scope = new Error("native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_scope");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(scope);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(scope);
+    expect(acquire).toHaveBeenCalledOnce();
+  });
+
+  it("resumes a retired inherited runner's native workspace sync sandbox", async () => {
+    const { input, envOrchestrator } = await fixture();
+    const location = { leaseId: randomUUID(), providerLeaseId: "retained-sync-sandbox", remoteCwd: "/retained-sync" };
+    input.run.runnerProfileJson = { ...(input.run.runnerProfileJson ?? {}),
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: randomUUID(),
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        resourceDisposition: "destroy", ...location },
+      nativeInheritedRunnerRetirement: { schema: "paperclip.native-inherited-runner-retirement.v1",
+        predecessorRunId: randomUUID(), retainedSandbox: location } };
+    input.reuse.runOptions = { nativeLeaseOwner: "resume-owner" };
+    const reached = new Error("Reached the retained sync sandbox");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reattachRemoteLease: location }));
+  });
+
+  it("does not reuse a retained sandbox without a retired inherited runner", async () => {
+    const { input, envOrchestrator } = await fixture();
+    retiredInheritedRunner(input);
+    delete (input.run.runnerProfileJson as Record<string, unknown>).nativeInheritedRunnerRetirement;
+    const reached = new Error("Reached ordinary acquisition");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire.mock.calls[0]![0]).not.toHaveProperty("reattachRemoteLease");
   });
 
   it("binds a replacement workspace from realization and snapshots the restore lease", async () => {

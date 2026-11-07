@@ -1969,7 +1969,11 @@ its receipt source, recovered from a restart, or lost a provider turn on
 restore) never hard-stops or pauses a company under the blocking policy,
 whatever its token count; its activity entry and provenance remain the notice. A lost
 receipt that already carries a provider-reported cost settles at that cost as
-an estimate marked as a lower bound, not as unpriced. A native
+an estimate marked as a lower bound, not as unpriced. A failed native run that
+never started provider work (no usage receipt, no replaced receipt source, and a
+local process that never launched or was verified stopped) settles at once
+with no charge and never holds admission; the empty receipt-source fence map
+that every usage recorder binds is not evidence that provider work began. A native
 turn that the restored Runner reports as lost on restore can never report its
 usage. It does not hold the run's receipt open: the receipt closes when the
 run's other turns do, and its provenance says the observed usage is a lower
@@ -2018,6 +2022,12 @@ checks and an activity record. Review policy is checked under the task-row lock.
 Dismissal never creates an answer, decision, execution, or continuation wake.
 Raw runtime requests retain browser-local dismissal; reopening restores the
 original request and draft. A failed save leaves the request open with an error.
+
+Sending a separate message closes the current composer request immediately,
+before the send finishes. After a successful send, earlier requests stay in the
+feed and can be reopened manually; a newer request can still open normally.
+If sending fails, restore the previous form unless the person has opened a
+different request. This presentation change does not answer or approve a request.
 
 A saved ordinary question becomes historical after a newer human task message
 or explicit human dismissal. It remains answerable after completion without

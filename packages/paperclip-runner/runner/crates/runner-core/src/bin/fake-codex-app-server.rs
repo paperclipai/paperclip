@@ -1344,6 +1344,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "thread/resume" => {
+                if let Some(delay) = argument(&args, "--thread-resume-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
                 if reject_missing_resume_state {
                     send(json!({"id": id, "error": {
                         "code": -32600,
