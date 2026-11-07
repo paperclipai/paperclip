@@ -52,7 +52,7 @@ The homepage surfaces companies across several dimensions:
 - **Featured** — editorially curated, high-quality templates
 - **Popular** — ranked by downloads, stars, and forks
 - **Recent** — latest published or updated
-- **Categories** — browseable by use case (see Categories below)
+- **Categories** — browsable by use case (see Categories below)
 
 Each listing shows: name, short description, org size (agent count), category, adapter types used, star count, download count, and a mini org chart preview.
 
