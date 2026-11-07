@@ -173,7 +173,9 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     const closureTimedOutCharge = sql`(${finalCharge}
       and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
         and timed_out_run.company_id = ${costEvents.companyId}
-        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true' and not ${restartDerived("timed_out_run")}))`;
+        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true'
+        -- A failed capture is unknown spend whatever its source history.
+        and (timed_out_run.usage_json->>'accountingCaptureFailed' = 'true' or not ${restartDerived("timed_out_run")})))`;
     const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${finalCharge}
         and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
           and lost_receipt_run.company_id = ${costEvents.companyId}
