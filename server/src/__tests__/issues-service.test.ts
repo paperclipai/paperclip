@@ -2366,6 +2366,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       done: randomUUID(),
       humanComment: randomUUID(),
       mention: randomUUID(),
+      derivedAgentMention: randomUUID(),
+      selfMention: randomUUID(),
       unarchived: randomUUID(),
     };
 
@@ -2439,6 +2441,24 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         createdAt: new Date("2026-03-26T13:00:00.000Z"),
         updatedAt: new Date("2026-03-26T13:00:00.000Z"),
       },
+      {
+        companyId,
+        issueId: issueIds.selfMention,
+        authorUserId: userId,
+        body: "Note to self, [Viewer](user://user-1)",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.derivedAgentMention,
+        authorUserId: "local-board",
+        derivedAuthorAgentId: agentId,
+        derivedAuthorSource: "run_log_comment_post",
+        body: "Agent progress needs [Viewer](user://user-1)",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
     ]);
 
     await db.insert(issueThreadInteractions).values({
@@ -2499,6 +2519,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       issueIds.done,
       issueIds.humanComment,
       issueIds.mention,
+      issueIds.derivedAgentMention,
       issueIds.unarchived,
     ]);
     await expect(listVisibleIds()).resolves.toEqual(expectedVisible);
