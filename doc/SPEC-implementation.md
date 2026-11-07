@@ -1890,6 +1890,13 @@ termination receipt (stopped or destroyed); a sandbox that may still run keeps
 the debt pending. Accounting then records
 its known part as an unpriced charge, so the unpriced-usage policy governs
 admission. A later receipt still posts through late-receipt reconciliation.
+When a lost receipt's observed usage has a known model and token counts, the
+rate card prices it as an estimate whose provenance marks the usage as a lower
+bound. A charge settled from a lost receipt never trips the blocking
+unpriced-usage policy by itself, and neither does an unpriced charge with a
+known partial cost or with no observed tokens on metered billing. A task's own
+continuation and finalization are never held by that task's pending
+accounting.
 A controller that detaches for server restart loses checkpoint and completion
 write authority. A closing event stream is not proof that the governed run
 finished; the replacement controller must adopt and settle the original run.
