@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use crate::acpx_event_payload::{AcpxRuntimeEventKind, AcpxTurnStatus};
 use crate::acpx_provider_state::{is_reserved_terminal_operation, AcpxProviderStateEvent};
-use crate::durable::{redact_text, sanitize_value, EventPriority};
+use crate::durable::{redact_sensitive_text_values, redact_text, sanitize_value, EventPriority};
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{semantic_value_digest, ToolResult};
 use crate::stable_identity::{
@@ -551,6 +551,71 @@ fn require_projected_turn(
     Ok(())
 }
 
+/// Matches the `plan.proposed` schema bound: a proposed-plan document stays
+/// complete through this boundary so the TypeScript mapper can save it.
+const MAX_PLAN_PROPOSAL_CHARS: usize = 60_000;
+
+/// Splits one `<proposed_plan>` block out of a message. The tags must sit on
+/// their own lines outside fenced code, so quoting or documenting the tag
+/// never creates a proposal. Mirrors `splitProposedPlanBlock` in TypeScript.
+fn proposed_plan_block(value: &str) -> Option<String> {
+    let lines: Vec<&str> = value.split('\n').collect();
+    let mut fence: Option<char> = None;
+    let mut start: Option<usize> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let marker = trimmed.chars().next().filter(|first| {
+            (*first == '`' || *first == '~') && trimmed.starts_with(&first.to_string().repeat(3))
+        });
+        // Fences are tracked inside the block too, so a fenced example tag in
+        // the plan never opens or closes it.
+        if let Some(marker) = marker {
+            fence = match fence {
+                None => Some(marker),
+                Some(open) if open == marker => None,
+                Some(open) => Some(open),
+            };
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        if start.is_none() && trimmed.eq_ignore_ascii_case("<proposed_plan>") {
+            start = Some(index);
+        } else if let Some(open) = start {
+            if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
+                return Some(lines[open + 1..index].join("\n").trim().to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// A proposed-plan document, redacted and bounded by the `plan.proposed`
+/// schema rather than the short display bound, which would cut it.
+fn plan_proposal_markdown(value: &str) -> String {
+    // Only a wrapper around the whole document is removed. Literal tags inside
+    // the plan (an inline or fenced example) stay part of its text.
+    let trimmed = value.trim();
+    let mut lines: Vec<&str> = trimmed.split('\n').collect();
+    if lines
+        .first()
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case("<proposed_plan>"))
+    {
+        lines.remove(0);
+        if lines
+            .last()
+            .is_some_and(|line| line.trim().eq_ignore_ascii_case("</proposed_plan>"))
+        {
+            lines.pop();
+        }
+    }
+    redact_sensitive_text_values(lines.join("\n").trim())
+        .chars()
+        .take(MAX_PLAN_PROPOSAL_CHARS)
+        .collect()
+}
+
 fn bounded_text(value: &str, max_chars: usize) -> String {
     let redacted = redact_text(value);
     if redacted.chars().count() <= max_chars {
@@ -606,6 +671,101 @@ fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
             "message": "Codex reported a failed turn without error details",
         }),
     }
+}
+
+/// Codex app-server `error` carries a `TurnError` under `error` plus
+/// `willRetry`. A retried error is a transient status notice; only a final
+/// error is fatal. Older shapes kept the text at the top level.
+fn codex_error_notice(params: &Value) -> Value {
+    let error = params.get("error").unwrap_or(&Value::Null);
+    let will_retry = params.get("willRetry").and_then(Value::as_bool) == Some(true);
+    let info = error.get("codexErrorInfo");
+    let info_kind = match info {
+        Some(Value::String(kind)) => kind.clone(),
+        Some(Value::Object(map)) => map.keys().next().cloned().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let http_status = info
+        .and_then(|value| value.get(&info_kind))
+        .and_then(|value| value.get("httpStatusCode"))
+        .and_then(Value::as_u64);
+    let summary = [
+        string(error.get("message")),
+        string(params.get("summary")),
+        string(params.get("message")),
+        string(params.get("details")),
+    ]
+    .into_iter()
+    .find(|value| !value.trim().is_empty())
+    .unwrap_or("Provider notice");
+    // Codex reports stream retries as "Reconnecting... {attempt}/{max}" with
+    // the actual cause in additionalDetails.
+    let attempt = summary
+        .trim()
+        .strip_prefix("Reconnecting...")
+        .and_then(|rest| rest.trim().split_once('/'))
+        .and_then(|(attempt, max)| {
+            Some((
+                attempt.trim().parse::<u32>().ok()?,
+                max.trim().parse::<u32>().ok()?,
+            ))
+        });
+    let additional = string(error.get("additionalDetails")).trim();
+    let summary = if attempt.is_some() && !additional.is_empty() {
+        additional
+    } else {
+        summary
+    };
+    let mut details = Vec::new();
+    if let Some((attempt, max)) = attempt {
+        details.push(json!({"name": "Attempt", "value": attempt.to_string()}));
+        details.push(json!({"name": "Max attempts", "value": max.to_string()}));
+    }
+    if !info_kind.is_empty() {
+        details.push(json!({"name": "Reason", "value": bounded_text(&info_kind, 160)}));
+    }
+    if let Some(status) = http_status {
+        details.push(json!({"name": "HTTP status", "value": status.to_string()}));
+    }
+    if !additional.is_empty() && summary != additional {
+        details.push(json!({"name": "Additional details", "value": bounded_text(additional, MAX_TEXT_CHARS)}));
+    }
+    let turn_id = string(params.get("turnId"));
+    let mut notice = json!({
+        "schema": "paperclip.provider.notice.v1",
+        // Retries within one turn update one chip; the final error is its own row.
+        "noticeId": stable_id(
+            &format!("codex-error-{}-{}", if will_retry { "retry" } else { "final" }, turn_id),
+            "codex-notice",
+        ),
+        "severity": if will_retry { "warning" } else { "error" },
+        "category": if will_retry { "provider_retry" } else { "error" },
+        "scope": "turn",
+        "recoverable": will_retry,
+        "userActionable": false,
+        "summary": bounded_text(summary.trim(), MAX_TEXT_CHARS),
+    });
+    if !details.is_empty() {
+        notice["details"] = Value::Array(details);
+    }
+    notice
+}
+
+/// Codex wraps MCP startup errors in sentences that repeat what the notice
+/// already says, e.g. "MCP client for `github` failed to start: MCP startup
+/// failed: <reason>"; keep only the provider's reason.
+fn mcp_startup_error_reason(error: &str) -> String {
+    let redacted = redact_text(error);
+    let mut reason = redacted.trim();
+    if let Some(rest) = reason.strip_prefix("MCP client for `") {
+        if let Some(index) = rest.find("` failed to start:") {
+            reason = rest[index + "` failed to start:".len()..].trim();
+        }
+    }
+    if let Some(rest) = reason.strip_prefix("MCP startup failed:") {
+        reason = rest.trim();
+    }
+    reason.to_owned()
 }
 
 fn string(value: Option<&Value>) -> &str {
@@ -672,6 +832,44 @@ fn measurement(value: &Value) -> Value {
     })
 }
 
+/// Context-window occupancy from a Codex `thread/tokenUsage/updated` payload.
+/// Codex sizes the live context by the most recent request's total tokens.
+pub(crate) fn codex_context_usage(params: &Value) -> Option<Value> {
+    let usage = params.get("tokenUsage").unwrap_or(params);
+    let window = usage
+        .get("modelContextWindow")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)?;
+    let last = usage.get("last")?;
+    let used = last
+        .get("totalTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let input = last.get("inputTokens").and_then(Value::as_u64)?;
+            Some(
+                input.saturating_add(
+                    last.get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        })?;
+    Some(json!({"usedTokens": used, "windowTokens": window}))
+}
+
+/// Context-window occupancy from an ACP `usage_update` (`used` of `size`).
+fn acpx_context_usage(payload: &Value) -> Option<Value> {
+    let window = payload
+        .get("size")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 1.0)?;
+    let used = payload
+        .get("used")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some(json!({"usedTokens": used.round() as u64, "windowTokens": window.round() as u64}))
+}
+
 /// Converts Codex app-server notifications into provider-neutral PRP events.
 /// Provider-native envelopes are consumed here and never cross the PRP boundary.
 fn provider_performance_spans(params: &Value) -> Vec<Value> {
@@ -695,7 +893,91 @@ fn provider_performance_spans(params: &Value) -> Vec<Value> {
     }).collect()
 }
 
+/// A Codex reasoning item's provider-written summary parts, joined the same
+/// way the live stream separates them. `None` when the provider sent none.
+fn reasoning_summary_text(provider_item: &Value) -> Option<String> {
+    let parts: Vec<&str> = provider_item
+        .get("summary")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|part| {
+            part.as_str()
+                .or_else(|| part.get("text").and_then(Value::as_str))
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| bounded_text(&parts.join("\n\n"), MAX_TEXT_CHARS))
+}
+
+fn optional_bounded_text(value: Option<&Value>, max_chars: usize) -> Value {
+    match value.and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Value::String(bounded_text(text, max_chars)),
+        _ => Value::Null,
+    }
+}
+
+/// Bounded display fields for Codex activity items that become canonical
+/// research and wait events. Only typed, user-visible fields are kept; result
+/// entries keep an http(s) URL, title and snippet.
+fn codex_activity_item_fields(item_type: &str, provider_item: &Value) -> Option<Value> {
+    match item_type {
+        "webSearch" => {
+            let action = provider_item
+                .get("action")
+                .filter(|value| value.is_object())
+                .map(|action| {
+                    json!({
+                        "type": bounded_text(string(action.get("type")), 64),
+                        "query": optional_bounded_text(action.get("query"), MAX_TEXT_CHARS),
+                        "url": optional_bounded_text(action.get("url"), 8_192),
+                        "pattern": optional_bounded_text(action.get("pattern"), MAX_TEXT_CHARS),
+                    })
+                });
+            let results = provider_item
+                .get("results")
+                .and_then(Value::as_array)
+                .map(|results| {
+                    results
+                        .iter()
+                        .take(64)
+                        .filter_map(|result| {
+                            let url = string(result.get("url"));
+                            if !(url.starts_with("http://") || url.starts_with("https://")) || url.len() > 8_192 {
+                                return None;
+                            }
+                            Some(json!({
+                                "url": url,
+                                "title": optional_bounded_text(result.get("title"), MAX_TEXT_CHARS),
+                                "snippet": optional_bounded_text(result.get("snippet"), MAX_TEXT_CHARS),
+                                "ref_id": optional_bounded_text(result.get("ref_id").or_else(|| result.get("refId")), 240),
+                            }))
+                        })
+                        .collect::<Vec<_>>()
+                });
+            Some(json!({
+                "query": optional_bounded_text(provider_item.get("query"), MAX_TEXT_CHARS),
+                "action": action.unwrap_or(Value::Null),
+                "results": results.map(Value::Array).unwrap_or(Value::Null),
+            }))
+        }
+        "sleep" => Some(json!({
+            "durationMs": provider_item.get("durationMs").and_then(Value::as_u64),
+        })),
+        _ => None,
+    }
+}
+
 pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<NormalizedProviderEvent> {
+    normalize_codex_notification_in(method, params, None)
+}
+
+/// As [`normalize_codex_notification`], resolving provider file paths against
+/// the session working directory so edit rows and turn diffs stay workspace-relative.
+pub fn normalize_codex_notification_in(
+    method: &str,
+    params: &Value,
+    cwd: Option<&str>,
+) -> Vec<NormalizedProviderEvent> {
     let mut events = Vec::new();
     let push = |events: &mut Vec<NormalizedProviderEvent>,
                 event_type: &str,
@@ -726,7 +1008,11 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             EventPriority::P1,
             json!({
                 "schema": "paperclip.context.compacted.v1",
-                "compactionId": stable_id(string(params.get("threadId")), "codex-compaction"),
+                // One thread compacts many times; its turn names each compaction.
+                "compactionId": stable_id(
+                    &format!("{}:{}", string(params.get("threadId")), string(params.get("turnId"))),
+                    "codex-compaction",
+                ),
                 "reason": "provider",
                 "preTokens": Value::Null,
                 "postTokens": Value::Null,
@@ -766,6 +1052,17 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "error": codex_terminal_error(params, event_type),
                 }),
             );
+        }
+        "turn/diff/updated" => {
+            let turn_id = stable_id(string(params.get("turnId")), "codex-turn");
+            if let Some(diff) = params.get("diff").and_then(Value::as_str) {
+                push(
+                    &mut events,
+                    "workspace.change.updated",
+                    EventPriority::P2,
+                    crate::tool_file_changes::codex_turn_diff_snapshot(&turn_id, diff, cwd),
+                );
+            }
         }
         "turn/plan/updated" => {
             let plan_id = stable_id(string(params.get("turnId")), "codex-plan");
@@ -876,7 +1173,68 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             )
         }
-        "error" | "warning" | "deprecationNotice" | "configWarning" => push(
+        "error" => push(
+            &mut events,
+            "provider.notice.recorded",
+            EventPriority::P0,
+            codex_error_notice(params),
+        ),
+        // Only a failed start is user-facing: the agent then runs without that
+        // server's tools. starting/ready/cancelled stay in the raw run log.
+        "mcpServer/startupStatus/updated"
+            if params.get("status").and_then(Value::as_str) == Some("failed") =>
+        {
+            let name: String = string(params.get("name"))
+                .trim()
+                .chars()
+                .take(160)
+                .collect();
+            let server_name = if name.is_empty() {
+                "An".to_owned()
+            } else {
+                name
+            };
+            let failure_reason = string(params.get("failureReason"));
+            let reason = if failure_reason == "reauthenticationRequired" {
+                "needs re-authentication".to_owned()
+            } else {
+                mcp_startup_error_reason(string(params.get("error")))
+            };
+            let notice_id = stable_id(&format!("mcp-startup:{server_name}"), "mcp-startup");
+            let mut details = vec![json!({"name": "server", "value": server_name})];
+            if !reason.is_empty() {
+                details.push(
+                    json!({"name": "reason", "value": bounded_text(&reason, MAX_TEXT_CHARS)}),
+                );
+            }
+            if !failure_reason.is_empty() {
+                details.push(
+                    json!({"name": "failureReason", "value": bounded_text(failure_reason, 160)}),
+                );
+            }
+            let summary = if reason.is_empty() {
+                format!("{server_name} MCP server failed to start")
+            } else {
+                format!("{server_name} MCP server failed to start: {reason}")
+            };
+            push(
+                &mut events,
+                "provider.notice.recorded",
+                EventPriority::P0,
+                json!({
+                    "schema": "paperclip.provider.notice.v1",
+                    "noticeId": notice_id,
+                    "severity": "warning",
+                    "category": "mcp_server_startup_failed",
+                    "scope": "session",
+                    "recoverable": true,
+                    "userActionable": true,
+                    "summary": bounded_text(&summary, MAX_TEXT_CHARS),
+                    "details": details,
+                }),
+            )
+        }
+        "warning" | "deprecationNotice" | "configWarning" => push(
             &mut events,
             "provider.notice.recorded",
             EventPriority::P0,
@@ -897,6 +1255,26 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 ),
             }),
         ),
+        "hook/started" | "hook/completed" => push(
+            &mut events,
+            if method == "hook/started" {
+                "hook.started"
+            } else {
+                "hook.completed"
+            },
+            EventPriority::P2,
+            crate::governance_events::codex_hook_payload(method, params),
+        ),
+        "item/autoApprovalReview/started" | "item/autoApprovalReview/completed" => push(
+            &mut events,
+            if method.ends_with("started") {
+                "safety.review.started"
+            } else {
+                "safety.review.completed"
+            },
+            EventPriority::P1,
+            crate::governance_events::codex_safety_review_payload(method, params),
+        ),
         "item/agentMessage/delta" => push(
             &mut events,
             "item.delta",
@@ -910,12 +1288,121 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "text": bounded_text(string(params.get("delta")), MAX_TEXT_CHARS),
             }),
         ),
+        // Provider-written reasoning summaries. Each later summary part starts
+        // after a blank line, matching the completed item's joined `summary[]`.
+        "item/reasoning/summaryTextDelta" | "item/reasoning/summaryPartAdded" => {
+            let text = if method == "item/reasoning/summaryPartAdded" {
+                if params
+                    .get("summaryIndex")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+                    == 0
+                {
+                    return events;
+                }
+                "\n\n".to_owned()
+            } else {
+                bounded_text(string(params.get("delta")), MAX_TEXT_CHARS)
+            };
+            push(
+                &mut events,
+                "item.delta",
+                EventPriority::P2,
+                json!({
+                    "provider": "codex",
+                    "itemId": stable_id(string(params.get("itemId")), "codex-item"),
+                    "kind": "reasoning",
+                    "channel": "summary",
+                    "providerMethod": method,
+                    "text": text,
+                }),
+            );
+        }
         "item/started" | "item/updated" | "item/completed" => {
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
+            // A proposed plan travels as a schema-bounded rich event, so the
+            // durable display bound never cuts the document.
+            let proposal = match (item_type, method) {
+                ("plan", "item/started") => Some((false, String::new())),
+                ("plan", "item/completed") => Some((
+                    true,
+                    plan_proposal_markdown(string(provider_item.get("text"))),
+                )),
+                ("agentMessage", "item/completed")
+                    if provider_phase.is_empty() || provider_phase == "final_answer" =>
+                {
+                    proposed_plan_block(string(provider_item.get("text")))
+                        .map(|block| (true, plan_proposal_markdown(&block)))
+                        .filter(|(_, markdown)| !markdown.is_empty())
+                }
+                _ => None,
+            };
+            if let Some((proposal_completed, markdown)) = proposal {
+                push(
+                    &mut events,
+                    "plan.proposed",
+                    if proposal_completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    json!({
+                        "schema": "paperclip.plan.proposed.v1",
+                        "proposalId": item_id,
+                        "status": if proposal_completed { "completed" } else { "streaming" },
+                        "markdown": markdown,
+                        "source": "codex_plan_item",
+                    }),
+                );
+            }
+            if item_type == "fileChange" {
+                let file_changes =
+                    crate::tool_file_changes::codex_file_changes(provider_item.get("changes"), cwd);
+                let mut payload = json!({
+                    "schema": "paperclip.tool.execution.v1",
+                    "executionId": item_id,
+                    "transport": "builtin",
+                    "operation": "edit",
+                    "name": "apply_patch",
+                    "target": file_changes.as_ref().and_then(|files| files.get(0)).and_then(|file| file.get("path")).cloned().unwrap_or(Value::Null),
+                    "namespace": Value::Null,
+                    "readOnly": false,
+                    "status": provider_status(string(provider_item.get("status")), completed),
+                    "durationMs": Value::Null,
+                    "exitCode": Value::Null,
+                    "progress": Value::Null,
+                });
+                if let (Some(object), Value::Object(output)) =
+                    (payload.as_object_mut(), bounded_output(""))
+                {
+                    object.extend(output);
+                }
+                if let Some(file_changes) = file_changes {
+                    payload["fileChanges"] = file_changes;
+                }
+                push(
+                    &mut events,
+                    if completed {
+                        "tool.execution.completed"
+                    } else if method == "item/updated" {
+                        "tool.execution.progressed"
+                    } else {
+                        "tool.execution.started"
+                    },
+                    if completed {
+                        EventPriority::P1
+                    } else {
+                        EventPriority::P2
+                    },
+                    payload,
+                );
+            }
+            // The fileChange item event above stays alongside the edit row:
+            // recovery and progress projections classify the native item kind.
             if matches!(
                 item_type,
                 "commandExecution" | "mcpToolCall" | "dynamicToolCall" | "builtinToolCall"
@@ -924,9 +1411,9 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
                     "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", "builtinToolCall" => "builtin", _ => "process" },
-                    "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
+                    "operation": if item_type == "commandExecution" { codex_command_operation(provider_item) } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
-                    "target": Value::Null,
+                    "target": if item_type == "commandExecution" { codex_command_target(provider_item, cwd) } else { Value::Null },
                     "namespace": provider_item.get("server").and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "readOnly": provider_item.get("readOnlyHint").and_then(Value::as_bool),
                     "status": provider_status(string(provider_item.get("status")), completed),
@@ -943,6 +1430,11 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     )),
                 ) {
                     object.extend(output);
+                }
+                if item_type == "commandExecution" {
+                    if let Some(subject) = codex_command_subject(provider_item, cwd) {
+                        payload["subject"] = Value::String(subject);
+                    }
                 }
                 push(
                     &mut events,
@@ -973,7 +1465,8 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     } else {
                         "detail"
                     },
-                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS))
+                        .or_else(|| (item_type == "reasoning").then(|| reasoning_summary_text(provider_item)).flatten()),
                 });
                 // Preserve only actual terminal invocation identity in the compatibility
                 // projection. Arguments, arbitrary tool names and result bodies stay omitted.
@@ -986,6 +1479,16 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                             .expect("item payload is an object")
                             .insert("item".to_owned(), json!({ "name": name }));
                     }
+                }
+                // Web research and intentional waits are already user-visible
+                // activity. Keep their bounded identity (query, action, cited
+                // sources, planned duration) so the driver's canonical
+                // `research.*` and `wait.*` events are not empty.
+                if let Some(activity) = codex_activity_item_fields(item_type, provider_item) {
+                    payload
+                        .as_object_mut()
+                        .expect("item payload is an object")
+                        .insert("item".to_owned(), activity);
                 }
                 if !provider_phase.is_empty() {
                     payload
@@ -1047,7 +1550,10 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
         _ => stable_id(string(payload.get("messageId")), fallback_item_id),
     };
-    match kind {
+    let compaction = matches!(kind, AcpxRuntimeEventKind::ProviderNotice)
+        .then(|| acpx_compaction_notice_completed(payload, turn_id))
+        .flatten();
+    let mut events = match kind {
         AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
@@ -1079,13 +1585,41 @@ pub fn normalize_acpx_runtime_event(
         AcpxRuntimeEventKind::ToolCall => {
             normalize_acpx_tool_call(payload, &item_id, tool_operation.unwrap_or("unknown"))
         }
-        AcpxRuntimeEventKind::ProviderNotice => vec![acpx_notice(
-            &item_id,
-            string(payload.get("severity")),
-            string(payload.get("category")),
-            string(payload.get("summary")),
-            false,
-        )],
+        AcpxRuntimeEventKind::ProviderNotice => {
+            // A provider-supplied key pairs lifecycle notices (compaction start
+            // and end) into one notice within the turn.
+            let notice_id = match string(payload.get("noticeKey")) {
+                "" => item_id.clone(),
+                key => stable_id(&format!("{turn_id}:{key}"), fallback_item_id),
+            };
+            let mut event = acpx_notice(
+                &notice_id,
+                string(payload.get("severity")),
+                string(payload.get("category")),
+                string(payload.get("summary")),
+                false,
+            );
+            if let Some(details) = payload.get("details").and_then(Value::as_array) {
+                let details: Vec<Value> = details
+                    .iter()
+                    .take(64)
+                    .filter_map(|detail| {
+                        let name = detail.get("name").and_then(Value::as_str)?;
+                        let value = detail.get("value").and_then(Value::as_str)?;
+                        (!name.trim().is_empty()).then(|| {
+                            json!({
+                                "name": bounded_text(name, 160),
+                                "value": bounded_text(value, MAX_TEXT_CHARS),
+                            })
+                        })
+                    })
+                    .collect();
+                if !details.is_empty() {
+                    event.payload["details"] = Value::Array(details);
+                }
+            }
+            vec![event]
+        }
         AcpxRuntimeEventKind::Error => vec![acpx_notice(
             &item_id,
             "error",
@@ -1094,6 +1628,48 @@ pub fn normalize_acpx_runtime_event(
             true,
         )],
         AcpxRuntimeEventKind::SemanticResult | AcpxRuntimeEventKind::Done => Vec::new(),
+    };
+    events.extend(compaction);
+    events
+}
+
+/// A completed `context_compaction` notice (the sidecar's form of Claude's
+/// compaction banner) also marks a context compaction.
+fn acpx_compaction_notice_completed(
+    payload: &Value,
+    turn_id: &str,
+) -> Option<NormalizedProviderEvent> {
+    if string(payload.get("category")) != "context_compaction" {
+        return None;
+    }
+    let completed = payload
+        .get("details")
+        .and_then(Value::as_array)?
+        .iter()
+        .any(|detail| {
+            string(detail.get("name")) == "Phase" && string(detail.get("value")) == "completed"
+        });
+    if !completed {
+        return None;
+    }
+    Some(acpx_context_compacted(&stable_id(
+        &format!("{turn_id}:{}", string(payload.get("noticeKey"))),
+        "acpx-compaction",
+    )))
+}
+
+fn acpx_context_compacted(compaction_id: &str) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "context.compacted".to_owned(),
+        priority: EventPriority::P1,
+        payload: json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": compaction_id,
+            "reason": "provider",
+            "preTokens": Value::Null,
+            "postTokens": Value::Null,
+            "sameSession": true,
+        }),
     }
 }
 
@@ -1208,9 +1784,16 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
-        // session-cumulative. Keep those authorities separate so consumers do
-        // not add the same tokens twice or treat cumulative cost as a delta.
+        let turn_cost = payload.pointer("/cost/basis").and_then(Value::as_str) == Some("turn");
+        let provider_cost = if cost_is_usd {
+            payload
+                .pointer("/cost/amount")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1218,15 +1801,7 @@ fn normalize_acpx_status(
             "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": if cost_is_usd {
-                payload
-                    .pointer("/cost/amount")
-                    .and_then(Value::as_f64)
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            },
+            "providerCostUsd": if turn_cost { 0.0 } else { provider_cost },
         });
         let run_delta = json!({
             "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
@@ -1243,9 +1818,9 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": if turn_cost { provider_cost } else { 0.0 },
         });
-        return vec![NormalizedProviderEvent {
+        let mut usage = NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1260,7 +1835,28 @@ fn normalize_acpx_status(
                 "runDeltaAvailable": run_delta_available,
                 "runDelta": run_delta,
             }),
-        }];
+        };
+        if let Some(context) = acpx_context_usage(payload) {
+            usage.payload["context"] = context;
+        }
+        // Claude forwards its SDK rate_limit_event on usage_update; the
+        // sidecar passes only the sanitized `rateLimit` fields.
+        let rate_limits = payload.get("rateLimit").and_then(|info| {
+            crate::provider_rate_limits::claude_rate_limit_snapshot(
+                info,
+                &crate::provider_rate_limits::now_iso(),
+            )
+        });
+        return match rate_limits {
+            Some(snapshot) => vec![
+                usage,
+                crate::provider_rate_limits::rate_limit_notice(
+                    &snapshot,
+                    &stable_id(&format!("{item_id}:rate-limits"), "acpx-rate-limits"),
+                ),
+            ],
+            None => vec![usage],
+        };
     }
     if tag == "current_mode_update" {
         let status = string(payload.get("text"));
@@ -1342,7 +1938,17 @@ fn normalize_acpx_tool_call(
     let native_status = string(payload.get("status"));
     let status = provider_status(native_status, native_status == "completed");
     let terminal = status != "running";
-    let raw_title = string(payload.get("title")).trim();
+    let detail = payload.get("toolDetail").filter(|value| value.is_object());
+    let detail_text = |key: &str| {
+        detail
+            .and_then(|detail| detail.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    // The native tool name ("Bash", "Write", "mcp__server__tool") beats the
+    // free-text display title ("Terminal", a command line, "Preparing file…").
+    let raw_title = detail_text("toolName").unwrap_or_else(|| string(payload.get("title")).trim());
     let mcp = acpx_mcp_tool_identity(raw_title);
     let name = bounded_text(mcp.map_or(raw_title, |(_, name)| name), 240);
     let output = match payload.get("rawOutput").or_else(|| payload.get("output")) {
@@ -1360,8 +1966,16 @@ fn normalize_acpx_tool_call(
         "namespace": mcp.map(|(namespace, _)| bounded_text(namespace, 240)),
         "readOnly": matches!(operation, "read" | "search" | "list"),
         "status": status,
-        "durationMs": Value::Null,
-        "exitCode": Value::Null,
+        "durationMs": if terminal {
+            detail.and_then(|detail| detail.get("durationMs")).and_then(Value::as_u64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
+        "exitCode": if terminal {
+            detail.and_then(|detail| detail.get("exitCode")).and_then(Value::as_i64).map_or(Value::Null, Value::from)
+        } else {
+            Value::Null
+        },
         "progress": if terminal {
             Value::Null
         } else {
@@ -1375,6 +1989,26 @@ fn normalize_acpx_tool_call(
     });
     if let Some(input_updated) = payload.get("inputUpdated").and_then(Value::as_bool) {
         normalized["inputUpdated"] = Value::Bool(input_updated);
+    }
+    for key in ["subject", "description", "blockedReason"] {
+        if let Some(value) = detail_text(key) {
+            normalized[key] = Value::String(bounded_text(value, MAX_TEXT_CHARS));
+        }
+    }
+    let parent = string(payload.get("parentToolCallId"));
+    if !parent.is_empty() {
+        let parent_item_id = acpx_opaque_item_id(parent, "", "tool");
+        if parent_item_id != item_id {
+            normalized["parentItemId"] = Value::String(parent_item_id);
+        }
+    }
+    if let Some(file_changes) =
+        crate::tool_file_changes::sanitize_file_changes(payload.get("fileChanges"))
+    {
+        if normalized["target"].is_null() {
+            normalized["target"] = file_changes[0]["path"].clone();
+        }
+        normalized["fileChanges"] = file_changes;
     }
     if let (Some(object), Value::Object(output)) =
         (normalized.as_object_mut(), bounded_output(&output))
@@ -1432,6 +2066,236 @@ fn acpx_notice(
             },
         }),
     }
+}
+
+fn codex_command_actions(item: &Value) -> &[Value] {
+    item.get("commandActions")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Codex parses each shell command into read, search, list and unknown
+/// actions. A command made only of reads is a read, and so on; anything
+/// mixed or unparsed stays an execution.
+fn codex_command_operation(item: &Value) -> &'static str {
+    let actions = codex_command_actions(item);
+    let kind = |action: &Value| match string(action.get("type")).to_ascii_lowercase().as_str() {
+        "read" => "read",
+        "search" => "search",
+        "listfiles" | "list_files" => "list",
+        _ => "execute",
+    };
+    match actions.first().map(kind) {
+        Some(first) if actions.iter().all(|action| kind(action) == first) => first,
+        _ => "execute",
+    }
+}
+
+/// The single file a read-only command touched, relative to the command's cwd.
+fn codex_command_target(item: &Value, workspace_root: Option<&str>) -> Value {
+    let actions = codex_command_actions(item);
+    if actions.len() != 1 {
+        return Value::Null;
+    }
+    // One parsed action can still name several files (`sed -n 1,20p a b c`);
+    // naming only the first would misstate what was read.
+    if string(actions[0].get("type")).eq_ignore_ascii_case("read")
+        && codex_command_operands(string(actions[0].get("command"))) > 1
+    {
+        return Value::Null;
+    }
+    codex_workspace_relative_path(item, string(actions[0].get("path")), workspace_root)
+        .map_or(Value::Null, Value::String)
+}
+
+/// A Codex action path relative to the session workspace root. A relative
+/// path is resolved against the command's own cwd first, so `cat server.ts`
+/// run in `<root>/src` becomes `src/server.ts`. Returns None without a known
+/// root, or for a path outside it: host paths never reach a persisted event.
+fn codex_workspace_relative_path(
+    item: &Value,
+    path: &str,
+    workspace_root: Option<&str>,
+) -> Option<String> {
+    let root = workspace_root?.trim().trim_end_matches('/');
+    let path = path.trim();
+    if root.is_empty() || !root.starts_with('/') || path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    let command_cwd = string(item.get("cwd")).trim();
+    let base = if command_cwd.starts_with('/') {
+        command_cwd
+    } else {
+        root
+    };
+    let absolute = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("{base}/{path}")
+    };
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in absolute.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            other => segments.push(other),
+        }
+    }
+    let root_segments: Vec<&str> = root
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.len() < root_segments.len() || segments[..root_segments.len()] != root_segments[..]
+    {
+        return None;
+    }
+    let relative = segments[root_segments.len()..].join("/");
+    Some(if relative.is_empty() {
+        ".".to_owned()
+    } else {
+        bounded_text(&relative, 4_000)
+    })
+}
+
+/// Non-flag operands after the program name, ignoring `sed` line ranges.
+fn codex_command_operands(command: &str) -> usize {
+    let words = shell_words(command);
+    let program = words
+        .first()
+        .map(|word| word.rsplit('/').next().unwrap_or(word).to_owned())
+        .unwrap_or_default();
+    // `sed -n 1,20p FILE`: the script is not a file. `head -n 20 FILE`: the
+    // flag's value is not a file. Every other non-flag word is an operand,
+    // including numeric filenames.
+    let is_sed_script = |word: &str| {
+        word.trim_end_matches('p')
+            .split(',')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit() || c == '$'))
+    };
+    let mut count = 0;
+    let mut skip_next = false;
+    for word in words.iter().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if word.is_empty() {
+            continue;
+        }
+        if word.starts_with('-') {
+            skip_next = matches!(program.as_str(), "head" | "tail")
+                && matches!(word.as_str(), "-n" | "-c")
+                || program == "sed" && word == "-e";
+            continue;
+        }
+        if program == "sed" && is_sed_script(word) {
+            continue;
+        }
+        count += 1;
+    }
+    count
+}
+
+/// Split a command into words the way a POSIX shell groups them: single and
+/// double quotes and backslash escapes keep spaces inside one word.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut characters = command.chars();
+    while let Some(character) = characters.next() {
+        match (quote, character) {
+            (Some(open), close) if close == open => quote = None,
+            (Some('"'), '\\') | (None, '\\') => {
+                if let Some(escaped) = characters.next() {
+                    current.push(escaped);
+                }
+                in_word = true;
+            }
+            (Some(_), other) => current.push(other),
+            (None, '\'' | '"') => {
+                quote = Some(character);
+                in_word = true;
+            }
+            (None, other) if other.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            (None, other) => {
+                current.push(other);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    words
+}
+
+/// The command a person typed, without the `/bin/zsh -lc '…'` wrapper. Codex
+/// already parsed each action's own command, so prefer those. A single search
+/// reads as its query: `"TODO" in src`.
+fn codex_command_subject(item: &Value, workspace_root: Option<&str>) -> Option<String> {
+    let actions = codex_command_actions(item);
+    if let [action] = actions {
+        let query = string(action.get("query")).trim();
+        if string(action.get("type")).eq_ignore_ascii_case("search") && !query.is_empty() {
+            let scope = match codex_workspace_relative_path(
+                item,
+                string(action.get("path")),
+                workspace_root,
+            ) {
+                Some(path) if path != "." => format!(" in {path}"),
+                _ => String::new(),
+            };
+            return Some(bounded_text(&format!("\"{query}\"{scope}"), MAX_TEXT_CHARS));
+        }
+    }
+    let parsed: Vec<&str> = codex_command_actions(item)
+        .iter()
+        .map(|action| string(action.get("command")).trim())
+        .collect();
+    let joined = if !parsed.is_empty() && parsed.iter().all(|command| !command.is_empty()) {
+        parsed.join(" && ")
+    } else {
+        unwrap_shell_command(string(item.get("command")).trim()).to_owned()
+    };
+    (!joined.is_empty()).then(|| bounded_text(&joined, MAX_TEXT_CHARS))
+}
+
+fn unwrap_shell_command(command: &str) -> &str {
+    for shell in [
+        "/bin/zsh",
+        "/bin/bash",
+        "/bin/sh",
+        "zsh",
+        "bash",
+        "sh",
+        "/usr/bin/env bash",
+        "/usr/bin/env zsh",
+    ] {
+        for flag in [" -lc ", " -c "] {
+            if let Some(rest) = command
+                .strip_prefix(shell)
+                .and_then(|rest| rest.strip_prefix(flag))
+            {
+                let rest = rest.trim();
+                for quote in ['\'', '"'] {
+                    if rest.len() >= 2 && rest.starts_with(quote) && rest.ends_with(quote) {
+                        return &rest[1..rest.len() - 1];
+                    }
+                }
+                return rest;
+            }
+        }
+    }
+    command
 }
 
 fn nonnegative_u64(value: Option<&Value>) -> u64 {
@@ -1498,6 +2362,111 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acpx_turn_cost_is_not_a_cumulative_session_price() {
+        let base = json!({"tag": "usage_update", "breakdown": {
+            "inputTokens": 30787, "outputTokens": 5763, "cachedReadTokens": 475008,
+            "cachedWriteTokens": 0, "thoughtTokens": 0
+        }, "cost": {"amount": 0.336842, "currency": "USD", "basis": "turn"}});
+        let first = normalize_acpx_status(&base, "item", "turn-1", 1);
+        assert_eq!(first[0].payload["runDeltaAvailable"], true);
+        assert_eq!(first[0].payload["runDelta"]["providerCostUsd"], 0.336842);
+        assert_eq!(first[0].payload["cumulative"]["providerCostUsd"], 0.0);
+        assert_eq!(first[0].payload["runDelta"]["inputTokens"], 30787);
+        assert_eq!(first[0].payload["runDelta"]["outputTokens"], 5763);
+        let mut second = base.clone();
+        second["cost"]["amount"] = json!(0.001);
+        let next = normalize_acpx_status(&second, "next", "turn-2", 2);
+        assert_eq!(next[0].payload["runDelta"]["providerCostUsd"], 0.001);
+        second["cost"].as_object_mut().unwrap().remove("basis");
+        let cumulative = normalize_acpx_status(&second, "legacy", "turn-3", 3);
+        assert_eq!(
+            cumulative[0].payload["cumulative"]["providerCostUsd"],
+            0.001
+        );
+        assert_eq!(cumulative[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
+
+    #[test]
+    fn acpx_usage_carries_context_window_occupancy() {
+        let usage = normalize_acpx_status(
+            &json!({"tag": "usage_update", "used": 34076, "size": 200000}),
+            "item",
+            "turn-1",
+            1,
+        );
+        assert_eq!(
+            usage[0].payload["context"],
+            json!({"usedTokens": 34076, "windowTokens": 200000})
+        );
+        for missing in [
+            json!({"tag": "usage_update", "used": 10}),
+            json!({"tag": "usage_update", "used": 10, "size": 0}),
+        ] {
+            let usage = normalize_acpx_status(&missing, "item", "turn-1", 1);
+            assert!(usage[0].payload.get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn codex_context_usage_reads_last_request_and_model_window() {
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "total": {"inputTokens": 76682, "outputTokens": 1089},
+                "last": {"inputTokens": 26000, "outputTokens": 672, "totalTokens": 26672},
+                "modelContextWindow": 258400,
+            }})),
+            Some(json!({"usedTokens": 26672, "windowTokens": 258400}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {
+                "last": {"inputTokens": 100, "outputTokens": 20}, "modelContextWindow": 1000,
+            }})),
+            Some(json!({"usedTokens": 120, "windowTokens": 1000}))
+        );
+        assert_eq!(
+            codex_context_usage(&json!({"tokenUsage": {"last": {"totalTokens": 5}}})),
+            None
+        );
+    }
+
+    #[test]
+    fn compaction_banner_text_alone_is_not_a_compaction() {
+        // The sidecar turns Claude's banner into a `context_compaction`
+        // notice; only that notice marks the compaction, so it is counted once.
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::TextDelta,
+            &json!({"text": "\n\nCompacting completed."}),
+            None,
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "item.delta");
+    }
+
+    #[test]
+    fn completed_compaction_notice_emits_context_compacted() {
+        let notice = |phase: &str| {
+            normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ProviderNotice,
+                &json!({"severity": "info", "category": "context_compaction",
+                    "summary": "Compacting context", "noticeKey": "compaction-1",
+                    "details": [{"name": "Phase", "value": phase}]}),
+                None,
+                "fallback",
+                "turn-1",
+                0,
+            )
+        };
+        assert_eq!(notice("running").len(), 1);
+        let completed = notice("completed");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[1].event_type, "context.compacted");
+        assert_eq!(completed[1].payload["compactionId"], "turn-1:compaction-1");
+    }
 
     #[test]
     fn performance_diagnostics_keep_only_bounded_content_free_measurements() {
@@ -1593,6 +2562,91 @@ mod tests {
     }
 
     #[test]
+    fn maps_codex_turn_error_text_retries_and_error_info() {
+        let retry = normalize_codex_notification(
+            "error",
+            &json!({
+                "turnId": "turn-1", "willRetry": true,
+                "error": {
+                    "message": "Reconnecting... 2/5",
+                    "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 502}},
+                    "additionalDetails": "stream closed before response.completed"
+                }
+            }),
+        );
+        let notice = &retry[0].payload;
+        assert_eq!(notice["summary"], "stream closed before response.completed");
+        assert_eq!(notice["category"], "provider_retry");
+        assert_eq!(notice["severity"], "warning");
+        assert_eq!(notice["recoverable"], true);
+        assert_eq!(
+            notice["details"],
+            json!([
+                {"name": "Attempt", "value": "2"},
+                {"name": "Max attempts", "value": "5"},
+                {"name": "Reason", "value": "responseStreamDisconnected"},
+                {"name": "HTTP status", "value": "502"},
+            ])
+        );
+        let fatal = normalize_codex_notification(
+            "error",
+            &json!({"turnId": "turn-1", "willRetry": false,
+                "error": {"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}}),
+        );
+        assert_eq!(fatal[0].payload["category"], "error");
+        assert_eq!(fatal[0].payload["recoverable"], false);
+        assert_eq!(fatal[0].payload["summary"], "You've hit your usage limit.");
+        assert_ne!(fatal[0].payload["noticeId"], notice["noticeId"]);
+    }
+
+    #[test]
+    fn maps_failed_codex_mcp_startup_to_user_facing_notice() {
+        let events = normalize_codex_notification(
+            "mcpServer/startupStatus/updated",
+            &json!({
+                "threadId": null, "name": "github", "status": "failed",
+                // Codex 0.160's own wording, observed on a live run.
+                "error": "MCP client for `github` failed to start: MCP startup failed: No such file or directory (os error 2)",
+                "failureReason": null,
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "provider.notice.recorded");
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "schema": "paperclip.provider.notice.v1",
+                "noticeId": "mcp-startup:github",
+                "severity": "warning",
+                "category": "mcp_server_startup_failed",
+                "scope": "session",
+                "recoverable": true,
+                "userActionable": true,
+                "summary": "github MCP server failed to start: No such file or directory (os error 2)",
+                "details": [
+                    {"name": "server", "value": "github"},
+                    {"name": "reason", "value": "No such file or directory (os error 2)"},
+                ],
+            })
+        );
+        let reauth = normalize_codex_notification(
+            "mcpServer/startupStatus/updated",
+            &json!({"name": "linear", "status": "failed", "failureReason": "reauthenticationRequired"}),
+        );
+        assert_eq!(
+            reauth[0].payload["summary"],
+            "linear MCP server failed to start: needs re-authentication"
+        );
+        for status in ["starting", "ready", "cancelled"] {
+            assert!(normalize_codex_notification(
+                "mcpServer/startupStatus/updated",
+                &json!({"name": "github", "status": status}),
+            )
+            .is_empty());
+        }
+    }
+
+    #[test]
     fn preserves_codex_notice_text_from_current_and_legacy_payloads() {
         for method in ["configWarning", "deprecationNotice", "warning"] {
             for (params, expected) in [
@@ -1630,6 +2684,60 @@ mod tests {
                 <= MAX_TEXT_CHARS
         );
         assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+    }
+
+    #[test]
+    fn maps_codex_file_changes_and_turn_diffs_to_workspace_relative_patches() {
+        let started = normalize_codex_notification_in(
+            "item/started",
+            &json!({"item": {"id": "call-1", "type": "fileChange", "status": "inProgress", "changes": [
+                {"path": "/w/repo/a.js", "kind": {"type": "update", "move_path": null}, "diff": "@@ -1 +1 @@\n-a\n+b\n"}
+            ]}}),
+            Some("/w/repo"),
+        );
+        assert_eq!(started[0].event_type, "tool.execution.started");
+        assert_eq!(started[0].payload["operation"], "edit");
+        assert_eq!(started[0].payload["target"], "a.js");
+        assert_eq!(started[0].payload["fileChanges"][0]["additions"], 1);
+        // The native item event remains for recovery and progress projections.
+        assert_eq!(started[1].event_type, "item.started");
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "tool.execution.started",
+            &started[0].payload
+        ));
+
+        let diff = normalize_codex_notification_in(
+            "turn/diff/updated",
+            &json!({"turnId": "turn-1", "diff": "diff --git a//w/repo/a.js b//w/repo/a.js\n--- a//w/repo/a.js\n+++ b//w/repo/a.js\n@@ -1 +1 @@\n-a\n+b\n"}),
+            Some("/w/repo"),
+        );
+        assert_eq!(diff[0].event_type, "workspace.change.updated");
+        assert_eq!(diff[0].payload["files"][0]["path"], "a.js");
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "workspace.change.updated",
+            &diff[0].payload
+        ));
+    }
+
+    #[test]
+    fn forwards_sanitized_acpx_file_changes() {
+        let events = normalize_acpx_tool_call(
+            &json!({"type": "tool_call", "tag": "tool_call_update", "status": "completed", "title": "Edit",
+                "fileChanges": [{"path": "price.js", "operation": "modify", "previousPath": null,
+                    "additions": 1, "deletions": 1, "diff": "@@ -1 +1 @@\n-a\n+b\n", "diffTruncated": false},
+                    {"path": "/etc/passwd", "operation": "modify", "diff": ""}]}),
+            "tool-1",
+            "edit",
+        );
+        assert_eq!(events[0].payload["target"], "price.js");
+        assert_eq!(
+            events[0].payload["fileChanges"].as_array().unwrap().len(),
+            1
+        );
+        assert!(crate::acpx_event_payload::has_bounded_rich_display_shape(
+            "tool.execution.completed",
+            &events[0].payload
+        ));
     }
 
     #[test]
@@ -1760,6 +2868,44 @@ mod tests {
     }
 
     #[test]
+    fn acpx_opaque_tool_ids_match_the_sidecar() {
+        // Shared vector with claude-subagent-lineage.test.ts acpxOpaqueToolItemId.
+        assert_eq!(
+            acpx_opaque_item_id("toolu_01Abc", "", "tool"),
+            "toolu_01Abc"
+        );
+        assert_eq!(
+            acpx_opaque_item_id("tool/with slash", "", "tool"),
+            "acpx-tool-65b834e51b2f923abbb92966fc162e52736b1f0bc7675c8170cf08df837ec5d4"
+        );
+    }
+
+    #[test]
+    fn links_a_subagent_child_tool_to_its_parent_call() {
+        let events = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_child", "tag": "tool_call",
+                "status": "pending", "title": "Read", "parentToolCallId": "toolu_agent",
+            }),
+            Some("read"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(events[0].payload["parentItemId"], "toolu_agent");
+        let top = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_top", "tag": "tool_call", "status": "pending", "title": "Read"}),
+            Some("read"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert!(top[0].payload.get("parentItemId").is_none());
+    }
+
+    #[test]
     fn preserves_only_typed_acpx_input_update_marker() {
         for input_updated in [
             Value::Bool(true),
@@ -1787,6 +2933,93 @@ mod tests {
     }
 
     #[test]
+    fn emits_complete_long_plan_proposals_as_rich_events() {
+        let body = format!("# Plan\n{}", "- step\n".repeat(1_000).trim_end());
+        let message = format!("Ready for review.\n<proposed_plan>\n{body}\n</proposed_plan>");
+        assert!(message.chars().count() > MAX_TEXT_CHARS);
+        // A message carries prose around the block; a plan item is the
+        // wrapped document itself.
+        let plan_item = format!("<proposed_plan>\n{body}\n</proposed_plan>");
+        for (kind, text) in [("agentMessage", &message), ("plan", &plan_item)] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "item-1", "type": kind, "phase": "final_answer", "text": text}}),
+            );
+            let proposal = events
+                .iter()
+                .find(|event| event.event_type == "plan.proposed")
+                .unwrap_or_else(|| panic!("{kind} emits a proposal"));
+            assert_eq!(
+                proposal.payload["markdown"].as_str(),
+                Some(body.as_str()),
+                "{kind}"
+            );
+            assert_eq!(proposal.payload["proposalId"], "item-1");
+            assert_eq!(proposal.payload["status"], "completed");
+        }
+        let started = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "plan-1", "type": "plan", "text": ""}}),
+        );
+        assert_eq!(started[0].event_type, "plan.proposed");
+        assert_eq!(started[0].payload["status"], "streaming");
+        // Quoted, fenced or non-final mentions never become proposals.
+        for (phase, text) in [
+            (
+                "final_answer",
+                "Use:\n```\n<proposed_plan>\n# P\n</proposed_plan>\n```",
+            ),
+            (
+                "final_answer",
+                "Inline <proposed_plan>x</proposed_plan> mention.",
+            ),
+            ("commentary", "<proposed_plan>\n# P\n</proposed_plan>"),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"item": {"id": "m", "type": "agentMessage", "phase": phase, "text": text}}),
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.event_type != "plan.proposed"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_a_plan_whole_when_it_contains_a_fenced_closing_tag_example() {
+        let body =
+            "# Plan\n\n1. Document:\n```\n<proposed_plan>\nexample\n</proposed_plan>\n```\n2. Ship";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "msg-9", "type": "agentMessage", "phase": "final_answer",
+                "text": format!("Ready.\n<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        let proposal = events
+            .iter()
+            .find(|event| event.event_type == "plan.proposed")
+            .unwrap();
+        assert_eq!(proposal.payload["markdown"].as_str(), Some(body));
+    }
+
+    #[test]
+    fn keeps_literal_proposed_plan_tags_inside_a_plan_body() {
+        let body = "# Plan\n\n1. Format: `<proposed_plan>x</proposed_plan>`\n\n```\n<proposed_plan>\nsample\n</proposed_plan>\n```";
+        let events = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-2", "type": "plan", "text": format!("<proposed_plan>\n{body}\n</proposed_plan>")}}),
+        );
+        assert_eq!(events[0].payload["markdown"].as_str(), Some(body));
+        let bare = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "plan-3", "type": "plan", "text": body}}),
+        );
+        assert_eq!(bare[0].payload["markdown"].as_str(), Some(body));
+    }
+
+    #[test]
     fn maps_codex_plan_without_retaining_native_envelope() {
         let events = normalize_codex_notification(
             "turn/plan/updated",
@@ -1800,6 +3033,240 @@ mod tests {
         assert_eq!(events[0].event_type, "plan.updated");
         assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
         assert!(!events[0].payload.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn codex_commands_carry_their_parsed_subject_operation_and_target() {
+        let read = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-read", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'sed -n 1,120p src/server.ts'",
+                "cwd": "/work/repo", "exitCode": 0, "durationMs": 31,
+                "commandActions": [{"type": "read", "command": "sed -n 1,120p src/server.ts", "name": "server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(read[0].payload["operation"], "read");
+        assert_eq!(read[0].payload["target"], "src/server.ts");
+        assert_eq!(read[0].payload["subject"], "sed -n 1,120p src/server.ts");
+        assert_eq!(read[0].payload["exitCode"], 0);
+        assert_eq!(read[0].payload["durationMs"], 31);
+
+        let run = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-run", "type": "commandExecution", "status": "failed",
+                "command": "/bin/bash -lc \"node --test\"", "cwd": "/work/repo", "exitCode": 1,
+                "commandActions": [{"type": "unknown"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(run[0].payload["operation"], "execute");
+        assert_eq!(run[0].payload["target"], Value::Null);
+        assert_eq!(run[0].payload["subject"], "node --test");
+        assert_eq!(run[0].payload["exitCode"], 1);
+
+        let escape = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-escape", "type": "commandExecution", "status": "completed",
+                "command": "cat ../secret", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat ../secret", "path": "../secret"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(escape[0].payload["target"], Value::Null);
+
+        let several = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-several", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"sed -n '1,20p' notes/a.md notes/b.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "sed -n '1,20p' notes/a.md notes/b.md", "path": "notes/a.md"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(several[0].payload["operation"], "read");
+        assert_eq!(several[0].payload["target"], Value::Null);
+
+        let quoted = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-quoted", "type": "commandExecution", "status": "completed",
+                "command": "cat \"docs/setup guide.md\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat \"docs/setup guide.md\"", "path": "docs/setup guide.md"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(quoted[0].payload["target"], "docs/setup guide.md");
+        assert_eq!(codex_command_operands("cat 2025 2026"), 2);
+        assert_eq!(codex_command_operands("head -n 20 src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '1,20p' src/a.ts"), 1);
+        assert_eq!(codex_command_operands("sed -n '$p' a.md b.md"), 2);
+        assert_eq!(
+            shell_words(r#"sed -n '1,20p' a\ b.md "c d.md""#),
+            ["sed", "-n", "1,20p", "a b.md", "c d.md"]
+        );
+
+        let search = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-search", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc \"rg -n TODO src\"", "cwd": "/work/repo",
+                "commandActions": [{"type": "search", "command": "rg -n TODO src", "query": "TODO", "path": "src"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(search[0].payload["operation"], "search");
+        assert_eq!(search[0].payload["subject"], "\"TODO\" in src");
+
+        for (path, expected) in [
+            ("/work/repo/src", "\"TODO\" in src"),
+            ("/work/repo", "\"TODO\""),
+            ("/etc", "\"TODO\""),
+            ("../outside", "\"TODO\""),
+        ] {
+            let scoped = normalize_codex_notification_in(
+                "item/completed",
+                &json!({"item": {
+                    "id": "exec-search-abs", "type": "commandExecution", "status": "completed",
+                    "command": "rg TODO", "cwd": "/work/repo",
+                    "commandActions": [{"type": "search", "command": "rg TODO", "query": "TODO", "path": path}],
+                }}),
+                Some("/work/repo"),
+            );
+            assert_eq!(scoped[0].payload["subject"], expected, "path {path}");
+        }
+
+        let nested = normalize_codex_notification_in(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-nested", "type": "commandExecution", "status": "completed",
+                "command": "cat server.ts", "cwd": "/work/repo/src",
+                "commandActions": [{"type": "read", "command": "cat server.ts", "path": "server.ts"}],
+            }}),
+            Some("/work/repo"),
+        );
+        assert_eq!(nested[0].payload["target"], "src/server.ts");
+        let rootless = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-rootless", "type": "commandExecution", "status": "completed",
+                "command": "cat src/server.ts", "cwd": "/work/repo",
+                "commandActions": [{"type": "read", "command": "cat src/server.ts", "path": "/work/repo/src/server.ts"}],
+            }}),
+        );
+        assert_eq!(rootless[0].payload["target"], Value::Null);
+    }
+
+    #[test]
+    fn acpx_tool_detail_supplies_native_name_outcome_and_refusal() {
+        let completed = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({
+                "type": "tool_call", "toolCallId": "toolu_1", "status": "completed", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "subject": "node --test", "description": "Run the tests", "exitCode": 0, "durationMs": 1840},
+            }),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        let payload = &completed[0].payload;
+        assert_eq!(payload["name"], "Bash");
+        assert_eq!(payload["subject"], "node --test");
+        assert_eq!(payload["description"], "Run the tests");
+        assert_eq!(payload["exitCode"], 0);
+        assert_eq!(payload["durationMs"], 1840);
+
+        let running = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_2", "status": "in_progress", "title": "Terminal",
+                "toolDetail": {"toolName": "Bash", "exitCode": 1, "durationMs": 5}}),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(running[0].payload["exitCode"], Value::Null);
+        assert_eq!(running[0].payload["durationMs"], Value::Null);
+
+        let blocked = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_3", "status": "failed", "title": "rm -rf build",
+                "toolDetail": {"toolName": "mcp__paperclip__delete", "blockedReason": "Denied by rule"}}),
+            Some("unknown"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert_eq!(blocked[0].payload["name"], "delete");
+        assert_eq!(blocked[0].payload["namespace"], "paperclip");
+        assert_eq!(blocked[0].payload["transport"], "mcp");
+        assert_eq!(blocked[0].payload["blockedReason"], "Denied by rule");
+
+        let secret = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type": "tool_call", "toolCallId": "toolu_4", "status": "failed", "title": "curl",
+            "toolDetail": {
+                "toolName": "Bash",
+                "subject": "curl -H 'Authorization: Bearer top-secret-value' https://example.test?token=top-secret-value",
+                "description": "Call with password=top-secret-value",
+                "blockedReason": "Denied: api_key=top-secret-value",
+            }}),
+            Some("execute"),
+            "fallback",
+            "turn-1",
+            0,
+        );
+        assert!(!secret[0].payload.to_string().contains("top-secret-value"));
+        let codex = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "exec-secret", "type": "commandExecution", "status": "completed",
+                "command": "/bin/zsh -lc 'curl https://example.test?token=top-secret-value'", "cwd": "/work/repo",
+            }}),
+        );
+        assert!(!codex[0].payload.to_string().contains("top-secret-value"));
+    }
+
+    #[test]
+    fn keeps_bounded_web_search_and_sleep_identity() {
+        let search = normalize_codex_notification(
+            "item/completed",
+            &json!({
+                "item": {
+                    "id": "ws-1",
+                    "type": "webSearch",
+                    "query": "iso week date",
+                    "action": {"type": "search", "query": "iso week date", "queries": null, "token": "secret-value"},
+                    "results": [
+                        {"url": "https://example.com/a", "title": "A", "snippet": "first", "raw": "secret-value"},
+                        {"url": "file:///etc/passwd", "title": "local"},
+                    ],
+                },
+            }),
+        );
+        assert_eq!(search[0].event_type, "item.completed");
+        let item = &search[0].payload["item"];
+        assert_eq!(item["query"], "iso week date");
+        assert_eq!(item["action"]["type"], "search");
+        assert_eq!(item["results"].as_array().map(Vec::len), Some(1));
+        assert_eq!(item["results"][0]["url"], "https://example.com/a");
+        assert!(!search[0].payload.to_string().contains("secret-value"));
+
+        let sleep = normalize_codex_notification(
+            "item/started",
+            &json!({"item": {"id": "sleep-1", "type": "sleep", "durationMs": 15000}}),
+        );
+        assert_eq!(sleep[0].payload["item"]["durationMs"], 15000);
+
+        let message = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "m-1", "type": "agentMessage", "text": "hi", "query": "x"}}),
+        );
+        assert!(message[0].payload.get("item").is_none());
     }
 
     #[test]
@@ -1848,6 +3315,50 @@ mod tests {
             assert!(!events[0].payload.to_string().contains("top-secret"));
             assert!(events[0].payload.get("callId").is_none());
         }
+    }
+
+    #[test]
+    fn maps_codex_reasoning_summary_parts_and_completed_summary_text() {
+        let first_part = normalize_codex_notification(
+            "item/reasoning/summaryPartAdded",
+            &json!({"itemId": "rs_1", "summaryIndex": 0}),
+        );
+        assert!(first_part.is_empty());
+        let delta = normalize_codex_notification(
+            "item/reasoning/summaryTextDelta",
+            &json!({"itemId": "rs_1", "summaryIndex": 0, "delta": "**Tracing the retry path**"}),
+        );
+        assert_eq!(delta[0].event_type, "item.delta");
+        assert_eq!(delta[0].payload["kind"], "reasoning");
+        assert_eq!(delta[0].payload["channel"], "summary");
+        assert_eq!(delta[0].payload["itemId"], "rs_1");
+        assert_eq!(delta[0].payload["text"], "**Tracing the retry path**");
+        let next_part = normalize_codex_notification(
+            "item/reasoning/summaryPartAdded",
+            &json!({"itemId": "rs_1", "summaryIndex": 1}),
+        );
+        assert_eq!(next_part[0].payload["text"], "\n\n");
+        assert_eq!(next_part[0].payload["kind"], "reasoning");
+
+        let completed = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "rs_1",
+                "type": "reasoning",
+                "summary": ["**Tracing the retry path**", "**Verifying edge cases**"],
+                "content": [],
+            }}),
+        );
+        assert_eq!(completed[0].payload["channel"], "detail");
+        assert_eq!(
+            completed[0].payload["text"],
+            "**Tracing the retry path**\n\n**Verifying edge cases**"
+        );
+        let empty = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {"id": "rs_2", "type": "reasoning", "summary": [], "content": []}}),
+        );
+        assert_eq!(empty[0].payload["text"], Value::Null);
     }
 
     #[test]

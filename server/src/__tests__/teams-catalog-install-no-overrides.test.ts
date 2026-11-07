@@ -81,13 +81,18 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
-    await svc.installCatalogTeam(companyId, "core-exec-team", {
+    const installed = await svc.installCatalogTeam(companyId, "core-exec-team", {
       collisionStrategy: "rename",
       include: { projects: false, issues: false },
     });
 
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(3);
+    const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
+    const saved = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, companyId));
+    expect([...installed.resourceLinks].sort((a, b) => a.id.localeCompare(b.id))).toEqual(saved.map(agent => ({ kind: "agent", id: agent.id, name: agent.name,
+      href: `/${company!.issuePrefix}/agents/${agent.id}` })).sort((a, b) => a.id.localeCompare(b.id)));
+
 
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
     expect(adapterTypes).toEqual(["paperclip_runner", "paperclip_runner", "paperclip_runner"]);

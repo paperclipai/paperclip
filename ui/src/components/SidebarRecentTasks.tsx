@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const RECENT_TASK_MENU_ITEM_CLASS =
   "h-(--profile-popover-row-height) gap-(--profile-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) focus:bg-accent/50 focus:text-foreground";
@@ -252,7 +253,7 @@ function RecentTasksList({
             <SidebarNavItem
               to={`/issues/${entry.id}`}
               label={entry.title}
-              iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon status={entry.status} displayStatus={entry.displayStatus} /> : undefined}
+              iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon {...taskStatusIconProps(entry)} /> : undefined}
               trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
                 ? <span className="text-xs text-muted-foreground">Idle</span> : undefined}
               trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? "Idle" : undefined}

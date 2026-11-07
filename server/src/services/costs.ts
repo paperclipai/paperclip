@@ -3,11 +3,12 @@ import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createSe
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentRuntimeState, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals, aiSubscriptions } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals, aiSubscriptions } from "@paperclipai/db";
 import { notFound, unprocessable, conflict } from "../errors.js";
-import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
+import type { BudgetServiceHooks } from "./budgets.js";
 import { logActivity, type LogActivityInput, type ActivityPublication } from "./activity-log.js";
-import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
+import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
+import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
@@ -37,27 +38,6 @@ function currentUtcMonthWindow(now = new Date()) {
     start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
     end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
   };
-}
-
-/** Increment an initialized month under the company lock. On upgrade or UTC
- * rollover, initialize from the ledger in the same transaction exactly once.
- * Reports, budgets and the integrity checker continue reading the ledger. */
-export async function updateMonthlySpendProjections(db: Db, companyId: string, agentId: string | null, amountCents: MoneyInput, occurredAt: Date) {
-  const { start, end } = currentUtcMonthWindow();
-  const month = start.toISOString().slice(0, 10);
-  const delta = occurredAt >= start && occurredAt < end ? normalizeCents(amountCents) : "0.0000000";
-  for (const table of [companies, agents] as const) {
-    const id = table === companies ? companyId : agentId;
-    if (!id) continue;
-    const companyCondition = table === companies ? eq(companies.id, companyId) : eq(agents.companyId, companyId);
-    await db.update(table).set({
-      spentMonthlyCents: sql`case when ${table.spendMonthUtc} = ${month} then ${table.spentMonthlyCents} + ${delta}::numeric else (
-        select coalesce(sum(${costEvents.costCents}),0) from ${costEvents} where ${costEvents.companyId} = ${companyId}
-        and ${costEvents.occurredAt} >= ${start.toISOString()}::timestamptz and ${costEvents.occurredAt} < ${end.toISOString()}::timestamptz
-        ${table === agents ? sql`and ${costEvents.agentId} = ${agentId}` : sql``}) end`,
-      spendMonthUtc: month, updatedAt: new Date(),
-    }).where(and(eq(table.id, id), companyCondition));
-  }
 }
 
 export async function getMonthlySpendTotal(
@@ -137,25 +117,19 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
   }
   // Server-derived attribution stays outside the immutable receipt fingerprint;
   // replaying a receipt must not depend on later account metadata changes.
-  const [event] = await db.insert(costEvents).values({ ...values, subscriptionId, costCents: sql`${values.costCents}::numeric`, reportedCostCents: values.costCents, id: data.id, companyId, receiptHash }).returning();
-  await updateMonthlySpendProjections(db, companyId, event.agentId, values.costCents, event.occurredAt);
-  // Separately reported charges linked to an already-accounted run contribute
-  // to lifetime totals too. Before acknowledgement, accountRunCost includes
-  // all of the run's events atomically when it initializes the projection.
-  if (event.heartbeatRunId && event.agentId) {
-    const [run] = await db.select({ acknowledged: heartbeatRuns.costAccountedAt, version: heartbeatRuns.accountingProjectionVersion })
-      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, event.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
-    if (run.acknowledged && run.version === "v2") await db.update(agentRuntimeState).set({
-      totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${values.costCents}::numeric`,
-      totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${event.inputTokens}`,
-      totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${event.cachedInputTokens}`,
-      totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${event.outputTokens}`,
-      updatedAt: new Date(),
-    }).where(and(eq(agentRuntimeState.agentId, event.agentId), eq(agentRuntimeState.companyId, companyId)));
+  const [inserted] = await db.insert(costEvents).values({ ...values, subscriptionId, costCents: sql`${values.costCents}::numeric`, reportedCostCents: values.costCents, id: data.id, companyId, receiptHash })
+    .onConflictDoNothing().returning();
+  if (!inserted) {
+    const [winner] = values.idempotencyKey ? await db.select().from(costEvents).where(and(
+      eq(costEvents.companyId, companyId), eq(costEvents.idempotencyKey, values.idempotencyKey))) : [];
+    if (!winner) throw Object.assign(new Error("Concurrent cost receipt requires a fresh snapshot"), { code: "40001" });
+    if (winner.receiptHash !== receiptHash && winner.receiptHash !== legacyHash)
+      throw conflict("Idempotency key already used for a different cost receipt");
+    const [exact] = await db.select({ costCents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(eq(costEvents.id, winner.id));
+    return { ...winner, costCentsExact: normalizeCents(exact.costCents) };
   }
-  // A multi-model run receipt inserts all parts before one scope evaluation.
-  // The owning accounting transaction must perform that deferred evaluation.
-  if (!options.deferBudgetEvaluation) await budgetServiceInTransaction(db, publications).evaluateCostEvent(event);
+  const event = inserted;
+  if (!options.deferBudgetEvaluation) await queueBudgetEvaluation(db, { companyId, agentId: event.agentId, projectId: event.projectId });
   await logActivity(db, {
     companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "cost_accounting", agentId: actor?.agentId ?? event.agentId,
     ...((event.usageKind === "decision" || event.usageKind === "fast_response" || event.usageKind === "prompt_injection") ? { responsibleUserIdOverride: event.responsibleUserId } : {}),
@@ -169,7 +143,7 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId" | "receiptHash" | "costCents"> & { costCents: MoneyInput }, actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId">) => {
       if (data.idempotencyKey?.startsWith("heartbeat:")) throw unprocessable("The heartbeat idempotency namespace is reserved for run receipts");
-      const event = await withAccountingTransaction(db, companyId, (tx, publications) => createCostEventInTransaction(tx, companyId, data, publications, actor));
+      const event = await withOperationAccountingTransaction(db, companyId, (tx, publications) => createCostEventInTransaction(tx, companyId, data, publications, actor));
       return event;
     },
 

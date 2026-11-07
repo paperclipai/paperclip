@@ -53,6 +53,18 @@ test("the ACPX sidecar schema accepts each versioned message family", () => {
   }
 });
 
+test("usage prices declare turn or session scope without changing legacy cumulative prices", () => {
+  const event = cost => ({ protocolVersion, sequence: 1, eventType: "runtime.event", runId: "run-1", turnId: "turn-1",
+    payload: { type: "status", tag: "usage_update", cost } });
+  for (const cost of [null, { amount: 0.1, currency: "USD" }, { amount: 0.1, currency: "USD", basis: "turn" },
+    { amount: 0.1, currency: "USD", basis: "session_cumulative" }]) {
+    assert.equal(validate(event(cost)), true, JSON.stringify(validate.errors));
+  }
+  for (const cost of [{ amount: -1 }, { amount: 0.1, basis: "estimated" }, { amount: 0.1, rawProviderReceipt: {} }]) {
+    assert.equal(validate(event(cost)), false);
+  }
+});
+
 test("failed responses accept the bounded provider cause and reject extra diagnostic fields", () => {
   const failure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "Account rate limit reached.", httpStatus: 429, retryability: "unknown" };
