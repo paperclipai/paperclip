@@ -2690,6 +2690,7 @@ describe("sandbox callback bridge", () => {
     const requestRemovals: string[] = [];
     let listCalls = 0;
     let writeAttempts = 0;
+    let failWrites = true;
 
     const client: SandboxCallbackBridgeQueueClient = {
       makeDir: async () => {},
@@ -2714,8 +2715,10 @@ describe("sandbox callback bridge", () => {
       writeTextFile: async () => {},
       writeResponseFile: async () => {
         writeAttempts += 1;
-        // Fail every recovery 503 write attempt.
-        throw new Error("simulated persistent recovery 503 write failure");
+        if (failWrites) {
+          throw new Error("simulated persistent recovery 503 write failure");
+        }
+        return { wrote: true };
       },
       rename: async () => {},
       remove: async (remotePath) => {
@@ -2731,6 +2734,7 @@ describe("sandbox callback bridge", () => {
       queueDir,
       iterationTimeoutMs: 200,
       watchdogTimeoutMs: 10_000,
+      abortedHandlerGraceMs: 30,
       runtimeSpan,
       authorizeRequest: async () => null,
       handleRequest: async () => ({ status: 200, body: "ok" }),
@@ -2749,7 +2753,13 @@ describe("sandbox callback bridge", () => {
     // partial or retryable status for the possibly-committed mutation.
     expect(responseWrites).toHaveLength(0);
 
+    failWrites = false;
+    await waitFor(() => !requestBodies.has(requestPath), 3_000);
+
     await worker.stop({ drainTimeoutMs: 10 });
+    const attemptsAtStop = writeAttempts;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(writeAttempts).toBe(attemptsAtStop);
   });
 
 
