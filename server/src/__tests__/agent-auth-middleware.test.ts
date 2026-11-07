@@ -113,6 +113,12 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
     res.json({ reachedGatewayProtocol: true, actorType: req.actor.type });
   });
+  app.get("/api/tool-gateway/tools", (req, res) => {
+    res.json({ reachedSessionTools: true, actorType: req.actor.type });
+  });
+  app.post("/api/tool-gateway/tools/call", (req, res) => {
+    res.json({ reachedSessionToolsCall: true, actorType: req.actor.type });
+  });
   app.get("/companies/:companyId/protected", (req, res) => {
     assertCompanyAccess(req, req.params.companyId);
     res.json({ ok: true });
@@ -272,6 +278,95 @@ describe("agent auth middleware", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ reachedGatewayProtocol: true });
+  });
+
+  it("leaves gateway session tokens on tools endpoints for the gateway service to validate", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const listRes = await request(createApp(db, "local_trusted"))
+      .get("/api/tool-gateway/tools")
+      .set("Authorization", `Bearer pcgt_${randomUUID()}.secret-abc`);
+
+    expect(listRes.status).toBe(200);
+    expect(listRes.body).toMatchObject({ reachedSessionTools: true, actorType: "none" });
+
+    const callRes = await request(createApp(db, "local_trusted"))
+      .post("/api/tool-gateway/tools/call")
+      .set("Authorization", `Bearer pcgt_${randomUUID()}.secret-abc`);
+
+    expect(callRes.status).toBe(200);
+    expect(callRes.body).toMatchObject({ reachedSessionToolsCall: true, actorType: "none" });
+  });
+
+  it("does not bypass actor authentication for lookalike session tools paths", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/api/tool-gateway/tools/extra")
+      .set("Authorization", `Bearer pcgt_${randomUUID()}.secret-abc`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("Agent token did not verify");
+  });
+
+  it("authenticates an agent JWT normally on the session tools endpoints", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/api/tool-gateway/tools")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ reachedSessionTools: true, actorType: "agent" });
+  });
+
+  it("audits and rejects a spoofed run header on the session tools endpoints", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const spoofedRunId = randomUUID();
+    const { db, activity } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "user-claim" },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+
+    const res = await request(createApp(db))
+      .post("/api/tool-gateway/tools/call")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", spoofedRunId);
+
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("agent_jwt_run_id_mismatch");
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({
+      action: "auth.agent_jwt_run_header_mismatch",
+      details: { claimRunId: runId, headerRunId: spoofedRunId },
+    });
+  });
+
+  it.each([
+    ["terminated", "Agent is terminated"],
+    ["pending_approval", "Agent is pending approval"],
+  ])("rejects a %s agent's JWT on the session tools endpoints", async (status, error) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const { db } = createDbState({ agent: { id: agentId, companyId, status } });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1");
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/api/tool-gateway/tools")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain(error);
   });
 
   it("does not bypass actor authentication for lookalike MCP gateway paths", async () => {
