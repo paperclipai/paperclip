@@ -50,9 +50,12 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
   let registeredClientsClosed = false;
   let stage = "not-started";
   let queryCount = 0;
+  const poolQueryCounts = { main: 0, liveness: 0, checkpoint: 0, fileStorage: 0 };
   let callbacks = 0;
   let sessions = 0;
   let verifyCalls = 0;
+  let unexpectedDecisionWakes = 0;
+  let invitationFailure: { status: number; code: string; message: string } | undefined;
   let oldOwnerFailures = 0;
   let reconstructedCommits = 0;
   let firstAttemptAt: number | undefined;
@@ -69,6 +72,22 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
   let grantId: string | undefined;
   let firstFailureState: { contactPersisted: boolean; challengeAbsent: boolean; mailboxCount: number } | undefined;
 
+  function classifyInvitationFailure(status: number, body: unknown) {
+    const parsed = z.object({ error: z.string().optional() }).safeParse(body);
+    const fixed = [
+      { message: "Board access required", code: "board_access_required" },
+      { message: "User does not have access to this company", code: "company_access_denied" },
+      { message: "User does not have active company access", code: "active_company_access_required" },
+      { message: "Viewer access is read-only", code: "viewer_read_only" },
+      { message: "Sign in as a company operator to configure Muse.", code: "company_operator_required" },
+      { message: "Missing permission: agents:create.", code: "agents_create_permission_missing" },
+      { message: "Permission agents:create does not cover the requested scope.", code: "agents_create_scope_denied" },
+      { message: "Enable Muse and Paperclip Runner in experimental settings.", code: "muse_runner_disabled" },
+    ].find(value => parsed.success && value.message === parsed.data.error);
+    return fixed ? { status, ...fixed }
+      : { status, code: "unclassified_invitation_response", message: "Invitation response details withheld" };
+  }
+
   function currentDb() { if (!db) throw new Error("Missing owned Muse database"); return db; }
   function currentApp() { if (!app) throw new Error("Missing normal Muse App"); return app; }
   function record(owner: "original" | "reconstructed", outcome: "injected-failure" | "committed" | "error") {
@@ -82,8 +101,9 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
     const owner = createDb(databaseUrl, { maxConnections: 2, applicationName: "muse-contact-normal-app" });
     db = owner;
     registeredClientsClosed = false;
-    for (const pool of [owner, livenessDb(owner), checkpointDb(owner), fileStorageDb(owner)]) {
-      pool.$client.options.debug = () => { queryCount++; };
+    for (const [name, pool] of [["main", owner], ["liveness", livenessDb(owner)],
+      ["checkpoint", checkpointDb(owner)], ["fileStorage", fileStorageDb(owner)]] as const) {
+      pool.$client.options.debug = () => { queryCount++; poolQueryCounts[name]++; };
     }
     unsubscribe = subscribeDatabaseWork(owner, DELIVERY_QUEUES.museMaintenance, () => { callbacks++; });
     await migrateCloudConfiguration(owner);
@@ -97,6 +117,10 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
       deploymentMode: "authenticated", deploymentExposure: "private", bindHost: "127.0.0.1",
       allowedHostnames: [host], authPublicBaseUrl: origin, authReady: true,
       companyDeletionEnabled: false, managedPluginAutoInstall: [],
+      decisionServiceOptions: { wakeOriginAgent: async () => {
+        unexpectedDecisionWakes++;
+        throw new Error("This Muse contact fixture does not admit Decision continuation work");
+      } },
       resolveSession: async req => {
         sessions++;
         if (req.get("x-muse-test-operator") !== userId) return null;
@@ -135,6 +159,7 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
     await owner.insert(companies).values({ id: companyId, name: "Muse contact recovery", issuePrefix: "MCR0", requireBoardApprovalForNewAgents: false });
     await owner.insert(authUsers).values({ id: userId, name: "Muse fixture operator", email: userId + "@example.test", createdAt: new Date(), updatedAt: new Date() });
     await accessService(owner).ensureMembership(companyId, "user", userId, "owner", "active");
+    await accessService(owner).ensureRoleDefaultGrants(companyId, userId, "owner", userId);
     await instanceSettingsService(owner).updateExperimental({ enableMuse: true, enableNativeRunner: true });
   }, 90_000);
 
@@ -148,8 +173,8 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
     vi.unstubAllEnvs();
     if (artifactPath) {
       try { await writeFile(artifactPath + ".cleanup.json", JSON.stringify({ stage, passed,
-        oldOwnerFailures, reconstructedCommits, firstFailureState, attempts, attemptOverflow,
-        queryCount, callbacks, sessions, verifyCalls, cleanupErrors: errors.length,
+        oldOwnerFailures, reconstructedCommits, firstFailureState, invitationFailure, attempts, attemptOverflow,
+        queryCount, poolQueryCounts, callbacks, sessions, verifyCalls, unexpectedDecisionWakes, cleanupErrors: errors.length,
         appOwnerJoined: app === undefined, rootDbEnded: db === undefined, registeredClientsClosed,
         retainedHome: passed && !errors.length ? false : home ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); }
       catch (error) { errors.push(error); }
@@ -162,7 +187,8 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
     const invite = await request(currentApp()).post(`/api/companies/${companyId}/muse-invitations`)
       .set("Host", host).set("Origin", origin).set("x-muse-test-operator", userId)
       .send({ name: "Contact recovery Muse", role: "Contact verification regression" });
-    expect(invite.status).toBe(200);
+    if (invite.status !== 200) invitationFailure = classifyInvitationFailure(invite.status, invite.body);
+    expect(invite.status, invitationFailure ? JSON.stringify(invitationFailure) : undefined).toBe(200);
     const createdAgentId = z.object({ agent: z.object({ id: z.uuid() }) }).parse(invite.body).agent.id;
     agentId = createdAgentId;
     const pairing = await request(currentApp()).post(`/api/companies/${companyId}/agents/${agentId}/muse-binding`)
@@ -294,13 +320,19 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
       expect(getTaskDrainStatus()).toMatchObject({ activeRuns: 0, pendingWakes: 0, quiescent: true });
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 15_000, interval: 25 });
+    const beforeRequiredRead = { total: queryCount, main: poolQueryCounts.main };
     expect(await reconstructed.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
-    const quietBefore = { queryCount, callbacks, sessions, verifyCalls };
+    const afterRequiredRead = { total: queryCount, main: poolQueryCounts.main };
+    expect(afterRequiredRead.total).toBeGreaterThan(beforeRequiredRead.total);
+    expect(afterRequiredRead.main).toBeGreaterThan(beforeRequiredRead.main);
+    expect(poolQueryCounts.fileStorage).toBeGreaterThan(0);
+    expect(unexpectedDecisionWakes).toBe(0);
+    const quietBefore = { queryCount, poolQueryCounts: { ...poolQueryCounts }, callbacks, sessions, verifyCalls, unexpectedDecisionWakes };
     stage = "strict-fifteen-second-quiet";
     const quietStarted = performance.now();
     await pause(15_000);
     const quietElapsedMs = performance.now() - quietStarted;
-    const quietAfter = { queryCount, callbacks, sessions, verifyCalls };
+    const quietAfter = { queryCount, poolQueryCounts: { ...poolQueryCounts }, callbacks, sessions, verifyCalls, unexpectedDecisionWakes };
     expect(quietAfter).toEqual(quietBefore);
     stage = "revocation-and-negatives";
     const revoke = await request(currentApp()).post("/api/muse/v1/oauth/revoke").set("Host", host)
@@ -313,6 +345,7 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
     expect(revokedGrant.revokedAt).not.toBeNull();
     const [finalBinding] = await reconstructed.select().from(museAgentBindings).where(eq(museAgentBindings.id, paired.bindingId));
     expect(finalBinding.revokedAt).not.toBeNull(); expect(finalBinding.verifiedReplyAt).not.toBeNull();
+    expect(unexpectedDecisionWakes).toBe(0);
     if (!artifactPath) throw new Error("Missing owned Muse acceptance path");
     await writeFile(artifactPath, JSON.stringify({ contract: "normal Muse contact verification recovery",
       companyId, userId, agentId, bindingId, generation, clientId, grantId, normalOAuth: true,
@@ -320,6 +353,7 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
       reconstructedDbObject: true, challengeCount: challengeRows.length, challengeConfirmed: true,
       contacts: contactsBefore[0].contacts, contactTimestampCount: contactsBefore[0].timestamps.length,
       beforeRestartRevision: beforeRestart.revision, recoveredRevision: recovered.revision,
+      queryInstrumentation: { beforeRequiredRead, afterRequiredRead }, unexpectedDecisionWakes,
       quiet: { elapsedMs: quietElapsedMs, before: quietBefore, after: quietAfter },
       revoked: true, oldAccessRejected: true, oldSignalRejected: true, nativeRuns: 0,
       cost: null, usage: null, liveMuseBackgroundReply: false,
