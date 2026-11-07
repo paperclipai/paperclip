@@ -15,8 +15,10 @@ import { builtInAgentsApi, type BuiltInAgentState } from "@/api/builtInAgents";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { summarySlotsApi, type SummarySlotSelector } from "@/api/summarySlots";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { InlineBanner } from "@/components/InlineBanner";
+import { describeError } from "@/api/errors";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { Badge } from "@/components/ui/badge";
@@ -160,7 +162,6 @@ export function SummarySlotCard({
     queryKey: queryKeys.builtInAgents.list(companyId ?? "__none__"),
     queryFn: () => builtInAgentsApi.list(companyId!),
     enabled: Boolean(companyId && summariesEnabled && builtInAgentsEnabled),
-    retry: false,
   });
 
   const summarizerState = builtInAgentsQuery.data?.find(
@@ -179,15 +180,15 @@ export function SummarySlotCard({
     queryKey: slotQueryKey,
     queryFn: () => summarySlotsApi.get(selector!),
     enabled: Boolean(selector && summariesEnabled),
-    retry: false,
     refetchInterval: (query) => query.state.data?.slot?.status === "generating" ? 3_000 : false,
   });
+  const slotView = useQueryView(slotQuery);
+  const slotReady = slotView.kind === "ready" || slotView.kind === "stale";
 
   const revisionsQuery = useQuery({
     queryKey: revisionsQueryKey,
     queryFn: () => summarySlotsApi.revisions(selector!),
     enabled: Boolean(selector && summariesEnabled && slotQuery.data?.document),
-    retry: false,
   });
 
   const generateMutation = useMutation({
@@ -357,21 +358,17 @@ export function SummarySlotCard({
         </InlineBanner>
       ) : null}
 
-      {slotQuery.isError ? (
-        <InlineBanner
-          tone="warning"
-          title="Summary could not be loaded"
-          actions={
-            <Button type="button" size="sm" variant="outline" onClick={() => void slotQuery.refetch()}>
-              Retry
-            </Button>
-          }
-        >
-          {slotQuery.error instanceof Error ? slotQuery.error.message : "Try loading the summary again."}
-        </InlineBanner>
+      {slotView.kind === "error" ? (
+        <QueryErrorState
+          size="panel"
+          error={slotView.error}
+          action="load the summary"
+          onRetry={slotView.retry}
+          retrying={slotView.isFetching}
+        />
       ) : null}
 
-      {!slotQuery.isError && generationFailed ? (
+      {slotReady && generationFailed ? (
         <InlineBanner
           tone="danger"
           title="Summary generation failed"
@@ -390,7 +387,7 @@ export function SummarySlotCard({
         </InlineBanner>
       ) : null}
 
-      {!slotQuery.isError && isGenerating && generatingIssue ? (
+      {slotReady && isGenerating && generatingIssue ? (
         <div className="flex items-start gap-3 text-sm">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           <div className="min-w-0 space-y-1">
@@ -434,7 +431,7 @@ export function SummarySlotCard({
         </div>
       ) : null}
 
-      {!slotQuery.isError && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? (
+      {slotReady && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">No summary yet</p>

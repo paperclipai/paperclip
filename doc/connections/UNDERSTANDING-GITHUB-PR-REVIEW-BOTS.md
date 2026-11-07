@@ -255,16 +255,20 @@ discussion, it uses `comment`. For a review, `submit_review` publishes the
 assessment summary and updates the check. It should not add another comment
 just to announce that the review is complete.
 
-Paperclip posts one “Working on this…” comment when it accepts a request. The
-agent can periodically edit that comment with `update_comment` as it makes
+Paperclip keeps one main comment per bot per PR, beginning with “Review queued…”.
+Pushes and repeat requests reuse it. The agent can periodically edit it with `update_comment` as it makes
 progress. Its final `comment` or review summary replaces the same comment;
-inline-only reviews close it with a link to the finding. Coalesced requests have
-their existing working comments updated to point to the response. New requests
+inline-only reviews close it with a link to the finding. Coalesced PR requests
+share the main comment; issue and inline threads keep per-request responses. New requests
 no longer create eyes reactions.
 
 The runner's final text stays inside the Paperclip task. If a run ends without
 a tool reply, Paperclip updates the working comment with a safe notice and a
 link to the task. A real question can link to its answer form in Paperclip.
+Maintenance clears stale working states after recovery stops, and requests saved
+while the task is blocked show a paused notice. A leading mention addressed to
+another recipient, such as `@greptile review`, does not wake this bot unless the
+message also explicitly mentions it.
 A confirmed reply suppresses fallback notices. Pending or uncertain tool
 delivery prevents a duplicate reply while its receipt is resolved. A check
 alone does not count as a conversation reply.

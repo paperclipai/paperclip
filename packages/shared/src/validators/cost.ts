@@ -32,7 +32,7 @@ export const createCostEventSchema = costEventFields.transform((value) => ({
 /** Internal service receipts; the public reporting endpoint retains its required agent. */
 export const createServiceCostEventSchema = costEventFields.extend({
   agentId: z.string().uuid().nullable(),
-  usageKind: z.enum(["decision", "fast_response"]),
+  usageKind: z.enum(["decision", "fast_response", "prompt_injection"]),
   responsibleUserId: z.string().nullable(),
 }).transform(value => ({ ...value, biller: value.biller ?? value.provider }));
 

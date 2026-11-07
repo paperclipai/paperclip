@@ -1,9 +1,13 @@
+import type { IdleIssueWait } from "./idle-deadline-types.js";
 import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { AGENT_STATUSES, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { AGENT_STATUSES, issueExecutionPolicySchema, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import type { ScheduledWake } from "./idle-scheduled-work.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./recovery/onboarding-first-task-wait.js";
+import { completedAgentUnblockRequest, responseDrivenIssueWait } from "./idle-work-proof.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { passiveIdleConversation } from "./conversation-idle-proof.js";
 
 const processGeneration = randomUUID();
 const limit = 10_000;
@@ -12,9 +16,11 @@ const agentStatuses = new Set<string>(AGENT_STATUSES);
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
-export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number): Promise<{
+export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: string, now: number, waits: readonly IdleIssueWait[] = []): Promise<{
   blocked: boolean;
+  inspectionComplete?: false;
   scheduledWake?: ScheduledWake;
+  generation?: string;
 }> {
   const rows = await tx.execute<{
     id: string; company_id: string; status: string; updated_at: Date | string;
@@ -25,13 +31,22 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     monitor_wake_requested_at: Date | string | null; monitor_attempt_count: number;
     company_status: string; company_updated: Date | string; agent_status: string | null;
     agent_updated: Date | string | null; scoped: boolean; unsafe_dependencies: boolean; dependency_ready: boolean;
-    untouched_onboarding: boolean;
+    untouched_onboarding: boolean; response_driven_wait: boolean;
+    unblock_request_finished: boolean;
+    response_wait_generation: unknown;
+    passive_conversation: boolean;
   }>(sql`SELECT i.id, i.company_id, i.status, i.updated_at, i.assignee_agent_id, i.assignee_user_id,
       i.checkout_run_id, i.execution_run_id, i.execution_policy, i.execution_state, i.unblock_descriptor,
       i.conversation_agent_id, i.monitor_next_check_at, i.monitor_wake_requested_at, i.monitor_attempt_count,
       c.status AS company_status, c.updated_at AS company_updated,
       a.status AS agent_status, a.updated_at AS agent_updated,
       (i.assignee_agent_id IS NULL OR a.id IS NOT NULL) AS scoped,
+      (${sql.raw(responseDrivenIssueWait('i'))}) AS response_driven_wait,
+      (${sql.raw(completedAgentUnblockRequest('i'))}) AS unblock_request_finished,
+      (${sql.raw(passiveIdleConversation('i'))}) AS passive_conversation,
+      (SELECT jsonb_agg(jsonb_build_array(w.id, w.updated_at, w.kind, w.status, w.source_run_id,
+          w.effective_resolver_policy, w.continuation_policy, w.addressee_agent_id, w.addressee_user_id) ORDER BY w.id)
+        FROM issue_thread_interactions w WHERE w.issue_id = i.id AND w.status = 'pending') AS response_wait_generation,
       (${onboardingFirstTaskAwaitingUserSql(sql`i.company_id`, sql`i.id`, sql`i.origin_kind`)}
         AND NOT EXISTS (SELECT 1 FROM heartbeat_runs h WHERE h.company_id = i.company_id
           AND (h.context_snapshot ->> 'issueId' = i.id::text OR h.context_snapshot ->> 'taskId' = i.id::text))) AS untouched_onboarding,
@@ -44,16 +59,38 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     FROM issues i JOIN companies c ON c.id = i.company_id
     LEFT JOIN agents a ON a.id = i.assignee_agent_id AND a.company_id = i.company_id
     WHERE i.status NOT IN ('done', 'cancelled') ORDER BY i.id LIMIT ${limit + 1}`);
-  if (rows.length > limit) return { blocked: true };
+  if (rows.length > limit) return { blocked: true, inspectionComplete: false };
   let earliest = Infinity;
+  const waitsByIssue = new Map(waits.map(wait => [wait.issueId, wait]));
   for (const row of rows) {
+    const wait = waitsByIssue.get(row.id);
+    const reviewRetry = wait?.kind === "current_review_retry" ? wait : undefined;
+    const retry = wait?.kind === "scheduled_retry" ? wait : reviewRetry;
+    const quota = wait?.kind === "provider_quota" ? wait : undefined;
     const policy = record(row.execution_policy);
     const state = record(row.execution_state);
+    let currentReviewRetry = false;
+    if (reviewRetry) {
+      const execution = parseIssueExecutionState(row.execution_state);
+      const parsedPolicy = issueExecutionPolicySchema.safeParse(row.execution_policy);
+      const stage = parsedPolicy.success ? parsedPolicy.data.stages.find(stage => stage.id === reviewRetry.stageId) : undefined;
+      currentReviewRetry = row.status === "in_review" && !row.assignee_user_id
+        && execution?.status === "pending" && execution.currentStageType === "review"
+        && execution.currentStageId === reviewRetry.stageId
+        && execution.currentParticipant?.type === "agent" && execution.currentParticipant.agentId === reviewRetry.reviewerAgentId
+        && stage?.type === "review" && stage.participants.some(participant =>
+          participant.type === "agent" && participant.agentId === reviewRetry.reviewerAgentId)
+        && parsedPolicy.success && execution.currentStageIndex === parsedPolicy.data.stages.findIndex(stage => stage.id === reviewRetry.stageId);
+      if (!currentReviewRetry) return { blocked: true };
+    }
     if (!statuses.has(row.status) || row.company_status !== "active" || row.scoped !== true
       || (row.assignee_agent_id && !agentStatuses.has(row.agent_status ?? ""))
-      || row.unsafe_dependencies !== false || row.checkout_run_id || row.execution_run_id
-      || row.conversation_agent_id || row.monitor_wake_requested_at
-      || (row.execution_state !== null && state?.status !== "idle")
+      || row.unsafe_dependencies !== false
+      || (row.checkout_run_id && row.checkout_run_id !== retry?.runId)
+      || (row.execution_run_id && row.execution_run_id !== retry?.runId)
+      || (row.conversation_agent_id && row.passive_conversation !== true) || row.monitor_wake_requested_at
+      || (row.execution_state !== null && state?.status !== "idle"
+        && !currentReviewRetry && !(quota?.reviewer && row.status === "in_review" && state?.status === "pending"))
       || (row.execution_policy !== null && !policy)) return { blocked: true };
     if (row.status === "blocked" && row.dependency_ready) return { blocked: true };
     if (row.monitor_next_check_at !== null) {
@@ -63,7 +100,8 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
         || !["in_progress", "in_review"].includes(row.status)
         || !["idle", "active", "error"].includes(row.agent_status ?? "")
         || !Number.isFinite(at) || at <= now || Date.parse(monitor.data.nextCheckAt) !== at
-        || monitor.data.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+        || (monitor.data.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+          && (!quota || monitor.data.externalRef !== quota.sourceRunId))
         || !Number.isSafeInteger(row.monitor_attempt_count) || row.monitor_attempt_count < 0
         || (monitor.data.timeoutAt && Date.parse(monitor.data.timeoutAt) <= at)
         || (monitor.data.maxAttempts !== null && row.monitor_attempt_count >= monitor.data.maxAttempts)) return { blocked: true };
@@ -72,21 +110,28 @@ export async function readIdleIssueSchedule(tx: Pick<Db, "execute">, ownerId: st
     }
     if (policy?.monitor != null) return { blocked: true };
     const unblock = record(row.unblock_descriptor);
-    const passive = row.status === "backlog"
+    const retryWait = currentReviewRetry || wait?.kind === "scheduled_retry" && ["todo", "in_progress"].includes(row.status) && Boolean(row.assignee_agent_id) && !row.assignee_user_id;
+    const passive = retryWait || row.passive_conversation === true || row.status === "backlog"
       || (row.status === "todo" && !row.assignee_agent_id)
       || (row.status === "todo" && row.assignee_agent_id && row.agent_status === "idle" && row.untouched_onboarding === true)
-      || (row.status === "blocked" && (row.unblock_descriptor === null || unblock?.owner === "board"))
+      || (row.status === "blocked" && (row.unblock_descriptor === null || unblock?.owner === "board"
+        || row.unblock_request_finished === true))
+      || (["in_progress", "in_review"].includes(row.status) && row.response_driven_wait === true)
       || Boolean(row.assignee_user_id && !row.assignee_agent_id);
     if (!passive) return { blocked: true };
   }
-  if (!Number.isFinite(earliest)) return { blocked: false };
+  const generation = createHash("sha256").update(JSON.stringify([processGeneration, ownerId, rows])).digest("hex");
+  if (!Number.isFinite(earliest)) return { blocked: false, generation };
   return { blocked: false, scheduledWake: { version: 1, kind: "routines_and_issue_monitors",
-    generation: createHash("sha256").update(JSON.stringify([processGeneration, ownerId, rows])).digest("hex"),
+    generation,
     nextWakeAt: new Date(earliest).toISOString() } };
 }
 
-export function combineIdleSchedules(routine?: ScheduledWake, issue?: ScheduledWake): ScheduledWake | undefined {
-  if (!issue) return routine;
+export function combineIdleSchedules(routine?: ScheduledWake, issue?: ScheduledWake, issueGeneration?: string): ScheduledWake | undefined {
+  // A passive issue can change even when only a routine owns the next alarm.
+  // Bind that waiting-state proof into the routine generation as well.
+  if (!issue) return routine && issueGeneration ? { ...routine,
+    generation: createHash("sha256").update(JSON.stringify([routine, issueGeneration])).digest("hex") } : routine;
   if (!routine) return issue;
   return { version: 1, kind: "routines_and_issue_monitors",
     generation: createHash("sha256").update(JSON.stringify([routine, issue])).digest("hex"),

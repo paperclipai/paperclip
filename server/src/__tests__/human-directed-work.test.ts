@@ -60,7 +60,7 @@ const support = await getEmbeddedPostgresTestSupport();
       companyId: f.companyId, agentId: f.agent.id, runId: current.run.id, agent: f.agent, issue,
     }) };
   }
-  async function resolve(f: Awaited<ReturnType<typeof seed>>, issue: Awaited<ReturnType<typeof task>>, runId: string) {
+  async function resolve(f: Awaited<ReturnType<typeof seed>>, issue: Parameters<typeof resolveCoreTrustPreset>[0]["issue"], runId: string) {
     return withHumanDirectedWork(db, resolveCoreTrustPreset({ companyId: f.companyId, agent: f.agent, issue }),
       { companyId: f.companyId, agentId: f.agent.id, runId });
   }

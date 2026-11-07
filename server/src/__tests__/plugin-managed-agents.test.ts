@@ -3,10 +3,11 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  resourceLifecycleEvents,
   agentConfigRevisions,
   agentInstructionRevisions,
   agentInstructionHeads,
@@ -366,6 +367,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
         adapterConfig: {},
         instructions: {
           entryFile: "AGENTS.md",
+          files: { "TOOLS.md": "# Stock tools\n" },
           content: [
             "# LLM Wiki Maintainer",
             "",
@@ -415,12 +417,17 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
       expect(history).toHaveLength(0);
       expect(await db.select().from(agentInstructionHeads)
         .where(eq(agentInstructionHeads.agentId, created.agentId!))).toHaveLength(0);
+      const runtimeEvents = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, created.agentId!)));
+      await fs.writeFile(path.join(path.dirname(instructionsFilePath as string), "TOOLS.md"), "custom tools");
+      const runtimeCount = (await runtimeEvents()).length;
       const repeated = await services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" });
       expect(repeated.status).toBe("reset");
+      expect(await runtimeEvents()).toHaveLength(runtimeCount + 2);
+      expect(await fs.readFile(path.join(path.dirname(instructionsFilePath as string), "TOOLS.md"), "utf8")).toBe("# Stock tools\n");
       expect(await db.select().from(agentInstructionRevisions)
         .where(eq(agentInstructionRevisions.agentId, created.agentId!))).toHaveLength(0);
       const audit = await db.select().from(activityLog).where(eq(activityLog.action, "agent.files_updated"));
-      expect(audit).toHaveLength(1);
+      expect(audit).toHaveLength(2);
       expect(audit.every((row) => row.actorType === "plugin" && row.actorId === pluginId)).toBe(true);
       const bundles = agentInstructionsService(db);
       await bundles.writeFile(repeated.agent!, "CUSTOM.md", "# Alternate configured entry\n");

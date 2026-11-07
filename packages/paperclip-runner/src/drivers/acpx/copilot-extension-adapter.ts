@@ -82,7 +82,11 @@ function detailFields(data: Record<string, unknown>): Array<{ name: string; valu
       // Preserve the complete field path for sensitive-key redaction. The
       // normalizer admits only known, typed counters/flags: their numeric token
       // counts are not credentials, so they retain value-only redaction.
-      const safe = typeof value === "string" ? name.split(".").reduce<unknown>((safe, segment) => redactSemanticValue(safe, segment), value) : value;
+      // Flattening must not discard a sensitive ancestor such as credentials.
+      // Apply the shared key rule to each path segment before publishing it.
+      const safe = typeof value === "string"
+        ? name.split(".").reduce<unknown>((entry, key) => redactSemanticValue(entry, key), value)
+        : value;
       details.push({ name: bounded(name, 160), value: bounded(String(safe), 4000) });
     }
   };
