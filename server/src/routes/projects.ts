@@ -52,7 +52,10 @@ import {
   collectProjectExecutionWorkspaceCommandPaths,
   collectProjectWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
-import { assertNoAgentCompletionRequirementSupply } from "./completion-requirement-authz.js";
+import {
+  assertNoAgentCompletionRequirementChange,
+  assertNoAgentCompletionRequirementSupply,
+} from "./completion-requirement-authz.js";
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
@@ -734,9 +737,10 @@ export function projectRoutes(db: Db) {
         req,
         collectProjectWorkspaceCommandPaths(req.body),
       );
-      assertNoAgentCompletionRequirementSupply(
+      assertNoAgentCompletionRequirementChange(
         req,
-        req.body?.defaultCompletionRequirement,
+        req.body,
+        "defaultCompletionRequirement",
         "the workspace default completion requirement",
       );
       await assertNoManagedSandboxWorkspacePath(req.body);
