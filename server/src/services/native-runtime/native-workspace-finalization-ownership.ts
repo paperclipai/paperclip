@@ -51,6 +51,8 @@ type Owner = {
   worker?: WorkspaceWorker;
   /** The platform volume this deployment mounted; it binds a later deployment proof. */
   volumeId?: string;
+  /** Recorded on Railway receipts; false keeps a later deployment proof from applying. */
+  exclusiveVolume?: boolean;
 };
 export type NativeWorkspaceFinalizationWaitReason =
   | "busy"
@@ -113,6 +115,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     processStartedAt: identity.processStartedAt.toISOString(),
     ...(processGroupId ? { processGroupId } : {}), worker: currentWorkspaceWorker(),
     // Record a volume only when this deployment is volume-exclusive by the same rule the proof uses.
+    ...(deployment ? { exclusiveVolume: deployment.exclusiveVolume } : {}),
     ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
   };
   const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
@@ -223,7 +226,8 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
             const replaced = await proveOwnerGone({ kind: "local", scope: "native_workspace_finalization", generation: null,
               host: prior.hostname, processSpace: null, bootId: prior.controllerBootId ?? null, pid: prior.pid,
               processStartedAt: prior.processStartedAt, worker: prior.worker,
-              volumeId: typeof prior.volumeId === "string" ? prior.volumeId : null });
+              volumeId: typeof prior.volumeId === "string" ? prior.volumeId : null,
+              exclusiveVolume: typeof prior.exclusiveVolume === "boolean" ? prior.exclusiveVolume : null });
             if (replaced.verdict === "gone" && replaced.reason === "deployment_replaced")
               deploymentProof = { reason: "deployment_replaced", previousDeploymentId: prior.worker.deploymentId, worker: prior.worker };
             if (!deploymentProof) {

@@ -40,6 +40,8 @@ export type LocalOwnerStamp = {
   worker?: WorkspaceWorker | null;
   /** The platform volume mounted by that deployment, when the stamp recorded one. */
   volumeId?: string | null;
+  /** False when the owner's deployment was not volume-exclusive. Missing on older stamps. */
+  exclusiveVolume?: boolean | null;
 };
 
 export type RemoteOwnerStamp = {
@@ -253,6 +255,7 @@ function deploymentReplaced(stamp: LocalOwnerStamp, current: ProcessProbe["deplo
   if (!stamped || !current?.exclusiveVolume) return false;
   // A stamp that recorded its volume must name this same volume. Older stamps
   // predate the field; the service and environment then name the volume.
+  if (stamp.exclusiveVolume === false) return false;
   if (stamp.volumeId != null && stamp.volumeId !== current.volumeId) return false;
   const worker = current.worker;
   return stamped.provider === worker.provider && stamped.projectId === worker.projectId

@@ -211,6 +211,8 @@ describe("proveOwnerGone: replaced platform deployment", () => {
     expect(await proveOwnerGone(stamp({ worker, volumeId: "vol-a" }), withVolume("vol-a")))
       .toEqual({ verdict: "gone", reason: "deployment_replaced" });
     expect((await proveOwnerGone(stamp({ worker, host: "old", volumeId: "vol-a" }), withVolume("vol-b"))).verdict).toBe("unprovable");
+    // A stamp from a deployment that was not volume-exclusive never qualifies.
+    expect((await proveOwnerGone(stamp({ worker, host: "old", exclusiveVolume: false }), withVolume("vol-a"))).verdict).toBe("unprovable");
   });
 });
 

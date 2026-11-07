@@ -237,6 +237,7 @@ describe("native workspace owner recovery after a restart", () => {
       });
       expect(recorded).toBeDefined();
       expect(recorded!.volumeId).toBeUndefined();
+      expect(recorded!.exclusiveVolume).toBe(false);
       await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, seed.runId));
       currentDeployment({ RAILWAY_VOLUME_ID: "mounted-volume" });
       await withNativeWorkspaceFinalizationOwnership(seed, async () => {
@@ -244,6 +245,18 @@ describe("native workspace owner recovery after a restart", () => {
         recorded = run.runnerProfileJson?.nativeWorkspaceFinalizationOwner as Record<string, unknown>;
       });
       expect(recorded!.volumeId).toBe("mounted-volume");
+      expect(recorded!.exclusiveVolume).toBe(true);
+    });
+
+    it("keeps a receipt from a deployment that was not volume-exclusive fenced", async () => {
+      currentDeployment();
+      const seed = await previousDeploymentOwner();
+      const owner = { ...seed.owner, exclusiveVolume: false };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } })
+        .where(eq(heartbeatRuns.id, seed.runId));
+      const work = vi.fn(async () => "second physical writer");
+      expect(await withNativeWorkspaceFinalizationOwnership(seed, work)).toEqual({ acquired: false, reason: "owner_unverified" });
+      expect(work).not.toHaveBeenCalled();
     });
 
     it("keeps the save fenced when the receipt names a different volume", async () => {
