@@ -14,6 +14,7 @@ import { executeNativeWorkflowTool } from "./native-workflow-tools.js";
 import { assertNoCaseHandoffMutation } from "../heartbeat/case-handoff-lifecycle.js";
 import { handoffCaseSchema } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
+import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
 import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
@@ -162,6 +163,7 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   ...CAPABILITY_CANONICAL_OPERATIONS.filter(tool => IMPLEMENTED_OPERATIONS.has(tool.operationId) && tool.sideEffectClass === "read")
     .map(tool => tool.operationId),
   ...RUNNER_BRIDGE_READ_OPERATIONS,
+  ...SKILL_LIBRARY_SCHEMAS.keys(),
   ...Object.keys(TASK_ATTACHMENT_SCHEMAS),
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
   READ_TOOL_RESULT, "connections_search",
@@ -397,6 +399,7 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
     if (this.binding.taskAttachmentRead) definitions.push(...TASK_ATTACHMENT_DEFINITIONS);
+    definitions.push(...SKILL_LIBRARY_TOOL_DEFINITIONS);
     definitions.push(...runnerBridgeDefinitions({ workspace: !this.binding.firstPartyOnly && !!this.binding.workspaceRoot && this.binding.workspaceBridge === true, skills: !!this.binding.runtimeContext, api: runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled), mode: workMode }));
     const connectionTools = this.binding.firstPartyOnly ? [] : [...RUNTIME_CONNECTION_TOOL_DEFINITIONS,
       ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools)];
@@ -593,6 +596,11 @@ export class PaperclipRunnerToolAuthority {
         await authorize();
         return result;
       });
+    }
+    if (SKILL_LIBRARY_SCHEMAS.has(call.tool)) {
+      if (!this.definitions().some(definition => definition.name === call.tool)) throw forbidden("Tool is not available to this run");
+      return executeSkillLibraryTool({ db: this.db, companyId: this.binding.companyId, tool: call.tool, arguments: call.arguments,
+        authorize: async () => { const current = await this.#boundContext({ tool: call.tool }); return this.#privacyActor(current.run); } });
     }
     if (RUNNER_BRIDGE_SCHEMAS.has(call.tool)) {
       await this.#boundContext({ tool: call.tool });
