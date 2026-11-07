@@ -115,8 +115,85 @@ describe("BreadcrumbContext", () => {
     ).toBe("PAP-3515 • Issues • Anachronist Wiki • Paperclip");
   });
 
+  it("includes a task identifier before its name without changing breadcrumb order", () => {
+    expect(
+      buildDocumentTitle(
+        [{ label: "Issues" }, { label: "First task prompt", identifier: "PAP-1204" }],
+        "Anachronist Wiki",
+      ),
+    ).toBe("PAP-1204 — First task prompt • Issues • Anachronist Wiki • Paperclip");
+    expect(buildDocumentTitle([{ label: "First task prompt", identifier: "  PAP-1204  " }])).toBe(
+      "PAP-1204 — First task prompt • Paperclip",
+    );
+  });
+
+  it("keeps titles unchanged when identifiers are missing or blank", () => {
+    expect(buildDocumentTitle([{ label: "First task prompt" }], "Anachronist Wiki")).toBe(
+      "First task prompt • Anachronist Wiki • Paperclip",
+    );
+    expect(buildDocumentTitle([{ label: "First task prompt", identifier: "   " }])).toBe(
+      "First task prompt • Paperclip",
+    );
+  });
+
+  it("does not repeat an identifier that is already the label", () => {
+    expect(buildDocumentTitle([{ label: "PAP-1204", identifier: "PAP-1204" }])).toBe(
+      "PAP-1204 • Paperclip",
+    );
+    expect(buildDocumentTitle([{ label: "PAP-1204", identifier: "  PAP-1204  " }])).toBe(
+      "PAP-1204 • Paperclip",
+    );
+  });
+
   it("omits blank company names from page titles", () => {
     expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe("Inbox • Paperclip");
     expect(buildDocumentTitle([], null)).toBe("Paperclip");
+  });
+
+  it("updates the document title when tasks and identifiers change", () => {
+    let updateBreadcrumbs: ReturnType<typeof useBreadcrumbs>["setBreadcrumbs"] | null = null;
+
+    function TestConsumer() {
+      updateBreadcrumbs = useBreadcrumbs().setBreadcrumbs;
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <BreadcrumbProvider companyName="Anachronist Wiki">
+          <TestConsumer />
+        </BreadcrumbProvider>,
+      );
+    });
+    expect(document.title).toBe("Anachronist Wiki • Paperclip");
+
+    act(() => {
+      updateBreadcrumbs?.([{ label: "First task prompt", identifier: "PAP-1204" }]);
+    });
+    expect(document.title).toBe("PAP-1204 — First task prompt • Anachronist Wiki • Paperclip");
+
+    act(() => {
+      updateBreadcrumbs?.([{ label: "First task prompt", identifier: "PAP-1205" }]);
+    });
+    expect(document.title).toBe("PAP-1205 — First task prompt • Anachronist Wiki • Paperclip");
+
+    act(() => {
+      updateBreadcrumbs?.([{ label: "Second task prompt", identifier: "PAP-1206" }]);
+    });
+    expect(document.title).toBe("PAP-1206 — Second task prompt • Anachronist Wiki • Paperclip");
+
+    act(() => {
+      root.render(
+        <BreadcrumbProvider companyName="Another Company">
+          <TestConsumer />
+        </BreadcrumbProvider>,
+      );
+    });
+    expect(document.title).toBe("PAP-1206 — Second task prompt • Another Company • Paperclip");
+
+    act(() => {
+      updateBreadcrumbs?.([]);
+    });
+    expect(document.title).toBe("Another Company • Paperclip");
   });
 });
