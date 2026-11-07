@@ -1767,8 +1767,13 @@ A native run can accept its result and then lose its server to a hard kill
 before finalization. Its result stays leased to the controller of the earlier
 boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
-different boot and its recorded controller process has exited or its PID now
-names another process. Only the executor's lease carries that controller
+different boot in the same known kernel and PID namespace, and its recorded
+controller process has exited or its PID now names another process. The
+executor saves that namespace with its claim. Linux uses its boot UUID and PID
+namespace; macOS uses its kernel boot-session UUID. An unreadable or unsupported
+identity, a different namespace, or an older claim without this proof keeps the
+original lease expiry and does not probe the recorded PID. Only the executor's
+lease carries that controller
 identity; a finalizer or cleanup lease is never released this way and expires
 on its own short lease. The stored result is then
 finalized without another

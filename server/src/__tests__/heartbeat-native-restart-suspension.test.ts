@@ -128,8 +128,12 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     // saved when it reaches the provider session.
     const savedAttempts: number[] = [];
     const reachedProvider = async () => {
-      const [owner] = await f.db.select({ attempt: nativeRunFinalizations.attempt }).from(nativeRunFinalizations)
+      const [owner] = await f.db.select({ attempt: nativeRunFinalizations.attempt,
+        controllerHostHash: nativeRunFinalizations.controllerHostHash }).from(nativeRunFinalizations)
         .where(eq(nativeRunFinalizations.runId, f.runId));
+      const actualProcess = await controllerProcess.currentControllerProcess();
+      expect(actualProcess.hostHash).not.toBe("unknown");
+      expect(owner.controllerHostHash).toBe(actualProcess.hostHash);
       savedAttempts.push(owner.attempt);
       throw new Error("stop at provider dispatch");
     };
