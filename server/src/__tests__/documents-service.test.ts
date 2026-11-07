@@ -186,6 +186,73 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     });
   });
 
+  it("rejects the loser of concurrent updates from the same base revision with a revision conflict", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const current = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+
+    const results = await Promise.allSettled(
+      ["# Writer A", "# Writer B", "# Writer C"].map((body) =>
+        svc.upsertIssueDocument({
+          issueId,
+          key: "plan",
+          title: "Plan",
+          format: "markdown",
+          body,
+          baseRevisionId: current.latestRevisionId,
+        }),
+      ),
+    );
+
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(2);
+    const winner = fulfilled[0]!.value;
+    for (const result of rejected) {
+      expect(result.reason).toMatchObject({
+        status: 409,
+        message: "Document was updated by someone else",
+        details: { currentRevisionId: winner.document.latestRevisionId },
+      });
+    }
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: winner.document.body,
+      latestRevisionId: winner.document.latestRevisionId,
+      latestRevisionNumber: current.latestRevisionNumber + 1,
+    });
+  });
+
+  it("applies concurrent restores of the same document one after another", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+    const revised = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Revised plan",
+      baseRevisionId: original.latestRevisionId,
+    });
+
+    const results = await Promise.allSettled(
+      [0, 1, 2].map(() =>
+        svc.restoreIssueDocumentRevision({
+          issueId,
+          key: "plan",
+          revisionId: original.latestRevisionId!,
+        }),
+      ),
+    );
+
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+    const revisions = await svc.listIssueDocumentRevisions(issueId, "plan");
+    expect(revisions).toHaveLength(revised.document.latestRevisionNumber + 3);
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: original.body,
+      latestRevisionNumber: revised.document.latestRevisionNumber + 3,
+    });
+  });
+
   it("locks and unlocks issue documents", async () => {
     const { issueId } = await createIssueWithDocuments();
 
