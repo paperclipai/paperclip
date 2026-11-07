@@ -75,7 +75,9 @@ when history is absent. It ends at Core commit callback. `anchor` names the star
 `comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
 zero, or negative when a wake request precedes the run trace. `eventKind` is
 `agentMessage` or `reasoning`. The wake request time is read after the first text,
-so the measurement adds no wait before `turn.start`. It includes preparation and startup, but excludes browser
+in detached diagnostic work bounded to 2 s, so the measurement adds no wait before
+`turn.start` and never delays event delivery. The span can appear after later
+run-log rows; the trace settles it before `task.provider_session.measured`. It includes preparation and startup, but excludes browser
 delivery/rendering. This measures text availability, not an exact model token.
 Empty text, item starts, tools, usage, result proposals, and duplicate replay do
 not qualify. No deliverable text means no timing sample. A recovered dispatch can

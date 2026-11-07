@@ -545,7 +545,28 @@ export function createNativeRunTrace(input: {
     }
   };
 
+  /**
+   * Diagnostic work that must not block the caller (for example a read that
+   * anchors a span). It runs detached; `finish` settles it before the root
+   * span closes. The work must bound its own waits.
+   */
+  const pendingDiagnostics = new Set<Promise<void>>();
+  const defer = (work: () => Promise<void>): void => {
+    if (ended) return;
+    const pending: Promise<void> = Promise.resolve()
+      .then(work)
+      .catch(() => {
+        // Diagnostics cannot change runner control flow.
+      })
+      .finally(() => {
+        pendingDiagnostics.delete(pending);
+      });
+    pendingDiagnostics.add(pending);
+  };
+
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
+    if (ended) return;
+    await Promise.all([...pendingDiagnostics]);
     if (ended) return;
     ended = true;
     const endedAtMs = Date.now();
@@ -577,6 +598,7 @@ export function createNativeRunTrace(input: {
     run,
     record,
     measure,
+    defer,
     finish,
   };
 }

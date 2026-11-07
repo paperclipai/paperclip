@@ -558,3 +558,41 @@ describe("time to first token anchor", () => {
     expect(span?.payload).toMatchObject({ durationMs: 3_000, startOffsetMs: -1_000, anchor: "wake_request", eventKind: "agentMessage" });
   });
 });
+
+describe("deferred diagnostics", () => {
+  it("never blocks the caller and settles before the trace finishes", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({
+      runId: "deferred-run", startedAtMs: 1_000,
+      traceContext: createRecordingTraceContext().traceContext,
+      onEvent: async (event) => { events.push(event); },
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    trace.defer(async () => {
+      await gate;
+      await trace.record({ name: "task.time_to_first_token", parentName: "task.provider_session", startedAtMs: 1_000, endedAtMs: 2_000 });
+    });
+    // Later work keeps flowing while the deferred read is pending.
+    await trace.record({ name: "response.first_nonempty_text", startedAtMs: 2_000, endedAtMs: 2_000 });
+    const span = (name: string) => events.some((event) => (event.payload as Record<string, unknown>)?.span === name);
+    expect(span("response.first_nonempty_text")).toBe(true);
+    expect(span("task.time_to_first_token")).toBe(false);
+    const finished = trace.finish("ok");
+    release();
+    await finished;
+    const names = events.map((event) => (event.payload as Record<string, unknown>)?.span);
+    expect(names.indexOf("task.time_to_first_token")).toBeGreaterThan(-1);
+    expect(names.indexOf("task.time_to_first_token")).toBeLessThan(names.indexOf("task.provider_session.measured"));
+  });
+
+  it("ignores a failed deferred diagnostic and work deferred after finish", async () => {
+    const trace = createNativeRunTrace({ runId: "deferred-fail", traceContext: createRecordingTraceContext().traceContext });
+    trace.defer(async () => { throw new Error("diagnostic failed"); });
+    await expect(trace.finish("ok")).resolves.toBeUndefined();
+    const late = vi.fn(async () => {});
+    trace.defer(late);
+    await Promise.resolve();
+    expect(late).not.toHaveBeenCalled();
+  });
+});

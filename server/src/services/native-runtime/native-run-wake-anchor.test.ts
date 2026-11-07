@@ -21,6 +21,13 @@ describe("readNativeRunWakeRequestedAtMs", () => {
     await expect(readNativeRunWakeRequestedAtMs(fakeDb(async () => []), "run")).resolves.toBeNull();
   });
 
+  it("returns null when the read stays pending past the timeout", async () => {
+    const pending = new Promise<unknown[]>(() => {});
+    const startedAt = Date.now();
+    await expect(readNativeRunWakeRequestedAtMs(fakeDb(() => pending), "run", 20)).resolves.toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
   it("never throws: a read failure only drops the diagnostic anchor", async () => {
     await expect(readNativeRunWakeRequestedAtMs(fakeDb(async () => { throw new Error("db down"); }), "run")).resolves.toBeNull();
   });
