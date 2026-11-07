@@ -155,7 +155,7 @@ describe.skipIf(!support.supported)("covered historical prepared-source preserva
     return run;
   }
 
-  async function coveredFixture() {
+  async function coveredFixture(additionalSource = false) {
     const f = await recoveryFixture(), cause = "native_workspace_sync_out_retry_exhausted", contractId = randomUUID(), resultId = randomUUID();
     const reference = { ...f.run.runnerProfileJson!.nativeWorkspaceSync as Record<string, unknown>, resourceDisposition: "keep_running" };
     await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.run.nativeIssueId!, revision: 1,
@@ -180,10 +180,19 @@ describe.skipIf(!support.supported)("covered historical prepared-source preserva
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.run.id, status: "blocked", stage: "verifying_stop", attempt: 4, requestIds: [] },
         previousWorkspaceRecovery: { retained: "original recovery history" },
       } }).where(eq(issueRecoveryActions.id, f.warning.id));
+    const [additionalLease] = additionalSource ? await db.insert(environmentLeases).values({ companyId: f.companyId,
+      issueId: f.run.nativeIssueId!, heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId,
+      environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "released", releasedAt: new Date("2026-01-01T00:00:00Z"), leasePolicy: "retain_on_failure",
+      metadata: { remoteCwd: "/workspaces/additional-retained" } }).returning() : [];
+    if (additionalLease) await db.update(heartbeatRuns).set({ resultJson: { retained: "original failed export",
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1",
+        leaseIds: [f.lease.id, additionalLease.id] } } }).where(eq(heartbeatRuns.id, f.run.id));
     await adoptHistoricalWorkspaceRecoveries(db);
     const [warning] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.warning.id));
-    expect(warning.evidence.historicalWorkspaceSource).toEqual({ schema: "paperclip.historical-workspace-source.v1", runId: f.run.id, leaseIds: [f.lease.id] });
-    return { ...f, ...await gitFixture(f), warning };
+    expect(warning.evidence.historicalWorkspaceSource).toEqual({ schema: "paperclip.historical-workspace-source.v1",
+      runId: f.run.id, leaseIds: [f.lease.id, ...(additionalLease ? [additionalLease.id] : [])].sort() });
+    return { ...f, ...await gitFixture(f), warning, additionalLease };
   }
   async function retained(f: Awaited<ReturnType<typeof coveredFixture>>) {
     return { run: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0],
@@ -223,6 +232,32 @@ describe.skipIf(!support.supported)("covered historical prepared-source preserva
       expect(await git(targetDir, "rev-parse", "HEAD")).toBe(head);
     } finally { await fs.rename(parked, f.cwd); }
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
+  it.each([false, true])("preserves both declared historical allocations and refuses an uncovered third (%s)", async uncovered => {
+    const f = await coveredFixture(true), additional = f.additionalLease!;
+    const [additionalBefore] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, additional.id));
+    const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: (await stored(f.workspaceId))!, runId: f.run.id });
+    expect(source?.recoveryAllocations?.map(item => item.leaseId).sort()).toEqual([f.lease.id, additional.id].sort());
+    expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.run.nativeIssueId!,
+      runId: f.run.id, actionId: f.warning.id })).sources.map(item => item.lease.id).sort()).toEqual([f.lease.id, additional.id].sort());
+    if (uncovered) await db.update(issueRecoveryActions).set({ evidence: { ...f.warning.evidence,
+      historicalWorkspaceSource: { ...(f.warning.evidence.historicalWorkspaceSource as Record<string, unknown>),
+        leaseIds: [f.lease.id, additional.id, randomUUID()] } } }).where(eq(issueRecoveryActions.id, f.warning.id));
+    const before = await retained(f), input = { db, storage, companyId: f.companyId, workspaceId: f.child.id, apply: true };
+    if (uncovered) {
+      expect(await inspectOnlineWorkspaceSource(db, f.child)).toBeNull();
+      await expect(migrateRemoteWorkspace(input)).rejects.toThrow();
+      expect(await db.select().from(workspaceOperations)).toEqual([]);
+      expect(await db.select().from(executionWorkspaceSnapshots)).toEqual([]);
+    } else {
+      const scope = await inspectOnlineWorkspaceSource(db, f.child);
+      expect(scope?.companions.find(item => item.workspaceId === f.workspaceId)?.holds).toHaveLength(1);
+      await expect(migrateRemoteWorkspace(input)).resolves.toMatchObject({ applied: true });
+      expect(readRemoteWorkspaceAuthority((await stored(f.child.id))!.metadata)).not.toBeNull();
+    }
+    expect(await retained(f)).toEqual(before);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, additional.id)))[0]).toEqual(additionalBefore);
+    expect(await fs.readFile(path.join(f.child.cwd!, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
   it.each(["schema", "run", "duplicate", "extra", "foreign", "missing", "malformed", "unknown-field", "provider", "cwd", "owner", "task"])("refuses a historical source with invalid %s binding without changing the hold", async mode => {
     const f = await coveredFixture(), marker = f.warning.evidence.historicalWorkspaceSource as Record<string, unknown>;
