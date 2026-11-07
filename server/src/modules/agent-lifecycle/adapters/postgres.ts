@@ -44,10 +44,10 @@ export async function requestAgentLifecycleRecheckInTransaction(
     || input.expectedVersion !== undefined && agent.lifecycleVersion !== input.expectedVersion
     || input.onlyIfWaiting && !agent.lifecycleOperation?.waitingForSignal) return false;
   await notify();
-  const active = Boolean(agent.lifecycleOperation?.leaseOwner && agent.lifecycleOperation.leaseUntil
-    && Date.parse(agent.lifecycleOperation.leaseUntil) > Date.now());
+  // Expiry permits a replacement claim; only an owner change fences a late park.
+  const owned = Boolean(agent.lifecycleOperation?.leaseOwner);
   await tx.update(agents).set({ lifecycleError: null,
-    lifecycleOperation: active
+    lifecycleOperation: owned
       ? sql`${agents.lifecycleOperation} || '{"recheckRequested":true}'::jsonb`
       : sql`${agents.lifecycleOperation} - 'waitingForSignal' - 'recheckRequested' - 'retryAt'`,
     updatedAt: new Date(),
