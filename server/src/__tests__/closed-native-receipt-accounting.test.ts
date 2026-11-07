@@ -620,6 +620,49 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  async function captureFailed(f: { run: { id: string } }, finishedMinutesAgo: number, extra: Record<string, unknown> = {}) {
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - finishedMinutesAgo * 60_000),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingCaptureFailed: true, accountingReceiptReady: false, ...extra })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+  }
+
+  // A failed usage capture never completes its receipt. It used to be skipped
+  // by accounting and held company admission until the UTC month rolled over.
+  it("settles a capture failure as unpriced at the closure bound and releases held work", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80 });
+    expect(await f.block()).not.toBeNull();
+    expect((await readCostAccountingWork(db, Date.now())).pending).toBe(true);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const run = await f.readRun();
+    expect(run).toMatchObject({ costAccountingPending: false });
+    expect(run.usageJson).toMatchObject({ accountingReceiptUnavailable: true, accountingClosureTimedOut: true });
+    const [charge] = await f.charges();
+    expect(charge).toMatchObject({ inputTokens: 1200, outputTokens: 80 });
+    expect(charge?.costStatus).not.toBe("reported");
+    expect(JSON.stringify(charge?.pricingProvenance)).toContain("usage capture failed");
+    expect(await f.block()).toBeNull();
+  });
+
+  it("waits for the closure bound before settling a capture failure", async () => {
+    const f = await fixture();
+    await captureFailed(f, 1);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+    const next = (await readCostAccountingWork(db, Date.now())).nextRunAt;
+    expect(next).not.toBeNull();
+    expect(next!).toBeGreaterThan(Date.now());
+  });
+
+  it("keeps a settled capture failure under the blocking unpriced-usage policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model" });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
     const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })
