@@ -4,6 +4,7 @@ import {
   buildCompanyUserInlineOptions,
   buildCompanyUserLabelMap,
   buildCompanyUserProfileMap,
+  buildCreatorUserOption,
   buildIssueMentionOptions,
   buildMarkdownMentionOptions,
 } from "./company-members";
@@ -32,6 +33,33 @@ describe("company-members helpers", () => {
 
     expect(labels.get("user-1")).toBe("Taylor");
     expect(labels.get("local-board")).toBe("Board");
+  });
+
+  it("labels creator filter options with the company directory name", () => {
+    const labels = buildCompanyUserLabelMap([
+      activeMember({
+        principalId: "yvjfSqRKhr5uoyqXUl8aShbKCC4a2xCO",
+        user: { id: "yvjfSqRKhr5uoyqXUl8aShbKCC4a2xCO", name: "Taylor", email: "taylor@example.com", image: null },
+      }),
+    ]);
+
+    const option = buildCreatorUserOption("yvjfSqRKhr5uoyqXUl8aShbKCC4a2xCO", "user-9", labels);
+
+    expect(option.label).toBe("Taylor");
+    expect(option.searchText).toContain("Taylor");
+    expect(option.id).toBe("user:yvjfSqRKhr5uoyqXUl8aShbKCC4a2xCO");
+  });
+
+  it("falls back to the id prefix when the creator is outside the directory", () => {
+    const option = buildCreatorUserOption("yvjfSqRKhr5uoyqXUl8aShbKCC4a2xCO", "user-9", new Map());
+
+    expect(option.label).toBe("yvjfS");
+  });
+
+  it("keeps the current user labelled as themselves", () => {
+    const option = buildCreatorUserOption("user-9", "user-9", new Map([["user-9", "Taylor"]]));
+
+    expect(option.label).toBe("You");
   });
 
   it("builds user profiles with labels and avatars", () => {
