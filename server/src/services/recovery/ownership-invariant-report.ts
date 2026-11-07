@@ -83,6 +83,7 @@ const COVERAGE_GAPS: Record<string, string> = {
   I5_work_based_budgets: "Needs the section B outcome records (accepted turn.start) to tell charged from uncharged attempts.",
   I6_generation_fencing: "Runner events carry no generation stamp until section G lands.",
   I8_fast_turns: "Measured per run by the speed-budget check in the run log, not by this pass.",
+  I7_scope: "I7 measures agent-assigned in_progress issues. todo, in_review and blocked issues are not measured yet.",
   wake_coverage: "Writers of workspace runtime services, remote workspace operations, snapshots, restore points, "
     + "git cache intents, provider artifacts and harness backups publish no work signal. Those kinds are read at "
     + "startup and on any other report wake. Phase 2 adds a signal when each kind moves to the shared settle path.",
@@ -152,7 +153,8 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
 
 /** Admission still waits on accounting (inventory finding 3). This mirrors
- * the `waitingRunCount` gate of budget-exposure.ts: a terminal run with
+ * the `waitingRunCount` gate of budget-exposure.ts (late-receipt debt is not
+ * counted here): a terminal run with
  * pending accounting holds its company's new work unless it is a succeeded
  * run with observed cost, or a native run whose coordinator is still
  * recovering. Only companies with an active budget policy have the gate, and
@@ -165,8 +167,16 @@ async function checkAdmissionIndependence(db: Db, now: Date, limit: number): Pro
     where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id} and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
       and ${nativeRunFinalizations.resultId} is null
       and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt}))))`;
+  // A run holds only the policies whose scope and window include it, as in
+  // computeObservedSpends: company, the run's agent, or its ledger project;
+  // a calendar-month policy counts runs finished in the current UTC month.
   const gated = sql`exists (select 1 from ${budgetPolicies} where ${budgetPolicies.companyId} = ${heartbeatRuns.companyId}
-    and ${budgetPolicies.isActive} = true)`;
+    and ${budgetPolicies.isActive} = true
+    and (${budgetPolicies.scopeType} = 'company'
+      or (${budgetPolicies.scopeType} = 'agent' and ${budgetPolicies.scopeId} = ${heartbeatRuns.agentId})
+      or (${budgetPolicies.scopeType} = 'project' and ${usage}->'ledgerScope'->>'projectId' = ${budgetPolicies.scopeId}::text))
+    and (${budgetPolicies.windowKind} <> 'calendar_month_utc'
+      or ${heartbeatRuns.finishedAt} >= (date_trunc('month', ${now.toISOString()}::timestamptz at time zone 'UTC') at time zone 'UTC')))`;
   const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true),
       inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
@@ -212,6 +222,8 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
   const rows = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
+      // A saved monitor deadline is a first-class wait path (SPEC-implementation).
+      or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
         or(eq(heartbeatRuns.issueId, issues.id), eq(heartbeatRuns.nativeIssueId, issues.id))))),

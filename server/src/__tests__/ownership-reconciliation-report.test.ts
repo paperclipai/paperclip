@@ -165,7 +165,7 @@ describe("report-only ownership reconciliation", () => {
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
     expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns",
-      "wake_coverage"]);
+      "I7_scope", "wake_coverage"]);
 
     expect(first.awaitingSecondProof).toBe(1);
     const second = await runOwnershipReconciliationPass(db, { state });
@@ -231,6 +231,24 @@ describe("report-only ownership reconciliation", () => {
     ]);
     expect(await db.select({ entityId: activityLog.entityId }).from(activityLog)
       .where(eq(activityLog.action, OWNERSHIP_INVARIANT_VIOLATION_ACTION))).toEqual([{ entityId: "orphan-1" }]);
+  });
+
+  it("counts admission holds only for policies whose scope includes the run", async () => {
+    await seed();
+    await db.update(budgetPolicies).set({ scopeType: "agent", scopeId: randomUUID() });
+    const other = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(other.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
+    await db.update(budgetPolicies).set({ scopeId: agentId });
+    const own = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(own.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
+      .toEqual([ids.debtRun]);
+  });
+
+  it("treats a saved monitor deadline as a next action", async () => {
+    await db.insert(issues).values({ companyId, title: "Monitored", status: "in_progress", assigneeAgentId: agentId,
+      updatedAt: minutesAgo(30), monitorNextCheckAt: new Date(Date.now() + 60 * 60_000) });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
   });
 
   it("returns the end of the next-action grace window for an issue still inside it", async () => {
