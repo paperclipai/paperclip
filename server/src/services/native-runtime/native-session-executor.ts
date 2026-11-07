@@ -115,7 +115,7 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -137,7 +137,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
@@ -2125,7 +2125,7 @@ function runnerdStateBase(): string {
  * run's runner arguments and no saved runner state belongs to the run: a
  * provider starts only after its runner connects and writes that state.
  */
-export function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): boolean {
+export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): Promise<boolean> {
   let execution: NativeExecutionInput;
   try {
     execution = parseNativeExecutionInput(input.execution);
@@ -2133,13 +2133,7 @@ export function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; exec
     return false;
   }
   if (execution.binding.runId !== input.runId) return false;
-  let processes: string;
-  try {
-    processes = execFileSync("ps", ["-axww", "-o", "command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  } catch {
-    return false;
-  }
-  if (processes.split("\n").some(line => line.includes(`--run-id ${input.runId}`))) return false;
+  if (!(await noLocalRunnerProcessForRun(input.runId))) return false;
   const root = scopedRunnerdStateRoot(execution);
   const candidates = [root];
   const quarantine = resolve(runnerdStateBase(), "quarantine");
@@ -2161,6 +2155,16 @@ export function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; exec
     }
   }
   return true;
+}
+
+/** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
+ * slow process listing proves nothing, so it keeps the caller blocked. */
+async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
+  const listing = await new Promise<string | null>(resolve => {
+    execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? null : stdout));
+  });
+  return listing !== null && !listing.split("\n").some(line => line.includes(`--run-id ${runId}`));
 }
 
 function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
@@ -5609,11 +5613,12 @@ async function migrateRunnerdStateRootForExecution(input: {
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
         (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
-        !existsSync(resolve(scoped, "control-plane", "control-plane-state.json"))) {
+        !existsSync(resolve(scoped, "control-plane", "control-plane-state.json")) &&
+        await noLocalRunnerProcessForRun(input.execution.binding.runId)) {
       // The server was killed between creating the root and the local runner's
-      // first state write. No runner connected, so no provider started and no
-      // command was acknowledged. Keep the partial root for inspection and
-      // start the same-run bootstrap again.
+      // first state write. No runner for the run is alive on this host and none
+      // connected, so no provider started and no command was acknowledged.
+      // Keep the partial root for inspection and start the bootstrap again.
       quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
       return;
     }
@@ -10440,6 +10445,8 @@ async function executePaperclipNativeSessionWithinScope(
                 stream: "system",
                 level: "info",
                 message: "Native execution requested; prior local stop evidence no longer applies.",
+                // Binds a later identity-less stop proof to the host that launched.
+                payload: { hostname: hostname() },
               });
             },
             input: runnerExecution,

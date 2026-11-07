@@ -108,17 +108,18 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
   "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" | "runnerProfileJson">,
   options: { record: boolean } = { record: true }): Promise<boolean> {
   if (run.runtimeMode !== "native" || run.processPid || run.processGroupId) return false;
-  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType }).from(heartbeatRunEvents).where(and(
+  const [latest] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     isNull(heartbeatRunEvents.sourceEventId),
     inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
   )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  if (latest?.eventType !== PROCESS_START_REQUESTED) return false;
+  // Only the host that requested the launch can inspect its process table.
+  if (latest?.eventType !== PROCESS_START_REQUESTED || latest.payload?.hostname !== os.hostname()) return false;
   const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
     .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
   if (leases.some(lease => lease.provider !== "local")) return false;
   const { unidentifiedLocalRunnerProvenAbsent } = await import("./native-runtime/native-session-executor.js");
-  if (!unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput })) return false;
+  if (!await unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput })) return false;
   if (!options.record) return true;
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,

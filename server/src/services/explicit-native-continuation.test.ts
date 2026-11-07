@@ -1121,7 +1121,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       } finally { verify.mockRestore(); }
     });
 
-  it.each(["absent", "live_runner", "saved_state", "dry_run"] as const)(
+  it.each(["absent", "live_runner", "saved_state", "dry_run", "foreign_host", "unbound_launch"] as const)(
     "admits a Retry after a launch whose runner identity was never recorded only when no runner exists (%s)", async kind => {
       // RC-42: the server was killed after requesting the runner launch and
       // before recording its process identity, so there is no PID to verify.
@@ -1144,7 +1144,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         };
         await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, nativeSessionId: null, runnerInstanceId: null,
           errorCode: "adapter_failed", runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.sourceRunId));
-        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType: PROCESS_START_REQUESTED });
+        // Only the launching host can inspect its process table.
+        await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType: PROCESS_START_REQUESTED,
+          ...(kind === "unbound_launch" ? {} : { payload: { hostname: kind === "foreign_host" ? `other-${os.hostname()}` : os.hostname() } }) });
         if (kind === "live_runner") {
           child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", f.sourceRunId], { stdio: "ignore" });
           await once(child, "spawn");
