@@ -267,7 +267,9 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated active agent" }).returning();
     const run = await remoteWriter(f.companyId, agent.id);
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
+    const get = vi.spyOn(storage, "getObject");
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(get).toHaveBeenCalledTimes(1);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
     expect(await stored(f.aliases[1].workspace.id)).toEqual(f.aliases[1].workspace);
