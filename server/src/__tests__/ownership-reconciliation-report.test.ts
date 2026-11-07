@@ -192,6 +192,27 @@ describe("report-only ownership reconciliation", () => {
     });
   });
 
+  it("proves a foreign-boot coordinator gone when its PID-space stamp matches and its PID is dead", async () => {
+    const issueId = randomUUID(); const runId = randomUUID(); const legacyRunId = randomUUID(); const legacyIssueId = randomUUID();
+    await db.insert(issues).values([{ id: issueId, companyId, title: "Dead owner" }, { id: legacyIssueId, companyId, title: "Legacy" }]);
+    await db.insert(heartbeatRuns).values([
+      { id: runId, companyId, agentId, issueId, status: "running", invocationSource: "manual", runtimeMode: "native", nativeIssueId: issueId },
+      { id: legacyRunId, companyId, agentId, issueId: legacyIssueId, status: "running", invocationSource: "manual",
+        runtimeMode: "native", nativeIssueId: legacyIssueId },
+    ]);
+    const claim = { companyId, phase: "observed", leaseOwner: "previous-boot:1:token",
+      leaseExpiresAt: new Date(Date.now() + 60_000), controllerBootId: "previous-boot", controllerPid: 4_194_303,
+      controllerProcessStartedAt: new Date("2026-11-07T09:00:00.000Z"), controllerGeneration: 1 };
+    await db.insert(nativeRunFinalizations).values([
+      { ...claim, runId, issueId, controllerHostHash: currentProcessSpaceHash() },
+      // Written before the PID space was stamped: never provable.
+      { ...claim, runId: legacyRunId, issueId: legacyIssueId, controllerHostHash: null },
+    ]);
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(kindReport(report, "native_executor_claim")).toMatchObject({ inProgress: 2,
+      verdicts: { gone: 1, unprovable: 1 }, reasons: { pid_dead: 1, missing_identity: 1 } });
+  });
+
   it("writes nothing when recording is off", async () => {
     await seed();
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });

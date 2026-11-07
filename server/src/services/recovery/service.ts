@@ -108,6 +108,7 @@ import {
   isPidAlive,
   isProcessGroupAlive,
 } from "../local-service-supervisor.js";
+import { sameProcessSpace } from "../controller-process-identity.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import {
@@ -6180,7 +6181,12 @@ export function recoveryService(
     let processGone = false;
     const hasLiveExecution =
       deps.liveRunExecutions?.has(run.id) ?? runningProcesses.has(run.id);
-    if (!hasLiveExecution) {
+    // A recorded PID is judged only in the PID space that recorded it: a dead
+    // local PID never proves that a process on another host, in another
+    // namespace, or in a sandbox ("remote") is gone. Rows saved before the
+    // space was recorded keep the previous local proof for one release.
+    const processSpaceJudgeable = run.processHostHash == null || sameProcessSpace(run.processHostHash);
+    if (!hasLiveExecution && processSpaceJudgeable) {
       if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
           (typeof pid === "number" && isPidAlive(pid)) ||
