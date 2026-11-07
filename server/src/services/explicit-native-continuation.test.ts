@@ -94,6 +94,32 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       onBlocked: reason => blocked.push(reason) });
     return { result, blocked, reads };
   }
+  it.each([
+    { shape: "refused by the cleanup quarantine before launch", errorCode: "native_session_cleanup_quarantined", launched: false,
+      comment: "local_cleanup", retry: "cleanup_quarantined" },
+    { shape: "quarantined after it requested a launch", errorCode: "native_session_cleanup_quarantined", launched: true,
+      comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "failed for another reason without a process record", errorCode: "adapter_failed", launched: false,
+      comment: "process_identity_missing", retry: "process_identity_missing" },
+  ])("routes input after a run $shape to the gate that can clear it", async ({ errorCode, launched, comment, retry }) => {
+    // s7532/t04: a Retry's run failed at the quarantine fence before it asked
+    // for a runner. Input then waited for a stop record of a process that
+    // never existed ("process_identity_missing", Retry still offered) instead
+    // of the quarantine's own gate, which names the action that clears it.
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ processPid: null, errorCode }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (launched) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "launch requested",
+      payload: { hostname: "another-host" } });
+    const { result, blocked } = await readAdmission(f, false);
+    expect(result).toBeNull();
+    expect(blocked).toEqual([comment]);
+    const retryBlocked: string[] = [];
+    expect(await admitExplicitNativeContinuation({ ...f, db, dryRun: true, reason: "retry_failed_run",
+      failedRunId: f.sourceRunId, onBlocked: reason => retryBlocked.push(reason) })).toBeNull();
+    expect(retryBlocked).toEqual([retry]);
+  });
+
   it("keeps admission and the complete locked session profile while omitting prompt data", async () => {
     const f = await seed();
     const payload = randomBytes(128 * 1024).toString("base64");
@@ -1746,7 +1772,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
     expect(await hasNativeLocalProcessStop(db, randomUUID(), source.id)).toBe(false);
     expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
-    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
+    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString(), targetKind: "local" });
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
     expect(await admit(f, true)).toBeNull();
     expect(await db.transaction(tx => recordNativeLocalProcessStop(tx as unknown as typeof db, source))).toBe(true);

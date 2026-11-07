@@ -483,6 +483,7 @@ class HarnessNativeSession implements NativeSession {
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
     currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
     this.#assertProtocolIntegrity();
     const currentIdentity = this.#input.identity;
@@ -500,6 +501,7 @@ class HarnessNativeSession implements NativeSession {
     try {
       await this.#session.attachRun({ runId: input.identity.runId,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.#assertProtocolIntegrity();
     } catch (error) {

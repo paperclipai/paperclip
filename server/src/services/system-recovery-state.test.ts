@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { exhaustedSystemRecoveryAction } from "./system-recovery.js";
+import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 
 describe("durable system recovery budget", () => {
   it("makes six attempts with exponential delays that survive serialization and exhaustion", () => {
@@ -43,6 +44,25 @@ describe("durable system recovery budget", () => {
       { now: 0, cause: { label: "/home/daytona/secret", code: null, status: null } });
     expect(unsafe.failure).not.toHaveProperty("cause");
   });
+  it("never asks a person to inspect a sandbox, even for text saved by an older release", () => {
+    const manual = /administrator|\bowner\b|board member|inspect the run|environment/i;
+    const exhausted = failSystemRecovery(createSystemRecovery(randomUUID()),
+      new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required"));
+    const copyback = failSystemRecovery(createSystemRecovery(randomUUID()),
+      new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence"));
+    for (const state of [exhausted, { ...copyback, state: "exhausted" as const }])
+      expect(exhaustedSystemRecoveryAction(state)).not.toMatch(manual);
+    const runId = exhausted.sourceRunId;
+    const display = workspaceRecoveryDisplay({ runId, systemRecovery: exhausted, workspaceRecovery: {
+      schema: "paperclip.workspace-recovery.v1", runId, status: "blocked", stage: "verifying_stop", attempt: 1,
+      attemptLimit: 6, requestIds: [], retryable: true,
+      message: "Automatic recovery of saved work stopped after 1 attempts (last failure: allocation_ownership_ambiguous). "
+        + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
+        + "If Retry keeps failing, inspect the run and its environment." } }, runId);
+    expect(display?.message).toContain("Retry to try again");
+    expect(display?.message).not.toMatch(manual);
+  });
+
   it("names the last failure and its cause in the board handoff", () => {
     const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
