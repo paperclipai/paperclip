@@ -76,6 +76,11 @@ pub struct AcpxSidecarEvent {
     pub payload: Value,
 }
 
+pub(crate) struct AcpxTurnStartFailure {
+    pub error: LocalRunnerError,
+    pub resume_required: bool,
+}
+
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
@@ -415,6 +420,37 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<Value, LocalRunnerError> {
+        match self.request_outcome(command, params)? {
+            CommandOutcome::Success(value) => Ok(value),
+            CommandOutcome::Rejected { error, .. } => Err(error),
+        }
+    }
+
+    pub(crate) fn request_turn_start(
+        &mut self,
+        params: Value,
+    ) -> Result<Value, AcpxTurnStartFailure> {
+        match self.request_outcome(GeneratedAcpxSidecarCommand::TurnStart, params) {
+            Ok(CommandOutcome::Success(value)) => Ok(value),
+            Ok(CommandOutcome::Rejected {
+                error,
+                resume_required,
+            }) => Err(AcpxTurnStartFailure {
+                error,
+                resume_required,
+            }),
+            Err(error) => Err(AcpxTurnStartFailure {
+                error,
+                resume_required: false,
+            }),
+        }
+    }
+
+    fn request_outcome(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+    ) -> Result<CommandOutcome, LocalRunnerError> {
         if self.poisoned {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar transport is unavailable after a protocol failure",
@@ -422,8 +458,7 @@ impl AcpxSidecarTransport {
         }
         let result = self.request_inner(command, params);
         match result {
-            Ok(CommandOutcome::Success(value)) => Ok(value),
-            Ok(CommandOutcome::Rejected(error)) => Err(error),
+            Ok(outcome) => Ok(outcome),
             Err(error) => {
                 self.poison();
                 Err(error)
@@ -517,7 +552,7 @@ impl AcpxSidecarTransport {
             });
         match result {
             Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
-            Ok(Some(CommandOutcome::Rejected(_))) => Ok(None),
+            Ok(Some(CommandOutcome::Rejected { .. })) => Ok(None),
             Ok(None) => Ok(None),
             Err(error) => {
                 self.poison();
@@ -623,14 +658,17 @@ impl AcpxSidecarTransport {
                     }
                     let error = response.error.expect("failed response has validated error");
                     let provider_failure = error.provider_failure.clone();
-                    return Ok(Some(CommandOutcome::Rejected(LocalRunnerError::invalid(
+                    let resume_required = command == GeneratedAcpxSidecarCommand::TurnStart
+                        && error.retryable
+                        && error.code == "SESSION_RESUME_REQUIRED";
+                    return Ok(Some(CommandOutcome::Rejected { error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    ).with_provider_failure(provider_failure))));
+                    ).with_provider_failure(provider_failure), resume_required }));
                 }
             }
         }
@@ -823,7 +861,10 @@ impl AcpxSidecarTransport {
 
 enum CommandOutcome {
     Success(Value),
-    Rejected(LocalRunnerError),
+    Rejected {
+        error: LocalRunnerError,
+        resume_required: bool,
+    },
 }
 
 enum ParsedFrame {
@@ -1154,6 +1195,30 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(unix)]
+    fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {
+        let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
+            command: "/bin/sh".into(),
+            args: vec!["-c".to_owned(), "read request; sleep 10".to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(30),
+            shutdown_grace: Duration::from_millis(20),
+        })
+        .unwrap();
+        let failure = transport
+            .request_turn_start(json!({"turnId":"turn-1"}))
+            .unwrap_err();
+        assert!(!failure.resume_required);
+        assert!(failure.error.to_string().contains("timed out"));
+        let reuse = transport
+            .request_turn_start(json!({"turnId":"turn-2"}))
+            .unwrap_err();
+        assert!(!reuse.resume_required);
+        assert!(reuse.error.to_string().contains("unavailable"));
+        transport.shutdown().unwrap();
+    }
+
     #[test]
     fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
         assert!(pi_credential_environment_keys(None).unwrap().is_empty());
