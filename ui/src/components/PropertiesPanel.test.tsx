@@ -230,6 +230,13 @@ describe("PropertiesPanel", () => {
       window.dispatchEvent(new Event("resize"));
       await flushReact();
       expect(aside.style.width).toBe("532px");
+
+      geometry.rowRight = 900;
+      geometry.centerLeft = 700;
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+      expect(aside.style.width).toBe("200px");
+      expect(inner!.style.width).toBe("200px");
     });
 
     it("renders the Paper task-detail rail width with a drag grip and a maximize button", async () => {

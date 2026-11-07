@@ -126,7 +126,8 @@ function measureFittedPaneMax(aside: HTMLElement | null): number | null {
   const rowRight = row.getBoundingClientRect().right;
   const centerLeft = main.getBoundingClientRect().left;
   if (rowRight <= centerLeft) return null;
-  return Math.max(MIN_PANE_WIDTH, Math.floor(rowRight - centerLeft - MIN_CENTER_WIDTH));
+  const available = Math.floor(rowRight - centerLeft);
+  return Math.max(Math.min(MIN_PANE_WIDTH, available), available - MIN_CENTER_WIDTH);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
