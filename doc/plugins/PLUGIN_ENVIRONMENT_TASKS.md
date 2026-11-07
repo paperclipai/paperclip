@@ -117,20 +117,45 @@ warm or source recovery capabilities do not imply support. Older strict Core
 schemas reject this description field, so coordinate advertisement with a
 compatible Core version.
 
-Core's lease-bound task owner exposes capability-gated `release` and `resume`
-methods for both Codex and ACPX. They require `releaseResumeVersion: 1`, warm-task
-support and a selected account, and validate the operation result and exact task
-ID with the SDK parser. These methods are a forwarding facade; Core does not yet
-call them automatically or change its warm-session timeout policy.
+Core uses this pair only for explicitly supported warm tasks with a selected
+account. It releases after the turn's required events, tool results, journal
+writes and cleanup have settled. It keeps the exact session busy until the host
+confirms release and Core records that source. Existing tasks without the
+capability retain their ordinary warm lifecycle.
 
-The caller must serialize settled release against new work and disposal, quiet
-its owned connection's liveness checks and reconnect loop before release, and
-retain the same pending ticket for ambiguous resume retries. Ordinary owner
-rebind must first check the new run's account, credentials and project scope.
-After resume, authenticate the source with the fresh ticket before warm readiness
-and ordinary `run.attach`. An RPC error does not prove that release or resume had
-no effect; it must not trigger reconnect, a replacement ticket or turn replay.
-The facade does not supply this orchestration or enable provider retention.
+Before release, Core stops connection pings and reconnect work while keeping the
+existing receive/ACK path open. A confirmed release closes the route and stops
+its idle polling. An ambiguous release stays with the original run for bounded
+reconciliation. It cannot pass to a new run's task scope. Cancellation or an
+expired reconciliation budget uses ordinary host stop and physical cleanup;
+it does not change an already completed business result.
+
+Resume first checks the new run's account, credential revision and project
+scope. It uses one fresh transient ticket, preserving that exact ticket through
+ambiguous replies. Core authenticates the source before warm readiness, provider
+preparation and ordinary `run.attach`; no new turn can pass that handover.
+Generic RPC errors do not prove refusal or permit a new ticket, reconnect or
+turn replay. A known `unavailable` result still requires ordinary physical
+cleanup. Transparent cold fallback remains a separate qualification requirement.
+
+A normal Core cache timeout detaches only Core's quiet local owner. The host
+keeps its retained resources under its own retention policy. Core's existing
+completed-session record stores only the confirmed source, physical task and a
+digest of the selected account, credential revision and workspace scope. The
+transport returns the exact source after the host's release receipt; Core does
+not infer it from a local checkpoint marker, which may still name an older run.
+An invalid source receipt or failed proof write keeps cleanup under the same
+owner until physical retirement finishes. Later
+cache adoption validates that Core-authored proof before claiming or
+reconnecting. A stale or missing proof never licenses a claim. A changed
+selection remains blocked until guarded retirement/recovery; it does not imply
+that a cold launch is safe. Confirmed claim or physical cleanup clears only the
+matching proof. Raw tickets are never stored in this record.
+
+These Core paths do not advertise the capability or opt ordinary tasks into a
+private host channel. Provider recovery, bounded host retention and deployment
+qualification are still required before activation. Recovery from a Core crash
+between claim and source authentication is not qualified by this integration.
 
 ## Error codes
 
