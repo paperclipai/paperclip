@@ -576,6 +576,35 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  // s7532 run 23dc4e9d (OpenCode Retry): failed at once with
+  // native_session_cleanup_quarantined before any provider start. Its usage
+  // recorder had bound an empty fence map, so the never-started rule did not
+  // apply and the run held company admission for the full closure bound.
+  it("settles a quarantined Retry whose recorder bound an empty fence map at once", async () => {
+    const f = await neverStartedFixture("never_launched");
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined",
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ accountingReceiptSourceId: randomUUID(),
+        accountingReceiptSourceFences: {}, accountingReceiptReady: false })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" })
+      .where(eq(nativeRunFinalizations.runId, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.charges()).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
+  it("does not count an empty fence map as restart evidence for a timed-out closure", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
+    await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingReceiptSourceFences":{}}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
   it("keeps waiting for the bound when the provider process was never verified stopped", async () => {
     const f = await neverStartedFixture("unverified");
     expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
