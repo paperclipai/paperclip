@@ -1,3 +1,4 @@
+import { CONTEXT_COMPACTION_WAKE_REASON, readContextCompactionRequest } from "../context-compaction.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2189,7 +2190,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-      reason === CHAT_COMPLETION_WAKE_REASON,
+      reason === CHAT_COMPLETION_WAKE_REASON ||
+      (reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
+        && opts.manualUserWake === true && opts.requestedByActorType === "user"
+        && Boolean(opts.requestedByActorId) && opts.allowRunCoalescing === false
+        && payload?.intent === CONTEXT_COMPACTION_WAKE_REASON
+        && readNonEmptyString(payload.requestId) !== null
+        && readContextCompactionRequest(enrichedContextSnapshot)?.requestId === payload.requestId),
     );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
 import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -117,7 +119,8 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.budgets.getInvocationBlock).not.toHaveBeenCalled();
   });
 
-  it("does not admit recovery after the conversation settles between precheck and admission", async () => {
+  it.each(["ordinary recovery", "mismatched compaction"] as const)(
+    "does not admit %s after the conversation settles between precheck and admission", async cause => {
     const [user] = await db.insert(authUsers).values({
       id: "queue-conversation-race-user", name: "Conversation owner", email: "queue-race@paperclip.test",
       createdAt: new Date(), updatedAt: new Date(),
@@ -157,10 +160,16 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       await admissionMayContinue;
       return null;
     });
+    const requestId = randomUUID();
+    const compaction = cause === "mismatched compaction";
     const pending = createHeartbeatQueue(db, deps).enqueueWakeup(agent.id, {
-      source: "automation", triggerDetail: "system", reason: "issue.continuation_recovery",
-      requestedByActorType: "system", payload: { issueId: issue.id },
-      contextSnapshot: { issueId: issue.id, retryOfRunId: completed.id, source: "issue.continuation_recovery" },
+      source: compaction ? "on_demand" : "automation", triggerDetail: compaction ? "manual" : "system",
+      reason: compaction ? "context_compaction" : "issue.continuation_recovery",
+      requestedByActorType: compaction ? "user" : "system", requestedByActorId: compaction ? user.id : undefined,
+      ...(compaction ? { manualUserWake: true, allowRunCoalescing: false } : {}),
+      payload: { issueId: issue.id, ...(compaction ? { intent: "context_compaction", requestId: `foreign-${requestId}` } : {}) },
+      contextSnapshot: { issueId: issue.id, retryOfRunId: completed.id, source: "issue.continuation_recovery",
+        ...(compaction ? { contextCompactionRequestId: requestId } : {}) },
     });
     try {
       await atBarrier;
@@ -195,6 +204,98 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
     return { user, company, agent, issue, deps, queue: createHeartbeatQueue(db, deps) };
   }
+
+  async function waitingCompactionFixture() {
+    const f = await waitingConversationFixture();
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })
+      .where(eq(agents.id, f.agent.id)).returning();
+    if (!agent) throw new Error("Missing compaction agent");
+    f.deps.getAgent.mockResolvedValue(agent);
+    const service = contextCompactionService(db, { wakeup: f.queue.enqueueWakeup });
+    return { ...f, agent, service };
+  }
+
+  it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
+    const f = await waitingCompactionFixture();
+    const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ id: accepted.runId, status: "queued", contextSnapshot: {
+      issueId: f.issue.id, contextCompactionRequestId: accepted.requestId, skipIssueComment: true,
+    } });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id)))
+      .toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+      .toMatchObject({ status: "in_review", conversationState: "waiting", assigneeAgentId: f.agent.id });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { actor: "missing actor", userId: "", message: "Manual wake requires an authenticated user" },
+    { actor: "foreign owner", userId: "another-conversation-owner", message: "Only the conversation owner can start a chat run" },
+  ])("refuses waiting-conversation compaction from a $actor", async ({ userId, message }) => {
+    const f = await waitingCompactionFixture();
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId })).rejects.toThrow(message);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing request", "malformed request", "mismatched request"] as const)(
+    "rejects a waiting-conversation compaction envelope with a %s", async kind => {
+      const f = await waitingCompactionFixture();
+      const service = contextCompactionService(db, { wakeup: (agentId, options) => {
+        const contextSnapshot = { ...options.contextSnapshot };
+        const payload = { ...options.payload };
+        if (kind === "missing request") delete contextSnapshot.contextCompactionRequestId;
+        if (kind === "malformed request") payload.requestId = { unexpected: true };
+        if (kind === "mismatched request") payload.requestId = randomUUID();
+        return f.queue.enqueueWakeup(agentId, { ...options, contextSnapshot, payload });
+      } });
+      await expect(service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+        .rejects.toMatchObject({ code: "wake_skipped" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+        .toMatchObject({ status: "in_review", conversationState: "waiting" });
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+    });
+
+  it("does not turn an ordinary waiting-conversation wake into compaction authority", async () => {
+    const f = await waitingCompactionFixture();
+    expect(await f.queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual",
+      reason: "issue.continuation_recovery", requestedByActorType: "user", requestedByActorId: f.user.id,
+      manualUserWake: true, allowRunCoalescing: false, payload: { issueId: f.issue.id },
+      contextSnapshot: { issueId: f.issue.id } })).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps closed tasks ineligible for a compaction request", async () => {
+    const f = await waitingCompactionFixture();
+    const [closed] = await db.insert(issues).values({ companyId: f.company.id, title: "Closed task",
+      status: "done", assigneeAgentId: f.agent.id }).returning();
+    if (!closed) throw new Error("Missing closed task");
+    await expect(f.service.request({ companyId: f.company.id, issue: closed, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "task_closed" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+  });
+
+  it("keeps a busy conversation ineligible for a second compaction run", async () => {
+    const f = await waitingCompactionFixture();
+    const [running] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.issue.id, scopeKind: "issue", status: "running" }).returning();
+    if (!running) throw new Error("Missing active conversation run");
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "agent_busy" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).map(run => run.id))
+      .toEqual([running.id]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
 
   it.each(["comment", "interaction", "ordinary task"] as const)("preserves admission for a current %s", async cause => {
     const f = await waitingConversationFixture();
