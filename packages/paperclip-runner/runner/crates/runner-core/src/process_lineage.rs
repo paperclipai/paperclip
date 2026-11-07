@@ -36,16 +36,26 @@ pub(crate) use paperclip_process_table::ProcessEntry;
 /// One read of the process table. Session IDs are read only on demand.
 pub(crate) trait ProcessTable {
     fn entries(&self) -> &[ProcessEntry];
+    /// Processes that exist but whose details could not be read. On macOS
+    /// these are other users' processes; a provider's tools run as the
+    /// runner's user, so only a recorded member here is a concern.
+    fn unreadable(&self) -> &[i32] {
+        &[]
+    }
     fn session_of(&self, pid: i32) -> Option<i32>;
 }
 
 struct LiveProcessTable {
-    entries: Vec<ProcessEntry>,
+    snapshot: paperclip_process_table::Snapshot,
 }
 
 impl ProcessTable for LiveProcessTable {
     fn entries(&self) -> &[ProcessEntry] {
-        &self.entries
+        &self.snapshot.entries
+    }
+
+    fn unreadable(&self) -> &[i32] {
+        &self.snapshot.unreadable
     }
 
     fn session_of(&self, pid: i32) -> Option<i32> {
@@ -53,6 +63,22 @@ impl ProcessTable for LiveProcessTable {
         rustix::process::getsid(Some(pid))
             .ok()
             .map(|sid| sid.as_raw_nonzero().get())
+    }
+}
+
+/// The lineage as one table read saw it.
+#[derive(Debug, Default)]
+pub(crate) struct Observation {
+    /// Live members, with the identity that read reported.
+    pub live: Vec<ProcessEntry>,
+    /// Members that still exist but could not be read. Their exit is not
+    /// proven, so teardown cannot succeed while any remain.
+    pub unresolved: Vec<i32>,
+}
+
+impl Observation {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.live.is_empty() && self.unresolved.is_empty()
     }
 }
 
@@ -76,9 +102,12 @@ impl LineageState {
     }
 
     /// Updates membership from one table read and returns the live members.
-    pub(crate) fn observe(&mut self, table: &dyn ProcessTable) -> Vec<ProcessEntry> {
+    /// Callers must apply reads in the order they were taken; an older read
+    /// would forget members that a newer one recorded.
+    pub(crate) fn observe(&mut self, table: &dyn ProcessTable) -> Observation {
         let entries = table.entries();
         let by_pid: HashMap<i32, &ProcessEntry> = entries.iter().map(|e| (e.pid, e)).collect();
+        let unreadable: HashSet<i32> = table.unreadable().iter().copied().collect();
 
         // Resolve the root's start time on first sight. A root that is gone
         // contributes nothing further; its recorded lineage still does.
@@ -98,11 +127,11 @@ impl LineageState {
         // Forget members that exited, and groups or sessions whose leader PID
         // now names a different process. A group or session ID cannot be
         // reused while any process is still in it, so a new process with the
-        // leader's PID means the recorded one is gone.
-        self.members.retain(|pid, started| {
-            by_pid
-                .get(pid)
-                .is_some_and(|e| e.started == *started && !e.zombie)
+        // leader's PID means the recorded one is gone. A member that could
+        // not be read is kept: its exit is not established.
+        self.members.retain(|pid, started| match by_pid.get(pid) {
+            Some(e) => e.started == *started && !e.zombie,
+            None => unreadable.contains(pid),
         });
         self.groups
             .retain(|id, started| by_pid.get(id).is_none_or(|e| e.started == *started));
@@ -166,17 +195,36 @@ impl LineageState {
             }
         }
 
-        entries
-            .iter()
-            .filter(|e| !e.zombie && self.members.get(&e.pid) == Some(&e.started))
+        let mut unresolved: Vec<i32> = self
+            .members
+            .keys()
             .copied()
-            .collect()
+            .filter(|pid| !by_pid.contains_key(pid))
+            .collect();
+        unresolved.sort_unstable();
+        Observation {
+            live: entries
+                .iter()
+                .filter(|e| !e.zombie && self.members.get(&e.pid) == Some(&e.started))
+                .copied()
+                .collect(),
+            unresolved,
+        }
     }
 }
 
-pub(crate) fn read_process_table() -> Option<Box<dyn ProcessTable>> {
-    paperclip_process_table::list()
-        .map(|entries| Box::new(LiveProcessTable { entries }) as Box<dyn ProcessTable>)
+fn read_process_table() -> Option<LiveProcessTable> {
+    paperclip_process_table::list().map(|snapshot| LiveProcessTable { snapshot })
+}
+
+/// Reads the table while holding the state, so reads are applied in the
+/// order they were taken. `None` when the table could not be read.
+fn observe_now(state: &Mutex<LineageState>) -> Option<Observation> {
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let table = read_process_table()?;
+    Some(state.observe(&table))
 }
 
 /// Records a supervised process's lineage from spawn until it is reaped.
@@ -187,8 +235,11 @@ pub(crate) struct LineageTracker {
 }
 
 impl LineageTracker {
-    pub(crate) fn start(root_pid: u32) -> Option<Self> {
-        let root_pid = i32::try_from(root_pid).ok()?;
+    /// Starts recording. Fails when the sampler cannot run, so a caller never
+    /// supervises a process whose tools it could not stop.
+    pub(crate) fn start(root_pid: u32) -> Result<Self, String> {
+        let root_pid = i32::try_from(root_pid)
+            .map_err(|_| format!("process ID {root_pid} is out of range"))?;
         let state = Arc::new(Mutex::new(LineageState::new(root_pid)));
         let stop = Arc::new(AtomicBool::new(false));
         let sampler_state = Arc::clone(&state);
@@ -197,17 +248,12 @@ impl LineageTracker {
             .name("process-lineage".to_owned())
             .spawn(move || {
                 while !sampler_stop.load(Ordering::Acquire) {
-                    if let Some(table) = read_process_table() {
-                        sampler_state
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .observe(table.as_ref());
-                    }
+                    let _ = observe_now(&sampler_state);
                     thread::park_timeout(SAMPLE_INTERVAL);
                 }
             })
-            .ok()?;
-        Some(Self {
+            .map_err(|error| format!("the process lineage sampler could not start: {error}"))?;
+        Ok(Self {
             state,
             stop,
             sampler: Some(sampler),
@@ -216,12 +262,7 @@ impl LineageTracker {
 
     /// Reads the table once now, so lineage visible at this moment is kept.
     pub(crate) fn sample(&self) {
-        if let Some(table) = read_process_table() {
-            self.state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .observe(table.as_ref());
-        }
+        let _ = observe_now(&self.state);
     }
 
     /// Stops every live process in the lineage and proves it is gone.
@@ -236,30 +277,34 @@ impl LineageTracker {
         let mut terminated: HashSet<(i32, u64)> = HashSet::new();
         loop {
             let elapsed = started.elapsed();
-            let Some(table) = read_process_table() else {
+            let Some(observation) = observe_now(&self.state) else {
                 if elapsed >= deadline {
                     return Err("the process table could not be read".to_owned());
                 }
                 thread::sleep(Duration::from_millis(10));
                 continue;
             };
-            let live = self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .observe(table.as_ref());
-            if live.is_empty() {
+            if observation.is_empty() {
                 return Ok(());
             }
             if elapsed >= deadline {
-                let pids = live
+                let alive = observation
+                    .live
                     .iter()
                     .map(|entry| entry.pid.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                return Err(format!("still alive: {pids}"));
+                let unresolved = observation
+                    .unresolved
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                return Err(format!(
+                    "still alive: [{alive}]; unreadable: [{unresolved}]"
+                ));
             }
-            for entry in &live {
+            for entry in &observation.live {
                 let first_signal = terminated.insert((entry.pid, entry.started));
                 if elapsed >= grace {
                     signal_member(entry, rustix::process::Signal::KILL);
@@ -290,7 +335,7 @@ impl Drop for LineageTracker {
 /// process. The re-check and the signal are not atomic, but a PID is not
 /// reused within the few microseconds between them in practice.
 fn signal_member(entry: &ProcessEntry, signal: rustix::process::Signal) {
-    let Some(current) = paperclip_process_table::read(entry.pid) else {
+    let Some(current) = paperclip_process_table::read(entry.pid).entry() else {
         return;
     };
     if current.started != entry.started || current.zombie {
@@ -307,12 +352,16 @@ mod tests {
 
     struct FixedTable {
         entries: Vec<ProcessEntry>,
+        unreadable: Vec<i32>,
         sessions: HashMap<i32, i32>,
     }
 
     impl ProcessTable for FixedTable {
         fn entries(&self) -> &[ProcessEntry] {
             &self.entries
+        }
+        fn unreadable(&self) -> &[i32] {
+            &self.unreadable
         }
         fn session_of(&self, pid: i32) -> Option<i32> {
             self.sessions.get(&pid).copied()
@@ -331,8 +380,15 @@ mod tests {
 
     fn table(entries: Vec<(ProcessEntry, i32)>) -> FixedTable {
         FixedTable {
+            unreadable: Vec::new(),
             sessions: entries.iter().map(|(e, sid)| (e.pid, *sid)).collect(),
             entries: entries.into_iter().map(|(e, _)| e).collect(),
+        }
+    }
+
+    impl LineageState {
+        fn observe_live(&mut self, table: &FixedTable) -> Vec<ProcessEntry> {
+            self.observe(table).live
         }
     }
 
@@ -355,7 +411,7 @@ mod tests {
             (entry(200, 100, 200, 20), 200),
             (entry(201, 200, 200, 21), 200),
         ]);
-        assert_eq!(pids(&state.observe(&before)), vec![100, 200, 201]);
+        assert_eq!(pids(&state.observe_live(&before)), vec![100, 200, 201]);
 
         let after = table(vec![
             (entry(1, 0, 1, 1), 1),
@@ -364,7 +420,7 @@ mod tests {
             (entry(201, 1, 200, 21), 200),
             (entry(202, 201, 200, 30), 200),
         ]);
-        assert_eq!(pids(&state.observe(&after)), vec![100, 201, 202]);
+        assert_eq!(pids(&state.observe_live(&after)), vec![100, 201, 202]);
     }
 
     #[test]
@@ -380,14 +436,14 @@ mod tests {
             (entry(100, 10, 100, 10), 1),
             (entry(300, 1, 300, 25), 200),
         ]);
-        assert_eq!(pids(&state.observe(&after)), vec![100, 300]);
+        assert_eq!(pids(&state.observe_live(&after)), vec![100, 300]);
     }
 
     #[test]
     fn never_claims_processes_through_the_supervisors_own_session_or_group() {
         let mut state = LineageState::new(100);
         // 50 shares the supervisor's session and group but is not a descendant.
-        let observed = state.observe(&table(vec![
+        let observed = state.observe_live(&table(vec![
             (entry(10, 1, 10, 5), 1),
             (entry(50, 1, 10, 6), 1),
             (entry(100, 10, 100, 10), 1),
@@ -413,7 +469,7 @@ mod tests {
             (entry(201, 200, 200, 91), 200),
             (entry(210, 1, 200, 15), 200),
         ]);
-        assert_eq!(pids(&state.observe(&reused)), vec![100]);
+        assert_eq!(pids(&state.observe_live(&reused)), vec![100]);
     }
 
     #[test]
@@ -432,6 +488,24 @@ mod tests {
             (entry(100, 10, 100, 10), 1),
             (entry(201, 1, 200, 21), 200),
         ]);
-        assert_eq!(pids(&state.observe(&after)), vec![100, 201]);
+        assert_eq!(pids(&state.observe_live(&after)), vec![100, 201]);
+    }
+
+    #[test]
+    fn keeps_an_unreadable_member_unresolved_until_it_is_gone() {
+        let mut state = LineageState::new(100);
+        state.observe(&table(vec![
+            (entry(100, 10, 100, 10), 1),
+            (entry(200, 100, 200, 20), 200),
+        ]));
+        let mut unreadable = table(vec![(entry(100, 10, 100, 10), 1)]);
+        unreadable.unreadable = vec![200];
+        let observation = state.observe(&unreadable);
+        assert_eq!(pids(&observation.live), vec![100]);
+        assert_eq!(observation.unresolved, vec![200]);
+        assert!(!observation.is_empty());
+
+        let gone = state.observe(&table(vec![(entry(100, 10, 100, 10), 1)]));
+        assert!(gone.unresolved.is_empty());
     }
 }

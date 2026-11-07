@@ -18,23 +18,59 @@ pub struct ProcessEntry {
     pub zombie: bool,
 }
 
-/// Lists every process the caller can inspect. `None` when the table cannot
-/// be read at all, or on an unsupported platform.
-pub fn list() -> Option<Vec<ProcessEntry>> {
-    platform::list()
+/// One read of the whole table.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub entries: Vec<ProcessEntry>,
+    /// Listed processes that still exist but whose details could not be
+    /// read. A caller must not treat them as exited.
+    pub unreadable: Vec<i32>,
 }
 
-/// Reads one process. `None` when it does not exist or cannot be inspected.
-pub fn read(pid: i32) -> Option<ProcessEntry> {
+/// The result of reading one process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Read {
+    Present(ProcessEntry),
+    /// The process does not exist.
+    Gone,
+    /// The process may exist, but its details could not be read.
+    Unreadable,
+}
+
+impl Read {
+    pub fn entry(self) -> Option<ProcessEntry> {
+        match self {
+            Self::Present(entry) => Some(entry),
+            Self::Gone | Self::Unreadable => None,
+        }
+    }
+}
+
+/// Lists every process. `None` when the table cannot be read at all, or on
+/// an unsupported platform.
+pub fn list() -> Option<Snapshot> {
+    let mut snapshot = Snapshot::default();
+    for pid in platform::pids()? {
+        match read(pid) {
+            Read::Present(entry) => snapshot.entries.push(entry),
+            Read::Gone => {}
+            Read::Unreadable => snapshot.unreadable.push(pid),
+        }
+    }
+    Some(snapshot)
+}
+
+/// Reads one process.
+pub fn read(pid: i32) -> Read {
     if pid <= 0 {
-        return None;
+        return Read::Gone;
     }
     platform::read(pid)
 }
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::ProcessEntry;
+    use super::{ProcessEntry, Read};
     use std::mem::{size_of, MaybeUninit};
 
     /// `SZOMB` from <sys/proc.h>.
@@ -42,7 +78,7 @@ mod platform {
     /// Room for processes started between counting and listing.
     const LIST_HEADROOM: usize = 256;
 
-    pub(super) fn list() -> Option<Vec<ProcessEntry>> {
+    pub(super) fn pids() -> Option<Vec<i32>> {
         // SAFETY: a null buffer of size zero asks only for the PID count.
         let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
         let capacity = usize::try_from(count).ok()?.checked_add(LIST_HEADROOM)?;
@@ -55,12 +91,14 @@ mod platform {
             return None;
         }
         pids.truncate(listed.min(capacity));
-        Some(pids.into_iter().filter_map(super::read).collect())
+        Some(pids.into_iter().filter(|pid| *pid > 0).collect())
     }
 
-    pub(super) fn read(pid: i32) -> Option<ProcessEntry> {
+    pub(super) fn read(pid: i32) -> Read {
         let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
-        let size = i32::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
+        let Ok(size) = i32::try_from(size_of::<libc::proc_bsdinfo>()) else {
+            return Read::Unreadable;
+        };
         // SAFETY: `info` is a zeroed `proc_bsdinfo` of exactly `size` bytes.
         let read = unsafe {
             libc::proc_pidinfo(
@@ -72,15 +110,26 @@ mod platform {
             )
         };
         if read != size {
-            return None;
+            // A short read with ESRCH means the process is gone. Anything
+            // else leaves it unresolved.
+            let error = std::io::Error::last_os_error();
+            return if read <= 0 && error.raw_os_error() == Some(libc::ESRCH) {
+                Read::Gone
+            } else {
+                Read::Unreadable
+            };
         }
         // SAFETY: the kernel filled all `size` bytes, and every field is a
         // plain integer or byte array for which any bit pattern is valid.
         let info = unsafe { info.assume_init() };
-        Some(ProcessEntry {
+        let (Ok(ppid), Ok(pgid)) = (i32::try_from(info.pbi_ppid), i32::try_from(info.pbi_pgid))
+        else {
+            return Read::Unreadable;
+        };
+        Read::Present(ProcessEntry {
             pid,
-            ppid: i32::try_from(info.pbi_ppid).ok()?,
-            pgid: i32::try_from(info.pbi_pgid).ok()?,
+            ppid,
+            pgid,
             started: info
                 .pbi_start_tvsec
                 .saturating_mul(1_000_000)
@@ -92,22 +141,30 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::ProcessEntry;
+    use super::{ProcessEntry, Read};
 
-    pub(super) fn list() -> Option<Vec<ProcessEntry>> {
+    pub(super) fn pids() -> Option<Vec<i32>> {
         let entries = std::fs::read_dir("/proc").ok()?;
         Some(
             entries
                 .filter_map(Result::ok)
                 .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
-                .filter_map(read)
                 .collect(),
         )
     }
 
-    pub(super) fn read(pid: i32) -> Option<ProcessEntry> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        parse_stat(pid, &stat)
+    pub(super) fn read(pid: i32) -> Read {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => parse_stat(pid, &stat).map_or(Read::Unreadable, Read::Present),
+            // The process exited between listing and reading.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(3) =>
+            {
+                Read::Gone
+            }
+            Err(_) => Read::Unreadable,
+        }
     }
 
     /// `/proc/<pid>/stat` fields after the parenthesized command name, which
@@ -128,14 +185,14 @@ mod platform {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod platform {
-    use super::ProcessEntry;
+    use super::Read;
 
-    pub(super) fn list() -> Option<Vec<ProcessEntry>> {
+    pub(super) fn pids() -> Option<Vec<i32>> {
         None
     }
 
-    pub(super) fn read(_pid: i32) -> Option<ProcessEntry> {
-        None
+    pub(super) fn read(_pid: i32) -> Read {
+        Read::Unreadable
     }
 }
 
@@ -148,12 +205,29 @@ mod tests {
     fn lists_this_process_with_its_parent_and_group() {
         let me = i32::try_from(std::process::id()).unwrap();
         let listed = list().expect("process table");
-        let entry = listed.iter().find(|entry| entry.pid == me).expect("self");
-        assert_eq!(Some(*entry), read(me));
+        let entry = listed
+            .entries
+            .iter()
+            .find(|entry| entry.pid == me)
+            .expect("self");
+        assert_eq!(Read::Present(*entry), read(me));
         assert!(entry.ppid > 0);
         assert!(entry.pgid > 0);
         assert!(entry.started > 0);
         assert!(!entry.zombie);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn reports_an_exited_process_as_gone() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+        child.wait().unwrap();
+        assert_eq!(read(pid), Read::Gone);
     }
 
     #[cfg(target_os = "linux")]

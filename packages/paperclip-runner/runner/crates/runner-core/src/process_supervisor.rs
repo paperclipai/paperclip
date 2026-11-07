@@ -1086,6 +1086,21 @@ impl SupervisedProcess {
             ))
         })?;
         let process_group_id = child.id();
+        // Record the lineage from the start. Without it, teardown could not
+        // stop tools that leave the group, so a process is never supervised
+        // without it: stop the one just started and report the failure.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let lineage = match crate::process_lineage::LineageTracker::start(process_group_id) {
+            Ok(lineage) => lineage,
+            Err(reason) => {
+                signal_process_group(process_group_id, "KILL");
+                let _ = child.wait();
+                return Err(LocalRunnerError::invalid(format!(
+                    "failed to start supervised process {}: {reason}",
+                    program.display()
+                )));
+            }
+        };
         crate::oom_score::release_supervised_process(process_group_id);
         let stdin = child
             .stdin
@@ -1113,7 +1128,7 @@ impl SupervisedProcess {
             shutdown_grace,
             finished: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            lineage: crate::process_lineage::LineageTracker::start(process_group_id),
+            lineage: Some(lineage),
             #[cfg(target_os = "macos")]
             _temporary_executables: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -1496,9 +1511,12 @@ mod tests {
                 .ok()
                 .and_then(|text| text.trim().parse::<i32>().ok())
             {
-                let job = paperclip_process_table::read(pid).expect("tool job is running");
+                let job = paperclip_process_table::read(pid)
+                    .entry()
+                    .expect("tool job is running");
                 // Wait until the wrapper has exited and the job is orphaned.
                 if paperclip_process_table::read(job.ppid)
+                    .entry()
                     .is_none_or(|parent| parent.pgid != job.pgid)
                 {
                     break job;
@@ -1513,6 +1531,7 @@ mod tests {
 
     fn assert_stopped_and_clean_up(job: paperclip_process_table::ProcessEntry, directory: &Path) {
         let alive = paperclip_process_table::read(job.pid)
+            .entry()
             .is_some_and(|current| current.started == job.started && !current.zombie);
         if alive {
             // Never leave the escaped job behind when the assertion fails.
