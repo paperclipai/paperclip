@@ -29,6 +29,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { issueService } from "../services/issues.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -780,5 +781,79 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId));
     expect(JSON.stringify(activity.map((row) => row.details))).not.toContain("provider.example");
     expect(activity.find((row) => row.action === "issue.monitor_triggered")?.details).not.toHaveProperty("externalRef");
+  });
+
+  it("clears an armed monitor and preserves unrelated policy fields when an issue is released back to todo", async () => {
+    const { issueId, agentId } = await seedFixture({
+      monitor: {
+        timeoutAt: "2026-04-11T12:45:00.000Z",
+        recoveryPolicy: "create_recovery_issue",
+      },
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const unrelatedPolicy = { commentRequired: false, futureAuthorization: { preserve: true } };
+    await db
+      .update(issues)
+      .set({ executionPolicy: { ...before.executionPolicy, ...unrelatedPolicy } })
+      .where(eq(issues.id, issueId));
+    const svc = issueService(db);
+
+    const released = await svc.release(issueId, agentId);
+    expect(released).not.toBeNull();
+    expect(released?.status).toBe("todo");
+    expect(released?.assigneeAgentId).toBeNull();
+    expect(released?.monitorNextCheckAt).toBeNull();
+    expect(released?.executionPolicy).toMatchObject(unrelatedPolicy);
+    expect(normalizeIssueExecutionPolicy(released?.executionPolicy)?.monitor ?? null).toBeNull();
+    expect(parseIssueExecutionState(released?.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      nextCheckAt: null,
+      clearReason: "invalid_assignee",
+      timeoutAt: "2026-04-11T12:45:00.000Z",
+      recoveryPolicy: "create_recovery_issue",
+    });
+  });
+
+  it("keeps the monitor on adminForceRelease when clearAssignee is false and clears it while preserving unrelated policy fields when clearAssignee is true", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({
+      monitor: {
+        timeoutAt: "2026-04-11T12:45:00.000Z",
+        recoveryPolicy: "create_recovery_issue",
+      },
+    });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const unrelatedPolicy = { commentRequired: false, futureAuthorization: { preserve: true } };
+    await db
+      .update(issues)
+      .set({ executionPolicy: { ...before.executionPolicy, ...unrelatedPolicy } })
+      .where(eq(issues.id, issueId));
+    const svc = issueService(db);
+
+    const kept = await svc.adminForceRelease(issueId, { clearAssignee: false });
+    expect(kept).not.toBeNull();
+    expect(kept?.issue.assigneeAgentId).toBe(agentId);
+    expect(kept?.issue.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+    expect(kept?.issue.executionPolicy).toMatchObject(unrelatedPolicy);
+    expect(normalizeIssueExecutionPolicy(kept?.issue.executionPolicy)?.monitor?.nextCheckAt).toBe(
+      nextCheckAt.toISOString(),
+    );
+    expect(parseIssueExecutionState(kept?.issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: nextCheckAt.toISOString(),
+    });
+
+    const cleared = await svc.adminForceRelease(issueId, { clearAssignee: true });
+    expect(cleared).not.toBeNull();
+    expect(cleared?.issue.assigneeAgentId).toBeNull();
+    expect(cleared?.issue.monitorNextCheckAt).toBeNull();
+    expect(cleared?.issue.executionPolicy).toMatchObject(unrelatedPolicy);
+    expect(normalizeIssueExecutionPolicy(cleared?.issue.executionPolicy)?.monitor ?? null).toBeNull();
+    expect(parseIssueExecutionState(cleared?.issue.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      nextCheckAt: null,
+      clearReason: "invalid_assignee",
+      timeoutAt: "2026-04-11T12:45:00.000Z",
+      recoveryPolicy: "create_recovery_issue",
+    });
   });
 });

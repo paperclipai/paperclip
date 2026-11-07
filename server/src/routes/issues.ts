@@ -16908,6 +16908,34 @@ export function issueRoutes(
       details: { status: released.status, _previous: { status: existing.status } },
     });
 
+    const previousMonitor = summarizeIssueMonitor(
+      existing,
+      normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+    );
+    const nextMonitor = summarizeIssueMonitor(
+      released,
+      normalizeIssueExecutionPolicy(released.executionPolicy ?? null),
+    );
+    if (!nextMonitor.nextCheckAt && previousMonitor.nextCheckAt) {
+      await logActivity(db, {
+        companyId: released.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.monitor_cleared",
+        entityType: "issue",
+        entityId: released.id,
+        details: {
+          identifier: released.identifier,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          reason: nextMonitor.clearReason ?? "manual",
+          notes: previousMonitor.notes,
+        },
+      });
+    }
+
     res.json(released);
   });
 
@@ -16955,6 +16983,34 @@ export function issueRoutes(
         clearAssignee,
       },
     });
+
+    const previousMonitor = summarizeIssueMonitor(
+      existing,
+      normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+    );
+    const nextMonitor = summarizeIssueMonitor(
+      result.issue,
+      normalizeIssueExecutionPolicy(result.issue.executionPolicy ?? null),
+    );
+    if (!nextMonitor.nextCheckAt && previousMonitor.nextCheckAt) {
+      await logActivity(db, {
+        companyId: result.issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.monitor_cleared",
+        entityType: "issue",
+        entityId: result.issue.id,
+        details: {
+          identifier: result.issue.identifier,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          reason: nextMonitor.clearReason ?? "manual",
+          notes: previousMonitor.notes,
+        },
+      });
+    }
 
     res.json(result);
   });

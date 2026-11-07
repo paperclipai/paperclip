@@ -266,7 +266,7 @@ function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assi
   return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
 }
 
-function monitorClearReasonForIssue(
+export function monitorClearReasonForIssue(
   status: string,
   assigneeAgentId: string | null,
   assigneeUserId: string | null,
