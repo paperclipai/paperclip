@@ -1476,6 +1476,7 @@ export interface PluginIssuesClient {
     companyId: string;
     projectId?: string;
     assigneeAgentId?: string;
+    assigneeUserId?: string;
     originKind?: PluginIssueOriginKind;
     originKindPrefix?: string;
     originId?: string;
