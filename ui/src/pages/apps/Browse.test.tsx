@@ -1895,8 +1895,8 @@ describe("Connectors landing page", () => {
     await clickButton(`${count} connections`, row);
     expect(row.querySelectorAll('[aria-label^="Manage OpenAI account"]')).toHaveLength(count);
     expect(row.querySelector('[aria-label="Your default for OpenAI"]')).not.toBeNull();
-    await act(() => row.querySelector('[aria-label="Manage OpenAI account 1 connection"]')!
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await act(() => { row.querySelector('[aria-label="Manage OpenAI account 1 connection"]')!
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
     const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
       .find(element => element.textContent === "Set as default for OpenAI")!;

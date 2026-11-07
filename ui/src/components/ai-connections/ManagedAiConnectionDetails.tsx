@@ -66,8 +66,11 @@ export function ManagedAiConnectionDetails({
     mutationFn: (id: string) => heartbeatsApi.cancel(id),
     onSuccess: refresh,
   });
-  const candidates = defaults.data?.connections.filter(a => a.id === connection.id) ?? [];
-  const account = candidates.length === 1 ? candidates[0] : candidates.find(a => a.ownerUserId === defaults.data?.currentUserId && a.isDefault);
+  const visibleGrants = new Set(grants.data?.grants.map(grant => grant.id));
+  const candidates = defaults.data?.connections.filter(account => account.id === connection.id && account.companyId === connection.companyId && visibleGrants.has(account.grantId)) ?? [];
+  const ownPersonal = (account: (typeof candidates)[number]) => account.ownership === "personal" && account.ownerUserId === defaults.data?.currentUserId;
+  const account = candidates.find(account => ownPersonal(account) && account.isDefault)
+    ?? candidates.find(ownPersonal) ?? candidates[0];
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
   const loadError = [accountsView, grantsView].find((view) => view.kind === "error")?.error;
   const error = stop.error;

@@ -10,8 +10,8 @@ import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "user", settled: true }) }));
 vi.mock("./AiConnectionAccountControls", () => ({
-  AiConnectionAccountControls: ({ account }: { account: AiManagedConnectionSummary }) => (
-    <section aria-label="AI account settings">{account.name}</section>
+  AiConnectionAccountControls: ({ account, grant }: { account: AiManagedConnectionSummary; grant: { id: string } }) => (
+    <section aria-label="AI account settings" data-grant-id={grant.id}>{account.name}</section>
   ),
 }));
 vi.mock("./AiConnectionUsagePanel", () => ({ AiConnectionUsagePanel: () => null }));
@@ -76,6 +76,23 @@ it("reuses the grants already loaded by the permissions page", async () => {
   await render();
   expect(host.querySelector('[aria-label="AI account settings"]')?.textContent).toBe(account.name);
   expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/grants"))).toBe(false);
+});
+
+it.each(["personal", "shared", "missing-first"] as const)("keeps an accessible %s grant visible without a saved personal default", async mode => {
+  const personal = { ...account, ownerUserId: "user", grantId: "personal-grant", name: "Personal account", isDefault: false };
+  const shared = { ...account, ownership: "shared" as const, grantId: "shared-grant", name: "Shared account", isDefault: false };
+  const other = { ...shared, grantId: "other-shared-grant", name: "Other shared account" };
+  const choices = mode === "personal" ? [shared, personal] : [other, shared];
+  const available = mode === "missing-first" ? [shared] : choices;
+  fetchMock.mockImplementation((url: string) => Promise.resolve(Response.json(url.endsWith("/active-runs") ? []
+    : url.endsWith("/grants") ? { ...grants, grants: available.map(choice => ({ id: choice.grantId })) }
+      : { ...accounts, connections: choices })));
+  await render();
+  const expected = mode === "personal" ? personal : mode === "missing-first" ? shared : other;
+  const controls = host.querySelector('[aria-label="AI account settings"]');
+  expect(controls?.textContent).toBe(expected.name);
+  expect(controls?.getAttribute("data-grant-id")).toBe(expected.grantId);
+  expect(host.textContent).not.toContain("not available to you");
 });
 
 it.each(["accounts", "grants"] as const)("bounds a stuck %s read, retries once, and recovers from the retry button", async kind => {
