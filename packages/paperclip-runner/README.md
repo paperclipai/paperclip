@@ -76,6 +76,7 @@ retrieval instructions. Reads and excerpts are bounded; the handoff has a
 reset boundaries, deleted messages, source quarantine, and secret redaction
 apply before model submission. Successful recovery does not fetch or replay the
 handoff.
+
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
@@ -403,7 +404,9 @@ and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
 
-Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+Pi and Claude cold provider admission have an absolute 60-second budget, and
+the runner's ACPX sidecar and the sidecar's provider session handshake bound their `session.open` at 60 seconds too. A cold
+Claude `session.open` timed out at the earlier 30-second bound on a loaded host. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
 while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;

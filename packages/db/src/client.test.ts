@@ -248,6 +248,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     }
   }
 
+  // Later migrations may add columns; retained rows must keep every earlier value.
+  function retainedColumns<T extends Record<string, Record<string, unknown> | null>>(after: T, before: T): T {
+    return Object.fromEntries(Object.entries(after).map(([table, row]) => {
+      const earlier = before[table];
+      return [table, row && earlier ? Object.fromEntries(Object.keys(earlier).map(key => [key, row[key]])) : row];
+    })) as T;
+  }
+
   async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
     const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
     const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
@@ -344,7 +352,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(expectedRetainedRows);
+      if (retainedRows) {
+        const afterRows = await retainedRows();
+        expect(retainedColumns(afterRows, expectedRetainedRows!)).toEqual(expectedRetainedRows);
+        expect(afterRows).toMatchObject({
+          run: { legacy_process_settlement: null },
+          grant: { revocation_index_receipt: null, revocation_revision: 0 },
+        });
+      }
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -361,7 +376,14 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(expectedRetainedRows);
+      if (retainedRows) {
+        const afterRows = await retainedRows();
+        expect(retainedColumns(afterRows, expectedRetainedRows!)).toEqual(expectedRetainedRows);
+        expect(afterRows).toMatchObject({
+          run: { legacy_process_settlement: null },
+          grant: { revocation_index_receipt: null, revocation_revision: 0 },
+        });
+      }
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }

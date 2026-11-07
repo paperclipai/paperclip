@@ -6,12 +6,16 @@ import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 import { ApiError } from "@/api/client";
-import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
+import { aiConnectionRouterAppDefinition, CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
 
 const aggregatorCatalogMock = vi.hoisted(() => [] as AggregatorAppCatalogEntry[]);
+// Counts identity normalizations made by the page (not by the catalog module itself), as a
+// deterministic measure of how much catalog work a render does. Past `limit` it throws, so
+// a runaway render fails at once instead of blocking the test worker for minutes.
+const aggregatorIdentityCalls = vi.hoisted(() => ({ count: 0, limit: Infinity }));
 const openNewIssueMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const setupComposioAppMock = vi.hoisted(() => vi.fn());
@@ -26,11 +30,19 @@ function genericResponse(value: { apps?: any[]; sync?: Record<string, unknown> }
       appName: snapshot.appName ?? snapshot.toolkit })) };
 }
 vi.mock("@/api/agents", () => ({ agentsApi: { list: (companyId: string) => listAgentsMock(companyId) } }));
-vi.mock("@paperclipai/shared/aggregator-app-catalog", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@paperclipai/shared/aggregator-app-catalog")>(),
-  AGGREGATOR_APP_CATALOG: aggregatorCatalogMock,
-  findComposioCatalogApp: (toolkit: string) => aggregatorCatalogMock.find(app => app.aliases.includes(toolkit) || app.routes.some(route => route.provider === "composio" && route.toolkit === toolkit)),
-}));
+vi.mock("@paperclipai/shared/aggregator-app-catalog", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/shared/aggregator-app-catalog")>();
+  return {
+    ...actual,
+    AGGREGATOR_APP_CATALOG: aggregatorCatalogMock,
+    aggregatorAppIdentity: (value: string) => {
+      aggregatorIdentityCalls.count += 1;
+      if (aggregatorIdentityCalls.count > aggregatorIdentityCalls.limit) throw new Error("Connector catalog work exceeded its budget");
+      return actual.aggregatorAppIdentity(value);
+    },
+    findComposioCatalogApp: (toolkit: string) => aggregatorCatalogMock.find(app => app.aliases.includes(toolkit) || app.routes.some(route => route.provider === "composio" && route.toolkit === toolkit)),
+  };
+});
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: openNewIssueMock }) }));
 
 const accountIdentity = vi.hoisted(() => ({ userId: "board-user" as string | null, settled: true, failed: false }));
@@ -233,10 +245,11 @@ describe("Connectors landing page", () => {
     vi.clearAllMocks();
   });
 
-  async function renderBrowse(allCatalog = true) {
+  async function renderBrowse(allCatalog = true, options: { cloud?: boolean } = {}) {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    if (options.cloud) client.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -677,6 +690,113 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('[data-app-slug="context7"]')).toBeNull();
     expect(container.querySelectorAll('[data-app-slug="hubspot"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-app-slug="hubspot"] button[aria-label*="third-party"]')).toHaveLength(2);
+  });
+
+  // BUG-06: on Paperclip Cloud, Slack's built-in tool method needs a customer-created OAuth
+  // app and, without the Chat connectors opt-in, there is no managed Slack path. Connect
+  // must offer the aggregators' one-click sign-in instead of the "needs its own OAuth app" form.
+  it("offers aggregator Slack sign-in on Cloud while the built-in Slack connector needs a customer OAuth app", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack"), getAppStoreDefinition("notion")] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Connect through Composio or Arcade.");
+    await clickButton("Connect", rows[0]!);
+    expect(navigateMock).not.toHaveBeenCalledWith("/apps/connect?source=slack");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Which service would you like to use?");
+  });
+
+  it.each([
+    ["Chat connectors offer its setup path", { enableChatConnectors: true }, true],
+    ["the instance is self-hosted", {}, false],
+  ])("keeps the built-in Slack connector when %s", async (_label, experimental, cloud) => {
+    experimentalMock.mockResolvedValue(experimental);
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    await renderBrowse(true, { cloud });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
+  it("keeps native Asana on Cloud when the gallery omits its unavailable managed method", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Asana", ["composio", "arcade"]));
+    const asana = getAppStoreDefinition("asana")!;
+    // The gallery removes a Paperclip Cloud method whose broker profile is not advertised.
+    const galleryAsana = { ...asana, methods: asana.methods.filter((method) => !method.oauthStrategy) };
+    listGalleryMock.mockResolvedValue({ apps: [galleryAsana] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="asana"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).not.toContain("Connect through Composio");
+  });
+
+  it("keeps a saved built-in Slack connection on its native row on Cloud", async () => {
+    experimentalMock.mockResolvedValue({});
+    aggregatorCatalogMock.push(indexedApp("Slack", ["composio", "arcade"]));
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("slack")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "slack-app", name: "Slack", metadata: { sourceTemplateKey: "slack" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "slack-app", name: "Team Slack", transport: "mcp_remote", config: { sourceTemplateKey: "slack" } })] });
+    await renderBrowse(true, { cloud: true });
+
+    const rows = container.querySelectorAll('[data-app-slug="slack"]');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Team Slack");
+  });
+
+  // The other tests use a handful of catalog entries, which hides how the work grows.
+  // Load the shipped catalogs (about 1,600 aggregator apps and every native connector) in
+  // managed-instance mode, where native rows check aggregator routes, and bound the
+  // identity work. A nested scan of the catalog per row needs tens of millions of calls
+  // and stalls the tab.
+  it("builds the full shipped catalog on a managed instance with work proportional to its size, and not again for a search or an unchanged refetch", async () => {
+    const { AGGREGATOR_APP_CATALOG: shippedCatalog } = await vi.importActual<typeof import("@paperclipai/shared/aggregator-app-catalog")>("@paperclipai/shared/aggregator-app-catalog");
+    aggregatorCatalogMock.push(...shippedCatalog);
+    experimentalMock.mockResolvedValue({});
+    listGalleryMock.mockResolvedValue({ apps: CONNECTABLE_APP_DEFINITIONS });
+    // A saved Composio gateway with one observed account, so the per-gateway query data
+    // takes part in the row build.
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } })] });
+    const snapshot = { connectionId: "conn-notion", toolkit: "fireflies", status: "connected", checkedAt: new Date(0).toISOString(), accounts: [{ id: "ca-work", alias: "Meeting notes", status: "ACTIVE", isDefault: true }] };
+    // Each call returns a new but equal object, as a real refetch does.
+    listComposioAppsMock.mockImplementation(async () => ({ apps: [structuredClone(snapshot)] }));
+    const catalogNames = shippedCatalog.reduce((total, app) => total + 2 + app.aliases.length, 0);
+    const accountsKey = queryKeys.tools.aggregatorApps("conn-notion", "board-user");
+
+    // Today a full load normalizes about five names per catalog name.
+    aggregatorIdentityCalls.count = 0;
+    aggregatorIdentityCalls.limit = catalogNames * 20;
+    try {
+      const client = await renderBrowse(true, { cloud: true });
+      expect(container.querySelector('[data-app-slug="fireflies"]')?.textContent).toContain("Meeting notes");
+      expect(aggregatorIdentityCalls.count).toBeLessThan(catalogNames * 20);
+
+      // An unchanged refetch keeps the query data identity, so the rows are not rebuilt.
+      aggregatorIdentityCalls.count = 0;
+      await act(async () => { await client.refetchQueries({ queryKey: accountsKey, exact: true }); });
+      await flushReact();
+      expect(aggregatorIdentityCalls.count).toBeLessThan(catalogNames);
+
+      // Changed accounts still reach the page.
+      listComposioAppsMock.mockImplementation(async () => ({ apps: [{ ...snapshot, accounts: [...snapshot.accounts, { id: "ca-team", alias: "Team notes", status: "ACTIVE", isDefault: false }] }] }));
+      await act(async () => { await client.refetchQueries({ queryKey: accountsKey, exact: true }); });
+      await flushReact();
+      expect(container.querySelector('[data-app-slug="fireflies"]')?.textContent).toContain("Team notes");
+
+      // Typing a search changes no connector data, so the rows are not rebuilt.
+      aggregatorIdentityCalls.count = 0;
+      await search("slack");
+      expect(aggregatorIdentityCalls.count).toBeLessThan(catalogNames);
+    } finally {
+      aggregatorIdentityCalls.limit = Infinity;
+    }
   });
 
   it("paginates the catalog while keeping installed connectors above every page and resets on search", async () => {

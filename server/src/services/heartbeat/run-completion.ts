@@ -1,4 +1,5 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -13,6 +14,10 @@ import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { findPluginWorkerUnavailableError, PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailableError } from "../environment-provider-unavailable-error.js";
+import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
+import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
+import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -985,6 +990,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       });
@@ -1308,6 +1314,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
 
     await settleAgent();
+    if (failureOutcome === "failed" && failedRun?.runtimeMode === "native" && nativeTerminalFailureCode !== null) {
+      await import("./restart-interrupted-turn.js").then(({ requestInterruptedNativeTurnRetry }) =>
+        requestInterruptedNativeTurnRetry(db, run.id)).catch(error => {
+        logger.warn({ err: error, runId: run.id }, "interrupted native turn Retry request failed");
+      });
+    }
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
@@ -1376,12 +1388,25 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // bootstrap budget; the worker is restarted or replaced meanwhile.
     const pluginWorkerUnavailableFailure = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findPluginWorkerUnavailableError(outerErr) : null;
+    // The environment provider refused lease acquisition with a transient
+    // status (HTTP 5xx/429/timeout) before dispatch. Each retry is a new,
+    // separately owned creation attempt; an unconfirmed provisional allocation
+    // stays with its creation record and the cleanup reconciler.
+    const environmentProviderUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
+    const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
+    const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
       reusableSandboxResumeFailure?.code ??
       remoteWorkspaceRestoreFailure?.code ??
       pluginWorkerUnavailableFailure?.code ??
+      environmentProviderUnavailable?.code ??
+      repositoryCatalogUnavailable?.code ??
+      (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
       configurationIncompleteSetupFailure?.code ??
@@ -1392,8 +1417,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
       "setup_failed";
+    // Bounded kind and reason only: a workspace provider's own text never crosses into Core.
+    const workspaceProviderFailure = findWorkspaceProviderFailure(outerErr)?.summary() ?? null;
+    // A wrapped query error hides its driver cause (for example
+    // CONNECTION_CLOSED or SQLSTATE 53300). Log the bounded code only.
+    const causeCode = outerErr instanceof Error ? (outerErr.cause as { code?: unknown } | undefined)?.code : undefined;
+    const setupFailureCauseCode = typeof causeCode === "string" && /^[A-Z0-9_]{1,64}$/.test(causeCode) ? causeCode : null;
     logger.error(
-      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId },
+      { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId,
+        errorCode: setupFailureErrorCode, ...(setupFailureCauseCode ? { causeCode: setupFailureCauseCode } : {}),
+        ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
     const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
@@ -1427,9 +1460,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const connectionFailure = readGitConnectionFailure(outerErr);
     const setupFailureResultJson = {
       ...setupFailureDetails,
+      ...(repositoryCatalogUnavailable ? { errorFamily: "transient_upstream",
+        ...(repositoryCatalogUnavailable.retryAt ? { retryNotBefore: new Date(repositoryCatalogUnavailable.retryAt).toISOString() } : {}),
+      } : {}),
       ...(providerFailure ? { providerFailure: { ...providerFailure,
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
+      ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),
@@ -1541,10 +1578,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         } else if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
           // An accepted interaction keeps its own continuation retry, which
           // carries the interaction and escalates on exhaustion.
-          const interactionOwnsRetry = livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+          const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
-            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
+            ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
+              ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
+              : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {
             logger.warn(
@@ -1559,6 +1600,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
+          isContextCompactionRun(livenessRun.contextSnapshot) ||
           parseObject(livenessRun.contextSnapshot)
             .resumeSessionGoalHeartbeat === true,
       }).catch((releaseError) => {

@@ -1,4 +1,5 @@
 import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
+import { isEverydayReliabilityCase } from "./everyday-reliability-cases.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
@@ -74,7 +75,7 @@ export interface LiveFixtureValues {
   setupQualification?: { recorded: boolean; adapterType: string | null; platformResponses: number; adapterResponses: number };
 
   onboardingRuntime?: {
-    mode: "production-wizard" | "post-onboarding-runtime-switch";
+    mode: "production-wizard" | "api-configured-legacy-setup" | "post-onboarding-runtime-switch";
     originalAdapterType: string;
     originalModel: string | null;
     testedAdapterType: string;
@@ -221,7 +222,8 @@ export async function setupLiveFixtures(input: {
         budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
           : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
           : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
-          || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
+          || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+            || isEverydayReliabilityCase(execution.task.id))) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
           : ["cursor-cloud", "stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id) ? 1_000 : 0,
       });
@@ -419,7 +421,8 @@ export async function setupLiveFixtures(input: {
         }
       }
       if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity", "remote-workspace-storage", "rolling-web-deployment"].includes(execution.suite.id)
-        || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
+        || (execution.suite.id === "everyday-workflows" && (["hire-reuse", "delegate-feedback"].includes(execution.task.id)
+          || isEverydayReliabilityCase(execution.task.id)))) {
         agent.budgetMonthlyCents = 1_000;
       }
       if (receiptSmoke) {

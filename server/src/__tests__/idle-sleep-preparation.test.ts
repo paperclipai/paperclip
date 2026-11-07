@@ -123,4 +123,3 @@ describe("explicit idle resource preparation", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 });
-

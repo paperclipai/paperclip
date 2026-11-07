@@ -1,6 +1,6 @@
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agents, issues, heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createSystemRecovery, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -48,7 +48,13 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
 }
 
 export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
-  const reason = state.failure?.code ? ` (last failure: ${state.failure.code})` : "";
+  // Another Retry cannot release a copyback owner that stopped without reporting.
+  if (state.failure?.code === "copyback_stop_unconfirmed")
+    return "Automatic recovery of saved work is waiting for the previous server's file copy to stop, and Paperclip cannot verify "
+      + "that it stopped. A board member who manages this company's runtime can confirm that it stopped; recovery then "
+      + "resumes. No provider turn is submitted.";
+  const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
+  const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
   return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `
     + "Retry recovery to export and merge from the retained sandbox again; no provider turn is submitted. "
     + "If Retry keeps failing, inspect the run and its environment.";
@@ -126,8 +132,18 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`),
       sql`${heartbeatRuns.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`,
     )).where(and(
-      workspaceRecoverySourceEligible(),
-      sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`,
+      workspaceRecoverySourceEligible(true),
+      sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
+          and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+          and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'
+          and exists (select 1 from ${issues} inner join ${agents}
+            on ${agents.id} = ${heartbeatRuns.agentId} and ${agents.companyId} = ${heartbeatRuns.companyId}
+            where ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.companyId} = ${heartbeatRuns.companyId}
+              and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
+              and ${issues.status} in ('todo', 'in_progress', 'in_review')
+              and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
+              and ${agents.status} in ('idle', 'running', 'error'))))`,
     )).orderBy(sql`1`).limit(1);
   return rows.length ? Number(rows[0].at) : null;
 }

@@ -1,4 +1,5 @@
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
@@ -10,6 +11,8 @@ import { boundRunIssueId } from "../run-task-binding.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
+import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -74,6 +77,7 @@ import {
   chatConversations,
   caseHandoffs,
   companies,
+  budgetPolicies,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -114,6 +118,7 @@ import {
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
+import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -561,6 +566,8 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   REUSABLE_SANDBOX_RESUME_FAILED_CODE,
   REMOTE_WORKSPACE_RESTORE_FAILED_CODE,
   PLUGIN_WORKER_UNAVAILABLE_CODE,
+  ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE,
+  RUNNER_REVISION_MISMATCH_CODE,
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
   "low_trust_boundary_mismatch",
@@ -575,6 +582,13 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
+// The accept route resolves an interaction and then enqueues its own
+// continuation wake. A sweep that reads the issue inside that gap would see an
+// accepted interaction with no wake or run and queue a second, redundant
+// continuation for the same response, which then shows as an immutable queued
+// item. Treat an accepted interaction as stranded only once its accept-time
+// wake has had time to appear.
+const INTERACTION_CONTINUATION_RECOVERY_GRACE_MS = 2 * 60_000;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -2123,11 +2137,11 @@ export function recoveryService(
     return result?.awaiting === true;
   }
 
-  async function isInvocationBudgetBlocked(
+  async function readInvocationBudgetBlock(
     issue: RecoveryIssue,
     agentId: string,
   ) {
-    const budgetBlock = await budgets.getInvocationBlock(
+    return budgets.getInvocationBlock(
       issue.companyId,
       agentId,
       {
@@ -2135,7 +2149,13 @@ export function recoveryService(
         projectId: issue.projectId,
       },
     );
-    return Boolean(budgetBlock);
+  }
+
+  async function isInvocationBudgetBlocked(
+    issue: RecoveryIssue,
+    agentId: string,
+  ) {
+    return Boolean(await readInvocationBudgetBlock(issue, agentId));
   }
 
   async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
@@ -3782,6 +3802,7 @@ export function recoveryService(
         activeExecution: state.hasActiveExecutionPath || latest?.id !== (dispatchRunId ?? run.id),
         ownedLifecycle: run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted" ||
           Boolean(readNonEmptyString(context.goalControlRequestId)) || context.resumeSessionGoalHeartbeat === true ||
+          isContextCompactionRun(context) ||
           isPluginManagedIssueLifecycle(issue) || routine.length > 0 || workspaceChildren.length > 0 ||
           Boolean(goal[0]?.status && goal[0].status !== "complete") || Boolean(active && !ownsRepair),
         conversation: Boolean(issue.conversationAgentId) || isWaitingConversation(issue),
@@ -4810,7 +4831,16 @@ export function recoveryService(
           continue;
         }
       }
-      if (await isInvocationBudgetBlocked(issue, agentId)) {
+      const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      // A temporary hold (accounting still settling) only delays the task's
+      // start or continuation; it is not a reason to escalate. Leave the task
+      // as it is: settling accounting wakes this recovery again, which then
+      // admits it. A reached hard stop still goes to the board.
+      if (budgetBlock && !(await isBoardOwnedBudgetBlock(db, issue.companyId, budgetBlock))) {
+        result.skipped += 1;
+        continue;
+      }
+      if (budgetBlock) {
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4832,8 +4862,9 @@ export function recoveryService(
               issue.status === "in_review"
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
                 : undefined,
+            // Name the actual gate: unpriced or unrecorded usage is not spend over the limit.
             comment:
-              "Paperclip cannot safely continue automatic recovery because the original recovery target is over budget. " +
+              `Paperclip cannot safely continue automatic recovery because the budget does not allow new work: ${budgetBlock.reason} ` +
               "The source assignment is unchanged and the board must choose the next action.",
           });
           if (updated) {
@@ -4995,6 +5026,18 @@ export function recoveryService(
         );
 
         if (!successfulRunSinceResolution) {
+          if (
+            recoveryNow.getTime() - acceptedInteractionResolvedAt.getTime() <
+            INTERACTION_CONTINUATION_RECOVERY_GRACE_MS
+          ) {
+            // Re-check at the deadline so a lost accept-time wake still recovers.
+            opts?.onDeferredDeadline?.(
+              acceptedInteractionResolvedAt.getTime() +
+                INTERACTION_CONTINUATION_RECOVERY_GRACE_MS,
+            );
+            result.skipped += 1;
+            continue;
+          }
           if (!agentInvokable) {
             result.skipped += 1;
             continue;

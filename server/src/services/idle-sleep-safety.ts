@@ -294,8 +294,8 @@ export interface IdleSleepSafetyOptions {
   incomingWake?: VerifiedIdleCapabilities;
   deadlineCapability?: VerifiedIdleCapabilities;
   collectDiagnostics?: true;
-  deadlineOwners?: IdleDeadlineOwners;
   prepareLocalWork?: (input: { canPrepare: () => boolean }) => Promise<IdleLocalWork>;
+  deadlineOwners?: IdleDeadlineOwners;
 }
 
 export async function readIdleSleepSafety(

@@ -8,14 +8,15 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { agents, agentTaskSessions, agentWakeupRequests, authUsers, companies, companyMemberships, companySecretVersions, createDb, heartbeatRuns,
   issues, issueWorkProducts, nativeRunResults } from "@paperclipai/db";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
-import { nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
+import { nativeRestartFixture } from "../../__tests__/helpers/native-restart-fixture.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { getRecoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres-fixture.js";
 import { heartbeatService } from "../heartbeat.js";
-import { instanceSettingsService } from "../instance-settings.js";
 import { flushBudgetEvaluationWork } from "../budgets.js";
+import { instanceSettingsService } from "../instance-settings.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
 import { errorHandler } from "../../middleware/index.js";
@@ -23,9 +24,12 @@ import { readIdleSleepSafety } from "../idle-sleep-safety.js";
 import { closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "./native-session-executor.js";
 
 const dedicatedDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_TEST_DATABASE_URL");
+const recoveryOptions = { dedicatedDatabaseUrl };
+const recoverySupport = await getRecoveryPostgresSupport(recoveryOptions);
+const describeRecoveryPostgres = recoverySupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres("native idle sleep cold continuation", () => {
-  const fixture = nativeRestartFixture({ dedicatedDatabaseUrl });
+describeRecoveryPostgres("native idle sleep cold continuation", () => {
+  const fixture = nativeRestartFixture(recoveryOptions);
   afterEach(async () => {
     await closeIdleWarmNativeSessionsForRestart();
     vi.unstubAllEnvs();

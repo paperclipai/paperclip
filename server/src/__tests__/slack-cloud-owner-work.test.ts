@@ -218,7 +218,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await service.configure(b, { action: "pause" }, actorId);
     await holdCredentials(a);
     const start = cloud.calls.length;
-    const owner = githubConnectionEventService(db, { connector: cloud.connector });
+    let pollTime = Date.now();
+    const owner = githubConnectionEventService(db, { connector: cloud.connector, now: () => new Date(pollTime) });
     await owner.pollOnce({ forDelivery: true });
     await owner.pollOnce({ forDelivery: true });
     expect((await setup(b)).slackCloudIntent).toBeUndefined();
@@ -227,13 +228,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(retained).toMatchObject({ ...before, attempts: 1, failureCode: "credential_lease_busy", nextAttemptAt: expect.any(String) });
     expect(Date.parse(retained.nextAttemptAt!)).toBeGreaterThan(Date.now());
     expect(cloud.calls.slice(start).filter(call => call.enrollment?.endpointId === a)).toEqual([]);
-    expect(owner.nextPollAt()).not.toBeNull();
-    const dueAt = Date.parse(retained.nextAttemptAt!);
-    expect(owner.nextPollAt(), "B settlement must retain A’s persisted enrollment deadline").toBe(dueAt);
+    const retryAt = Date.parse(retained.nextAttemptAt!);
+    expect(owner.nextPollAt()).toBe(retryAt);
     releases.splice(0).forEach(release => release()); await Promise.all(heldLeases);
-    for (let remaining = dueAt - Date.now(); remaining > 0; remaining = dueAt - Date.now()) {
-      await new Promise(resolve => setTimeout(resolve, remaining));
-    }
+    pollTime = retryAt - 1;
+    await owner.pollOnce();
+    expect((await setup(a)).slackCloudIntent).toEqual(retained);
+    expect(cloud.calls.slice(start).filter(call => call.enrollment?.endpointId === a)).toEqual([]);
+    pollTime = retryAt;
     await owner.pollOnce();
     expect((await setup(a)).slackCloudIntent).toBeUndefined();
     expect((await setup(a)).slackCloudRetiredGeneration).toBeDefined();

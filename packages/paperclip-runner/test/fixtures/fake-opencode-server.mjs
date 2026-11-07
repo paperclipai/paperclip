@@ -495,6 +495,22 @@ const server = createServer(async (request, response) => {
       }
       setTimeout(async () => {
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("configured-environment-output")) {
+          const output = await new Promise((resolve, reject) => {
+            execFile("/bin/sh", ["-c", 'printf "%s" "$PROBE_SECRET"'], { timeout: 5000 }, (error, stdout) => {
+              if (error) reject(error); else resolve(stdout);
+            });
+          });
+          const messageID = "message-configured-binding-output";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: {
+            id: "part-configured-binding-output", messageID, type: "tool", tool: "bash",
+            state: { status: "completed", output },
+          } } });
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
         if (backlogTool) {
           const messageID = "message-stream-backlog";
@@ -516,6 +532,36 @@ const server = createServer(async (request, response) => {
           }
           await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
           if (backlogTool !== "completion" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [await mcpRequest("tools/call", {
+            name: "paperclip_paperclip_call_assigned_tool", arguments: [],
+          })];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          emit({ type: "message.updated", id: "diagnostic-message-event", properties: { sessionID: session.id,
+            info: { id: "diagnostic-message", sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", id: "diagnostic-part-event", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", messageID: "diagnostic-message", sessionID: session.id,
+              type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "provider-receipt" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }

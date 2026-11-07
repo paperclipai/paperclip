@@ -615,13 +615,6 @@ test.describe.serial("native chat adapter UI", () => {
       await expectMinimumProviderSetup(page, provider);
       await fillProviderSetup(page, provider);
 
-      if (provider.provider === "github") {
-        // A completed click does not mean the async configure request reached the mock.
-        await expect.poll(() => mock.setupAttempts).toBe(2);
-        expect(mock.githubPrivateKeyMatchedFile).toBe(true);
-        expect(mock.githubPrivateKeyMatchedPaste).toBe(true);
-      }
-
       if (provider.provider === "telegram") {
         const submittedToken = "123456:e2e-redacted";
         // The next step intentionally has its own identity-readiness alert.
@@ -763,25 +756,19 @@ test.describe.serial("native chat adapter UI", () => {
         { id: `resource-${provider.provider}`, enabled: true },
       ]);
 
-      if (provider.provider === "github") {
+      const directMessages = page.getByRole("switch", {
+        name: "Allow direct messages",
+      });
+      await expect(directMessages).toBeVisible();
+      if (provider.provider === "discord") {
         await expect(
-          page.getByRole("heading", { name: "Private conversations" }),
-        ).toHaveCount(0);
-      } else {
-        const directMessages = page.getByRole("switch", {
-          name: "Allow direct messages",
-        });
-        await expect(directMessages).toBeVisible();
-        if (provider.provider === "discord") {
-          await expect(
-            page.getByText(
-              "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
-            ),
-          ).toBeVisible();
-        }
-        await directMessages.click();
-        await expect.poll(() => mock.allowDirectMessages).toBe(true);
+          page.getByText(
+            "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
+          ),
+        ).toBeVisible();
       }
+      await directMessages.click();
+      await expect.poll(() => mock.allowDirectMessages).toBe(true);
       if (provider.provider === "microsoft-teams") {
         const groupChats = page.getByRole("switch", {
           name: "Allow group chats",
@@ -979,92 +966,12 @@ test.describe.serial("native chat adapter UI", () => {
       expect(new URL(page.url()).searchParams.get("reconnect")).toBe("1");
       await expect(
         page.getByRole("heading", {
-          name:
-            provider.provider === "github"
-              ? "Reconnect GitHub App"
-              : provider.provider === "slack" ? "Add Slack credentials" : provider.setupHeading,
+          name: provider.provider === "slack" ? "Add Slack credentials" : provider.setupHeading,
         }),
       ).toBeVisible();
       await expect(
         page.getByRole("button", { name: "Choose an active agent" }),
       ).toHaveCount(0);
-
-      if (provider.provider === "github") {
-        const connectButton = page.getByRole("button", {
-          name: provider.setupButton,
-        });
-        await expect(
-          page.getByText(
-            /Under the target user or organization, create a new GitHub App/,
-          ),
-        ).toHaveCount(0);
-        await expect(
-          page.getByText(
-            /Leave App ID and private key blank to reuse saved credentials/,
-          ),
-        ).toBeVisible();
-        await page.getByLabel("GitHub App ID").fill("123456");
-        await page
-          .getByLabel("Private key (PEM)")
-          .fill("reconnect-private-key");
-        await expect(connectButton).toBeEnabled();
-        await page.evaluate((buttonName) => {
-          const state = window as typeof window & {
-            __githubConnectEnabledAfterRotation?: boolean;
-          };
-          state.__githubConnectEnabledAfterRotation = false;
-          new MutationObserver(() => {
-            const button = [...document.querySelectorAll("button")].find(
-              (candidate) => candidate.textContent?.trim() === buttonName,
-            );
-            if (button instanceof HTMLButtonElement && !button.disabled) {
-              state.__githubConnectEnabledAfterRotation = true;
-            }
-          }).observe(document.body, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-          });
-        }, provider.setupButton);
-        await page
-          .getByRole("button", { name: "Regenerate webhook secret" })
-          .click();
-        await expect(connectButton).toBeDisabled();
-        await page.waitForTimeout(100);
-        expect(
-          await page.evaluate(
-            () =>
-              (
-                window as typeof window & {
-                  __githubConnectEnabledAfterRotation?: boolean;
-                }
-              ).__githubConnectEnabledAfterRotation,
-          ),
-        ).toBe(false);
-
-        await page.goBack();
-        await page.getByText("Connection health and controls", { exact: true }).click();
-        await expect(
-          page.getByRole("heading", { name: "Connection activity" }),
-        ).toBeVisible();
-        await page
-          .getByRole("button", { name: "Reconnect", exact: true })
-          .click();
-        await expect(
-          page.getByRole("heading", { name: "Reconnect GitHub App" }),
-        ).toBeVisible();
-        await page.getByLabel("GitHub App ID").fill("123456");
-        await page
-          .getByLabel("Private key (PEM)")
-          .fill("reconnect-private-key");
-        await expect(
-          page.getByRole("button", { name: provider.setupButton }),
-        ).toBeDisabled();
-        mock.setWebhookVerified();
-        await expect(
-          page.getByRole("button", { name: provider.setupButton }),
-        ).toBeEnabled();
-      }
 
       mock.setStatus("active");
       await page.goto(

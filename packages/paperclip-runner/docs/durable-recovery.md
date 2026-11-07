@@ -41,6 +41,19 @@ lease without replacing its process, provider, thread, turn, token, or epoch.
 Retries of the same observed expiry replay the persisted extension. Renewal
 never admits an expired, revoked, or differently bound credential.
 
+The controller answers `lease_renew` (and `pong`) as soon as the frame is
+decrypted, outside the per-connection chain that serializes events, command
+results, and handoff frames. A slow business commit for an earlier event, such
+as a tool event during a long silent tool call, therefore cannot starve
+renewal. Frames still decrypt in arrival order, and the renewed expiry is
+persisted (absorbing any event write already staged) before the reply is sent.
+When an authenticated connection closes or is refused because its lease has
+expired, the controller records that reason (`connectionLeaseFailure`).
+Provider ingress reports it in the run log and, if reconnect grace runs out,
+as the `runner_connection_lease_expired` failure code instead of a generic
+transport loss. A credential revoked by a warm handoff is not reported, because
+a replacement runner owns the run.
+
 If a reply is lost, reconnect authentication may reconcile a later expiry only
 when this runner has an outstanding renewal on that same credential. Warm
 handoff receipts continue to bind exact expiry and renewal pauses during their
@@ -98,6 +111,36 @@ authenticated result, not from the message. If the run allows a replacement
 after a failed resume, it opens a fresh provider session as before. Otherwise the
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
+
+A Codex `run.attach` that would change the durable provider profile or a
+protected launch argument fails with the closed classification
+`provider_attach_refused`. An attach blocked by a pending tool call fails with
+`provider_side_effect_pending`. Neither refusal changes the saved state. The
+controller never opens a replacement session after either class, whatever the
+checkpoint's recovery policy, and stops the run for an operator.
+
+Saved OpenCode and Cursor Cloud provider state binds the digest of its own
+qualified launch profile (command, proxy script and, for OpenCode, the
+executable, each by path and SHA-256). Cursor Cloud does not re-bind. A changed
+profile fails restore with the same `provider_state_incompatible`
+classification and follows the same disposition, so the controller does not
+retry the restore or try to reattach a runner that already rejected it.
+
+Saved OpenCode state also records the SHA-256 of the OpenCode executable, the
+upstream release that owns the saved conversation. The Node command and the
+proxy bundle are controller runtime: a rebuild or deploy between a hard kill and
+recovery replaces their bytes, and the proxy keeps no state of its own. Restore
+re-binds a saved OpenCode session to the current launch profile only when all of
+these are true:
+
+- The saved release digest equals the current executable's digest.
+- The saved configuration names the current command and proxy paths.
+- The session is settled. It has no active or ambiguous turn, startup attempt,
+  receipt-limit interrupt, pending tool call, undelivered provider event, or
+  working goal. An observed provider exit with nothing in flight is settled.
+
+A changed OpenCode release, an unsettled session, and state written before the
+release digest existed keep the exact binding and fail closed as above.
 
 ## Profile identity
 
@@ -598,6 +641,14 @@ immutable launcher restarts it. Replacing a legacy binary or an adopted owner
 requires separate artifact and ownership admission; this path does not qualify
 that migration. Pending warm-transition receipts
 require their separate exact recovery admission, not an ordinary bootstrap.
+
+A hosted external route keeps the source connection until an independent
+physical-state read proves the target authority through the existing warm
+transition inspector. Recovery first activates the proven source registration
+so the Runner can consume its old receipt acknowledgement. It then activates
+the target registration. Ordinary attachment uses the same bounded barrier.
+External receipt recovery requires exact staged adoption and a physical reader;
+connect routes keep their existing activation order.
 
 ## Backpressure and bounded storage
 

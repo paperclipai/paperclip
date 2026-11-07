@@ -33,6 +33,12 @@ vi.mock("../services/agent-lifecycle-driver.js", () => ({
   createLifecycleDriver: () => ({ requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" }),
 }));
 
+vi.mock("../services/chat-channels/github/webhook-recovery-work.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/chat-channels/github/webhook-recovery-work.js")>();
+  return { ...original, registerGitHubWebhookRecoveryWork: (...args: Parameters<typeof original.registerGitHubWebhookRecoveryWork>) =>
+    original.registerGitHubWebhookRecoveryWork(args[0], args[1], () => false) };
+});
+
 // All requests traverse the assembled server and production bearer middleware.
 // No req.actor injection or special permission grants establish access.
 describe("connection management with production default agents", () => {
@@ -490,6 +496,38 @@ describe("connection management with production default agents", () => {
       expect(await f.request("GET", `${path}/${session.publicSessionId}`)).toMatchObject({ status: 404 });
       expect(await f.request("POST", `${path}/${session.publicSessionId}/cancel`, {})).toMatchObject({ status: 404 });
     } finally { unregisterServerAdapter("codex_local"); }
+  });
+
+  it.each(["add", "remove"] as const)("requires a connection creator to edit agent targets when finish will %s installations", async (change) => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const userId = f.responsibleUserId!;
+    const cookie = await server.humanSession(userId);
+    const [application] = await server.db.insert(toolApplications).values({ companyId: f.companyId, name: "Creator install authority", type: "mcp_http" }).returning();
+    const [connection] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+      uid: randomUUID(), name: "Creator-owned connection", transport: "mcp_remote", authKind: "none", status: "active", createdByUserId: userId }).returning();
+    if (change === "remove") await server.db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: connection.id, targetType: "agent", targetId: f.agentId });
+    const before = await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const finish = async () => fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/apps/${connection.id}/finish`, {
+      method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: change === "add" ? [f.agentId] : [] } }),
+    });
+    const denied = await finish();
+    expect(await denied.json()).toMatchObject({ error: expect.any(String) });
+    expect(denied.status).toBe(403);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toEqual(before);
+    expect(await server.db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connection.id}`))).toEqual([]);
+    await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId,
+      permissionKey: "agents:configure", scope: { targetAgentIds: [f.agentId] } });
+    const allowed = await finish();
+    expect(allowed.status, JSON.stringify(await allowed.json())).toBe(200);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toHaveLength(change === "add" ? 1 : 0);
+    const [peer] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Outside edit scope", adapterType: "process" }).returning();
+    const outOfScope = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/apps/${connection.id}/finish`, {
+      method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [peer.id] } }),
+    });
+    expect(outOfScope.status).toBe(403);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toHaveLength(change === "add" ? 1 : 0);
   });
 
   it("checks finish access, all-agent sharing, and retained targets against both management grants", async () => {

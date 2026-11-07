@@ -1,7 +1,7 @@
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
@@ -19,12 +19,19 @@ import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
+import { pinNativeProviderArtifactsForBackup, releaseRetiredNativeProviderArtifacts, restoreNativeProviderArtifacts, retainNativeProviderArtifacts,
+  type NativeProviderArtifactReceipt, type NativeProviderArtifactSource } from "./native-provider-artifacts.js";
+import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import type { SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
+import type { SettledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
 type Binding = { companyId: string; scopeDigest: string; id: string };
 type Reference = Binding & {
   schema: typeof SCHEMA; objectKey: string; sha256: string; byteSize: number;
   material: Record<string, unknown>; manifestSha256: string;
+  providerArtifacts?: NativeProviderArtifactReceipt;
 };
 type Row = typeof nativeHarnessBackups.$inferSelect;
 type OfflineOwner = { kind: "offline_migration"; companyId: string; issueId: string; runId: string;
@@ -92,9 +99,17 @@ export async function nativeHarnessBackupOwner(db: Db, input: { companyId: strin
   if (!row || !row.leaseOwner && (row.phase !== "committed" || !row.resultId)) fail("owner_missing");
   return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointFenceOwner;
 }
-async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner,
-  inactiveSource?: InactiveSource) {
+async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner | SettledNativeHarnessBackupOwner,
+  inactiveSource?: InactiveSource, signal?: AbortSignal) {
   if (inactiveSource && "kind" in owner) fail("prestage_requires_runtime_owner");
+  if ("kind" in owner && owner.kind === "settled_native_harness_backup") {
+    await (await import("./native-harness-preservation-source.js")).assertSettledNativeHarnessBackupSource(tx as unknown as Db, owner, signal);
+    return;
+  }
+  if ("kind" in owner && owner.kind === "settled_controller_archive") {
+    await (await import("./native-controller-archive-source.js")).assertSettledControllerArchiveSource(tx as unknown as Db, owner);
+    return;
+  }
   const checkpointOwner = "kind" in owner ? null : await lockNativeRunnerCheckpointOwner(tx, owner);
   const [task] = await tx.select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues)
     .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("share");
@@ -174,43 +189,63 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
   }
 }
 
+export async function assertNativeHarnessBackupOwner(db: Db, owner: NativeRunnerCheckpointFenceOwner): Promise<void> {
+  await db.transaction(tx => fence(tx, owner));
+}
+
 export async function persistNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
+  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner | SettledControllerArchiveOwner | SettledNativeHarnessBackupOwner;
   scopeDigest: string; root: string; signal?: AbortSignal; maxArchiveBytes?: number;
   inactiveSource?: { normalizedSessionId: string; runnerInstanceId: string; providerLeaseId: string };
+  providerArtifacts?: NativeProviderArtifactSource;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");
+  if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup"
+    && (input.scopeDigest !== input.owner.scopeDigest || input.root !== input.owner.root)) fail("preservation_source_changed");
+  if (input.providerArtifacts) {
+    if ("kind" in input.owner) fail("provider_artifacts_require_runtime_owner");
+    const receipt = await retainNativeProviderArtifacts({ ...input, owner: input.owner, source: input.providerArtifacts });
+    const manifestPath = join(input.root, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, providerArtifacts: receipt }), { mode: 0o600 });
+  }
   const source = input.inactiveSource ? await readNativeHarnessBackupSource(input.root) : undefined;
   if (source === null) fail("prestage_source_changed");
   const manifestBytes = source?.manifestBytes ?? await readFile(join(input.root, "manifest.json"));
+  const providerArtifacts = JSON.parse(manifestBytes.toString("utf8")).providerArtifacts as NativeProviderArtifactReceipt | undefined;
   const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
+  if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup"
+    && manifestSha256 !== input.owner.manifestSha256) fail("preservation_source_changed");
   const inactiveSource = input.inactiveSource ? { ...input.inactiveSource, root: input.root, manifestSha256, scopeDigest: input.scopeDigest } : undefined;
   const binding = { companyId: input.owner.companyId, scopeDigest: input.scopeDigest, id: randomUUID() };
   const scratch = await mkdtemp(join(os.tmpdir(), "pc-harness-upload-"));
   const key = randomBytes(32);
+  const publications: ActivityPublication[] = [];
   try {
     const archive = join(scratch, "archive"), encrypted = join(scratch, "encrypted");
-    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes);
+    await captureNativeHarnessArchive(input.root, archive, input.signal, input.maxArchiveBytes, providerArtifacts ? ["provider-artifacts"] : []);
     const plaintext = await digest(archive, input.signal), iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(aad(binding));
     await pipeline(createReadStream(archive), cipher, createWriteStream(encrypted, { flags: "wx", mode: 0o600 }), { signal: input.signal });
-    const ref: Reference = { schema: SCHEMA, ...binding, manifestSha256,
+    const ref: Reference = { schema: SCHEMA, ...binding, manifestSha256, ...(providerArtifacts ? { providerArtifacts } : {}),
       objectKey: `${binding.companyId}/native-harness-backups/${binding.scopeDigest}/${binding.id}.pchn`,
       ...await digest(encrypted, input.signal),
       material: createLocalEncryptedCipher("write").encrypt(JSON.stringify({ schema: SCHEMA, ...binding,
         key: key.toString("base64"), iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), plaintext })) };
     if (ref.byteSize > MAX_NATIVE_HARNESS_OBJECT_BYTES) fail("size_limit_exceeded");
     await input.db.transaction(async tx => {
-      await fence(tx, input.owner, inactiveSource);
+      await fence(tx, input.owner, inactiveSource, input.signal);
       await tx.insert(nativeHarnessBackups).values({ ...binding, issueId: input.owner.issueId, runId: input.owner.runId,
         manifestSha256, reference: ref });
+      if (providerArtifacts) await pinNativeProviderArtifactsForBackup(tx, { companyId: input.owner.companyId,
+        runId: input.owner.runId, backupId: binding.id, receipt: providerArtifacts });
     });
     await input.storage.putFile({ companyId: ref.companyId, namespace: "native-harness-backups", objectKey: ref.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
       byteSize: ref.byteSize, sha256: ref.sha256, signal: input.signal });
     await receive(input.storage, ref, undefined, input.signal);
     await input.db.transaction(async tx => {
-      await fence(tx, input.owner, inactiveSource);
+      await fence(tx, input.owner, inactiveSource, input.signal);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${ref.companyId}:${ref.scopeDigest}`}, 0))`);
       const [pending] = await tx.select({ status: nativeHarnessBackups.status }).from(nativeHarnessBackups)
         .where(eq(nativeHarnessBackups.id, ref.id)).for("update");
@@ -220,12 +255,19 @@ export async function persistNativeHarnessBackup(input: {
           eq(nativeHarnessBackups.status, "current"), sql`${nativeHarnessBackups.runId} <> ${input.owner.runId}::uuid`,
           sql`${heartbeatRuns.createdAt} >= (select created_at from heartbeat_runs where id = ${input.owner.runId}::uuid)`)).limit(1);
       if (successor) fail("owner_superseded");
-      await fence(tx, input.owner, inactiveSource);
+      await fence(tx, input.owner, inactiveSource, input.signal);
       await tx.update(nativeHarnessBackups).set({ status: "superseded", updatedAt: new Date() })
         .where(and(scope(ref), eq(nativeHarnessBackups.status, "current")));
       await tx.update(nativeHarnessBackups).set({ status: "current", updatedAt: new Date() })
         .where(and(eq(nativeHarnessBackups.id, ref.id), eq(nativeHarnessBackups.status, "pending")));
+      if ("kind" in input.owner && input.owner.kind === "settled_native_harness_backup") {
+        await logActivity(tx as unknown as Db, { companyId: input.owner.companyId, actorType: "system", actorId: "native-harness-preservation",
+          action: "native_harness_backup_preserved", entityType: "heartbeat_run", entityId: input.owner.runId,
+          agentId: input.owner.agentId, runId: input.owner.runId,
+          details: { scopeDigest: ref.scopeDigest, manifestSha256, backupId: ref.id, originalFilesRetained: true } }, publications);
+      }
     });
+    for (const publication of publications) publishActivity(publication);
   } finally { key.fill(0); await removeNativeHarnessBackup(scratch); }
 }
 
@@ -243,7 +285,13 @@ export async function restoreDurableNativeHarnessBackup(input: {
   const localManifest = await readFile(join(current, "manifest.json")).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null; throw error;
   });
-  if (localManifest && `sha256:${createHash("sha256").update(localManifest).digest("hex")}` === ref.manifestSha256) return true;
+  if (localManifest && `sha256:${createHash("sha256").update(localManifest).digest("hex")}` === ref.manifestSha256) {
+    if (canonicalProviderPackJson(JSON.parse(localManifest.toString("utf8")).providerArtifacts)
+      !== canonicalProviderPackJson(ref.providerArtifacts)) fail("provider_artifacts_mismatch");
+    if (ref.providerArtifacts) await restoreNativeProviderArtifacts({ ...input, receipt: ref.providerArtifacts,
+      targetRoot: join(current, "provider-artifacts") });
+    return true;
+  }
   const scratch = await mkdtemp(join(os.tmpdir(), "pc-harness-restore-"));
   const key = Buffer.from(wrapped.key, "base64");
   try {
@@ -259,6 +307,10 @@ export async function restoreDurableNativeHarnessBackup(input: {
     await restoreNativeHarnessArchive(archive, restored, input.signal);
     const manifest = await readFile(join(restored, "manifest.json"));
     if (`sha256:${createHash("sha256").update(manifest).digest("hex")}` !== ref.manifestSha256) fail("manifest_mismatch");
+    const restoredManifest = JSON.parse(manifest.toString("utf8"));
+    if (canonicalProviderPackJson(restoredManifest.providerArtifacts) !== canonicalProviderPackJson(ref.providerArtifacts)) fail("provider_artifacts_mismatch");
+    if (ref.providerArtifacts) await restoreNativeProviderArtifacts({ ...input, receipt: ref.providerArtifacts,
+      targetRoot: join(restored, "provider-artifacts") });
     const { mkdir, cp } = await import("node:fs/promises");
     await mkdir(input.backupRoot, { recursive: true, mode: 0o700 });
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
@@ -286,6 +338,8 @@ export async function deleteRetiredNativeHarnessBackup(db: Db, storage: StorageS
     eq(nativeHarnessBackups.id, id), eq(nativeHarnessBackups.status, "retired")));
   if (!row) return false;
   const ref = reference(row);
+  if (ref.providerArtifacts) await releaseRetiredNativeProviderArtifacts({ db, storage, companyId: row.companyId,
+    runId: row.runId, backupId: row.id, receipt: ref.providerArtifacts, signal });
   await storage.deleteObject(ref.companyId, ref.objectKey, { allVersions: true, signal });
   await db.delete(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.id, id), eq(nativeHarnessBackups.status, "retired")));
   return true;
