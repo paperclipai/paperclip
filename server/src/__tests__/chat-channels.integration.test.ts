@@ -67977,6 +67977,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(successor).toMatchObject({ status: "queued", retryOfRunId: f.runId, contextSnapshot: {
         source: "chat:telegram", wakeCommentIds: [f.action.payload.commentId], taskRetryRequestId: click.body.requestId,
       } });
+      expect(successor.contextSnapshot?.forceFreshSession).toBe(true);
+      // Use the same canonical projection as heartbeat/task-context before
+      // execution. The chat payload carries a source reference, never a copy
+      // of operator authority or a fabricated provider outcome.
+      const { buildExecutionContinuation } = await import("../services/execution-continuation.js");
+      const continuation = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+        runId: successor.id, context: successor.contextSnapshot ?? {}, summary: null, exposeLowTrustRaw: false });
+      expect(continuation.trigger.sourceRunId).toBe(f.runId);
+      expect(continuation.recoveryOutcomes).toContainEqual({ recoveryActionId: action.id,
+        decision: expect.objectContaining({ runId: f.runId, controllerStopped: true, providerStopped: true,
+          actionOutcome: "mixed", outcomeEvidence: evidence }) });
       await f.service.processFailedChatRunRetry(click.body.chatActionId);
       expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
