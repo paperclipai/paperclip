@@ -10,7 +10,7 @@
   "stopSessionChanged": "Stop was not accepted because your session changed.",
   "stopOtherOperator": "This Stop request belongs to another operator.",
   "runnerUnavailable": "Could not confirm runner availability for this environment. Retry setup.",
-  "qualificationUnconfirmed": "The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced.",
+  "qualificationUnconfirmed": "The environment's platform qualification could not be confirmed. Retry the connection probe.",
   "audioBlocked": "Audio playback remains blocked",
   "draftStorageBlocked": "Draft file storage is blocked",
   "hangupUnconfirmed": "Speko has not confirmed hangup yet",

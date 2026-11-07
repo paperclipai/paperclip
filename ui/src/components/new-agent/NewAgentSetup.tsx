@@ -10,7 +10,6 @@ import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
-import { AgentRunnerSelect } from "../AgentRunnerSelect";
 import { SelectPopover } from "../ui/select";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
@@ -1112,14 +1111,6 @@ function Setup({
                         }).catch(cause => setError(cause instanceof Error ? cause.message : { key: "final-configuration:feedback_couldNotSaveAgentSetup_dc28937" }));
                       }}
                     /></fieldset> : <p role="status" className="text-sm text-muted-foreground">{t("agent-config:loadingConnectionSettings_7b90c54")}</p>}
-                    {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="mt-5 space-y-3">
-                      <summary className="cursor-pointer text-sm text-muted-foreground">{t("agent-config:advanced_4d06472")}</summary>
-                      <AgentRunnerSelect value={runner} disabled={busy}
-                        pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
-                        defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
-                        supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
-                        onChange={value => { setRunner(value); resetTest(); }} />
-                    </details>}
                   </OnboardingCard>
                 ) : screen === "saved" && created ? (
                   <div className="space-y-6">
@@ -1465,14 +1456,6 @@ function Setup({
                           </div>
                           </>
                         )}
-                        {["codex_local", "claude_local", "opencode_local", "pi_local", "cursor_cloud"].includes(adapterType) && <details className="space-y-3">
-                          <summary className="cursor-pointer text-sm text-muted-foreground">{t("agent-config:advanced_4d06472")}</summary>
-                          <AgentRunnerSelect value={runner} disabled={busy}
-                            pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
-                            defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
-                            supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
-                            onChange={value => { setRunner(value); resetTest(); }} />
-                        </details>}
                       </section>
                       {adapterType !== "hermes_gateway" && adapterType !== "cursor_cloud" && (
                         <section className="space-y-5">

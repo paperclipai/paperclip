@@ -673,7 +673,12 @@
       "info": "Info",
       "warn": "Warning",
       "error": "Error"
-    }
+    },
+    "defaultProviderAccount": "This will be your default {{provider}} account.",
+    "chooseSubscriptionAccount": "Choose a subscription account in Connections, then retry setup.",
+    "chooseConnectedApiAccount": "Choose a connected API account before continuing.",
+    "replaceConnectedApiAccount": "Choose a connected API account or Enter a new API key to replace this agent’s connected account.",
+    "retrySignIn": "Retry sign-in"
   },
   "roles": {
     "owner": "Owner",

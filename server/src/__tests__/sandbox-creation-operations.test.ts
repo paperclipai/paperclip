@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,7 @@ import { HttpError } from "../errors.js";
 import * as secretOwner from "../services/secrets.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
+import { readProcessStartedAt } from "../services/hot-restart.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
@@ -333,5 +334,108 @@ describe("durable sandbox creation through the runtime entry point", () => {
     expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "needs_reconciliation" })]);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
     await expect(acquire()).rejects.toThrow("requires reconciliation"); expect(creates).toBe(1);
+  });
+
+  describe("after the creating server exits mid-acquire", () => {
+    async function exitedPid(): Promise<number> {
+      const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise(resolve => child.once("exit", resolve));
+      return child.pid!;
+    }
+    // The provider allocated the sandbox; the server exited before committing the lease.
+    async function interruptedCreation(controller: (current: Record<string, unknown>) => Promise<Record<string, unknown>>) {
+      loseReply = true;
+      await expect(acquire()).rejects.toThrow("Lost provider reply");
+      const [operation] = await db.select().from(sandboxCreationOperations);
+      expect(operation).toMatchObject({ state: "pending" });
+      expect(operation!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 25 * 60_000);
+      const current = operation!.metadata.creationController as Record<string, unknown>;
+      await db.update(sandboxCreationOperations).set({ metadata: { ...operation!.metadata, creationController: await controller(current) } })
+        .where(eq(sandboxCreationOperations.id, operation!.id));
+      return operation!;
+    }
+    const inspections = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease");
+
+    it("destroys the sandbox on the next sweep instead of waiting for the settle deadline", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      await runtime().flushDeferredOrphanCleanups();
+      const [lease] = await db.select().from(environmentLeases);
+      expect(lease).toMatchObject({ status: "pending_cleanup", companyId, providerLeaseId: resources.get(operation.id),
+        failureReason: "interrupted_sandbox_creation" });
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "cleanup_pending", leaseId: lease!.id })]);
+      await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
+      expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
+    });
+    it("pages past more unprovable creations than one page to find an abandoned one", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const { id: _id, runId: _runId, ...row } = operation;
+      // Sorted ahead of the abandoned intent: creators on another host cannot be judged.
+      await db.insert(sandboxCreationOperations).values(Array.from({ length: 105 }, (_, index) => ({ ...row,
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, runId: randomUUID(),
+        metadata: { ...row.metadata, creationController: { ...(row.metadata.creationController as object), bootId: randomUUID(), pid, hostHash: "f".repeat(32) } } })));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup",
+        providerLeaseId: resources.get(operation.id) })]);
+    });
+    it("treats a restarted server that reused the creator PID as a different process", async () => {
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(),
+        processStartedAt: new Date(Date.parse(String(current.processStartedAt)) - 60_000).toISOString() }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup" })]);
+    });
+    it("leaves a creation owned by this live server untouched until its deadline", async () => {
+      await interruptedCreation(async current => current);
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(await db.select().from(sandboxCreationOperations)).toEqual([expect.objectContaining({ state: "pending" })]);
+      expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    });
+    it("leaves a creation owned by another live server process untouched", async () => {
+      const pid = process.ppid;
+      const startedAt = await readProcessStartedAt(pid);
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid, processStartedAt: startedAt }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(resources.size).toBe(1);
+    });
+    it("does not judge a creator on another host", async () => {
+      const pid = await exitedPid();
+      await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid, hostHash: "f".repeat(32) }));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      expect(resources.size).toBe(1);
+    });
+    it("keeps ownership when an early lookup finds no sandbox yet", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const resource = resources.get(operation.id)!;
+      resources.delete(operation.id); // Not materialized at the provider yet.
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(1);
+      const [pending] = await db.select().from(sandboxCreationOperations);
+      expect(pending).toMatchObject({ state: "pending" });
+      expect(pending!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+      // A late allocation is still found and removed by the retained owner.
+      resources.set(operation.id, resource);
+      await due(); await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup", providerLeaseId: resource })]);
+    });
+    it("never touches a sandbox whose lease was committed", async () => {
+      const { lease } = await acquire();
+      const pid = await exitedPid();
+      const [operation] = await db.select().from(sandboxCreationOperations);
+      expect(operation).toMatchObject({ state: "attached" });
+      await db.update(sandboxCreationOperations).set({ metadata: { ...operation!.metadata,
+        creationController: { ...(operation!.metadata.creationController as object), bootId: randomUUID(), pid } } });
+      await runtime().flushDeferredOrphanCleanups();
+      expect(inspections()).toHaveLength(0);
+      expect(await environmentService(db).getLeaseById(lease.id)).toMatchObject({ status: "active" });
+      expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    });
   });
 });

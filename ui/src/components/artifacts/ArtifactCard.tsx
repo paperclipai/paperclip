@@ -27,7 +27,7 @@ function PlaceholderPreview({ label }: { label?: string }) {
   useTranslation("task-components");
   return (
     <PreviewFrame className="flex items-center justify-center">
-      <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
+      <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
         <Paperclip className="h-7 w-7" aria-hidden="true" />
         {label ? <span className="text-(length:--text-micro) font-medium uppercase tracking-wide">{label}</span> : null}
       </div>

@@ -1443,5 +1443,10 @@
   "effortHigh": "高",
   "effortXhigh": "极高",
   "effortMax": "最大",
-  "paperclipSandbox": "Paperclip 沙箱"
+  "paperclipSandbox": "Paperclip 沙箱",
+  "waitingForAuth": "等待授权…",
+  "chatWithAgent": "与 {{name}} 聊天",
+  "chatWithThisAgent": "与此智能体聊天",
+  "unreadMessagesFromAgent_one": "来自 {{name}} 的 {{count}} 条未读消息",
+  "unreadMessagesFromAgent_other": "来自 {{name}} 的 {{count}} 条未读消息"
 }

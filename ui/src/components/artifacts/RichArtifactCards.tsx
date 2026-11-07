@@ -1,4 +1,6 @@
 import { t, useTranslation, Trans } from "@/i18n";
+import { isPatchFile } from "@/lib/patch";
+import { PatchLines } from "@/components/PatchLines";
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -83,7 +85,7 @@ function Footer({
 function Card({ children }: { children: ReactNode }) {
   useTranslation("task-components");
   return (
-    <article className="w-full overflow-hidden rounded-lg border border-border bg-card text-card-foreground">
+    <article className="w-full min-w-0 overflow-hidden rounded-lg border border-border bg-card text-card-foreground">
       {children}
     </article>
   );
@@ -309,12 +311,17 @@ export function CommitCard(props: CommitCardProps) {
   );
 }
 
-function Markdown({ body }: { body: string }) {
+function Markdown({ body, preview = false }: { body: string; preview?: boolean }) {
   useTranslation("task-components");
   return (
     <div className="flex flex-col gap-3 text-sm leading-relaxed">
       <ReactMarkdown
         components={{
+          pre: ({ children }) => <pre className={preview
+            ? "paperclip-patch-preview min-w-0 max-w-full overflow-hidden whitespace-pre font-mono text-xs"
+            : "min-w-0 max-w-full overflow-x-auto whitespace-pre-wrap wrap-anywhere font-mono text-xs"}>{children}</pre>,
+          code: ({ className, children }) => <code className={className}>{/\blanguage-(diff|patch)\b/i.test(className ?? "")
+            ? <PatchLines text={String(children)} /> : children}</code>,
           h1: ({ children }) => (
             <h3 className="text-lg font-semibold">{children}</h3>
           ),
@@ -376,6 +383,7 @@ function Markdown({ body }: { body: string }) {
 }
 
 export interface DocumentCardProps extends ArtifactIdentity {
+  patch?: boolean;
   filename: string;
   revision?: number | null;
   body: string;
@@ -385,6 +393,12 @@ export interface DocumentCardProps extends ArtifactIdentity {
 }
 export function DocumentCard(props: DocumentCardProps) {
   useTranslation("task-components");
+  const patch = props.patch ?? isPatchFile(props.filename);
+  const content = (body: string, preview = false) => patch
+    ? <pre className={preview
+      ? "paperclip-patch-preview m-0 min-w-0 overflow-hidden whitespace-pre font-mono text-xs leading-5"
+      : "m-0 min-w-0 whitespace-pre-wrap wrap-anywhere font-mono text-xs leading-5"}><code><PatchLines text={body} /></code></pre>
+    : <Markdown body={body} preview={preview} />;
   return (
     <Card>
       {props.body && (
@@ -392,12 +406,12 @@ export function DocumentCard(props: DocumentCardProps) {
           className="max-h-52 overflow-hidden border-b border-border bg-muted/20 p-5"
           inert
         >
-          <Markdown body={props.body.slice(0, 4000)} />
+          {content(props.body.slice(0, 4000), true)}
         </div>
       )}
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <FileText className="size-4" /> Markdown
+          <FileText className="size-4" /> {patch ? t("task-components:patchDocument") : "Markdown"}
           {props.revision != null && t("final-components-a:revisionRevision_2e30c066", { revision: props.revision })}
         </span>
         <Identity {...props} />
@@ -425,7 +439,7 @@ export function DocumentCard(props: DocumentCardProps) {
                 description={props.filename}
                 action={t("final-components-a:readDocument_a6be85ca")}
               >
-                <Markdown body={props.body} />
+                {content(props.body)}
               </Viewer>
             )}
           </div>

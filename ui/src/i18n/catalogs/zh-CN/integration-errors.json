@@ -10,7 +10,7 @@
   "stopSessionChanged": "您的会话已发生变化，停止请求未被接受。",
   "stopOtherOperator": "此停止请求属于另一位操作人员。",
   "runnerUnavailable": "无法确认此环境中的运行器可用性。请重试设置。",
-  "qualificationUnconfirmed": "无法确认此环境的平台资格验证结果。请重试连接探测，或在高级设置中选择旧版运行器。",
+  "qualificationUnconfirmed": "无法确认环境的平台资格。请重试连接探测。",
   "audioBlocked": "音频播放仍被阻止",
   "draftStorageBlocked": "草稿文件存储被阻止",
   "hangupUnconfirmed": "Speko 尚未确认挂断",

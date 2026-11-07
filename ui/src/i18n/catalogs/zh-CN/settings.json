@@ -673,7 +673,12 @@
       "info": "信息",
       "warn": "警告",
       "error": "错误"
-    }
+    },
+    "defaultProviderAccount": "这将成为你的默认 {{provider}} 账号。",
+    "chooseSubscriptionAccount": "请在连接中选择订阅账号，然后重试设置。",
+    "chooseConnectedApiAccount": "请选择已连接的 API 账号后再继续。",
+    "replaceConnectedApiAccount": "请选择已连接的 API 账号，或输入新的 API 密钥以替换此智能体已连接的账号。",
+    "retrySignIn": "重试登录"
   },
   "roles": {
     "owner": "所有者",

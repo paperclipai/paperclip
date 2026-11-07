@@ -1443,5 +1443,10 @@
   "effortHigh": "high",
   "effortXhigh": "xhigh",
   "effortMax": "max",
-  "paperclipSandbox": "Paperclip Sandbox"
+  "paperclipSandbox": "Paperclip Sandbox",
+  "waitingForAuth": "Waiting for auth…",
+  "chatWithAgent": "Chat with {{name}}",
+  "chatWithThisAgent": "Chat with this agent",
+  "unreadMessagesFromAgent_one": "{{count}} unread message from {{name}}",
+  "unreadMessagesFromAgent_other": "{{count}} unread messages from {{name}}"
 }

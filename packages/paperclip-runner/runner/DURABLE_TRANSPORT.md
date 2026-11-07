@@ -179,6 +179,18 @@ validate the exact Runner identity and acknowledged sequence cut.
 
 ### Hosted park and reclaim loop
 
+On Unix builds, `paperclip-runnerd --build-metadata` reports
+`privateHostControlVersion: 1` for the existing private fd 4 protocol below.
+Other builds omit this field. A consumer must verify the selected executable's
+identity and require the exact supported version before using this channel;
+an absent or unknown version does not establish support. Recovery and warm-task
+versions do not establish it either. Ordinary artifact admission can ignore this
+optional field.
+
+This field describes protocol support only. It does not mean a provider is ready
+to park or that a host implements the public `releaseResumeVersion` contract.
+Runner readiness checks and host sleep/wake qualification are still required.
+
 A trusted Launcher may pass a connected Unix stream at fd 4 and start durable
 listener mode with `--host-control-fd 4`. The descriptor is close-on-exec before
 provider startup. The private channel accepts the `park`, `claim`, and `retire`
@@ -205,3 +217,25 @@ This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake
 verification are required before rollout. Providers without an eligibility
 implementation remain ineligible.
+
+
+### Optional controller release and resume
+
+An explicit session `release()` returns a copy of A's confirmed six-field source
+identity. It returns `false` when support is absent or work is still active.
+Those refusals leave active work and its controller route in place. Release and
+released-source adoption require a registration checkpoint hook that owns process
+cleanup. Without it, release returns `false` and adoption fails before claim.
+
+For an eligible release, the controller first makes its existing route quiet,
+then waits for the host acknowledgement before it closes that route. A failed
+request can have taken effect. Its retry keeps the same source identity; a
+resume retry also keeps the exact bootstrap ticket. The route stays quiet while
+the result is uncertain. Resume's pinned ticket deadline bounds claim
+reconciliation. A late reply cannot grant authentication or work permission.
+
+A `resumed` result permits authentication under A. Ordinary `run.attach` must
+still establish B before B can start work. An `unavailable` result reports known
+absence of the retained Runner; it does not prove that descendants have stopped
+or release their cleanup ownership. This optional contract adds no automatic
+release policy or capability advertisement.

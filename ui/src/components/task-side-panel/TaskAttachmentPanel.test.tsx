@@ -2,6 +2,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { act } from "react";
+import { i18n } from "@/i18n";
+import { describeUiError } from "@/lib/localized-ui-error";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskAttachmentPanel, TextAttachmentPreview, readTextPreview, TEXT_PREVIEW_MAX_BYTES } from "./TaskAttachmentPanel";
@@ -27,7 +29,7 @@ describe("text attachment tabs", () => {
   });
 
   it("classifies text without treating PDF or images as text", () => {
-    for (const [contentType, originalFilename] of [["text/plain", "notes.txt"], ["application/octet-stream", "AGENTS.md"], ["application/json", "report.json"]]) expect(isTextAttachment({ contentType, originalFilename })).toBe(true);
+    for (const [contentType, originalFilename] of [["application/octet-stream", "fix.patch"], ["application/octet-stream", "fix.diff"], ["text/x-patch", "download"], ["text/plain", "notes.txt"], ["application/octet-stream", "AGENTS.md"], ["application/json", "report.json"]]) expect(isTextAttachment({ contentType, originalFilename })).toBe(true);
     expect(isTextAttachment({ contentType: "application/pdf", originalFilename: "report.pdf" })).toBe(false);
     expect(isTextAttachment({ contentType: "image/png", originalFilename: "fake.txt" })).toBe(false);
   });
@@ -70,6 +72,50 @@ describe("text attachment tabs", () => {
     expect(host.querySelector("table")).not.toBeNull();
     await act(async () => root.unmount());
   });
+  it.each(["fix.patch", "fix.diff"])("highlights %s while preserving literal source and download", async (title) => {
+    const host = document.createElement("div"); const root = createRoot(host);
+    const text = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+<script>new</script>\n";
+    await act(async () => root.render(<TextAttachmentPreview title={title} markdown={false} text={text} downloadUrl="/download" />));
+    expect(host.querySelector("pre")?.textContent).toBe(text);
+    expect(host.querySelector('[data-patch-line="add"]')?.textContent).toBe("+<script>new</script>\n");
+    expect(host.querySelector('[data-patch-line="remove"]')?.textContent).toBe("-old\n");
+    expect(host.querySelector("script")).toBeNull();
+    expect(host.querySelector("a")?.getAttribute("href")).toBe("/download");
+    await act(async () => root.unmount());
+  });
+  it("localizes patch labels without changing literal source or download", async () => {
+    const host = document.createElement("div"); const root = createRoot(host);
+    const text = "--- a/file\n+++ b/file\n-old\n+new\n";
+    try {
+      await act(async () => root.render(<TextAttachmentPreview title="fix.patch" markdown={false} text={text} downloadUrl="/download" />));
+      expect(host.querySelector("pre")?.getAttribute("aria-label")).toBe("fix.patch patch");
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(host.querySelector("pre")?.getAttribute("aria-label")).toBe("fix.patch 补丁");
+      expect(host.querySelector("pre")?.textContent).toBe(text);
+      expect(host.querySelector("a")?.getAttribute("href")).toBe("/download");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(host.querySelector("pre")?.getAttribute("aria-label")).toBe("fix.patch patch");
+    } finally {
+      await act(async () => root.unmount());
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it("retains localized shared-reader errors and the raw HTTP status across locales", async () => {
+    const error = await readTextPreview(new Response("denied", { status: 403 })).catch(error => error);
+    expect(error.status).toBe(403);
+    expect(error.message).toBe("Could not load file (403).");
+    const english = describeUiError(error).body;
+    try {
+      await i18n.changeLanguage("zh-CN");
+      expect(describeUiError(error).body).toContain("403");
+      expect(describeUiError(error).body).not.toBe(english);
+      expect(error.message).toBe("Could not load file (403).");
+      expect(error.status).toBe(403);
+    } finally { await i18n.changeLanguage("en"); }
+    expect(describeUiError(error).body).toBe(english);
+  });
+
   it("shows plain text literally without Markdown controls", async () => {
     const host = document.createElement("div"); const root = createRoot(host);
     await act(async () => root.render(<TextAttachmentPreview title="notes.txt" markdown={false} text="<script>alert(1)</script>" downloadUrl="/download" />));

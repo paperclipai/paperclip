@@ -406,5 +406,6 @@
   "earlierStepsDone_one": "前面的 {{count}} 个步骤已完成",
   "earlierStepsDone_other": "前面的 {{count}} 个步骤已完成",
   "moreSteps_one": "另外 {{count}} 个步骤",
-  "moreSteps_other": "另外 {{count}} 个步骤"
+  "moreSteps_other": "另外 {{count}} 个步骤",
+  "arguments": "参数"
 }

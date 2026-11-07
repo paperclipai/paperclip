@@ -97,6 +97,12 @@ When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list.
 
+Agent-owned tasks show **In Progress** only while a task-linked run is queued
+or running. When execution ends, their visible status reflects recovery
+(**Blocked**), a pending response or review (**In Review**), monitoring, or
+remaining work (**Todo**). The stored lifecycle status still controls execution
+and recovery. Human-owned tasks retain their selected ownership status.
+
 Tasks waiting between automatic checks show **Monitoring** with a blue clock.
 Task lists, board columns, filters, search, recent navigation and task properties
 use the same read-only display state. The task retains its execution lifecycle
@@ -145,6 +151,15 @@ Task reply and new-task composers submit with Enter by default; Shift+Enter
 adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
 restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
 submits.
+
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
 
 ### Task collection creation filters
 

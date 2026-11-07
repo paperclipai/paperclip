@@ -58,7 +58,7 @@ export async function qualifyRunnerEnvironment(input: {
       throw new Error(probe.details.platformQualificationDiagnostic);
     }
     if (probe.summary) throw new Error(probe.summary);
-    throw localizeUiError(new Error("The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced."), { key: "integration-errors:qualificationUnconfirmed" });
+    throw localizeUiError(new Error("The environment's platform qualification could not be confirmed. Retry the connection probe."), { key: "integration-errors:qualificationUnconfirmed" });
   }
   adapters = await input.readAdapters();
   if (!input.isCurrent()) return undefined;

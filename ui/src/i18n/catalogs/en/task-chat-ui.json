@@ -406,5 +406,6 @@
   "earlierStepsDone_one": "{{count}} earlier step done",
   "earlierStepsDone_other": "{{count}} earlier steps done",
   "moreSteps_one": "+{{count}} more step",
-  "moreSteps_other": "+{{count}} more steps"
+  "moreSteps_other": "+{{count}} more steps",
+  "arguments": "Arguments"
 }

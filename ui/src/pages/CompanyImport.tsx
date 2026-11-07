@@ -1691,7 +1691,7 @@ export function CompanyImport() {
         const available = nativeHarness ? runnerInstalled : adapterChoice === "openai_dot" ? dotAvailable : adapterChoice === "muse" ? museAvailable : nativeRunnerAvailable;
         if (!available && (availableAdapterTypes || !nativeHarness)) {
           availabilityWarning = nativeHarness
-            ? translateAgentPage("agents:paperclip_runner_is_unavailable_here_choose_a_runner")
+            ? translateAgentPage("agents:paperclip_runner_unavailable_choose_harness")
             : translateAgentPage("agents:paperclip_runner_provider_requires_its_experimental_feature_to", { value1: String(a.adapterConfig?.provider) });
         }
       } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {

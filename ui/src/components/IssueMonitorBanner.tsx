@@ -69,6 +69,7 @@ export interface MonitorSurfaceCopy {
   pullRequestReview?: boolean;
   automaticChecksPaused?: boolean;
   checkUnavailable?: boolean;
+  executionWait?: boolean;
 }
 
 function capitalize(value: string): string {
@@ -86,6 +87,7 @@ export function buildMonitorSurfaceCopy(
   scheduledRetryReason?: string | null,
   pendingPullRequestReviews = 0,
   issueStatus?: string,
+  hasActiveRun = false,
 ): MonitorSurfaceCopy | null {
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
@@ -118,7 +120,21 @@ export function buildMonitorSurfaceCopy(
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
-  if (derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0) {
+  const awaitingPullRequestReview = derived.source === "monitor" && derived.serviceName?.toLowerCase() === "github" && pendingPullRequestReviews > 0;
+  if (derived.source === "monitor" && hasActiveRun) {
+    const hint = t("task-components:monitorWaitForRunHint");
+    return {
+      bannerTitle: t("task-components:monitorWaitForRun"),
+      stripTitle: t("task-components:monitorWaitForRun"),
+      bannerMeta: [hint, t("task-components:monitorScheduledLocal", { absolute })],
+      stripMeta: [hint, t("task-components:monitorScheduled", { absolute })],
+      tone: "info",
+      executionWait: true,
+      checkUnavailable: true,
+      pullRequestReview: awaitingPullRequestReview,
+    };
+  }
+  if (awaitingPullRequestReview) {
     return {
       get bannerTitle() { return t("final-components-b:IssueMonitorBanner.Pull_request_review_requested_49c186"); },
       get stripTitle() { return t("final-components-b:IssueMonitorBanner.Pull_request_review_requested_49c186"); },
@@ -181,7 +197,7 @@ export function buildMonitorSurfaceCopy(
   };
 }
 
-function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number): MonitorSurfaceCopy | null {
+function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number, hasActiveRun: boolean): MonitorSurfaceCopy | null {
   // `nextCheckAt` is stable for a given issue; derive once to seed the ticking
   // countdown cadence, then re-derive against the live clock so the surfaces
   // roll scheduled → due → overdue on their own.
@@ -190,7 +206,7 @@ function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number):
     return derived.source === "monitor" && areAutomaticMonitorChecksPaused(issue) ? null : derived.nextCheckAt;
   }, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews, i18n.resolvedLanguage]);
+  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status, hasActiveRun), [issue, now, pendingPullRequestReviews, hasActiveRun, i18n.resolvedLanguage]);
 }
 
 function CheckNowButton({
@@ -258,6 +274,7 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
 
 export interface IssueMonitorSurfaceProps {
   issue: Issue;
+  hasActiveRun?: boolean;
   onCheckNow?: (() => void) | null;
   checkingNow?: boolean;
   workProducts?: IssueWorkProduct[] | null;
@@ -272,6 +289,7 @@ export interface IssueMonitorSurfaceProps {
  */
 export function IssueMonitorBanner({
   issue,
+  hasActiveRun = false,
   onCheckNow = null,
   checkingNow = false,
   workProducts,
@@ -280,8 +298,12 @@ export function IssueMonitorBanner({
 }: IssueMonitorSurfaceProps) {
   useTranslation("task-components");
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
-  const copy = useMonitorSurfaceCopy(issue, reviews.length);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length, hasActiveRun);
   if (!copy) return null;
+
+  // A busy workspace is a transient system wait the user cannot act on. It stays
+  // a quiet status (composer strip, properties row), never a pinned notice.
+  if (copy.workspaceWait) return null;
 
   const canCancel = onCancelMonitor && deriveMonitorState(issue).source === "monitor";
 
@@ -310,6 +332,7 @@ export function IssueMonitorBanner({
  */
 export function IssueMonitorComposerStrip({
   issue,
+  hasActiveRun = false,
   onCheckNow = null,
   checkingNow = false,
   workProducts,
@@ -318,7 +341,7 @@ export function IssueMonitorComposerStrip({
 }: IssueMonitorSurfaceProps & { className?: string }) {
   useTranslation("task-components");
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
-  const copy = useMonitorSurfaceCopy(issue, reviews.length);
+  const copy = useMonitorSurfaceCopy(issue, reviews.length, hasActiveRun);
   if (!copy) return null;
 
   return (
@@ -340,9 +363,11 @@ export function IssueMonitorComposerStrip({
       </div>
       {!copy.automaticChecksPaused ? (
         <p className="mt-1.5 text-xs text-muted-foreground">
-          {copy.pullRequestReview
+          {copy.pullRequestReview && copy.executionWait
+            ? t("task-components:monitorReviewDuringRun")
+            : copy.pullRequestReview
             ? t("task-components:reviewOnGithubThenCheckStatusTo_138c837a")
-            : copy.workspaceWait
+            : copy.workspaceWait || copy.executionWait
             ? t("task-components:youCanKeepSendingInstructionsWhileThe_863825ba")
             : t("task-components:sendingAReplyWakesTheAgentNow_c39c874e")}
         </p>

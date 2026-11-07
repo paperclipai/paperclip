@@ -232,6 +232,11 @@ by company and normalized session. Migration 0432 builds both indexes
 concurrently. A poll therefore reads a few index entries, not a run's full event
 history.
 
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a

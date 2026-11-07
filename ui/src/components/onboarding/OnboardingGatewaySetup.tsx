@@ -11,6 +11,7 @@ export function OnboardingGatewaySetup({
   environmentId,
   adapterType,
   disabled,
+  className,
   onComplete,
 }: {
   companyId: string;
@@ -18,12 +19,13 @@ export function OnboardingGatewaySetup({
   environmentId?: string;
   adapterType: "codex_local" | "claude_local";
   disabled?: boolean;
+  className?: string;
   onComplete: (binding: Exclude<AiConnectionBinding, { mode: "responsible_user" }>) => void;
 }) {
   const { t } = useTranslation("connections");
   const [open, setOpen] = useState(false);
   return <>
-    <Button type="button" variant="ghost" disabled={disabled} onClick={() => setOpen(true)}>{t("use_a_custom_gateway_c6d19f7")}</Button>
+    <Button type="button" variant="ghost" className={className} disabled={disabled} onClick={() => setOpen(true)}>{t("use_a_custom_gateway_c6d19f7")}</Button>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onKeyDown={event => event.stopPropagation()}>
         <DialogHeader>

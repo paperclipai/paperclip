@@ -4,6 +4,7 @@ import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
 import { issueFilterLabel } from "../lib/issue-filters";
+import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
 import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
 import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
@@ -14,6 +15,9 @@ import { TaskRowGroup } from "./TaskRowGroup";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { useTaskRowBudget } from "../hooks/useTaskRowBudget";
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
+import { deriveInitials } from "./Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useTaskListColumnPreferences } from "../hooks/useTaskListColumnPreferences";
 import type { TaskCollectionPreferenceLocation } from "../lib/task-collection-preferences";
 
@@ -22,6 +26,8 @@ export type TaskListItem = {
   unread?: boolean;
   createdBy?: string | null;
   assignee?: string | null;
+  assigneeAgent?: AvatarAgent | null;
+  assigneeUserAvatarUrl?: string | null;
 };
 
 export type TaskListGrouping = "none" | "status" | "project";
@@ -96,6 +102,8 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     const expanded = !collapsed.has(issue.id);
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
     const branch = issue.currentExecutionWorkspace?.branchName;
+    const assigneeName = item.assignee ?? (issue.assigneeAgentId ? "Unknown agent" : issue.assigneeUserId ? "User" : "Unassigned");
+    const assigneeUserAvatarUrl = paperclipHumanAvatarUrl(item.assigneeUserAvatarUrl);
     return (
       <Fragment key={issue.id}>
         <IssueRow
@@ -111,7 +119,15 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
           ) : undefined}
           columnValues={{
             createdBy: item.createdBy,
-            assignee: item.assignee ?? "Unassigned",
+            assignee: assigneeName,
+            assigneeAvatar: issue.assigneeAgentId ? (
+              <AgentAvatar agent={item.assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName }} size={20} />
+            ) : issue.assigneeUserId ? (
+              <Avatar size="xs" aria-hidden="true">
+                {assigneeUserAvatarUrl ? <AvatarImage src={assigneeUserAvatarUrl} alt="" /> : null}
+                <AvatarFallback>{deriveInitials(assigneeName)}</AvatarFallback>
+              </Avatar>
+            ) : null,
             project: issue.project?.name,
             parentTask: parent ? <span><span className="font-mono">{parent.identifier}</span> {parent.title}</span> : undefined,
             tags: issue.labels?.length ? <span className="inline-flex items-center gap-1">{issue.labels.map(label => <Badge key={label.id} variant="secondary" className="shrink-0 px-1.5 py-0">{label.name}</Badge>)}</span> : undefined,

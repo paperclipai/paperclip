@@ -1,4 +1,5 @@
 import { t, useTranslation } from "@/i18n";
+import { groupImageResources } from "./image-resources";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -249,10 +250,10 @@ export function TaskChatRunnerTurn({
   const final = finalRef.current.item;
   const timelineItems = paperclipRunnerTimelineItems(turnItems);
   const currentActivityItems = currentActivityStatusItems(timelineItems);
-  const timelineRows = buildTurnTimelineRows(
+  const timelineRows = groupImageResources(buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
     !terminal,
-  );
+  ));
 
   return (
     <TaskChatShimmerScope items={items}><div

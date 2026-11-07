@@ -671,6 +671,8 @@ describe("AgentConfigForm environment selector", () => {
       const values = { ...defaultCreateValues, adapterType: "claude_local", runner: "auto" as const };
       const result = await renderCreateForm([], values);
       roots.push(result.root);
+      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent?.includes("Advanced")).toBe(defaultRunner === "legacy");
       const resolved = result.onChange.mock.calls.reduce((current, [patch]) => ({ ...current, ...patch }), values);
       expect(resolved.resolvedRunner).toBe(defaultRunner);
       const config = buildClaudeLocalConfig(resolved);
@@ -734,8 +736,13 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderForm([], { adapterType, adapterConfig }, { showAdapterTypeField: true });
     roots.push(result.root);
     expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Codex");
-    await clickByText(result.container, "Advanced");
-    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain(adapterType === "paperclip_runner" ? "Paperclip Runner" : "Legacy runner");
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+    if (adapterType === "codex_local") {
+      await clickByText(result.container, "Advanced");
+      const labels = [...result.container.querySelectorAll("label")].map(label => label.textContent?.trim());
+      expect(labels).toContain("Command");
+      expect(labels).toContain("Extra args (comma-separated)");
+    }
     await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed Cody"));
     await flushReact();
     await clickByText(result.container, "Save");
@@ -862,8 +869,8 @@ describe("AgentConfigForm environment selector", () => {
     try {
       const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" } });
       roots.push(result.root);
-      await clickByText(result.container, "Advanced");
-      expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain("Paperclip Runner");
+      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
       await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runner: "paperclip" }));
     } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
@@ -1038,18 +1045,15 @@ describe("AgentConfigForm environment selector", () => {
       makeEnvironment({ id: "sandbox-2", name: "Daytona Two", driver: "sandbox", config: { provider: "daytona" } }),
     ], { adapterType, adapterConfig, defaultEnvironmentId: "sandbox-1" }, { showAdapterTypeField: true });
     roots.push(result.root);
-    await clickByText(result.container, "Advanced");
-    const runnerLabel = adapterType === "paperclip_runner" ? "Paperclip Runner" : "Legacy runner";
-
     await selectEnvironment(result.container, "sandbox-2");
     expect(result.container.querySelector('[aria-label="Environment override"]')?.textContent).toContain("Daytona Two");
-    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain(runnerLabel);
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
     await clickByText(result.container, "Save");
     expect(result.onSave).toHaveBeenLastCalledWith({ defaultEnvironmentId: "sandbox-2" });
 
     await selectEnvironment(result.container, "");
     expect(result.container.querySelector('[aria-label="Environment override"]')?.textContent).toContain("Default: Local");
-    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain(runnerLabel);
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
     await clickByText(result.container, "Save");
     expect(result.onSave).toHaveBeenLastCalledWith({ defaultEnvironmentId: null });
   });
@@ -1061,14 +1065,13 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onChange).toHaveBeenLastCalledWith({ defaultEnvironmentId: "" });
   });
 
-  it("submits only an explicit runner change and retains saved configuration for server translation", async () => {
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol", reasoningEffort: "high", env: { CODEX_HOME: { type: "secret_ref", secretId: "codex-account" } } } });
+  it.each(["codex", "claude"])("hides empty Advanced settings for the saved native %s harness", async harness => {
+    const profile = harness === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" };
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, model: "saved-model" } });
     roots.push(result.root);
-    await clickByText(result.container, "Advanced");
-    await clickElement(result.container.querySelector('[aria-label="Runner"]'));
-    await clickElement([...document.querySelectorAll('[role="option"]')].find(option => option.textContent?.startsWith("Legacy runner")));
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ runner: "legacy" });
+    const configuration = result.container.querySelector('[data-config-section="configuration"]')!;
+    expect(configuration.textContent).not.toContain("Advanced");
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
   });
 
   it.each([false, true])("keeps experimental native selection gated when enableNativeRunner is %s", async enabled => {
@@ -1089,13 +1092,13 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
   });
 
-  it("shows Claude's saved runner without legacy command controls when the experimental gate is off", async () => {
+  it("preserves Claude's saved runner without runner or legacy command controls when the experimental gate is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", modelReasoningEffort: "high" } }, { showAdapterTypeField: true });
     roots.push(result.root);
     expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Claude");
-    await clickByText(result.container, "Advanced");
-    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain("Paperclip Runner");
+    expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
     const labels = Array.from(result.container.querySelectorAll("label")).map(label => label.textContent?.trim());
     expect(labels).not.toContain("Command");
     expect(labels).not.toContain("Extra args (comma-separated)");
@@ -1111,9 +1114,10 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
     if (adapterConfig.provider === "opencode" || adapterConfig.acpxAgent === "pi") {
       expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(adapterConfig.provider === "opencode" ? "OpenCode" : "Pi");
-      await clickByText(result.container, "Advanced");
-      expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain("Paperclip Runner");
-    } else expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
+    }
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
     if (adapterConfig.acpxAgent === "pi") {
       expect(result.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
       expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
@@ -3014,6 +3018,7 @@ describe("AgentConfigForm environment selector", () => {
       "company-1",
       "codex_local",
       "resumed-session-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(findButton(result.container, "Cancel")).toBeTruthy();
   });
@@ -3785,6 +3790,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).toHaveBeenCalledWith(
       "company-1",
       "resumed-claude-session-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(findButton(result.container, "Cancel")).toBeTruthy();
   });

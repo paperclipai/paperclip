@@ -1,9 +1,10 @@
 import { resolveUiMessage, type UiMessageDescriptor } from "@/lib/localized-ui-error";
 import { t, useTranslation, i18n, Trans } from "@/i18n";
+import { PatchLines } from "./PatchLines";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, MessageCircle, WrapText } from "lucide-react";
+import { Check, Copy, MessageCircle, WrapText } from "lucide-react";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
 import { SidebarDocumentLink } from "./SidebarDocumentLink";
@@ -11,7 +12,7 @@ import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { GithubIcon } from "@/components/icons/github-icon";
+import { MarkdownUrlLink } from "./MarkdownUrlLink";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -41,6 +42,7 @@ import {
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "../lib/task-status-presentation";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
@@ -189,14 +191,17 @@ function MarkdownIssueLink({
   }
 
   if (documentLink) {
-    return <SidebarDocumentLink href={href} onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
-      <span className="min-w-0 truncate text-foreground underline underline-offset-4">{children}</span>
+    return <SidebarDocumentLink href={href} variant="inline" onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
+      <span className="underline underline-offset-4">{children}</span>
     </SidebarDocumentLink>;
   }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
+  // Same presentation inputs as every task view, so a covered blocked task is
+  // the blue in-queue glyph here too, not the red blocked one (BUG-07).
+  const statusIconProps = data && status ? taskStatusIconProps({ ...data, status }) : null;
   const issueLabel = title !== identifier ? t("final-components-a:issueIdentifierTitle_d7985502", { identifier: identifier, title: title }) : t("final-components-a:issueIdentifier_2a6ea444", { identifier: identifier });
 
   // Until the fetch settles we don't yet know whether this viewer can read the
@@ -226,8 +231,8 @@ function MarkdownIssueLink({
       title={title}
       aria-label={issueLabel}
     >
-      {status ? (
-        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
+      {statusIconProps ? (
+        <StatusIcon {...statusIconProps} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>
@@ -578,78 +583,6 @@ function createRemarkWikiLinks(options: {
   };
 }
 
-function isGitHubUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "www.github.com");
-  } catch {
-    return false;
-  }
-}
-
-function isExternalHttpUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    if (typeof window === "undefined") return true;
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function renderLinkBody(
-  children: ReactNode,
-  leadingIcon: ReactNode,
-  trailingIcon: ReactNode,
-): ReactNode {
-  if (!leadingIcon && !trailingIcon) return children;
-
-  // React-markdown can pass arrays/elements for styled link text; the nowrap
-  // splitting below is intentionally limited to plain text links.
-  if (typeof children === "string" && children.length > 0) {
-    if (children.length === 1) {
-      return (
-        <span style={{ whiteSpace: "nowrap" }}>
-          {leadingIcon}
-          {children}
-          {trailingIcon}
-        </span>
-      );
-    }
-    const first = children[0];
-    const last = children[children.length - 1];
-    const middle = children.slice(1, -1);
-    return (
-      <>
-        {leadingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {leadingIcon}
-            {first}
-          </span>
-        ) : first}
-        {middle}
-        {trailingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {last}
-            {trailingIcon}
-          </span>
-        ) : last}
-      </>
-    );
-  }
-
-  return (
-    <>
-      {leadingIcon}
-      {children}
-      {trailingIcon}
-    </>
-  );
-}
-
 function CodeBlock({
   children,
   preProps,
@@ -658,6 +591,10 @@ function CodeBlock({
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
   useTranslation("task-components");
+  const code = Array.isArray(children) ? children.find(isValidElement) : children;
+  const patchCode = isValidElement<{ className?: string; children?: ReactNode }>(code)
+    && /\blanguage-(diff|patch)\b/i.test(code.props.className ?? "");
+  const patchText = patchCode ? flattenText(code.props.children) : null;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -667,7 +604,7 @@ function CodeBlock({
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopy = useCallback(async () => {
-    const text = preRef.current?.innerText ?? flattenText(children);
+    const text = patchText ?? preRef.current?.innerText ?? flattenText(children);
     try {
       await copyTextToClipboard(text);
       setFailed(false);
@@ -681,7 +618,7 @@ function CodeBlock({
       setCopied(false);
       setFailed(false);
     }, 1500);
-  }, [children]);
+  }, [children, patchText]);
 
   const copyLabel = failed ? t("task-components:copyFailed_5b50e7a6") : copied ? t("task-components:copied_ea61bc15") : t("task-components:copy_e21f935f");
   const wrapLabel = wrapLines ? t("final-components-a:unwrapLines_6de95a89") : t("final-components-a:wrapLines_6727132a");
@@ -703,7 +640,7 @@ function CodeBlock({
             : null),
         }}
       >
-        {children}
+        {patchText !== null ? <code className="language-diff"><PatchLines text={patchText} /></code> : children}
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"
@@ -949,8 +886,8 @@ function MarkdownBodyImpl({
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
-        return <SidebarDocumentLink href={href}>
-          <span className="min-w-0 truncate text-foreground underline underline-offset-4">{linkChildren}</span>
+        return <SidebarDocumentLink href={href} variant="inline">
+          <span className="underline underline-offset-4">{linkChildren}</span>
         </SidebarDocumentLink>;
       }
       if (issueRef) {
@@ -1018,24 +955,10 @@ function MarkdownBodyImpl({
           </Link>
         ) : <>{linkChildren}</>;
       }
-      const isGitHubLink = isGitHubUrl(href);
-      const isExternal = isExternalHttpUrl(href);
-      const leadingIcon = isGitHubLink ? (
-        <GithubIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
-      ) : null;
-      const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
-      ) : null;
       return (
-        <a
-          href={href}
-          {...(isExternal
-            ? { target: "_blank", rel: "noopener noreferrer" }
-            : { rel: "noreferrer" })}
-          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
-        >
-          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
-        </a>
+        <MarkdownUrlLink href={href} title={anchorProps.title} style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+          {linkChildren}
+        </MarkdownUrlLink>
       );
     },
     };

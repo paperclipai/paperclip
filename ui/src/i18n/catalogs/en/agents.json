@@ -3171,5 +3171,21 @@
   "count_assignment_one": "{{count}} assignment",
   "count_assignment_other": "{{count}} assignments",
   "count_connection_one": "{{count}} connection",
-  "count_connection_other": "{{count}} connections"
+  "count_connection_other": "{{count}} connections",
+  "open_harness_settings": "Open {{value1}} harness settings",
+  "new_task": "New task",
+  "created_by_with_date": "Created by {{value1}} · {{value2}}",
+  "created_with_date": "Created {{value1}}",
+  "root_file_badge": "ROOT",
+  "file_copied": "File copied",
+  "edit_file_contents": "Edit {{value1}} contents",
+  "advanced_management": "Advanced management",
+  "root_file": "Root file",
+  "external_directory_root_file_help": "Point this agent at a directory on disk. Paperclip checks that the root file exists before it switches over.",
+  "paperclip_runner_unavailable_choose_harness": "Paperclip Runner is unavailable here. Choose another harness.",
+  "instruction_file_last_updated": "Last updated {{value1}}",
+  "instruction_file_date_created": "Date created {{value1}}",
+  "instruction_file_date_unavailable": "Date unavailable",
+  "new_markdown_file_name": "New Markdown file name",
+  "markdown_file_name_hint": "Use letters, numbers, hyphens or underscores."
 }

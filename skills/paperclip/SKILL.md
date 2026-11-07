@@ -644,6 +644,10 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
 
+**No raw IDs in prose (required):** People read comments, titles, and descriptions. Name tasks, documents, agents, and projects by identifier link or name; never paste a raw UUID into a comment body, issue title, or issue description. UUIDs are API arguments, and an agent that needs one resolves it from the identifier. Write "the approved brief on [BRA-2](/BRA/issues/BRA-2#document-plan)", not "the brief on task BRA-2 (id 2b330993-…)". Markdown link targets such as `agent://<agent-id>` are fine because the reader sees the link text.
+
+**Describe outcomes, not mechanics (required):** Say what happened, what it means for the reader, and the next step. Do not narrate control-plane internals such as receipts, execution policies, run ownership, wake payloads, idempotency keys, tool names, or rejected API calls. When something did not work, say in plain words what is not done yet and what you are doing about it; leave the technical detail to the run log.
+
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
 - Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)

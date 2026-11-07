@@ -2,6 +2,8 @@ import { t, useTranslation, Trans } from "@/i18n";
 import { enumDisplayLabel } from "./task-chat-display";
 import { detailDisplayLabel } from "./task-chat-display";
 import { useContext, useEffect, useMemo, useState } from "react";
+import { TaskChatImageGrid } from "./TaskChatImageGrid";
+import { imageResourceSource } from "./image-resources";
 import { TaskChatStatusNotice } from "./TaskChatStatusNotice";
 import { isStatusNotice } from "./status-notice-presentation";
 import {
@@ -1087,6 +1089,9 @@ function ResourceCard({
 }) {
   useTranslation("task-components");
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
+  if (imageResourceSource(item)) {
+    return <TaskChatImageGrid items={item.imageItems ?? [item]} />;
+  }
   if (artifactsV1) {
     // Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): one full-width row named after the file. A
     // registered file keeps the shipped card's actions (gallery, text tab, open raw, download, CSV preview);

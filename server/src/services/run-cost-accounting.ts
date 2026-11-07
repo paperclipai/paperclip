@@ -1,7 +1,7 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -11,6 +11,9 @@ import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
+import { priceAnthropicReceipt } from "./anthropic-pricing.js";
+import { priceCodexReceipt } from "./codex-pricing.js";
+import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
@@ -32,10 +35,90 @@ async function readAccountingClosure(db: Db, runId: string) {
     preProviderFailure: sql<boolean>`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
       or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false') is true`,
     coordinatorId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
+    processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
   }).from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(
     eq(nativeRunFinalizations.runId, heartbeatRuns.id), eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
   )).where(eq(heartbeatRuns.id, runId));
   return closure;
+}
+
+/** Every remote allocation of the run carries a provider termination receipt
+ * bound to that exact lease and run (mirrors hasRemoteTerminationReceipt): the
+ * sandbox is stopped or destroyed, so no runner there can report usage. The
+ * per-lease check uses "is not true": a missing receipt makes it NULL, which
+ * must never count as proof. */
+const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases} remote_lease
+    where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id})
+  and not exists (select 1 from ${environmentLeases} remote_lease
+    where remote_lease.company_id = ${heartbeatRuns.companyId} and remote_lease.heartbeat_run_id = ${heartbeatRuns.id}
+      and (remote_lease.provider is not null and remote_lease.provider <> 'local'
+        and remote_lease.provider_lease_id is not null and remote_lease.released_at is not null
+        and remote_lease.cleanup_status = 'success' and remote_lease.status in ('released', 'expired', 'failed')
+        and remote_lease.metadata->'remoteExecutionTermination'->>'schema' = 'paperclip.remote-termination.v1'
+        and remote_lease.metadata->'remoteExecutionTermination'->>'companyId' = remote_lease.company_id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'runId' = remote_lease.heartbeat_run_id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'leaseId' = remote_lease.id::text
+        and remote_lease.metadata->'remoteExecutionTermination'->>'provider' = remote_lease.provider
+        and remote_lease.metadata->'remoteExecutionTermination'->>'providerLeaseId' = remote_lease.provider_lease_id
+        and remote_lease.metadata->'remoteExecutionTermination'->>'state' in ('stopped', 'destroyed')) is not true)`;
+
+/** A native run's receipt source is closed only with positive stop evidence,
+ * after recovery ended in terminal failure without a result:
+ * - Local: the run no longer records a process identity and its latest
+ *   server-authored process event is the verified local stop. Only a failed
+ *   run closes this way; a cancelled local run keeps its accounting drain,
+ *   since Stop recovery can still reattach a recorder.
+ * - Remote: every allocation has a termination receipt for its sandbox, so
+ *   neither the original nor a reattached runner can report usage. That proof
+ *   does not clear the recorded remote process identity.
+ * Missing identity alone is never proof. One predicate serves the reconciler
+ * scan and settlement so they cannot disagree. */
+const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
+  and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+    and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
+  and ((${heartbeatRuns.status} = 'failed'
+    and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+    and (select process_event.event_type from ${heartbeatRunEvents} process_event
+      where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
+        and process_event.source_event_id is null
+        and process_event.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by process_event.seq desc limit 1) = 'native.local_process_stopped')
+    or (${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted') and ${remoteExecutionTerminated}))`;
+
+async function nativeReceiptSourceClosed(db: Db, runId: string) {
+  const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}` }).from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId));
+  return row?.closed === true;
+}
+
+/** A receipt lost with its stopped provider still carries the usage observed
+ * before the loss. When the model and token counts are known, price them from
+ * the rate card as an estimate marked as a lower bound, instead of leaving
+ * known numbers unpriced. Zero observed tokens stay unpriced: unknown is never
+ * presented as zero cost. */
+function estimateLostReceipt(usage: Record<string, unknown>) {
+  const count = (key: string) => amount(usage[key]);
+  const inputTokens = count("inputTokens") ?? 0, outputTokens = count("outputTokens") ?? 0;
+  const cachedInputTokens = count("cachedInputTokens"), cacheWriteTokens = count("cacheWriteTokens");
+  if (inputTokens + outputTokens + (cachedInputTokens ?? 0) <= 0) return null;
+  if ((usage.usageSource ?? "per_run") !== "per_run") return null;
+  // Aggregate totals across several models cannot take one model's rate.
+  if (Array.isArray(usage.usageByModel) && usage.usageByModel.length > 0) return null;
+  const billingType = text(usage.billingType);
+  const priced = priceAnthropicReceipt(priceCodexReceipt({
+    complete: true, usageBasis: "per_run", provider: text(usage.provider) ?? undefined,
+    biller: text(usage.biller) ?? undefined, model: text(usage.model) ?? undefined,
+    billingType: billingType === "metered_api" ? "api" : billingType ?? undefined,
+    usage: { inputTokens, outputTokens,
+      ...(cachedInputTokens !== null ? { cachedInputTokens } : {}),
+      ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}) },
+  } as AdapterUsageCheckpoint));
+  const exact = text(priced.costUsdExact);
+  if (exact === null || !priced.pricingProvenance) return null;
+  const evidence = text(priced.pricingProvenance.evidence);
+  return { costUsdExact: exact, pricingProvenance: { ...priced.pricingProvenance,
+    evidence: [evidence, "final receipt lost; observed usage is a lower bound"].filter(Boolean).join("; ") } };
 }
 
 /** The run's persisted usage is a durable receipt. Ledger, reservation handoff
@@ -100,8 +183,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     }
     // A stop can mark the run terminal before the provider's shutdown receipt
     // arrives. Keep the debt pending instead of acknowledging an invented zero
-    // and permanently discarding that late receipt.
-    if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
+    // and permanently discarding that late receipt. Once native recovery has
+    // given up and the provider process is verified stopped, no producer can
+    // deliver it: settle the known part as unpriced usage. A later receipt
+    // still posts through late-receipt reconciliation.
+    const receiptUnavailable = !preProviderFailure && object(run.usageJson).accountingReceiptReady === false;
+    if (receiptUnavailable && !(await nativeReceiptSourceClosed(tx, run.id))) return false;
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
@@ -125,7 +212,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         if (!linked) scope[key] = null;
       }
     }
-    const costUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    const knownCostUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
+    const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
@@ -139,9 +228,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       issueId: text(scope.issueId), projectId: text(scope.projectId), billingCode: text(scope.billingCode),
       provider: text(usage.provider) ?? "unknown", biller: text(usage.biller) ?? text(usage.provider) ?? "unknown",
       providerRequestId: text(usage.providerRequestId),
-      pricingProvenance: object(usage.pricingProvenance),
+      pricingProvenance: lostReceiptEstimate?.pricingProvenance ?? object(usage.pricingProvenance),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: (costUsd === null || usage.costStatus === "unpriced") && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: lostReceiptEstimate ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -174,7 +263,15 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
-      accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
+      // A complete receipt arriving later may price this charge (see usage-receipts).
+      ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
+        accountingReceiptUnavailable: true,
+        // Late reconciliation measures a later receipt from the accepted money.
+        ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
+          pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
+      })}::jsonb` } : {}),
+    }).where(eq(heartbeatRuns.id, run.id));
     return true;
   }), { "budget.accounting.owner": "run" });
   for (const file of recoveredFiles) {
@@ -197,7 +294,8 @@ function actionableRunAccounting() {
         or not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
-      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false')`,
+      sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
+        or (${closedNativeReceiptSource}))`,
     )),
   );
 }

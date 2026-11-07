@@ -5,6 +5,42 @@ rolling deployment while an agent works and new work is admitted. Enrollment mus
 preserve existing task files and historical recovery sources. It must not reset
 task workspaces, manufacture successful copyback, or weaken migration guards.
 
+## Online enrollment preparation
+
+`POST /api/instance/ephemeral-enrollment/prepare` accepts only a fresh, stack-bound
+Cloud control assertion naming `ephemeral-enrollment:prepare`. Tenant sessions,
+including instance admins, cannot export the original decision signing key.
+The strict request contains only an `attemptId` UUID. The owner first checks
+durable-data eligibility, validates the replacement's ephemeral configuration,
+and audits the attempt without storing its secret. It never creates a missing
+signing key or changes admission, process configuration, or workspace bindings.
+Preparation uses startup durability checks, so ordinary admission before skill
+pins are saved does not impose a global-idle requirement. Retention and migration
+checks keep their stronger pin requirements. Actual admitted local skill assets
+still require their owning preservation proof before volume removal.
+
+The existing audit owner accepts a caller-bound receipt UUID. Preparation derives
+it from the verified signed request ID and stack under its own namespace. The
+database primary key atomically consumes that assertion before returning the key,
+including concurrent replicas and process restarts. The process-local assertion
+fence remains an early refusal. Expired assertions cannot return a secret.
+
+The private, non-cacheable response binds the original key and its digest to the
+attempt, stack, stamped Core commit, Railway deployment, observation time, and
+current static ephemeral-mode setting. Cloud must deliver the key directly to
+its existing secret vault; do not print, persist in registry metadata, or return
+this response through an admin/browser API. HTTP diagnostics treat the entire
+enrollment namespace as secret-sensitive.
+
+This is an advisory preparation receipt, always `enrollmentReady: false`. It is
+not a writer fence, ownership-transfer receipt, or permission to detach a volume.
+The remaining Cloud transition must arm static ephemeral mode while retaining
+the original volume, verify that deployment and cessation of earlier local
+writers, repeat durable eligibility checks on the armed deployment, and use the
+qualified native handoff before detachment. Retain the original volume. Ordinary
+release selection must remain unpinned. No step may substitute a global-idle
+requirement for these ownership and durability checks.
+
 ## Evidence and remaining work
 
 | Required outcome | Current evidence | Remaining gap | Owner / next action |
@@ -146,6 +182,14 @@ recovery source validation and company boundaries.
 
 ## Queued turns during offline enrollment
 
+Offline workspace import preserves a pending repository request when preparation
+has never published a target directory, commit, branch or failure. The request
+stays pending in the database. It is excluded from the saved snapshot's materialized
+repository descriptors, so the next authorized sandbox admission can acquire it
+normally. Existing targets, preparation in progress, repair states, unreadable
+paths and live imports remain blocked. Publication rechecks the request and
+materialized source before transferring file authority.
+
 The task drain stops new executions. It does not consume queued turns. After
 Cloud has stopped every application deployment, offline maintenance preserves
 never-started queued run and wake rows unchanged. Workspace, instruction-file,
@@ -281,6 +325,46 @@ manifest and suspended state. A concurrent turn, moved source, revoked stamp or
 changed owner defers that source. Unrelated executions continue unchanged.
 No lease, result, task or lifecycle state is rewritten to make a source eligible.
 
+Run the controller-only phase separately so it does not re-read provider
+archives that were already verified:
+
+```sh
+PAPERCLIP_NATIVE_HARNESS_PRESTAGE=true node --max-old-space-size=512 server/dist-runtime/native-harness-prestage.mjs --controllers-only
+```
+
+This finite entry adopts legacy controller checkpoints for successful
+retained sources whose finalizer is committed, has an accepted result, and has
+released its ownership. It locks only the source task and coordinator while
+reading and publishing the original controller state. Related queued/running
+work, checkout, failed sources, recovery state, or any remaining coordinator
+owner (including an expired owner) defers that source. Local controller and warm
+supervisor bytes are rechecked before commit; a changed source rolls back.
+Unrelated runs remain active. Existing controller checkpoint identity, artifact
+provenance, configuration and snapshot checks still apply. The `paperclip.native-controller-prestage.v1` counts describe this phase; neither successful prestaging
+nor zero deferred controller sources authorizes volume detachment.
+
+The same finite controller-only entry also preserves settled failed sources.
+A committed failed result may import its exact checkpoint under the normal
+owner checks without changing the failed outcome. A terminal failed controller
+that cannot earn executable recovery authority instead gets an encrypted
+evidence archive through the existing native harness object owner.
+
+Online archival verifies the exact retained session pointer, company, agent,
+task, admitted source binding, terminal run and released coordinator. It rejects
+related queued/running work, checkout, expired-but-retained ownership and a busy
+physical finalizer. Source/profile/coordinator fingerprints and original file
+bytes are checked at publication, including after the upload. Pending object
+records commit before upload; a raced source cannot publish a current archive.
+The operation leaves original files, failed status, leases and recovery history
+unchanged. The `archivedFailed` count records preservation, never successful
+execution or permission to take over an agent.
+
+The live Cloud path uses online preparation and static ephemeral arming on the
+retained volume. Replacement startup must recheck the original bytes after the
+old deployment stops. That final check, not an archive copy or process-local
+busy map, establishes the cutover boundary. The offline fallback below is for
+an independently quiet instance; it is not the live staging delivery path.
+
 The final offline migration still stops all writers, verifies every durable
 object, imports deferred sources and all other data, and exports only its normal
 complete eligibility receipt. Qualification starts from the saved pristine
@@ -294,3 +378,12 @@ so a missing file cannot create a replacement during publication. Its database
 connections have five-second lock waits and 30-second statement and idle
 transaction limits. Cancellation closes the command's clients and has a
 ten-second process-exit fallback for a dependency that does not settle.
+
+Workspace archives preserve a resolved Git merge that still awaits its merge
+commit. The archive retains the merge heads, original head, message, mode,
+automatic merge tree and selected index, and verifies their objects and unchanged
+metadata before publication. A restored copy can continue the merge after the
+source disappears. Git still protects later unstaged edits during abort.
+Conflicted indexes, merge autostash, rerere state, unfinished rebase or sequencer
+operations, invalid metadata and concurrent changes block capture and retain the
+original workspace. Migration never commits or aborts a user's Git operation.

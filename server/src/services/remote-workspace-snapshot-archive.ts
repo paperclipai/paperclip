@@ -10,6 +10,8 @@ async function workspaceArchive(input: {
   targetDir?: string;
   expectedManifestDigest?: string;
   exclude?: string[];
+  requireNoGit?: boolean;
+  gitSourceRoots?: string[];
   signal?: AbortSignal;
   maxEntries?: number;
   maxManifestBytes?: number;
@@ -180,13 +182,50 @@ async function workspaceArchive(input: {
     // unfinished Git operation. Never acknowledge a copy that drops its todo,
     // scripts, autostash, or operation-only object references. Inspect the
     // selected worktree's administration directory without following links.
-    for (const name of ["rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+    for (const name of ["rebase-merge", "rebase-apply", "sequencer", "CHERRY_PICK_HEAD",
       "REVERT_HEAD", "MERGE_AUTOSTASH", "BISECT_START"]) {
       const state = await fs.lstat(path.join(gitDir, name)).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
         return null;
       });
       if (state) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+    }
+    const readState = async (name: string, limit: number) => {
+      const file = path.join(gitDir, name), entry = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (!entry) return null;
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.size > limit) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const chunks: Buffer[] = []; let size = 0;
+      const saved = await readStableFile(file, async chunk => {
+        size += chunk.length;
+        if (size > limit) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+        chunks.push(chunk);
+      });
+      return { name, sha256: saved.sha256, text: Buffer.concat(chunks).toString("utf8") };
+    };
+    const mergeHead = await readState("MERGE_HEAD", 8192);
+    if (mergeHead) {
+      for (const name of ["MERGE_RR", "REBASE_HEAD"]) {
+        const exists = await fs.lstat(path.join(gitDir, name)).then(() => true, (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return false;
+        });
+        if (exists) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      }
+      if (await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const mode = await readState("MERGE_MODE", 16), message = await readState("MERGE_MSG", 4 * 1024 * 1024);
+      const original = await readState("ORIG_HEAD", 128), automatic = await readState("AUTO_MERGE", 128);
+      if (!original || !message || mode && !["", "no-ff"].includes(mode.text.trim())) return fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      const objects = [...mergeHead.text.trim().split("\n").map(object => ({ object, type: "commit" })),
+        { object: original.text.trim(), type: "commit" }, ...(automatic ? [{ object: automatic.text.trim(), type: "tree" }] : [])];
+      for (const { object, type } of objects) {
+        if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(object)
+          || await git(repo, ["rev-parse", "--verify", `${object}^{${type}}`]).then(value => value.trim()).catch(() => null) !== object) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
+      }
+      return { objects, metadata: ([["MERGE_HEAD", mergeHead], ["MERGE_MODE", mode], ["MERGE_MSG", message], ["ORIG_HEAD", original], ["AUTO_MERGE", automatic]] as const)
+        .map(([name, entry]) => ({ name, sha256: entry?.sha256 ?? null })) };
     }
     const bookmark = path.join(gitDir, "REBASE_HEAD");
     const state = await fs.lstat(bookmark).catch((error: NodeJS.ErrnoException) => {
@@ -205,7 +244,7 @@ async function workspaceArchive(input: {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(object)
       || await git(repo, ["rev-parse", "--verify", "REBASE_HEAD^{commit}"]).then(value => value.trim()).catch(() => null) !== object
       || await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
-    return { object, sha256: entry.sha256 };
+    return { objects: [{ object, type: "commit" }], metadata: [{ name: "REBASE_HEAD", sha256: entry.sha256 }] };
   };
   const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>) => {
     check();
@@ -215,6 +254,7 @@ async function workspaceArchive(input: {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile() || original.dev !== before.dev || original.ino !== before.ino || await fs.realpath(source) !== source) fail("changed");
       const digest = crypto.createHash("sha256"); let size = 0;
+      check();
       for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal })) {
         check(); digest.update(bytes); size += bytes.length;
         await consume?.(bytes);
@@ -233,6 +273,46 @@ async function workspaceArchive(input: {
     await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
     const output = await fs.open(destination, "w", 0o600);
     try { await readStableFile(source, bytes => output.writeFile(bytes)); } finally { await output.close(); }
+  };
+  const assertGitSourceFence = async (repo: string) => {
+    if (!input.gitSourceRoots) return null;
+    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 384
+      || input.gitSourceRoots.some(root => !path.isAbsolute(root) || path.resolve(root) !== root)) fail("online_source_git_requires_shared_fence");
+    const directory = async (target: string) => {
+      const actual = await fs.realpath(target), entry = await fs.lstat(target, { bigint: true });
+      if (!entry.isDirectory() || entry.isSymbolicLink()
+        || !input.gitSourceRoots!.some(root => actual === root || actual.startsWith(`${root}${path.sep}`))) {
+        fail("online_source_git_requires_shared_fence");
+      }
+      return { path: actual, device: String(entry.dev), inode: String(entry.ino) };
+    };
+    const gitDirectory = await directory((await git(repo, ["rev-parse", "--absolute-git-dir"])).trim());
+    const commonDirectory = await directory((await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+    const stores: unknown[] = [], seen = new Set<string>();
+    const visit = async (target: string, depth: number): Promise<void> => {
+      if (depth > 4 || seen.size >= 32) fail("online_source_git_requires_shared_fence");
+      const current = await directory(target);
+      if (seen.has(current.path)) return;
+      seen.add(current.path);
+      if (await fs.lstat(path.join(current.path, "info", "http-alternates")).then(() => true,
+        (error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return false; })) fail("online_source_git_requires_shared_fence");
+      const alternatePath = path.join(current.path, "info", "alternates");
+      const entry = await fs.lstat(alternatePath).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
+      if (!entry) { stores.push(current); return; }
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 64 * 1024) fail("online_source_git_requires_shared_fence");
+      const chunks: Buffer[] = []; let size = 0;
+      const saved = await readStableFile(alternatePath, async bytes => {
+        size += bytes.length;
+        if (size > 64 * 1024) fail("online_source_git_requires_shared_fence");
+        chunks.push(bytes);
+      });
+      const values = Buffer.concat(chunks).toString("utf8").split("\n").filter(Boolean);
+      if (values.length > 32 || values.some(value => /[\0\r]/.test(value) || value.startsWith('"'))) fail("online_source_git_requires_shared_fence");
+      stores.push({ ...current, alternatesSha256: saved.sha256 });
+      for (const value of values) await visit(path.resolve(current.path, value), depth + 1);
+    };
+    await visit(path.join(commonDirectory.path, "objects"), 0);
+    return { gitDirectory, commonDirectory, stores };
   };
   const gitStatePath = async (repo: string, name: string) => (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", name])).trim();
   const gitStateHash = async (repo: string, name: string) => {
@@ -268,24 +348,40 @@ async function workspaceArchive(input: {
   };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
+  for (const relative of input.exclude ?? []) {
+    if (!safeRelative(relative)) fail("unsupported_filename");
+    excludedPaths.add(relative);
+  }
   const excluded = (next: string) => input.exclude?.some(item => next === item || next.startsWith(`${item}/`))
     || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/");
   const walk = async (root: string, skipGit = false) => {
     const entries: Entry[] = [];
+    // One bound for the whole walk, including nested directories. Reserve each
+    // entry's position before hashing so completion order cannot change identity.
+    const pending = new Set<Promise<void>>();
+    let failed = false, failure: unknown;
+    const checkWalk = () => { if (failed) throw failure; check(); };
     const visit = async (relative: string, parentIsRepository = false) => {
       const directory = relative ? path.join(root, relative) : root;
       const directoryStat = await fs.lstat(directory);
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink() || await fs.realpath(directory) !== directory) fail("changed");
       const names = (await fs.readdir(directory)).sort();
+      if (skipGit && (input.requireNoGit || input.gitSourceRoots) && (names.includes("commondir") || names.includes("gitdir")
+        || names.includes("objects") && names.some(name => ["HEAD", "refs", "packed-refs"].includes(name))
+        || names.includes("HEAD") && names.includes("config")
+        || path.basename(directory) === "info" && names.some(name => ["alternates", "http-alternates"].includes(name)))) {
+        fail("online_source_git_requires_shared_fence");
+      }
       const inRepository = parentIsRepository || names.includes(".git");
       if (skipGit && names.includes(".git") && !excluded(relative ? `${relative}/.git` : ".git")) {
+        if (input.requireNoGit) fail("online_source_git_requires_shared_fence");
         // Validate the repository before any Git read below, including the
         // tracked check for node_modules, can use a damaged entry.
         if ((await fs.lstat(path.join(directory, ".git"))).isSymbolicLink()) fail("unsafe_git_link");
         await assertRepositoryRoot(directory);
       }
       for (const name of names) {
-        check();
+        checkWalk();
         const next = relative ? `${relative}/${name}` : name;
         if (!safeRelative(next)) fail("unsupported_filename");
         if (excluded(next)) {
@@ -319,12 +415,27 @@ async function workspaceArchive(input: {
           if (!safeLink(next, link)) fail("unsafe_symlink");
           entries.push({ path: next, type: "symlink", target: link });
         } else if (stat.isFile()) {
-          entries.push({ path: next, type: "file", ...await readStableFile(source) });
+          const entry: Entry = { path: next, type: "file" };
+          entries.push(entry);
+          const read = readStableFile(source).then(value => { Object.assign(entry, value); }, error => {
+            if (!failed) { failed = true; failure = error; }
+          });
+          pending.add(read);
+          void read.then(() => pending.delete(read));
+          if (pending.size >= 4) { await Promise.race(pending); checkWalk(); }
         } else fail("unsupported_entry");
       }
     };
-    await visit("");
-    return entries;
+    try {
+      await visit("");
+      await Promise.all(pending);
+      checkWalk();
+      return entries;
+    } finally {
+      // A rejected/cancelled walk must close every active stable read before its
+      // caller removes scratch or returns control to a mutating source owner.
+      await Promise.all(pending);
+    }
   };
   const manifestHash = (manifest: { schema: string; entries: Entry[] }) => crypto.createHash("sha256").update(JSON.stringify(manifest)).digest("hex");
   if (input.kind === "capture") {
@@ -341,13 +452,14 @@ async function workspaceArchive(input: {
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
-        const rebaseBookmark = await assertGitOperationComplete(repo);
+        const fence = await assertGitSourceFence(repo);
+        const operation = await assertGitOperationComplete(repo);
         const index = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
         const indexHash = await hashFile(index).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
         const config = settings ?? await portableGitSettings(repo), shallow = await gitStateHash(repo, "shallow");
         const partial = config.some(setting => /^remote\..*\.promisor$/u.test(setting.key) && setting.value === "true");
         return JSON.stringify([await git(repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no"]), await git(repo, ["for-each-ref", "--format=%(objectname) %(refname)"]), await git(repo, ["symbolic-ref", "-q", "HEAD"]).catch(() => git(repo, ["rev-parse", "HEAD"])), indexHash, config,
-          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, rebaseBookmark]);
+          shallow, await gitStateHash(repo, "info/sparse-checkout"), shallow || partial ? (await gitObjectFiles(repo)).files : null, operation, fence]);
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
@@ -377,7 +489,7 @@ async function workspaceArchive(input: {
         for (const name of ["HEAD", "index", "ORIG_HEAD", "MERGE_HEAD", "MERGE_MSG", "CHERRY_PICK_HEAD", "REVERT_HEAD"]) {
           await fs.copyFile(path.join(sourceGit, name), path.join(destination, name)).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
         }
-        await copyGitFile(path.join(sourceGit, "REBASE_HEAD"), path.join(destination, "REBASE_HEAD"));
+        for (const name of ["REBASE_HEAD", "MERGE_MODE", "AUTO_MERGE"]) await copyGitFile(path.join(sourceGit, name), path.join(destination, name));
         for (const directory of new Set([sourceGit, sourceCommon])) {
           for (const name of await fs.readdir(directory)) if (/^sharedindex\.[a-f0-9]+$/.test(name)) await fs.copyFile(path.join(directory, name), path.join(destination, name));
         }
@@ -399,12 +511,15 @@ async function workspaceArchive(input: {
           const [object, ref] = row.split(" "); return `update ${ref} ${object}\n`;
         }).join("");
         if (updates) await git(restoredRepo, ["update-ref", "--stdin"], updates);
-        const rebaseBookmark = await assertGitOperationComplete(repo);
-        if (rebaseBookmark) {
-          const present = await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]).then(() => true).catch(() => false);
+        const operation = await assertGitOperationComplete(repo);
+        for (const entry of operation?.metadata ?? []) {
+          if (await gitStateHash(restoredRepo, entry.name) !== entry.sha256) fail("changed");
+        }
+        for (const { object, type } of operation?.objects ?? []) {
+          const present = await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]).then(() => true).catch(() => false);
           if (!present && !offline) await git(restoredRepo, ["-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-recurse-submodules",
-            "--no-write-fetch-head", "--no-auto-maintenance", "--", repo, rebaseBookmark.object]);
-          await git(restoredRepo, ["cat-file", "-e", `${rebaseBookmark.object}^{commit}`]);
+            "--no-write-fetch-head", "--no-auto-maintenance", "--", repo, object]);
+          await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]);
         }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
         await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
@@ -514,8 +629,32 @@ async function workspaceArchive(input: {
   }
 }
 
-export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; signal?: AbortSignal }) {
+export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {
   return workspaceArchive({ ...input, kind: "capture" });
+}
+
+export async function readRemoteWorkspaceArchiveDirectories(archivePath: string, expectedManifestDigest: string) {
+  const fs = await import("node:fs/promises");
+  const crypto = await import("node:crypto");
+  const archive = await fs.open(archivePath, "r");
+  try {
+    const header = Buffer.alloc(10);
+    if ((await archive.read(header, 0, 10, 0)).bytesRead !== 10 || header.subarray(0, 6).toString() !== "PCWS1\n") {
+      throw new Error("remote_workspace_archive_invalid_header");
+    }
+    const size = header.readUInt32BE(6);
+    if (size > 64 * 1024 * 1024) throw new Error("remote_workspace_archive_manifest_too_large");
+    const bytes = Buffer.alloc(size);
+    if ((await archive.read(bytes, 0, size, 10)).bytesRead !== size) throw new Error("remote_workspace_archive_truncated");
+    if (crypto.createHash("sha256").update(bytes).digest("hex") !== expectedManifestDigest) {
+      throw new Error("remote_workspace_archive_manifest_mismatch");
+    }
+    const manifest = JSON.parse(bytes.toString()) as { schema: string; entries: Array<{ type: string; path: string }> };
+    if (manifest.schema !== "paperclip.remote-workspace-archive.v1" || !Array.isArray(manifest.entries)) {
+      throw new Error("remote_workspace_archive_manifest_mismatch");
+    }
+    return new Set(manifest.entries.filter(entry => entry.type === "directory").map(entry => entry.path));
+  } finally { await archive.close(); }
 }
 
 export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal; maxEntries?: number; maxManifestBytes?: number }) {
@@ -528,6 +667,7 @@ export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | n
   const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
   const validation = [
     "remote_workspace_archive_changed", "remote_workspace_archive_unsupported_filename",
+    "remote_workspace_archive_online_source_git_requires_shared_fence",
     "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_invalid_git_repository",
     "remote_workspace_archive_unsafe_symlink",
     "remote_workspace_archive_unsupported_entry", "remote_workspace_archive_source_missing",

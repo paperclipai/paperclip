@@ -15,6 +15,7 @@ import type { TaskChatToolItem } from "./task-chat-model";
 import { toolTaxonomy } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
+import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -27,6 +28,20 @@ const STATUS_ICON = {
   failed: { Icon: X, spin: false, tone: "text-destructive" },
   interrupted: { Icon: X, spin: false, tone: "text-muted-foreground" },
 } as const;
+
+function ToolTarget({ text }: { text: string }) {
+  return (
+    <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro) leading-4">
+      {text}
+    </span>
+  );
+}
+
+/** Names the task a call is about by identifier; its UUID is never shown. */
+function TaskReferenceToolTarget({ taskRefId, target }: { taskRefId: string; target?: string }) {
+  const taskLabel = useTaskReferenceLabel(taskRefId);
+  return <ToolTarget text={withTaskReference(target, taskLabel)!} />;
+}
 
 /**
  * Tool invocation as a flat activity row (v7): [glyph] [name] [mono target] …
@@ -65,10 +80,10 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
         </span>
         <span data-conversation-tool-running={item.status === "in_progress" && shimmer ? "true" : undefined} className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
           <span className="shrink-0 font-medium leading-4">{toolDisplayLabel(item)}</span>
-          {item.target ? (
-            <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro) leading-4">
-              {item.target}
-            </span>
+          {item.taskRefId ? (
+            <TaskReferenceToolTarget taskRefId={item.taskRefId} target={item.target} />
+          ) : item.target ? (
+            <ToolTarget text={item.target} />
           ) : null}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2">

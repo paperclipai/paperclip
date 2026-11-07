@@ -58,10 +58,11 @@ export function TaskListViewport({ children, visibleColumns = defaultTaskListCol
 const detailColumns = taskListColumns.filter(column => column.id !== "task");
 type DetailColumn = Exclude<(typeof detailColumns)[number]["id"], "taskId">;
 
-/** Values are resolved by the collection; identity columns intentionally accept names only. */
+/** Values are resolved by the collection; names remain separate from avatar presentation. */
 export type TaskRowColumnValues = Partial<Record<Exclude<DetailColumn, "createdBy" | "assignee">, ReactNode>> & {
   createdBy?: string | null;
   assignee?: string | null;
+  assigneeAvatar?: ReactNode;
 };
 
 function SortableColumnHeader({ id, label, start, sort, onSortChange, onColumnOrderChange, helpId }: {
@@ -190,7 +191,12 @@ export function TaskRowColumnCells({ identifier, values }: { identifier: string;
     <span data-slot="task-row-columns" className="task-row-columns">
       {columns.filter(id => id !== "task").map(id => (
         <span key={id} role="cell" data-column={id} data-marquee-cell={id} className="task-row-column" style={{ gridColumn: taskListColumnStart(columns, id) }}>
-          <CellMarquee cell={id}>{id === "taskId" ? identifier : values[id] ?? "—"}</CellMarquee>
+          {id === "assignee" && values.assigneeAvatar ? (
+            <span className="flex min-w-0 items-center gap-1.5">
+              {values.assigneeAvatar}
+              <CellMarquee cell={id}>{values.assignee ?? "—"}</CellMarquee>
+            </span>
+          ) : <CellMarquee cell={id}>{id === "taskId" ? identifier : values[id] ?? "—"}</CellMarquee>}
         </span>
       ))}
     </span>

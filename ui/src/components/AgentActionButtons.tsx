@@ -7,6 +7,7 @@ import {
   Play,
   Plus,
   MoreHorizontal,
+  MessagesSquare,
   Loader2,
   Copy,
   RotateCcw,
@@ -165,6 +166,8 @@ export function AgentActionButtons({
   companyId,
   size = "sm",
   assignLabel = t("agent-config:assignTask_a96a1a4"),
+  showAssignIcon = true,
+  showChat = false,
   runLabel = t("agent-config:runNow_2af00e2"),
   showStatus = true,
   showRun = true,
@@ -187,6 +190,8 @@ export function AgentActionButtons({
   companyId?: string | null;
   size?: "sm" | "default";
   assignLabel?: string;
+  showAssignIcon?: boolean;
+  showChat?: boolean;
   runLabel?: string;
   showStatus?: boolean;
   showRun?: boolean;
@@ -509,6 +514,10 @@ export function AgentActionButtons({
             )}
           </PopoverContent>
         </Popover>
+        {showChat && <Button variant="outline" size="icon" aria-label={t("agent-config:chatWithAgent", { name: agent.name })} title={t("agent-config:chatWithThisAgent")}
+          disabled={disabled} onClick={() => { if (!onBeforeNavigate || onBeforeNavigate()) navigate(`/chats/${canonicalAgentRef}`); }}>
+          <MessagesSquare className="size-4" />
+        </Button>}
         {needsSetup ? (
           <Button size={size} disabled={disabled} onClick={finishSetup}>
             <Play className="size-4" />{t("agent-config:finishSetup_c516d2d")}</Button>
@@ -519,7 +528,7 @@ export function AgentActionButtons({
             disabled={assignAndRunDisabled}
             title={workActionsDisabled ? workActionsDisabledReason : undefined}
           >
-            <Plus className="size-4" />
+            {showAssignIcon && <Plus className="size-4" />}
             {assignLabel}
           </Button>
         )}

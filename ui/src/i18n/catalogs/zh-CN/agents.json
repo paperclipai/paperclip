@@ -3171,5 +3171,21 @@
   "count_assignment_one": "{{count}} 项分配",
   "count_assignment_other": "{{count}} 项分配",
   "count_connection_one": "{{count}} 个连接",
-  "count_connection_other": "{{count}} 个连接"
+  "count_connection_other": "{{count}} 个连接",
+  "open_harness_settings": "打开 {{value1}} 框架设置",
+  "new_task": "新建任务",
+  "created_by_with_date": "由 {{value1}} 创建 · {{value2}}",
+  "created_with_date": "创建于 {{value1}}",
+  "root_file_badge": "根文件",
+  "file_copied": "文件已复制",
+  "edit_file_contents": "编辑 {{value1}} 内容",
+  "advanced_management": "高级管理",
+  "root_file": "根文件",
+  "external_directory_root_file_help": "将此智能体指向磁盘上的目录。切换前，Paperclip 会检查根文件是否存在。",
+  "paperclip_runner_unavailable_choose_harness": "此处无法使用 Paperclip Runner。请选择其他框架。",
+  "instruction_file_last_updated": "上次更新于 {{value1}}",
+  "instruction_file_date_created": "创建日期 {{value1}}",
+  "instruction_file_date_unavailable": "日期不可用",
+  "new_markdown_file_name": "新 Markdown 文件名",
+  "markdown_file_name_hint": "使用字母、数字、连字符或下划线。"
 }

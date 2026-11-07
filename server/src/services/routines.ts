@@ -2279,7 +2279,7 @@ export function routineService(
       return createdRoutine;
     },
 
-    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
+    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<(Routine & { previousResponsibleUserId: string | null }) | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
@@ -2330,7 +2330,7 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
-      const responsibleUserId = await resolveRoutineResponsibleUserId(
+      const responsibleUserId = patch.responsibleUserId ?? existing.responsibleUserId ?? await resolveRoutineResponsibleUserId(
         db,
         existing.companyId,
         actor.userId,
@@ -2339,6 +2339,7 @@ export function routineService(
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }
+      let previousResponsibleUserId: string | null = null;
       const updatedRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
@@ -2349,11 +2350,26 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        previousResponsibleUserId = locked.responsibleUserId;
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
             currentRevisionId: locked.latestRevisionId,
           });
+        }
+
+        if (patch.responsibleUserId !== undefined) {
+          const member = await txDb.select({ id: companyMemberships.id })
+            .from(companyMemberships)
+            .where(and(
+              eq(companyMemberships.companyId, locked.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, patch.responsibleUserId),
+              eq(companyMemberships.status, "active"),
+            ))
+            .for("share")
+            .then((rows) => rows[0] ?? null);
+          if (!member) throw unprocessable("Responsible user must be an active company member");
         }
 
         const candidate: RoutineRow = {
@@ -2373,7 +2389,7 @@ export function routineService(
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
-          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          responsibleUserId: patch.responsibleUserId ?? locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2459,7 +2475,7 @@ export function routineService(
         }
         return routine;
       });
-      return updatedRoutine;
+      return updatedRoutine ? { ...updatedRoutine, previousResponsibleUserId } : null;
     },
 
     createTrigger: async (

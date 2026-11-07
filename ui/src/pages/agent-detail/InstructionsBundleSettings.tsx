@@ -102,13 +102,15 @@ export function InstructionsBundleSettings({
   return (
     <Collapsible defaultOpen={mode === "external"} className="flex flex-col gap-(--agent-detail-module-gap)">
       <CollapsibleTrigger className="group flex w-fit items-center gap-1.5 rounded-sm text-sm text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground">
-        <Settings2 className="size-4" aria-hidden />{translateAgentPage("agents:advanced_settings")}<ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
+        <Settings2 className="size-4" aria-hidden />
+        {translateAgentPage("agents:advanced_management")}
+        <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <AgentPanel className="gap-4 p-(--agent-detail-module-inset)" aria-label={translateAgentPage("agents:external_management")}>
+      <CollapsibleContent data-agent-disclosure>
+        <AgentPanel className="gap-4 p-(--agent-identity-panel-gap)" aria-label={translateAgentPage("agents:external_management")}>
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">{translateAgentPage("agents:external_management")}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:point_this_agent_at_a_directory_on_disk")}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{translateAgentPage("agents:external_directory_root_file_help")}</p>
           </div>
           <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5">
@@ -123,7 +125,7 @@ export function InstructionsBundleSettings({
               />
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-xs text-muted-foreground">{translateAgentPage("agents:entry_file")}</span>
+              <span className="text-xs text-muted-foreground">{translateAgentPage("agents:root_file")}</span>
               <Input
                 value={entry}
                 onChange={(event) => edit(setEntry)(event.target.value)}

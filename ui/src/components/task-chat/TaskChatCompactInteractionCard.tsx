@@ -32,6 +32,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { InteractionPreparationNotice } from "@/components/InteractionPreparationNotice";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { ToolActionAuditHashCopy } from "@/components/ToolActionAuditHashCopy";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -564,9 +565,7 @@ function ReceiptDisclosure({
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {interaction.payload.toolAction.argumentsHash}
-            </p>
+            <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />
           </div>
         ) : null}
         {interaction.payload.secretProposal ? (
@@ -919,13 +918,13 @@ function ConfirmationCard({
             {interaction.payload.toolAction.previewMarkdown}
           </MarkdownBody>
           <details>
-            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">{t("task-components:argumentsAndAuditHash_0e1e0bc9")}</summary>
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+              {t("task-chat-ui:arguments")}
+            </summary>
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {interaction.payload.toolAction.argumentsHash}
-            </p>
+            <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />
           </details>
         </div>
       ) : null}

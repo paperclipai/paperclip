@@ -1,4 +1,5 @@
 import { t, useTranslation } from "@/i18n";
+import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
@@ -117,7 +118,7 @@ export function TaskChatTurn({
             className="flex min-w-0 flex-col gap-2 py-1"
             data-testid="task-chat-turn-timeline"
           >
-            {item.items.map((child) => (
+            {groupImageResources(item.items).map((child) => (
               <div
                 className="min-w-0"
                 key={child.id}
@@ -279,7 +280,7 @@ export function TaskChatTurn({
       >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {historyMounted && foldedItems.map((child) => (
+            {historyMounted && groupImageResources(foldedItems).map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>

@@ -195,6 +195,12 @@ export function selectRunnerExecutions(
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
     if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
+    const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
+      + options.environments.length + options.cases.length === 0;
+    const explicitGroup = execution.task.explicitGroup;
+    // Naming any of the task's own groups (for example `slow`) also opts in.
+    if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
+      && !options.cases.includes(execution.task.id)) return false;
     if (
       options.all ||
       (options.list &&

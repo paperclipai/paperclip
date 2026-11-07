@@ -184,6 +184,30 @@ const TARGET_KEYS = [
 
 const TARGET_MAX = 96;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Argument keys that name one Paperclip task by its id. */
+const TASK_REF_KEYS = ["taskId", "task_id", "issueId", "issue_id"] as const;
+
+/** A raw id is an internal handle, never something a person reads. */
+function isOpaqueId(value: unknown): boolean {
+  return typeof value === "string" && UUID_RE.test(value.trim());
+}
+
+/**
+ * The task a tool call is about, when its input names one by UUID. The row
+ * shows that task's identifier (resolved at render time) instead of the id.
+ */
+export function toolInputTaskRef(input: unknown): string | undefined {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  for (const key of TASK_REF_KEYS) {
+    const value = record[key];
+    if (isOpaqueId(value)) return (value as string).trim();
+  }
+  return undefined;
+}
+
 function clip(text: string, max: number): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
@@ -197,21 +221,23 @@ function clip(text: string, max: number): string {
 export function summarizeToolInput(input: unknown): string | undefined {
   if (input == null) return undefined;
   if (typeof input === "string")
-    return input.trim() ? clip(input, TARGET_MAX) : undefined;
+    return input.trim() && !isOpaqueId(input) ? clip(input, TARGET_MAX) : undefined;
   if (typeof input !== "object") return clip(String(input), TARGET_MAX);
   const record = input as Record<string, unknown>;
   for (const key of TARGET_KEYS) {
     const value = record[key];
-    if (typeof value === "string" && value.trim())
+    if (typeof value === "string" && value.trim() && !isOpaqueId(value))
       return clip(value, TARGET_MAX);
   }
   // The acpx log parser synthesizes { text, status } onto tool inputs from the
-  // event's summary line — presentation noise, not call parameters.
+  // event's summary line — presentation noise, not call parameters. Raw ids
+  // (task, agent, run UUIDs) are handles for the API, not for people.
   const entries = Object.entries(record).filter(
     ([k, v]) =>
       (typeof v === "string" ||
         typeof v === "number" ||
         typeof v === "boolean") &&
+      !isOpaqueId(v) &&
       k !== "text" &&
       k !== "status",
   );
@@ -894,6 +920,7 @@ export function transcriptToTaskChatItems(
             rawName: entry.name ?? undefined,
             ...(isGenericToolName(entry.name) ? { generatedName: "missing" as const } : {}),
             target: summarizeToolInput(entry.input),
+            ...(toolInputTaskRef(entry.input) ? { taskRefId: toolInputTaskRef(entry.input) } : {}),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
           };

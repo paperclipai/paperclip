@@ -3,11 +3,17 @@ import type {
   IssueBlockerAttentionIssueSummary,
   IssueRelationIssueSummary,
 } from "@paperclipai/shared";
-import { CheckCircle2, Circle } from "lucide-react";
+import { useMemo } from "react";
+import { useQueries } from "@tanstack/react-query";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import { issuesApi } from "@/api/issues";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
+import { queryKeys } from "@/lib/queryKeys";
+import { taskStatusIconProps, type TaskStatusPresentationInput } from "@/lib/task-status-presentation";
+import { StatusIcon } from "../StatusIcon";
 import {
   orderWaitingBlockers,
-  type WaitingBlockerStatus,
   type WaitingBlockerStep,
 } from "@/lib/issue-blockers";
 import { Link } from "@/lib/router";
@@ -131,41 +137,56 @@ function BlockerRow({
   );
 }
 
-function LiveWorkGlyph({ status }: { status: WaitingBlockerStatus }) {
-  useTranslation("task-components");
-  const label = status === "done" ? t("task-chat-ui:done") : status === "running" ? t("task-chat-ui:running") : t("task-chat-ui:waiting");
-  if (status === "done") {
-    return (
-      <CheckCircle2
-        className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400"
-        role="img"
-        aria-label={label}
-      />
-    );
-  }
-  if (status === "running") {
-    return (
-      <span className="flex h-3.5 w-3.5 items-center justify-center" role="img" aria-label={label}>
-        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" aria-hidden />
-      </span>
-    );
-  }
-  return (
-    <Circle
-      className="h-3.5 w-3.5 text-blue-300 dark:text-blue-500/50"
-      role="img"
-      aria-label={label}
-    />
-  );
+type LiveWorkBlocker = IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
+
+/**
+ * The strip shows tasks, so it draws the shared task status glyph. Relation
+ * summaries do not carry blocker attention or the waiting-conversation state,
+ * so the same `/issues/summaries` projection that the sidebar and created-task
+ * cards use supplies them; until it loads, the relation status is used.
+ */
+function useLiveWorkStatusPresentation(
+  companyId: string | null | undefined,
+  blockers: LiveWorkBlocker[],
+): (blocker: LiveWorkBlocker) => TaskStatusPresentationInput {
+  const { userId } = useCoordinatorWorkspaceEnabled();
+  // The summaries endpoint accepts at most ISSUE_SUMMARIES_MAX_IDS per request.
+  const batches = useMemo(() => {
+    const ids = [...new Set(blockers.map((blocker) => blocker.id))].sort();
+    const chunks: string[][] = [];
+    for (let index = 0; index < ids.length; index += ISSUE_SUMMARIES_MAX_IDS) {
+      chunks.push(ids.slice(index, index + ISSUE_SUMMARIES_MAX_IDS));
+    }
+    return chunks;
+  }, [blockers]);
+  const results = useQueries({
+    queries: batches.map((ids) => ({
+      queryKey: queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, ids),
+      queryFn: ({ signal }: { signal: AbortSignal }) => issuesApi.summaries(companyId!, ids, { signal }),
+      enabled: Boolean(companyId),
+    })),
+  });
+  const summaries = results.flatMap((result) => result.data ?? []);
+  return (blocker) => {
+    const summary = summaries.find((candidate) => candidate.id === blocker.id);
+    if (summary) return taskStatusIconProps(summary);
+    if ("status" in blocker) return taskStatusIconProps(blocker);
+    // A sampled terminal blocker carries no status; it is only listed while live.
+    return { status: "in_progress" };
+  };
+}
+
+function LiveWorkGlyph({ presentation }: { presentation: TaskStatusPresentationInput }) {
+  return <StatusIcon {...presentation} size="sm" />;
 }
 
 function LiveWorkLink({
   blocker,
-  status,
+  presentation,
   label,
 }: {
-  blocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
-  status: WaitingBlockerStatus;
+  blocker: LiveWorkBlocker;
+  presentation: TaskStatusPresentationInput;
   label?: string;
 }) {
   useTranslation("task-components");
@@ -180,7 +201,7 @@ function LiveWorkLink({
       title={`${blocker.identifier ?? blocker.id.slice(0, 8)} — ${blocker.title}`}
     >
       {streamlined && label ? <span className="shrink-0 font-medium">{label}</span> : null}
-      {streamlined ? <LiveWorkGlyph status={status} /> : null}
+      {streamlined ? <LiveWorkGlyph presentation={presentation} /> : null}
       <span className="shrink-0 font-mono">{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
       <span className="truncate text-blue-700/80 dark:text-blue-300/80">{blocker.title}</span>
     </Link>
@@ -220,12 +241,19 @@ export function TaskChatBlockerLinks({
 export function TaskChatLiveWorkLinks({
   liveWork,
   placement,
+  companyId,
 }: {
   liveWork: ResolvedTaskChatLiveWork;
   placement: "top" | "bottom";
+  companyId?: string | null;
 }) {
   useTranslation("task-components");
   const streamlined = useStreamlinedTaskChatPresentation();
+  const listedBlockers = useMemo(
+    () => [...liveWork.steps.map((step) => step.blocker), ...liveWork.nowRunning],
+    [liveWork],
+  );
+  const presentationFor = useLiveWorkStatusPresentation(companyId, listedBlockers);
   const heading = streamlined && placement === "bottom" ? t("task-chat-ui:stillWaiting") : t("task-components:waitingOnLiveWork_54a2de10");
   return (
     <div
@@ -241,7 +269,7 @@ export function TaskChatLiveWorkLinks({
         {heading}
       </div>
       <ol className="flex min-w-0 flex-col gap-1">
-        {liveWork.steps.map(({ blocker, status }, index) => (
+        {liveWork.steps.map(({ blocker }, index) => (
           <li
             key={blocker.id}
             data-testid="task-chat-live-work-step"
@@ -252,19 +280,20 @@ export function TaskChatLiveWorkLinks({
                 <span className="w-4 shrink-0 text-right font-mono text-blue-500/80" aria-hidden>
                   {index + 1}.
                 </span>
-                <LiveWorkGlyph status={status} />
+                <LiveWorkGlyph presentation={presentationFor(blocker)} />
               </>
             ) : null}
-            <LiveWorkLink blocker={blocker} status={status} />
+            <LiveWorkLink blocker={blocker} presentation={presentationFor(blocker)} />
           </li>
         ))}
       </ol>
       {liveWork.nowRunning.map((blocker) => streamlined ? (
-        <LiveWorkLink key={blocker.id} blocker={blocker} status="running" label={t("task-components:nowRunning_44cdf357")} />
+        <LiveWorkLink key={blocker.id} blocker={blocker} presentation={presentationFor(blocker)} label={t("task-components:nowRunning_44cdf357")} />
       ) : (
         <div key={blocker.id} className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
           <span className="shrink-0 font-medium">{t("task-components:nowRunning_44cdf357")}</span>
-          <LiveWorkLink blocker={blocker} status="running" />
+          <LiveWorkGlyph presentation={presentationFor(blocker)} />
+          <LiveWorkLink blocker={blocker} presentation={presentationFor(blocker)} />
         </div>
       ))}
     </div>
