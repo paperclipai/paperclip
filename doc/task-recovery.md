@@ -11,7 +11,41 @@ It requires authenticated board task-mutation authority. It records an
 `agent_wakeup_requests` receipt before physical work. Company/key uniqueness
 covers completed and failed receipts as well as pending ones. Concurrent clicks
 attach to accepted work. A new deliberate click after exhaustion can create a
-new generation; a repeated HTTP request cannot.
+new generation; a repeated HTTP request cannot. A click does not renew an
+exhausted generation that already requires an alternative strategy and has no
+fresh attempt. The click binds to that generation and continues without
+repeating the failed step. A Retry never silently drops the agent's work:
+
+- If the task's own local workspace (a git worktree or isolated directory) is
+  safe to reuse, the Retry continues there with a fresh session. Uncommitted
+  files, Git history and the task branch stay in place. Reuse requires the same
+  one local directory the failed run used, still bound to and owned by this
+  task, not a shared project workspace, and not under remote storage authority.
+  The prior executor must be stopped, its leases released, and the recovery
+  generation settled. No other lease, failed cleanup or running workspace
+  operation may hold the directory. A restart orphan does not count: an
+  operation of the stopped source that started before the source settled and
+  before the current server process started. Operations with no run, of
+  another run, or started in the current process still block reuse. Its Git status must still be readable from
+  that directory itself. Workspace-export failures keep their repair path.
+- Otherwise the Retry continues in a fresh isolated attempt seeded from
+  committed files. The previous directory is retained unmodified. The retried
+  run's continuation context names it in `priorWorkspace`: its path, branch
+  and a bounded list of its uncommitted files, read without Git optional locks.
+  This hint is given only for a task-owned local directory with a settled
+  recovery generation, no pending workspace repair and no other writer. The
+  file list is given only when Git resolves to that directory itself.
+
+Either choice consumes the generation's one alternative attempt. Preparing the
+same attempt again after a restart reuses the directory that attempt already
+created and bound; it does not ask for another fresh directory. A native
+restart re-prepares from its admitted workspace. When that is the task's
+current task directory, it keeps the directory strategy; a task directory is
+never the base of a new git worktree. A git worktree base is always the
+project's checkout or the task's own worktree. If a restart's re-preparation
+still fails before the provider starts, the run settles its native coordinator
+as a terminal failure, so a later Retry is admitted instead of waiting on an
+open recovery claim.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
@@ -64,6 +98,17 @@ workspace strategy for that run. It does not borrow another run's strategy or
 skip any hold's independent containment and effect checks. Attaching a Retry to
 active automatic recovery preserves its generation, attempt count and deadline.
 
+A deliberate Retry can bind that intent to failed historical predecessors within
+a 32-run chain of persisted retry edges. Every run must retain the same company, task and
+agent, a terminal state and an ordered creation time. Missing, cyclic, contradictory
+or overlong lineage stays held; transcript hints confer no authority. Completed
+ancestors retain their existing recovery generation. A failed historical native
+source with an inherited session requires verified saved work, settled ownership
+and exact stop receipts before a fresh user turn. Its bounded host preparation
+settlement must prove no provider work; input, result, process, output and provider
+usage evidence still prevent admission. Prior action outcomes remain recorded and
+are never replayed by this authorization.
+
 A new user message, a saved undelivered message, or a deliberate board Retry can
 continue a failed native preparation after its saved remote workspace is verified.
 The source must retain its unresolved native adapter claim and the server's
@@ -79,6 +124,12 @@ preservation action does not discard the canonical Retry source. The same
 request resumes through normal admission and current repository access checks.
 Unknown execution, operator Stop, changed ownership and missing receipts keep
 the request held. Preservation alone does not authorize automatic replay.
+
+Preparation can initialize an object run log before provider dispatch. A finalized
+log with zero bytes and the SHA-256 digest of empty content is compatible with
+the no-output proof when its reference binds the exact company, agent and run.
+Output progress and nonempty excerpts still block admission. Unknown size or
+digest, another log backend, and incomplete preparation settlement remain held.
 
 Agent Chat additionally requires the current conversation owner and enabled
 Agent Chat. Admission and dispatch both recheck these conditions under the
@@ -101,13 +152,24 @@ environment, allocation, stop-only intent, and physical ownership claim before
 calling the provider. The retained-source fence still blocks ordinary resume
 and destruction. Recovery does not clear it to gain access to the saved files.
 
+The reopen moves the original stop receipt into the stop-only intent before it
+calls the provider. The lease shows no receipt while the reopen is in progress.
+When the provider returns the reopened allocation, recovery discards the old
+receipt, and the allocation needs a fresh stop. If the reopen fails, recovery
+asks the provider to stop the allocation. If that stop also fails, recovery
+restores the original receipt and lease state, so a stopped source never stays
+without a receipt. A reopen that fails because the sandbox disk is full ends the
+generation with `source_unavailable`. Saved input and Retry then continue in a
+fresh isolated workspace.
+
 Execution containment and file preservation are independent facts:
 
 - Another agent needs authoritative containment of the old executor.
 - Copyback needs a quiescent writer and a verified destination.
 - A fresh attempt uses a new execution workspace and the separate
   `isolated-workspace-attempts` namespace. It does not modify the original
-  directory or satisfy that source's preservation/cleanup obligation.
+  directory or satisfy that source's preservation/cleanup obligation. It is
+  used only when the task's own workspace cannot safely continue the work.
 
 A missing managed sandbox cannot answer another stop request. Core can request
 a signed absence observation from Cloud under a host-bound server capability.
@@ -132,6 +194,44 @@ without a merge baseline is exported to configured storage as an immutable,
 verified snapshot. Upload operations have stable identities and manifests.
 Recovered snapshots attach separately with provenance; they never become an
 invented baseline for overwriting newer files.
+
+When that owned files-only export reports a full sandbox disk, recovery can
+reclaim a verified inactive native provider installation and retry the same save
+once. The failed source must have a terminal coordinator with no controller
+owner or resumable failure, and its Core-verified provider-pack admission must
+match the exact run, company, agent, workspace and lease. Unverified historical
+installations remain held for operator repair.
+
+Only the reserved provider-pack `node_modules` and `provider-assets` directories
+are eligible. The installation manifest, task files, Git history, sessions,
+checkpoints and action receipts stay intact. A read-only inspection supplies
+manifest and directory identities for a source-bound journal in Core's database.
+That journal commits before cache contents change. Where directory creation
+times are available, cleanup needs only reads and deletion, so it can start even
+when archive-helper writes fail for lack of space.
+
+On filesystems without creation times, deleting children changes the directory's
+fallback timestamp. Recovery first releases blocks by truncating only regular
+installation files with no additional hard links through verified file handles. It
+skips files without write permission and stops scanning as soon as marker space
+is available, including when an earlier eligible cache supplied that space. It
+then moves the cache to an operation-specific path and pins a small identity
+marker in the existing Core journal before recursive deletion. An interrupted
+cleanup can resume against that marker without accepting a new installation,
+a replacement staged directory or a copied marker. The emptied staged directory
+and its marker remain in reserved runtime storage as generation evidence; the
+canonical installation path stays absent so later installation rebuilds it.
+Neither task files nor sessions enter this staging path. Changed identities or
+symlinks keep the original export failure.
+
+Inspection, optional staging and deletion each have a bounded remote call. The
+block-release scan visits at most 8,192 entries across the eligible caches and
+stops once 256 KiB is available for the markers. If capacity cannot be read, it
+uses a bounded 256 KiB estimate of released blocks. Journal creation and
+cleanup record separate terminal operations; neither is a file-save receipt or
+a new background obligation. An uncertain acknowledgement never proves that
+files were saved. This adds no provider turn, recovery generation or retry budget,
+and the normal save and stop receipts still govern continuation.
 
 Known publication receipts and exact API mutation receipts carry forward.
 Uncertain API mutations and upstream tool mutations remain fenced across run
@@ -185,7 +285,13 @@ Run the focused PostgreSQL/filesystem suites from `server/`:
 ../node_modules/.bin/vitest run --config vitest.config.ts \
   src/services/system-recovery-state.test.ts \
   src/services/task-retry.test.ts \
-  src/services/workspace-recovery.test.ts \
+  src/services/workspace-recovery-retry-copyback.test.ts \
+  src/services/workspace-recovery-preparation.test.ts \
+  src/services/workspace-recovery-preparation-proof.test.ts \
+  src/services/workspace-recovery-preparation-dispatch.test.ts \
+  src/services/workspace-recovery-preparation-gates.test.ts \
+  src/services/workspace-recovery-warm-handoff.test.ts \
+  src/services/workspace-recovery-admission.test.ts \
   src/services/explicit-native-continuation.test.ts \
   src/services/heartbeat/workspace-preparation.test.ts \
   src/services/native-runtime/native-chat-workspace.test.ts

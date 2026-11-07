@@ -378,7 +378,7 @@ describe("buildPaperclipRunnerConfig", () => {
   it("uses the Codex default when no model was selected", () => {
     expect(buildPaperclipRunnerConfig(makeValues({ model: "" }))).toMatchObject({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
     });
   });
 

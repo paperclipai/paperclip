@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
@@ -10,6 +10,7 @@ export type RemoteWarmSessionRecovery = {
   checkpoint: PersistedNativeSession;
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
+  releasedSource?: DurableRecoveryIdentity;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -77,6 +78,18 @@ export function describeOwnFailedAttachment(recoveryHistory: unknown): string {
   const history = Array.isArray(recoveryHistory) ? recoveryHistory : [];
   const cause = record(history.at(-1)).stderrTail;
   return `runner_state_identity_mismatch: prior_attach_failed: ${typeof cause === "string" && cause ? cause : "unknown"}`;
+}
+
+const SETTLEMENT_DOC = "https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run";
+
+/** Points whoever diagnoses a failed attachment at reviewed docs. The stored
+ * failure is already redacted and bounded; other failures produce no pointer. */
+export function describeFailedAttachment(failureMessage: unknown): string | null {
+  if (typeof failureMessage !== "string" || !/\brun\.attach (failed|requires)\b/.test(failureMessage)) return null;
+  const encoded = /"message":("(?:[^"\\]|\\.)*")/.exec(failureMessage)?.[1];
+  let cause = failureMessage;
+  try { if (encoded) cause = JSON.parse(encoded) as string; } catch { /* Keep the whole failure. */ }
+  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
 }
 
 export async function inspectRemoteWarmSessionRecovery(input: {

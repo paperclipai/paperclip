@@ -1,3 +1,4 @@
+import { assertPaperclipRunnerBinaryConfiguration } from "../native-runtime/native-codex-runner.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
@@ -15,7 +16,7 @@ import { isAgentDirectoryCopy } from "../agent-directory-working-copies.js";
 import { isConversation } from "../agent-conversations.js";
 import { renewLegacyControllerLease } from "../legacy-controller-lease.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
-import { supportsManagedNativeWarmSession } from "../native-runtime/native-warm-capability.js";
+import { resolveHeartbeatNativeLifecyclePolicy, type NativeLifecyclePolicy } from "./native-lifecycle.js";
 import {
   getNativeReviewAssignment,
   readNativeReviewAssignmentContext,
@@ -82,9 +83,9 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-st
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
-import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
+import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -132,6 +133,7 @@ export interface HeartbeatRuntimeSelectionInput {
     onPhase?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onPhase"];
   };
   config: {
+    nativeLifecyclePolicy?: NativeLifecyclePolicy | null;
     runtimeConfig: Record<string, unknown>;
     runtimeSkillEntries: Parameters<typeof buildNativeRuntimeContext>[0]["runtimeSkillEntries"];
     runScopedMentionedSkillKeys: string[];
@@ -258,7 +260,35 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-/** Prepare and persist the selected runtime before the executor dispatches provider work. */
+function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): NativeLifecyclePolicy | null {
+  if (input.nativeRuntimeResolution.kind !== "native") return null;
+  return resolveHeartbeatNativeLifecyclePolicy({
+    adapterType: input.agent.adapterType, backend: input.nativeRuntimeResolution.profile.backend,
+    acpxAgent: parseObject(input.agent.adapterConfig).acpxAgent,
+    agentMode: parseObject(input.agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(input.agent.adapterConfig).idleTimeoutMs,
+    environmentPolicy: input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" ? input.workspace.executionTarget.runnerLifecyclePolicy : null,
+    persistedPolicy: input.session.persistedNativeExecutionInput?.session.lifecyclePolicy,
+    managedAiSelected: Boolean(input.config.managedAiRuntime), managedAiAttribution: input.config.managedAiRuntime?.attribution,
+    taskOwned: Boolean(input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" && input.workspace.executionTarget.runnerTask),
+  });
+}
+
+export async function prepareAndSelectHeartbeatRuntime(
+  db: Db,
+  input: HeartbeatRuntimeSelectionInput,
+  preparation: {
+    prepareInstructions: (policy: NativeLifecyclePolicy | null) => Promise<Pick<HeartbeatRuntimeSelectionInput["config"], "runtimeConfig" | "instructionCopy">>;
+    measure: <T>(phase: "instructions" | "runtime_selection", work: () => Promise<T>) => Promise<T>;
+  },
+): Promise<HeartbeatRuntimeSelectionResult> {
+  const nativeLifecyclePolicy = resolveRuntimeLifecyclePolicy(input);
+  const prepared = await preparation.measure("instructions", () => preparation.prepareInstructions(nativeLifecyclePolicy));
+  return preparation.measure("runtime_selection", () => selectHeartbeatRuntime(db, {
+    ...input,
+    config: { ...input.config, ...prepared, nativeLifecyclePolicy },
+  }));
+}
+
 export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSelectionInput): Promise<HeartbeatRuntimeSelectionResult> {
   const { run, agent, nativeRuntimeResolution, issuesSvc, runtimeEnv, beforeNativeRuntimeSelection, onAdapterEvent,
     onNativeLifecycleSelected, onProviderResourceDisposition, onNativeOwnershipHeld, stopControllerLease } = input;
@@ -279,6 +309,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   if (nativeRuntimeResolution.kind === "native") {
     if (!issueRef) {
       throw new Error("native_runtime_ineligible: issue is required");
+    }
+    if (run.runtimeMode !== "native" && agent.adapterType === "paperclip_runner"
+      && executionTarget?.kind !== "remote"
+      && nativeRuntimeResolution.profile.backend !== "cursor_cloud_api"
+      && nativeRuntimeResolution.profile.backend !== "claude_managed_agents_api"
+      && nativeRuntimeResolution.profile.backend !== "aws_agentcore_harness_api") {
+      assertPaperclipRunnerBinaryConfiguration();
     }
     const nativeExecutionWorkspaceId =
       persistedNativeExecutionInput?.provider.kind === "cursor_cloud"
@@ -501,28 +538,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     let nativeResumeCheckpoint: ReturnType<
       typeof rebindNativeSessionCheckpoint
     > = null;
-    const agentLifecyclePolicy =
-      parseObject(agent.adapterConfig).lifecycleMode === "warm"
-        ? {
-            mode: "warm" as const,
-            idleTimeoutMs: resolvePaperclipRunnerIdleTimeoutMs(
-              parseObject(agent.adapterConfig).idleTimeoutMs,
-            ),
-          }
-        : { mode: "per_turn" as const, idleTimeoutMs: null };
-    const environmentLifecyclePolicy =
-      executionTarget?.kind === "remote" &&
-      executionTarget.transport === "sandbox"
-        ? (executionTarget.runnerLifecyclePolicy ?? null)
-        : null;
-    // Task providers own credential lifetime; process-backed managed homes retain their provider-specific cleanup policy.
-    const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-      ((executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && !!executionTarget.runnerTask) ||
-        supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution));
-    const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
-      (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
-        ? { mode: "per_turn" as const, idleTimeoutMs: null }
-        : environmentLifecyclePolicy ?? agentLifecyclePolicy);
+    const effectiveLifecyclePolicy = input.config.nativeLifecyclePolicy ?? resolveRuntimeLifecyclePolicy(input)!;
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&
@@ -922,6 +938,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             ? "destroy"
             : undefined;
     onProviderResourceDisposition(providerResourceDispositionForRun);
+    const stagedRuntimeSkills = await measureRunPhase("runtime_selection.skill_assets", () => stageNativeRuntimeSkillAssets(db, {
+      companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueRef.id, execution: nativeExecution!,
+    }));
     await beforeNativeRuntimeSelection?.(run.id);
     const nativeSelected = await measureRunTransaction(db, "runtime_selection", async (tx) => {
       const lockedRun = await measureRunPhase("runtime_selection.row_lock", () => tx
@@ -951,6 +970,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         throw new Error("native_runtime_mode_conflict");
       }
       const lockedProfile = parseObject(lockedRun.runnerProfileJson);
+      const runtimeSkillPreservation = await bindStagedNativeRuntimeSkillAssets(tx as unknown as Db, {
+        companyId: lockedRun.companyId, agentId: lockedRun.agentId, runId: lockedRun.id, issueId: issueRef.id,
+        execution: (lockedProfile.nativeExecutionInput ?? nativeExecution) as NativeExecutionInput, staged: stagedRuntimeSkills,
+      });
       const persistedNativeSessionId =
         await measureRunPhase("runtime_selection.bootstrap", () => prepareNativeSessionBootstrapPersistence(tx, {
           run: lockedRun,
@@ -962,6 +985,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          legacyProcessSettlement: null,
           controllerBootId: null,
           controllerLeaseExpiresAt: null,
           executionStage: null,
@@ -975,6 +999,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            ...(runtimeSkillPreservation ? { nativeRuntimeSkillPreservation: runtimeSkillPreservation } : {}),
             ...(nativeExecution?.provider.kind === "cursor_cloud" ? { executionPlacement: resolveProviderApiPlacement({ agent, run }) } : {}),
             nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
               ? NATIVE_PREPARATION_FENCING_VERSION

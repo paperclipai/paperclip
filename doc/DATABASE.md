@@ -49,6 +49,38 @@ failed results and recovery blockers stay unchanged. A successful retained
 session without artifact proof still blocks migration. The migration receipt
 reports failed-session archives separately from imported recovery authorities.
 
+An internal maintenance owner can separately record
+`runnerProfileJson.nativeHarnessFilesystemIndependence` when an original-volume
+inspection finds no uncovered provider or Runner payload. This is not a backup
+or a successful recovery. It requires a fresh, independently reviewed provider
+attachment witness and a private nonce anchor on that original volume. The
+anchor survives normal releases; current deployment and mount identities are
+verified afresh. Replacement hosts cannot create the receipt from missing files.
+
+Publication binds the retained session, canonical newest resume source, frozen
+inputs and checkpoints, every associated lease and destroyed-provider receipt,
+released controller/finalizer ownership, and existing immutable skill references.
+Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Source locks and a final comparison fence publication; original files, stamps,
+warnings, failed statuses and session pointers remain unchanged. Startup can
+validate the published receipt using only database bindings, without the old
+volume, a fresh source witness, or storage reads. Changed or missing bindings
+invalidate it. Existing resume and replacement policies remain authoritative,
+including governed-wait failures and warm-session refusals. No provider history
+is reconstructed or declared recovered, and uncertain provider sources remain
+enrollment blockers.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -224,6 +256,18 @@ legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two ne
 indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
+
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -835,6 +879,25 @@ with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
 `remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
 archive and local files remain available for a later administrative retry. Other
 database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
 
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
@@ -1878,3 +1941,14 @@ pre-upgrade database transactions before enabling independent writers. Do not ru
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

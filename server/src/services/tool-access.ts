@@ -1,8 +1,9 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
-import type { ConnectionManagementContext } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, type ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
@@ -3433,13 +3434,17 @@ export function toolAccessService(
       }
 
       const profileBindings: ToolProfileBinding[] = [];
-      // These connectors expose one agent-access choice. Commit installation
-      // reach and permission bindings together, including an empty selection.
-      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      // Agent access is also the credential admission boundary. Save its
+      // installation and permission targets together for every tool connector.
+      if (connection.connectionPurpose === "tool") {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
-        const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
+        const removed = input.preserveExistingAccess ? [] : existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));
         const added = [...desired.values()].filter((binding) => !existingInstalls.some((install) => install.targetType === binding.targetType && install.targetId === binding.targetId));
+        if (actor?.managementContext) {
+          await assertAgentConnectionInstallAccess(tx as unknown as Db, actor.managementContext.actor, companyId,
+            [...removed, ...added].filter(target => target.targetType === "agent").map(target => target.targetId));
+        }
         if (removed.length) await tx.delete(toolConnectionInstalls).where(inArray(toolConnectionInstalls.id, removed.map((install) => install.id)));
         if (added.length) await tx.insert(toolConnectionInstalls).values(added.map((binding) => ({
           companyId, connectionId: connection.id, targetType: binding.targetType, targetId: binding.targetId,
@@ -3533,7 +3538,15 @@ export function toolAccessService(
       await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
-        .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
+        .set({
+          status: "active", enabled: true,
+          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
+            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+          } : {}),
+          ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await tx
@@ -4265,8 +4278,9 @@ export function toolAccessService(
 
     // Repository discovery uses credential audiences, not connection-management
     // visibility. An administrator cannot browse another user's private repos.
-    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) =>
-      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted),
+    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] }) =>
+      toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, options),
 
     // Return identifiers, never credentials, so each attempted read can recheck its grant.
     githubReadConnectionIds: async (companyId: string, userId: string | null, localTrusted = false): Promise<string[]> => {
@@ -4310,6 +4324,7 @@ export function toolAccessService(
       companyId: string,
       userId: string | null,
       localTrusted = false,
+      options?: { requiredRepositoryIds: readonly string[] },
     ) => measureRunPhase("connectors.github.catalog", async () => {
       const [connections, grants, members, memberships] = await Promise.all([
         measureRunPhase("connectors.github.connections", () => db
@@ -4350,6 +4365,7 @@ export function toolAccessService(
       const usableConnections: Array<{ id: string; name: string }> = [];
       let connectionCount = 0;
       let failedConnectionCount = 0;
+      const unavailable: RepositoryCatalogUnavailableError[] = [];
       for (const connection of connections) {
         if (
           connection.status !== "active" ||
@@ -4433,13 +4449,19 @@ export function toolAccessService(
             for (const row of rows) {
               mergeProjectRepository(repositories, row, connection.name, connection.id);
             }
-          } catch {
+          } catch (error) {
+            const catalogFailure = findRepositoryCatalogUnavailableError(error);
+            if (catalogFailure) unavailable.push(catalogFailure);
             // Credential/provider errors may contain secrets. Only expose an
             // aggregate failure; successful connections remain usable.
             failed = true;
           }
         }
         if (failed) failedConnectionCount += 1;
+      }
+      const availableIds = new Set([...repositories.values()].map(repository => repository.id));
+      if (unavailable.length && options?.requiredRepositoryIds.some(id => !availableIds.has(id))) {
+        throw unavailable.reduce((latest, failure) => (failure.retryAt ?? 0) > (latest.retryAt ?? 0) ? failure : latest);
       }
       return {
         repositories: [...repositories.values()].sort((a, b) =>
@@ -4518,6 +4540,13 @@ export function toolAccessService(
       let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
+      // This path writes only tool connections. Channel setup has its own
+      // services. Reject other purposes here, before any row is written, so the
+      // database purpose/transport check never turns them into a 500.
+      if (input.connectionPurpose !== undefined && input.connectionPurpose !== "tool")
+        throw unprocessable("Only tool connections can be created here");
+      if (transport === "chat_sdk" || transport === "voice")
+        throw unprocessable("Chat and voice connections cannot be created here");
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? {},
       );
