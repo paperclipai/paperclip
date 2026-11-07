@@ -6,6 +6,17 @@ import { createCapabilityRunnerdCodexTransport, type RunnerdStartupStep } from "
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 const STEP_ORDER = ["runner.runtime.stage", "runner.process.launch", "provider.session.load"];
+const PROVIDER_DELAY_MS = 1_500;
+
+/** A slow provider must show up as session load, never as runner process launch. */
+function expectProviderTimeInSessionLoad(steps: RunnerdStartupStep[]): void {
+  const duration = (name: string) => {
+    const step = steps.find((candidate) => candidate.name === name)!;
+    return step.endedAtMs - step.startedAtMs;
+  };
+  expect(duration("provider.session.load")).toBeGreaterThanOrEqual(PROVIDER_DELAY_MS);
+  expect(duration("runner.process.launch")).toBeLessThan(PROVIDER_DELAY_MS);
+}
 
 function expectOrderedSteps(steps: RunnerdStartupStep[], mode: RunnerdStartupStep["mode"]): void {
   expect(steps.map((step) => step.name)).toEqual(STEP_ORDER);
@@ -17,7 +28,7 @@ function expectOrderedSteps(steps: RunnerdStartupStep[], mode: RunnerdStartupSte
   }
 }
 
-it("reports local stage, launch and provider session load for bootstrap and resume", async () => {
+it("reports local stage, launch and provider session load for bootstrap and cold resume", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-startup-steps-"));
   const identity = {
     runnerInstanceId: "startup-steps-runner",
@@ -30,7 +41,10 @@ it("reports local stage, launch and provider session load for bootstrap and resu
   const options = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(root),
+    // Delay the provider's own session start and resume. The runner process
+    // authenticates first, so the delay belongs to provider.session.load.
+    codexArgs: fakeCodexArgs(root, "--thread-start-delay-ms", String(PROVIDER_DELAY_MS),
+      "--thread-resume-delay-ms", String(PROVIDER_DELAY_MS)),
     stateDirectory: root,
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
     runnerReconnectGraceMs: 2_000,
@@ -43,20 +57,24 @@ it("reports local stage, launch and provider session load for bootstrap and resu
   try {
     const opened = await first.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
     expectOrderedSteps(bootstrapSteps, "bootstrap");
+    expectProviderTimeInSessionLoad(bootstrapSteps);
     const thread = opened.thread as { id: string; sessionId: string };
     await first.transport.close();
     // Closing a live transport is not a startup: no further steps.
     expect(bootstrapSteps).toHaveLength(3);
 
     const resumeSteps: RunnerdStartupStep[] = [];
+    // A new run on the saved session rotates authority through run.attach,
+    // which restores the provider before the command completes.
     resumed = createCapabilityRunnerdCodexTransport({
       ...options,
-      prpIdentity: identity,
+      prpIdentity: { ...identity, runId: "second-run", turnId: "second-turn", itemId: "second-item" },
       resumeProviderSession: { driverSessionId: thread.id, providerSessionId: thread.sessionId },
       onStartupStep: (step) => { resumeSteps.push(step); },
     });
     await resumed.transport.request("thread/read", {});
     expectOrderedSteps(resumeSteps, "resume");
+    expectProviderTimeInSessionLoad(resumeSteps);
   } finally {
     await resumed?.transport.close().catch(() => undefined);
     await first.transport.close().catch(() => undefined);

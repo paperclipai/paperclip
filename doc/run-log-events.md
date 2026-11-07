@@ -107,13 +107,13 @@ They also become native Observability spans only with an operator OTLP endpoint.
 - `runner.runtime.stage`: controller-side launch preparation before the Runner
   process exists (runtime context, provider home, launch profiles; on resume, the
   durable-state checks and authority rotation as well).
-- `runner.process.launch`: from spawning `paperclip-runnerd` until it has
-  authenticated to the PRP control plane and accepted the run (`run.prepare`, or
-  the recovery attachment on resume). An exact adoption of a live Runner records
-  no launch, so this span keeps meaning a fresh Runner process (see startup
-  reuse above).
-- `provider.session.load`: from `session.open` (or the recovery probe) until the
-  provider session identity is confirmed.
+- `runner.process.launch`: from spawning `paperclip-runnerd` until its first
+  authenticated connection to the PRP control plane. An exact adoption of a live
+  Runner records no launch, so this span keeps meaning a fresh Runner process
+  (see startup reuse above).
+- `provider.session.load`: from that authentication until the provider session
+  identity is confirmed. It covers `run.prepare` and `session.open`, or on resume
+  the `run.attach` that restores the provider and the recovery probe.
 
 Each carries `mode` (`bootstrap` or `resume`), `target: "local"`, and `outcome`
 (`failed` when startup fails inside the step). The Runner transport reports each

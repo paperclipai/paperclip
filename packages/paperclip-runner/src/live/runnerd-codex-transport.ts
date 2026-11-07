@@ -3964,7 +3964,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
-  #startupSteps: { begin(name: RunnerdStartupStep["name"]): void; end(): void } | null = null;
+  #startupSteps: {
+    begin(name: RunnerdStartupStep["name"]): void;
+    /** Move on only from the named open step (later reconnects are not startup milestones). */
+    advance(from: RunnerdStartupStep["name"], to: RunnerdStartupStep["name"]): void;
+    end(): void;
+  } | null = null;
   #pendingTraceRehydrations: PendingTraceRehydration[] = [];
   #pendingDriverTraceInterpretations: PendingDriverTraceInterpretation[] = [];
   #restoredRuntimeRequests: CodexRpcServerRequest[] = [];
@@ -5816,6 +5821,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     };
     this.#startupSteps = {
       begin: name => { close("ok"); open = { name, startedAtMs: Date.now() }; },
+      advance: (from, to) => {
+        if (open?.name !== from) return;
+        close("ok");
+        open = { name: to, startedAtMs: Date.now() };
+      },
       end: () => close("ok"),
     };
     try {
@@ -5884,6 +5894,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
+      // The runner process is up once it authenticates; provider work follows.
+      onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
       onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
@@ -5991,7 +6003,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitCommand("run.prepare", undefined, undefined, true);
-    this.#startupSteps?.begin("provider.session.load");
+    this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
     await this.#waitCommand("session.open", undefined, admissionDeadline, true);
     await this.#waitForProviderIdentity(undefined, admissionDeadline);
     this.#startupSteps?.end();
@@ -6403,6 +6415,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
+      // The runner process is up once it authenticates; provider work follows.
+      onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
       onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
@@ -6916,7 +6930,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (runAttachment) {
       await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
     }
-    this.#startupSteps?.begin("provider.session.load");
+    // A launched runner normally advanced at authentication, before run.attach
+    // restores the provider. An adopted runner had no launch step.
+    if (adoptedRunner) this.#startupSteps?.begin("provider.session.load");
+    else this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
     if (recoveryProbeCommandId !== null) {
       await this.#waitCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true);
       if (this.#checkpointProviderIdentityExpectation !== null) {
