@@ -3625,4 +3625,20 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
+
+  it.each(["owner-agent", "board-without-runtime-access"] as const)("denies original-host containment for %s before settlement", async actorKind => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+    const actor = actorKind === "owner-agent" ? ownerActor()
+      : { type: "board", userId: "board-user", source: "session", companyIds: [companyId] };
+    const response = await request(await createApp(actor)).post(`/api/issues/${issueId}/recovery-actions/resolve`).send({
+      actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "in_progress",
+      executionReconciliation: { runId: ownerRunId, controllerStopped: true, providerStopped: true,
+        controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "Original-host containment and external action outcomes were reviewed." },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    if (actorKind === "owner-agent") expect(response.body.error).toBe("Board access required");
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
 });

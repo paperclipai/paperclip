@@ -1,3 +1,4 @@
+import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hooks/useConversationHistoryPages";
@@ -8492,6 +8493,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : null,
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
+                <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence.controllerAuthority)}`} issue={issue}
+                  canManage={canResolveBoardRecoveryAction} onRecorded={() => {
+                    invalidateIssueCollections();
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+                  }} />
                 <IssueDetailChatTab
                   executionBlocked={Boolean(issue.executionBlocker)}
                   interruption={issue.interruption}

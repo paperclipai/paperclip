@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
@@ -31,6 +32,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  issueRecoveryActions,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
@@ -41,7 +43,7 @@ import { isUniqueViolation } from "../../db-errors.js";
 import { logger } from "../../middleware/logger.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
-import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { nativeControllerAuthorityDigest, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
@@ -834,6 +836,7 @@ export async function claimNativeRestartRecoveries(input: {
   const now = input.now ?? new Date();
   const controller =
     input.controller ?? (await currentNativeControllerIdentity());
+  const controllerHostHash = (await currentControllerProcess()).hostHash;
   const candidateQuery = input.db
     .select({
       runId: heartbeatRuns.id,
@@ -908,6 +911,7 @@ export async function claimNativeRestartRecoveries(input: {
         .select({
           run: heartbeatRuns,
           coordinator: nativeRunFinalizations,
+          controllerLeaseExpiryEpoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text`,
           issueExecutionRunId: issues.executionRunId,
           issueCheckoutRunId: issues.checkoutRunId,
           issueAssigneeAgentId: issues.assigneeAgentId,
@@ -1090,14 +1094,60 @@ export async function claimNativeRestartRecoveries(input: {
       const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
         companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
       });
-      const takeover = await evaluateNativeControllerTakeover({
-        owner: row.coordinator,
-        now,
-        remoteLeaseFenced: Boolean(durableAuthority),
-        coordinatedPreviousController:
-          input.coordinatedPreviousController ?? null,
-      });
+      // Lease expiry alone does not prove a local in-flight owner stopped.
+      // Only this boot's own PID or the same known process space can make a
+      // local PID observation meaningful. Durable remote leases keep their
+      // existing released/expired authority instead of using local probes.
+      const processSpaceUnverified = !durableAuthority
+        && Boolean(row.coordinator.leaseOwner && row.coordinator.leaseExpiresAt)
+        && !isCurrentNativeControllerProcess(row.coordinator)
+        && (controllerHostHash === "unknown" || row.coordinator.controllerHostHash !== controllerHostHash);
+      const nonExecutionOwner = row.coordinator.leaseOwner?.startsWith("native-finalizer:")
+        || row.coordinator.leaseOwner?.startsWith("native-cleanup:");
+      const takeover = nonExecutionOwner
+        ? { allowed: false, reason: "native_finalization_or_cleanup_owner" }
+        : processSpaceUnverified
+        ? { allowed: false, reason: remoteProcess ? "remote_controller_process_space_unverified" : "controller_process_space_unverified" }
+        : await evaluateNativeControllerTakeover({
+          owner: row.coordinator,
+          now,
+          remoteLeaseFenced: Boolean(durableAuthority),
+          coordinatedPreviousController:
+            input.coordinatedPreviousController ?? null,
+        });
       if (!takeover.allowed) {
+        if (processSpaceUnverified && !nonExecutionOwner) {
+          const attention = issueRecoveryActionService(tx as unknown as Db);
+          const digest = nativeControllerAuthorityDigest(row.coordinator, row.controllerLeaseExpiryEpoch);
+          const fingerprint = `native-controller-space:${row.run.id}:${digest}`;
+          const [existing] = await tx.select().from(issueRecoveryActions).where(and(
+            eq(issueRecoveryActions.companyId, row.run.companyId), eq(issueRecoveryActions.sourceIssueId, row.coordinator.issueId),
+            inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          )).for("update").limit(1);
+          // One incident per exact authority. A repeat neither spends a retry
+          // attempt nor emits a new wake. Renewed/replaced authority gets a new
+          // incident, preserving the prior confirmation/history. An unrelated
+          // active recovery owner is never overwritten by this observation.
+          const sameSource = existing?.cause === "native_restart_recovery_blocked"
+            && existing.evidence.runId === row.run.id
+            && ["controller_process_space_unverified", "remote_controller_process_space_unverified"].includes(String(existing.evidence.reason));
+          if (!existing || (sameSource && existing.fingerprint !== fingerprint)) {
+            await attention.upsertSourceScoped({
+              companyId: row.run.companyId, sourceIssueId: row.coordinator.issueId,
+              kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: row.run.agentId,
+              cause: "native_restart_recovery_blocked", fingerprint,
+              evidence: { runId: row.run.id, reason: takeover.reason, executorStopEvidence: "unverified",
+                ...(!remoteProcess ? { controllerAuthority: { schema: "paperclip.native-controller-authority.v1",
+                  digest, leaseExpiresAt: row.coordinator.leaseExpiresAt!.toISOString() } } : {}) },
+              nextAction: remoteProcess
+                ? "Use the task's ordinary Stop action and its environment provider's stop/cleanup recovery. Wait for that exact controller/provider acknowledgement. Local PID checks and local containment confirmation cannot authorize remote recovery."
+                : "Stop the original controller and provider on their original host. After the saved lease expires, a board operator must record both stops and review action outcomes. Recording containment does not retry the task.",
+              createOnly: !existing, supersedeOnIdentityChange: true,
+              attemptCount: 0, maxAttempts: null, timeoutAt: null, lastAttemptAt: null,
+              wakePolicy: null, monitorPolicy: null,
+            });
+          }
+        }
         const previous = row.coordinator.recoveryHistory.at(-1);
         const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
         const event = historyEntry({
@@ -1522,7 +1572,7 @@ export async function claimNativeRestartRecoveries(input: {
           // The owner row is locked: grant the full lease at this write.
           leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
-          controllerHostHash: null,
+          controllerHostHash,
           controllerPid: controller.pid,
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
@@ -1563,6 +1613,17 @@ export async function claimNativeRestartRecoveries(input: {
           reason: "concurrent_recovery_claim",
         } as const;
       }
+
+      // A successful ordinary claim has now reconciled this exact earlier
+      // authority. Retire only its namespace attention; stale/other incidents
+      // remain owned and no operator confirmation is fabricated.
+      await issueRecoveryActionService(tx as unknown as Db).resolveActiveForIssue({
+        companyId: row.run.companyId, sourceIssueId: row.coordinator.issueId,
+        kind: "active_run_watchdog", cause: "native_restart_recovery_blocked",
+        fingerprint: `native-controller-space:${row.run.id}:${nativeControllerAuthorityDigest(row.coordinator, row.controllerLeaseExpiryEpoch)}`,
+        status: "resolved", outcome: "restored",
+        resolutionNote: "Normal restart recovery verified the previous authority and committed its exact replacement claim.",
+      }, tx);
 
       if (
         claimKind !== "reattach_existing_runner" &&

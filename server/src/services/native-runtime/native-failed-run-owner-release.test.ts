@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
@@ -28,6 +28,8 @@ import {
   resetAbandonedNativeOwnerReleaseForTests,
   settleUnstartedNativeSessionResume,
 } from "./native-failed-run-owner-release.js";
+
+import * as controllerProcess from "../controller-process-identity.js";
 
 const LEASE_FAILURE = 'Failed to acquire lease for environment "Managed computer" (sandbox): Sandbox creation has failed';
 
@@ -78,8 +80,10 @@ describe("failed native run owner release", () => {
           providerSessionId: "provider-session", activeTurnId: "active-turn" },
       },
     });
+    const current = await controllerProcess.currentControllerProcess();
+    expect(current.hostHash).not.toBe("unknown");
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", attempt: 1,
-      ...input.coordinator } as typeof nativeRunFinalizations.$inferInsert);
+      controllerHostHash: current.hostHash, ...input.coordinator } as typeof nativeRunFinalizations.$inferInsert);
     return { runId, issueId };
   }
 
@@ -162,6 +166,38 @@ describe("failed native run owner release", () => {
     expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
     // Nothing is left to schedule once the owner is settled.
     expect(await nextAbandonedNativeOwnerReleaseAt(db)).toBeNull();
+  });
+
+  it.each(["null", "foreign", "unknown-current"] as const)("keeps a failed namespace-held source out of automatic expired-owner release: %s", async mode => {
+    const actual = await controllerProcess.currentControllerProcess();
+    expect(actual.hostHash).not.toBe("unknown");
+    const recordedPid = 2_000_000_001;
+    const { runId } = await nativeRun({ status: "failed", errorCode: "setup_failed",
+      coordinator: { leaseOwner: `foreign-controller:${randomUUID()}`, leaseExpiresAt: new Date(0),
+        controllerBootId: randomUUID(), controllerPid: recordedPid,
+        controllerHostHash: mode === "null" ? null : mode === "foreign" ? `foreign:${actual.hostHash}` : actual.hostHash,
+        recoveryState: "awaiting_evidence" } });
+    await db.update(heartbeatRuns).set({ processPid: recordedPid, processGroupId: recordedPid })
+      .where(eq(heartbeatRuns.id, runId));
+    const before = await coordinator(runId);
+    const originalKill = process.kill.bind(process);
+    const probes: number[] = [];
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (Math.abs(pid) === recordedPid && signal === 0) {
+        probes.push(pid);
+        throw Object.assign(new Error("controlled local PID absent; not foreign stop proof"), { code: "ESRCH" });
+      }
+      return originalKill(pid, signal);
+    });
+    const identity = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentControllerProcess")
+      .mockResolvedValue({ ...actual, hostHash: "unknown" }) : null;
+    try {
+      expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+      expect(probes).toEqual([]);
+      expect(await coordinator(runId)).toEqual(before);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "native.failed_run_owner_released")))).toHaveLength(0);
+    } finally { identity?.mockRestore(); probe.mockRestore(); }
   });
 
   it("keeps an unexpired owner blocking the stop check and schedules its expiry", async () => {

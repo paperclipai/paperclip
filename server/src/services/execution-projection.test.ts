@@ -39,6 +39,24 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it.each(["contained", "ordinary", "wrong-source", "continued"] as const)("projects controller containment without inventing queued work: %s", state => {
+    const stopped = run({ id: "old", status: "failed" });
+    const action = { status: "resolved" as const, cause: "native_restart_recovery_blocked", nextAction: "Inspect the original owner",
+      evidence: { reason: "controller_process_space_unverified", continuationDelivery: "not_requested",
+        executionReconciliation: { runId: state === "wrong-source" ? "another-run" : "old", providerStopped: true,
+          ...(state === "ordinary" ? {} : { controllerStopped: true, controllerAuthorityDigest: "a".repeat(64) }) },
+        ...(state === "continued" ? { explicitUserContinuation: { previousRunId: "old", runId: "new" } } : {}),
+      } };
+    const projected = projectExecution(stopped, coordinator({ phase: "terminal_failure" }), [], action, now);
+    expect(projected.phase).toBe(state === "contained" ? "failed" : state === "continued" ? "completed" : "queued");
+    if (state === "contained") {
+      expect(projected.label).toBe("Execution contained");
+      expect(projected.nextAction).toContain("Use Retry");
+      expect(projected.successorRunId).toBeNull();
+    }
+    if (state === "continued") expect(projected.successorRunId).toBe("new");
+  });
+
   it("offers Stop for every live run, including a long-silent native turn", () => {
     const silentSince = new Date(now.getTime() - 35 * 60_000);
     const silent = run({ lastUsefulActionAt: silentSince, startedAt: silentSince });

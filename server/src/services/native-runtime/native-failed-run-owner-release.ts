@@ -1,8 +1,14 @@
+import { currentControllerProcess } from "../controller-process-identity.js";
+import type { ExecutionReconciliation } from "@paperclipai/shared";
+import { nativeControllerAuthorityDigest, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
+import { settleNativeTerminalWake } from "./native-run-projection.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
-import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
+import { logActivity, persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { readProcessStartedAt } from "../hot-restart.js";
@@ -36,7 +42,10 @@ type Release =
   /** The caller dispatched this claim and its execution has returned. */
   | { kind: "unstarted_resume"; runId: string; leaseOwner: string; attempt: number }
   /** A background pass found an expired owner and must prove it stopped. */
-  | { kind: "expired_owner"; runId: string; leaseOwner: string; attempt: number; controllerGeneration: number };
+  | { kind: "expired_owner"; runId: string; leaseOwner: string; attempt: number; controllerGeneration: number }
+  | { kind: "operator_containment"; runId: string; leaseOwner: string; attempt: number;
+      companyId: string; issueId: string; actionId: string; authorityDigest: string; actorId: string; controllerGeneration: number;
+      actionOutcome: ExecutionReconciliation["actionOutcome"]; outcomeEvidence: string };
 
 /** Environment leases that `agentExecutionsHaveStopped` would still treat as live. */
 const unsettledRunEnvironmentLease = sql`exists (
@@ -135,20 +144,70 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, release.runId));
     if (!binding) return false;
     // Same issue-before-coordinator-before-run order as admission and failure settlement.
-    await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, binding.companyId),
+    const [task] = await tx.select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId,
+      status: issues.status, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(eq(issues.companyId, binding.companyId),
       eq(issues.id, binding.issueId))).for("update");
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, binding.companyId), eq(nativeRunFinalizations.runId, release.runId),
       eq(nativeRunFinalizations.issueId, binding.issueId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.id, release.runId))).for("update");
-    if (!coordinator || !run || run.runtimeMode !== "native" || !RELEASABLE_RUN_STATUSES.includes(run.status)
-      || coordinator.phase !== "observed" || coordinator.resultId !== null
+    if (!coordinator || !run || run.runtimeMode !== "native"
+      || !(RELEASABLE_RUN_STATUSES.includes(run.status) || (release.kind === "operator_containment" && run.status === "running"))
+      || !(coordinator.phase === "observed" || (release.kind === "operator_containment" && coordinator.phase === "retryable_failure"))
+      || coordinator.resultId !== null
       || coordinator.leaseOwner !== release.leaseOwner || coordinator.attempt !== release.attempt) return false;
-    if (release.kind === "expired_owner") {
+    let containedExpiryEpoch: string | null = null;
+    if (release.kind === "operator_containment") {
+      const [action] = await tx.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, release.companyId), eq(issueRecoveryActions.sourceIssueId, release.issueId),
+        eq(issueRecoveryActions.id, release.actionId))).for("update");
+      const [expiry] = await tx.select({ epoch: sql<string | null>`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text` })
+        .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      const authority = action?.evidence.controllerAuthority;
+      const recordedDigest = authority && typeof authority === "object" && !Array.isArray(authority)
+        && (authority as Record<string, unknown>).schema === "paperclip.native-controller-authority.v1"
+        ? (authority as Record<string, unknown>).digest : null;
+      if (!["completed", "not_performed", "mixed"].includes(release.actionOutcome)
+        || release.outcomeEvidence.trim().length < 20 || release.outcomeEvidence.length > 12_000
+        || !task || !action || action.kind !== "active_run_watchdog" || action.ownerType !== "board"
+        || !["active", "escalated"].includes(action.status) || action.cause !== "native_restart_recovery_blocked"
+        || action.fingerprint !== `native-controller-space:${run.id}:${release.authorityDigest}` || action.evidence.runId !== run.id
+        || action.evidence.reason !== "controller_process_space_unverified"
+        || recordedDigest !== release.authorityDigest || !expiry
+        || nativeControllerAuthorityDigest(coordinator, expiry.epoch) !== release.authorityDigest
+        || coordinator.companyId !== release.companyId || coordinator.issueId !== release.issueId
+        || action.returnOwnerAgentId !== run.agentId || task.assigneeAgentId !== run.agentId
+        || ["done", "cancelled"].includes(task.status) || task.executionRunId !== run.id
+        || (task.checkoutRunId !== null && task.checkoutRunId !== run.id)
+        || !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > now
+        || coordinator.leaseOwner?.startsWith("native-finalizer:") || coordinator.leaseOwner?.startsWith("native-cleanup:")
+        || coordinator.failureDetail?.successorRunId || isCurrentNativeControllerProcess(coordinator)
+        || isNativeRunnerOwnershipHeld(run) || (run.controllerLeaseExpiresAt !== null && run.controllerLeaseExpiresAt > now)
+        || run.runnerProfileJson?.nativeWorkspaceSync != null || run.runnerProfileJson?.remoteWorkspace != null
+        || run.runnerProfileJson?.nativeControllerRecovery != null
+        || run.resultJson?.[LEGACY_WORKSPACE_RECOVERY_KEY] != null
+        || adapterExecutionControls.has(run.id) || activeNativeExecutionRunIds.has(run.id)) return false;
+      const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, run.id), or(unsettledRunEnvironmentLease, pendingNativeStop))).limit(1);
+      const [work] = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.heartbeatRunId, run.id),
+        inArray(workspaceOperations.status, ["queued", "running"]))).limit(1);
+      if (heldElsewhere || work) return false;
+      containedExpiryEpoch = expiry.epoch;
+      // The explicit original-host controller+provider attestation replaces a
+      // meaningless local PID observation only in this exact authority branch.
+    } else if (release.kind === "expired_owner") {
       if (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > now
         || coordinator.controllerGeneration !== release.controllerGeneration
         || run.resultJson?.[LEGACY_WORKSPACE_RECOVERY_KEY] != null) return false;
+      // An expired lease does not make foreign PID numbers local evidence.
+      // Keep this boot's exact owner semantics; every other owner needs the
+      // same known kernel/PID space before either recorded-process probe.
+      if (!isCurrentNativeControllerProcess(coordinator)) {
+        const current = await currentControllerProcess();
+        if (current.hostHash === "unknown" || coordinator.controllerHostHash !== current.hostHash) return false;
+      }
       const [heldElsewhere] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, run.id), or(unsettledRunEnvironmentLease, pendingNativeStop))).limit(1);
       if (heldElsewhere || await runProcessMayBeLive(run, now) || await controllerMayBeLive(coordinator)) return false;
@@ -161,7 +220,8 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
       eq(nativeRunResults.schemaStatus, "accepted"))).limit(1);
     if (accepted) return false;
 
-    const failureCode = coordinator.failureCode ?? run.errorCode ?? FALLBACK_FAILURE_CODE;
+    const failureCode = release.kind === "operator_containment" ? "native_restart_recovery_blocked"
+      : coordinator.failureCode ?? run.errorCode ?? FALLBACK_FAILURE_CODE;
     const scope = { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId: coordinator.issueId };
     await notifyExecutionRunWork(tx, scope);
     await notifyNativeFinalizationWork(tx, scope);
@@ -179,21 +239,47 @@ async function settleFailedRunOwner(db: Db, release: Release, now: Date): Promis
         ...coordinator.failureDetail,
         ...(run.error ? { message: run.error.slice(0, 2_000) } : {}),
         originalFailureCode: run.errorCode ?? failureCode,
-        releasedOwner: { reason: release.kind, leaseOwner: release.leaseOwner, attempt: release.attempt },
+        releasedOwner: release.kind === "operator_containment"
+          ? { reason: release.kind, authorityDigest: release.authorityDigest, attempt: release.attempt,
+              actorId: release.actorId, recordedAt: now.toISOString(), controllerStopped: true, providerStopped: true,
+              actionOutcome: release.actionOutcome, outcomeEvidence: release.outcomeEvidence,
+              priorProcess: { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt?.toISOString() ?? null } }
+          : { reason: release.kind, leaseOwner: release.leaseOwner, attempt: release.attempt },
         recoveryOwner: { kind: "board" },
         nextAction: NEXT_ACTION,
       },
       updatedAt: now,
     }).where(and(
       eq(nativeRunFinalizations.runId, run.id),
-      eq(nativeRunFinalizations.phase, "observed"),
+      eq(nativeRunFinalizations.phase, release.kind === "operator_containment" ? coordinator.phase : "observed"),
       isNull(nativeRunFinalizations.resultId),
       eq(nativeRunFinalizations.leaseOwner, release.leaseOwner),
       eq(nativeRunFinalizations.attempt, release.attempt),
+      release.kind === "operator_containment" ? and(
+        eq(nativeRunFinalizations.controllerGeneration, release.controllerGeneration),
+        sql`extract(epoch from ${nativeRunFinalizations.leaseExpiresAt})::numeric::text = ${containedExpiryEpoch}`,
+        coordinator.controllerHostHash === null ? isNull(nativeRunFinalizations.controllerHostHash)
+          : eq(nativeRunFinalizations.controllerHostHash, coordinator.controllerHostHash),
+      ) : undefined,
     )).returning({ runId: nativeRunFinalizations.runId });
     if (!updated) return false;
-    await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: now, updatedAt: now })
-      .where(eq(heartbeatRuns.id, run.id));
+    const [settledRun] = await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: now, updatedAt: now,
+      ...(release.kind === "operator_containment" ? { status: "failed", finishedAt: now,
+        errorCode: failureCode, error: "The original controller and provider were contained by a board operator. Review the recorded action outcomes before explicitly retrying.",
+        processPid: null, processGroupId: null, processStartedAt: null, executionControlDeadlineAt: null } : {}),
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    if (release.kind === "operator_containment" && settledRun) {
+      await preserveNativeFailedWorkspace(tx, settledRun);
+      await settleNativeTerminalWake(tx, settledRun);
+      await notifyNativeStatusReassessment(tx, scope);
+      // Durable activity only: this call may be a savepoint of board resolution,
+      // so publishing a live event here would precede the outer commit.
+      await persistActivity(tx, { companyId: run.companyId, actorType: "user", actorId: release.actorId,
+        action: "native.controller_containment_recorded", entityType: "heartbeat_run", entityId: run.id,
+        agentId: run.agentId, runId: run.id, details: { recoveryActionId: release.actionId,
+          authorityDigest: release.authorityDigest, replay: "not_authorized" } });
+      return true;
+    }
     await logActivity(tx, {
       companyId: run.companyId, actorType: "system", actorId: ACTOR_ID,
       action: "native.failed_run_owner_released", entityType: "heartbeat_run", entityId: run.id,
@@ -268,4 +354,20 @@ export async function releaseAbandonedNativeOwners(db: Db, now = new Date(), pag
     }
   }
   return released;
+}
+
+/** This entry is called only by the board-authorized reconciliation owner.
+ * Its opaque authority is reloaded and checked under the normal settlement
+ * locks; the operator receipt never becomes a fabricated provider result. */
+export async function settleOperatorContainedNativeOwner(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actionId: string;
+  authorityDigest: string; actorId: string;
+  actionOutcome: ExecutionReconciliation["actionOutcome"]; outcomeEvidence: string;
+}): Promise<boolean> {
+  const [owner] = await db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+    eq(nativeRunFinalizations.runId, input.runId)));
+  if (!owner?.leaseOwner) return false;
+  return settleFailedRunOwner(db, { kind: "operator_containment", ...input,
+    leaseOwner: owner.leaseOwner, attempt: owner.attempt, controllerGeneration: owner.controllerGeneration }, new Date());
 }

@@ -629,6 +629,8 @@ export const resolveIssueRecoveryActionSchema = z
       .object({
         runId: z.string().guid(),
         providerStopped: z.literal(true),
+        controllerStopped: z.literal(true).optional(),
+        controllerAuthorityDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
         actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
         outcomeEvidence: z.string().trim().min(20).max(12000),
         workspaceRepairEvidence: z.string().trim().min(20).max(12000).optional(),
