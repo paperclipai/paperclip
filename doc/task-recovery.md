@@ -23,16 +23,18 @@ repeating the failed step. A Retry never silently drops the agent's work:
   task, not a shared project workspace, and not under remote storage authority.
   The prior executor must be stopped, its leases released, and the recovery
   generation settled. No other lease, failed cleanup or running workspace
-  operation may hold the directory. An operation that the stopped source
-  started before it settled, and that a restart left in the running state, is
-  an orphan and does not count. Its Git status must still be readable from
+  operation may hold the directory. A restart orphan does not count: an
+  operation of the stopped source that started before the source settled and
+  before the current server process started. Operations with no run, of
+  another run, or started in the current process still block reuse. Its Git status must still be readable from
   that directory itself. Workspace-export failures keep their repair path.
 - Otherwise the Retry continues in a fresh isolated attempt seeded from
   committed files. The previous directory is retained unmodified. The retried
   run's continuation context names it in `priorWorkspace`: its path, branch
   and a bounded list of its uncommitted files, read without Git optional locks.
   This hint is given only for a task-owned local directory with a settled
-  recovery generation and no other writer.
+  recovery generation, no pending workspace repair and no other writer. The
+  file list is given only when Git resolves to that directory itself.
 
 Either choice consumes the generation's one alternative attempt. Preparing the
 same attempt again after a restart reuses the directory that attempt already

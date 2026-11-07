@@ -35,14 +35,16 @@ const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
 const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminalRunStatuses = ["failed", "cancelled", "timed_out", "succeeded", "interrupted"];
 const reusableWorkspaceStatuses = ["active", "idle", "in_review"];
-// Admission can hold the issue lock, so all Git probes for one workspace share
-// one short wall-clock budget, including time queued in the scan scheduler.
-const RETAINED_WORKSPACE_GIT_BUDGET_MS = 10_000;
+// Admission can hold the issue lock. All holds share one probe per workspace,
+// and that probe has one short wall-clock budget, including scheduler queueing.
+const RETAINED_WORKSPACE_GIT_BUDGET_MS = 5_000;
+const processStartedAt = new Date(Date.now() - process.uptime() * 1_000);
 
 /** Why another writer may still hold the workspace, or null. The successor's
- * own claims do not count. An operation the stopped source started before it
- * settled is history: admission proved that source stopped, so a row still
- * marked running was orphaned by a restart. */
+ * own claims do not count. A restart orphan is ignored only when all of these
+ * hold: the stopped source owns it, it started before that source settled, and
+ * it started before this server process, so this process cannot be running it.
+ * Operations with no run, of another run, or from this process still block. */
 export async function workspaceHasOtherWriter(db: Db, input: {
   companyId: string; workspaceId: string; successorRunId: string;
   stoppedSource?: { id: string; finishedAt: Date | null } | null;
@@ -60,14 +62,15 @@ export async function workspaceHasOtherWriter(db: Db, input: {
     or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.successorRunId)),
     // coalesce keeps an operation with no run: NULL = id must not hide it.
     source ? sql`not coalesce(${workspaceOperations.heartbeatRunId} = ${source.id}
-      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz, false)` : undefined,
+      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz
+      and ${workspaceOperations.startedAt} < ${processStartedAt.toISOString()}::timestamptz, false)` : undefined,
   )).limit(1);
   return lease ? "lease_held" as const : operation ? "operation_running" as const : null;
 }
 
 /** A task-owned Git workspace must read cleanly from its own root. A broken
  * worktree link must not resolve to an enclosing repository. */
-async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSelect, real: string) {
+export async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSelect, real: string) {
   const marker = await lstat(path.join(real, ".git")).catch(() => null);
   if (!marker && workspace.providerType !== "git_worktree") return true;
   const signal = AbortSignal.timeout(RETAINED_WORKSPACE_GIT_BUDGET_MS);
@@ -95,6 +98,13 @@ export function isTaskOwnedLocalWorkspace(workspace: typeof executionWorkspaces.
 
 /** A recovery generation that is scheduled or running may still export or
  * repair the source tree. A settled projection is only status text. */
+/** Workspace-export failures and restore repairs keep their own repair path;
+ * their directory is neither reused nor offered as a recovery source. */
+export function sourceNeedsWorkspaceRepair(cause: string | null, resultJson: Record<string, unknown> | null) {
+  return Boolean((cause && workspaceExportCauses.includes(cause)) || resultJson?.workspaceRestoreFailure ||
+    hasRequiredWorkspaceRecovery(resultJson));
+}
+
 export function recoveryGenerationSettled(evidence: Record<string, unknown> | null, sourceRunId: string) {
   if (evidence?.systemRecovery === undefined) return true;
   const recovery = readSystemRecovery(evidence);
@@ -124,9 +134,7 @@ export async function retainedIssueWorkspaceForRetry(db: Db, input: {
   if (!terminalRunStatuses.includes(input.source.status) || !input.source.finishedAt ||
       adapterExecutionControls.has(input.source.id) ||
       (input.source.controllerLeaseExpiresAt && input.source.controllerLeaseExpiresAt > new Date())) return keepFresh("source_not_settled");
-  if ((input.cause && workspaceExportCauses.includes(input.cause)) ||
-      input.source.resultJson?.workspaceRestoreFailure || hasRequiredWorkspaceRecovery(input.source.resultJson))
-    return keepFresh("workspace_repair_required");
+  if (sourceNeedsWorkspaceRepair(input.cause, input.source.resultJson)) return keepFresh("workspace_repair_required");
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.source.id),
   ));

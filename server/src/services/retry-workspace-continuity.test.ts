@@ -172,7 +172,7 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
     expect(readiness).toMatchObject({ mode: "reuse_issue_workspace", cwd: f.worktree });
   }, 30_000);
 
-  it.each(["live_lease", "running_operation", "corrupt_git", "missing_directory", "remote_authority", "shared_workspace", "export_pending"] as const)(
+  it.each(["live_lease", "running_operation", "corrupt_git", "missing_directory", "remote_authority", "shared_workspace", "export_pending", "repair_required", "live_source_operation"] as const)(
     "keeps the fresh isolated attempt when the prior workspace is unsafe: %s", async unsafe => {
       const f = await seed("exhausted_generation");
       if (unsafe === "live_lease") await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
@@ -189,6 +189,14 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
         .where(eq(executionWorkspaces.id, f.workspace.id));
       if (unsafe === "shared_workspace") await db.update(executionWorkspaces).set({ mode: "shared_workspace" })
         .where(eq(executionWorkspaces.id, f.workspace.id));
+      if (unsafe === "repair_required") await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed" } })
+        .where(eq(heartbeatRuns.id, f.source.id));
+      // The source settled just now; an operation it started in this server process may still be running.
+      if (unsafe === "live_source_operation") {
+        await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.source.id));
+        await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspace.id,
+          heartbeatRunId: f.source.id, issueId: f.issueId, phase: "worktree_prepare", status: "running", startedAt: new Date(Date.now() - 1_000) });
+      }
       if (unsafe === "export_pending") await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence,
         systemRecovery: { ...readSystemRecovery(f.action.evidence)!, state: "running" } } })
         .where(eq(issueRecoveryActions.id, f.action.id));

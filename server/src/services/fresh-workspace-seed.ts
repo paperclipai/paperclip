@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
-import { isTaskOwnedLocalWorkspace, recoveryGenerationSettled, workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
+import { isTaskOwnedLocalWorkspace, readableOwnGitRoot, recoveryGenerationSettled, sourceNeedsWorkspaceRepair,
+  workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 
@@ -22,7 +23,8 @@ const PRIOR_WORKSPACE_FILE_LIMIT = 50;
 export async function describeRetainedPriorWorkspace(db: Db, input: {
   companyId: string; issueId: string; sourceRunId: string; successorRunId: string; freshCwd: string;
 }): Promise<NonNullable<ExecutionContinuationEnvelope["priorWorkspace"]> | null> {
-  const [prior] = await db.select({ workspace: executionWorkspaces, source: { id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt } })
+  const [prior] = await db.select({ workspace: executionWorkspaces,
+    source: { id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt, resultJson: heartbeatRuns.resultJson } })
     .from(environmentLeases).innerJoin(executionWorkspaces, and(
       eq(executionWorkspaces.companyId, environmentLeases.companyId),
       eq(executionWorkspaces.id, environmentLeases.executionWorkspaceId),
@@ -34,16 +36,25 @@ export async function describeRetainedPriorWorkspace(db: Db, input: {
   const workspace = prior?.workspace;
   if (!workspace?.cwd || !isTaskOwnedLocalWorkspace(workspace, input.issueId) ||
       path.resolve(workspace.cwd) === path.resolve(input.freshCwd)) return null;
-  const holds = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
-    sql`${issueRecoveryActions.evidence}->>'runId' = ${input.sourceRunId}`));
-  if (holds.some(hold => !recoveryGenerationSettled(hold.evidence, input.sourceRunId))) return null;
+  const holds = await db.select({ cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence })
+    .from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${input.sourceRunId}`));
+  if (sourceNeedsWorkspaceRepair(null, prior.source.resultJson) || holds.some(hold =>
+    !recoveryGenerationSettled(hold.evidence, input.sourceRunId) || sourceNeedsWorkspaceRepair(hold.cause, null))) return null;
   // A tree that another writer may still change is not a recovery source.
   if (await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: workspace.id,
     successorRunId: input.successorRunId, stoppedSource: prior.source })) return null;
   const stat = await lstat(workspace.cwd).catch(() => null);
-  if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
+  const real = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(workspace.cwd).catch(() => null) : null;
+  if (!real) return null;
   const priorCwd = workspace.cwd;
+  // Status is listed only when Git resolves to this directory itself, never
+  // to an enclosing repository through a missing or broken worktree link.
+  const ownGit = (workspace.providerType === "git_worktree" || await lstat(path.join(real, ".git")).catch(() => null) !== null)
+    && await readableOwnGitRoot(workspace, real);
+  if (!ownGit) return { sourceRunId: input.sourceRunId, path: priorCwd, branchName: workspace.branchName ?? null,
+    changedFilesKnown: false, changedFileCount: 0, changedFiles: [] };
   const scan = (args: string[], operation: string) => workspaceGitOperationScheduler.run({
     workspacePath: priorCwd, args, operation, cacheTtlMs: 0, bypassSingleFlight: true, timeoutMs: 15_000,
     maxStdoutBytes: 4 * 1024 * 1024, fairnessKeys: [`company:${input.companyId}`, `workspace:${workspace.id}`],
