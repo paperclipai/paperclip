@@ -78,8 +78,8 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   }
   let selected: Identities;
   try {
-    selected = await workspaceSourceIdentities(workspace.companyId, cwd);
-    if (nestedGit.length && selected.git) return null;
+    selected = nestedGit.length && ordinary ? { projectIds: ordinary.projectId ? [ordinary.projectId] : [],
+      issueIds: [...ordinary.issueIds], unownedPaths: [], git: null } : await workspaceSourceIdentities(workspace.companyId, cwd);
     for (const source of nestedGit) {
       const nested = await workspaceSourceIdentities(workspace.companyId, source.root);
       if (!nested.git || nested.git.fingerprint !== source.fingerprint) return null;

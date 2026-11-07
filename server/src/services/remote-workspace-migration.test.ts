@@ -1160,9 +1160,14 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await fs.writeFile(path.join(nested, "tracked.txt"), "unstaged\n");
     return { f, nested, head };
   }
-  it.each(["fresh", "resume", "nested-runtime"])("imports a nested Git wrapper and retains its pending journal on resume (%s)", async mode => {
+  it.each(["fresh", "resume", "nested-runtime", "host-repository"])("imports a nested Git wrapper and retains its pending journal on resume (%s)", async mode => {
     const relative = mode === "nested-runtime" ? ".review/.paperclip-runtime/repository" : ".review/repository";
     const { f, head } = await nestedGitWrapperFixture(relative);
+    let hostHead: string | undefined;
+    if (mode === "host-repository") {
+      await git(root, "init", "-q", "-b", "host"); await fs.writeFile(path.join(root, "host-only.txt"), "host repository\n");
+      await git(root, "add", "host-only.txt"); await git(root, "commit", "-qm", "host work"); hostHead = await git(root, "rev-parse", "HEAD");
+    }
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     let operationId: string | undefined, snapshotId: string | undefined;
     if (mode === "resume") {
@@ -1196,6 +1201,11 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await git(restored, "rev-parse", "HEAD")).toBe(head);
     expect(await git(restored, "show", ":tracked.txt")).toBe("staged");
     expect(await fs.readFile(path.join(restored, "tracked.txt"), "utf8")).toBe("unstaged\n");
+    if (hostHead) {
+      expect(await git(root, "rev-parse", "HEAD")).toBe(hostHead);
+      expect(await fs.lstat(path.join(targetDir, ".git")).catch(() => null)).toBeNull();
+      expect(await fs.lstat(path.join(targetDir, "host-only.txt")).catch(() => null)).toBeNull();
+    }
   });
   it.each(["linked", "alternate", "alternate-linked-wrapper"])("fences a nested Git wrapper's shared %s source before journal creation", async mode => {
     const { f, nested } = await nestedGitWrapperFixture();
