@@ -374,8 +374,8 @@ describe("plugin-provided Runner execution", () => {
     const workers = worker();
     await executeEnvironmentTask(db, workers as never, { companyId: "company", leaseId, operation });
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ projectIds: operation.projectIds }), 15_000);
-    const scope = query.where.mock.calls.map(([where]) => new PgDialect().sqlToQuery(where))
-      .find(candidate => candidate.sql.includes('"projects"."company_id" ='));
+    const scope = new PgDialect().sqlToQuery(query.where.mock.calls[2][0]);
+    expect(scope.sql).toContain('"projects"."company_id" =');
     expect(scope.params).toEqual(["company", projectId, secondProjectId]);
     const rejected = worker();
     await expect(executeEnvironmentTask(database(row(), [{ id: projectId }]).db, rejected as never, { companyId: "company", leaseId, operation })).rejects.toThrow("project unavailable");
@@ -402,9 +402,9 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(db, workers as never, { companyId: "company", leaseId, operation })).resolves.toEqual(result);
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
       projectIds: [projectId, secondProjectId], fresh, operation }), 15_000);
-    const scope = query.where.mock.calls.map(([where]) => new PgDialect().sqlToQuery(where))
-      .find(candidate => candidate.sql.includes('"projects"."company_id" ='));
-    expect(scope?.params).toEqual(["company", projectId, secondProjectId]);
+    const scope = new PgDialect().sqlToQuery(query.where.mock.calls[1][0]);
+    expect(scope.sql).toContain('"projects"."company_id" =');
+    expect(scope.params).toEqual(["company", projectId, secondProjectId]);
 
     const unscoped = row(); unscoped.lease.status = "retained";
     const plain = worker(result);
