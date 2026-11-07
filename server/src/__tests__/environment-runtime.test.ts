@@ -3957,6 +3957,28 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it.each([
+    [{ providerLeaseId: null, metadata: { expired: true } }, "RetainedSandboxAbsentError"],
+    [{ providerLeaseId: null, metadata: { expired: true, workspaceSentinel: { result: "mismatch" } } }, "RetainedSandboxAbsentError"],
+    [{ providerLeaseId: "another-sandbox", metadata: {} }, "Error"],
+    [{ providerLeaseId: null, metadata: {} }, "Error"],
+  ] as const)("names only a provider-confirmed missing sandbox as absent on exact resume (%j)", async (reply, name) => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner", { timeoutMs: 1234 });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method !== "environmentResumeLease") throw new Error("Only exact resume is permitted");
+      return reply;
+    });
+    const workerManager = { isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const error = await runtime.resumeRunLease({ environment: seeded.environment, lease }).catch(caught => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe(name);
+    expect(call).toHaveBeenCalledOnce();
+  });
+
+  it.each([
     { timeoutMs: 300_000, rpcTimeoutMs: 330_000 },
     { timeoutMs: 1234, rpcTimeoutMs: 31_234 },
     { timeoutMs: null, rpcTimeoutMs: 60_000 },
