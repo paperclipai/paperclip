@@ -50,6 +50,21 @@ function carrierReasons(input: unknown, source: "reporter" | "packaging") {
     }));
 }
 const failures = new Map([
+  ["Invalid private framework evidence", "invalid-private-framework-evidence"],
+  ["Docker config custody requires the isolated home scan", "docker-config-custody-requires-the-isolated"],
+  ["Private Codex identity policy requires the isolated home root", "private-codex-identity-policy-requires-the"],
+  ["Private Codex identity policy requires an owner-only temporary root", "private-codex-identity-policy-requires-an"],
+  ["Codex rollout record exceeds private scan bound", "codex-rollout-record-exceeds-private-scan"],
+  ["Invalid exact manual evidence selection", "invalid-exact-manual-evidence-selection"],
+  ["Private manual evidence exceeds the per-run cell limit", "private-manual-evidence-exceeds-the-perrun"],
+  ["Invalid manual private evidence identity", "invalid-manual-private-evidence-identity"],
+  ["Unsupported private manual evidence selection", "unsupported-private-manual-evidence-selection"],
+  ["Invalid protected manual evidence approval", "invalid-protected-manual-evidence-approval"],
+  ["Exact protected manual evidence approval missing or ambiguous", "exact-protected-manual-evidence-approval-missing"],
+  ["Invalid manual evidence execution identity", "invalid-manual-evidence-execution-identity"],
+  ["Invalid manual private storage identity", "invalid-manual-private-storage-identity"],
+  ["Private archive sessions require one exact cell or the report writer", "private-archive-sessions-require-one-exact"],
+  ["Private archive session policy exceeds the STS limit", "private-archive-session-policy-exceeds-the"],
   ["Invalid private evidence preflight custody", "invalid-private-evidence-preflight-custody"],
   ["Private evidence preflight does not match this exact attempt", "private-evidence-preflight-does-not-match"],
   ["Invalid private evidence staging ownership", "invalid-private-evidence-staging-ownership"],
@@ -155,6 +170,7 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
     status: member(result.status, ["passed", "failed", "skipped"]),
     failureClass: member(result.failureClass, ["candidate_failure", "transient_infrastructure", "permanent_infrastructure", "secret_leak", "cleanup_failure"]),
     finalization: failures.get(message) ?? (record(input.error).code === "ENOENT" ? "missing-file"
+      : typeof record(input.error).code === "string" && /^E[A-Z]{2,15}$/.test(record(input.error).code) ? `fs-${record(input.error).code}`
       : /^Secret leak in [\s\S]*: (?:exact secret value|secret-shaped value)$/.test(message) ? "text-secret-finding" : "unclassified"),
     phase: phases.find(([label]) => [...errors, message].some(error => error.includes(label!)))?.[1] ?? "unclassified",
     privacy: { persistedState: errors.some(error => error.startsWith("Secret leak in persisted ")),

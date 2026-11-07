@@ -123,11 +123,16 @@ it("retains each remaining fixed scanner reason without dynamic text", () => {
 
 import { readFileSync } from "node:fs";
 it("gives every fixed packaging, sealing and report-asset refusal a closed finalization code", () => {
-  const messages = ["manual-private-handoff.ts", "evidence.ts", "manual-private-report-assets.ts"].flatMap(file =>
+  const messages = ["manual-private-handoff.ts", "evidence.ts", "manual-private-report-assets.ts", "private-framework-report.ts", "redaction.ts", "manual-private-retention.ts"].flatMap(file =>
     [...readFileSync(new URL(`./${file}`, import.meta.url), "utf8").matchAll(/(?:new Error|budgetFailure)\("([^"$`]+)"/g)].map(match => match[1]!));
   expect(messages.length).toBeGreaterThan(20);
   for (const message of messages) {
     const diagnostic = privateAttemptDiagnostic({ stage: "seal-original", error: new Error(message) });
     expect(diagnostic.finalization, message).not.toBe("unclassified");
   }
+});
+it("names other filesystem refusals by their closed error code", () => {
+  const error = Object.assign(new Error("EEXIST: file already exists, open '/private/path'"), { code: "EEXIST" });
+  expect(privateAttemptDiagnostic({ stage: "seal-original", error }).finalization).toBe("fs-EEXIST");
+  expect(JSON.stringify(privateAttemptDiagnostic({ stage: "seal-original", error }))).not.toContain("/private/path");
 });
