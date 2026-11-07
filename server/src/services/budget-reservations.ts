@@ -54,7 +54,7 @@ export async function recheckRunBudgetReservationInTransaction(
   }
   if (stopRecovery) return null;
   const { block, policies, observations } = await budgetServiceInTransaction(tx, publications)
-    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId });
+    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id });
   if (block) return block.reason;
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));

@@ -6,10 +6,10 @@ import {
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork, recheckAdmittedRunBudgetReadOnly } from "../services/budgets.js";
 import { accountRunCost, reconcileRunCosts } from "../services/run-cost-accounting.js";
 import { persistUsageReceipt } from "../services/usage-receipts.js";
-import { reserveRunBudget } from "../services/budget-reservations.js";
+import { recheckRunBudgetReservationInTransaction, reserveRunBudget } from "../services/budget-reservations.js";
 
 // A control-plane SIGKILL during a provider turn that reports usage only at
 // turn end leaves the run terminal with an incomplete receipt. Once native
@@ -166,7 +166,18 @@ const support = await getEmbeddedPostgresTestSupport();
     const continuation = randomUUID();
     await db.insert(heartbeatRuns).values({ id: continuation, companyId: f.companyId, agentId: f.agentId, status: "queued",
       runtimeMode: "native", scopeKind: "issue", issueId: f.issue.id, nativeIssueId: f.issue.id });
-    await expect(reserveRunBudget(db, f.companyId, continuation, null)).resolves.toMatchObject({ reused: false });
+    const reservation = await reserveRunBudget(db, f.companyId, continuation, null);
+    expect(reservation).toMatchObject({ reused: false });
+    // The later dispatch gates must agree, or the continuation fails there instead.
+    const [continuationRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuation));
+    expect(await db.transaction(tx => recheckRunBudgetReservationInTransaction(tx as unknown as typeof db, [],
+      continuationRun, reservation.id))).toBeNull();
+    expect(await recheckAdmittedRunBudgetReadOnly(db, { companyId: f.companyId, agentId: f.agentId, runId: continuation,
+      projectId: null, reservationId: reservation.id })).toBeNull();
+    // A legacy run without a task identity is not exempt from another task's hold.
+    const legacy = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: legacy, companyId: f.companyId, agentId: f.otherAgentId, status: "queued" });
+    await expect(reserveRunBudget(db, f.companyId, legacy, null)).rejects.toThrow(/recovers its unfinished accounting/);
     const [otherIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Other task", status: "todo",
       assigneeAgentId: f.otherAgentId }).returning();
     const other = randomUUID();
@@ -193,6 +204,17 @@ const support = await getEmbeddedPostgresTestSupport();
     const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
     expect(company).toMatchObject({ status: "active", pauseReason: null });
     expect(await f.block()).toBeNull();
+  });
+
+  it("keeps the blocking policy for fixed or credit billing with no observed tokens", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block", stopEvidence: false });
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      billingType: "credits", inputTokens: 0, outputTokens: 0, model: "unlisted-model", costStatus: "unpriced",
+      accountingReceiptReady: true })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
   });
 
   it("keeps the blocking policy for complete-receipt usage with no price", async () => {

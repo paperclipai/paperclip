@@ -120,9 +120,10 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // A task never waits on its own unfinished accounting: the run being
     // admitted and earlier runs of the same task (its recovery generation) are
     // what its continuation and finalization settle. They still count as spend.
-    const ownTask = excludeRunId ? sql`(${heartbeatRuns.id} = ${excludeRunId}::uuid or (${heartbeatRuns.nativeIssueId} is not null
+    // coalesce keeps this a definite boolean when the admitted run has no task.
+    const ownTask = excludeRunId ? sql`coalesce(${heartbeatRuns.id} = ${excludeRunId}::uuid or (${heartbeatRuns.nativeIssueId} is not null
       and ${heartbeatRuns.nativeIssueId} = (select admitted_run.native_issue_id from ${heartbeatRuns} admitted_run
-        where admitted_run.id = ${excludeRunId}::uuid and admitted_run.company_id = ${heartbeatRuns.companyId})))` : sql`false`;
+        where admitted_run.id = ${excludeRunId}::uuid and admitted_run.company_id = ${heartbeatRuns.companyId})), false)` : sql`false`;
     const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt),
       sql`not ${ownTask}`)!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
@@ -147,13 +148,13 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // blocking policy (they stay visible in Costs):
     // - a receipt lost with its stopped provider (restart-derived, any usage);
     // - a charge that carries a known partial cost;
-    // - metered or subscription billing with no observed tokens.
+    // - metered API or subscription billing with no observed tokens.
     // Unknown billing with no tokens (for example Cursor Cloud) still counts.
     const exemptFromUnpricedBlock = sql`(exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
         and lost_receipt_run.company_id = ${costEvents.companyId}
         and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true')
       or ${costEvents.costCents} > 0
-      or (${costEvents.billingType} <> 'unknown' and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
+      or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
         and ${costEvents.outputTokens} = 0))`;
     ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
       and not ${exemptFromUnpricedBlock})::int`;

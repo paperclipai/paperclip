@@ -299,7 +299,7 @@ export async function recheckAdmittedRunBudgetReadOnly(db: Db, input: {
     const policies = await db.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, input.companyId),
       eq(budgetPolicies.isActive, true), eq(budgetPolicies.hardStopEnabled, true), eq(budgetPolicies.metric, "billed_cents"),
       sql`${budgetPolicies.amount} > 0`, budgetPoliciesForRun(input.companyId, input.agentId, input.projectId)));
-    const observations = await computeObservedSpends(db, policies);
+    const observations = await computeObservedSpends(db, policies, undefined, input.runId);
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       if (observedBlocks(policy, observed)) return "Applicable budget no longer permits provider work";
