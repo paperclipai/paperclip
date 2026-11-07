@@ -89,7 +89,7 @@ function createBroker(db: Db) {
     return { binding, assignment: a };
   }
 
-  const nativeBroker = createNativeExternalBroker<McpPrincipal>(db, "openai_dot", { enabled, authorize: authorizeAssignment });
+  const nativeBroker = createNativeExternalBroker<McpPrincipal>(db, "openai_dot", { enabled: (database, provider) => externalBotEnabled(db, provider ?? "openai_dot", database), authorize: authorizeAssignment });
 
   return {
     enabled,

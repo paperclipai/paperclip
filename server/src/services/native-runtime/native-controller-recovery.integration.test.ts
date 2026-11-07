@@ -150,10 +150,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const sourceClaim = { runId: fixture.scope.runId, remote: { providerLeaseId, remoteCwd } };
     const failure = await verifyRemoteRunnerReattachment({ claim: sourceClaim, target: target as never, identity,
       runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId }).catch(error => error);
-    expect(readRemoteRunnerRecoveryError(failure)).toEqual({ stage: "process_verification", reason: "process_not_running" });
+    expect(readRemoteRunnerRecoveryError(failure)).toEqual({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: true });
     expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
     await expect(verifyRemoteRunnerReattachment({ claim: { ...sourceClaim, runId }, target: target as never,
-      identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+      identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId }))
+      .rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=identity_run_id"));
     const recovery = await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) });
     expect(recovery).toMatchObject({ providerSessionEstablished: true, providerEventsExist: false, checkpointExists: true });
     expect(recovery.recoveryMode).toBe("ambiguous_state");
