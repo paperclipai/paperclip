@@ -29,6 +29,7 @@ import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } 
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { lockWorkspaceRecoveryTestDatabase, WORKSPACE_RECOVERY_EXTERNAL_SETUP_TIMEOUT_MS } from "./workspace-recovery-database-lock.js";
 import { prepareNativeWorkspaceSync, resumeNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup, readStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
@@ -55,21 +56,24 @@ export function replaceFixtureState(next: { db: typeof db; root?: string; connec
 export function useWorkspaceRecoveryFixture(executionTargets: Map<string, AdapterSandboxExecutionTarget>) {
   targets = executionTargets;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let externalLock: ReturnType<typeof createDb> | undefined;
   const priorHome = process.env.PAPERCLIP_HOME, priorInstance = process.env.PAPERCLIP_INSTANCE_ID;
+  const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "workspace-recovery-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home"); process.env.PAPERCLIP_INSTANCE_ID = "recovery";
-    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
     if (external) {
+      externalLock = await lockWorkspaceRecoveryTestDatabase(external);
       await applyPendingMigrations(external);
       temporary = { connectionString: external, cleanup: async () => {} };
     } else temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-");
     connectionString = temporary.connectionString;
     db = createDb(connectionString);
     if (external) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
-  }, 30_000);
+  }, external ? WORKSPACE_RECOVERY_EXTERNAL_SETUP_TIMEOUT_MS : 30_000);
   afterAll(async () => {
     await db?.$client.end(); await temporary?.cleanup();
+    await externalLock?.$client.end(); externalLock = undefined;
     const makeWritable = async (directory: string): Promise<void> => {
       const entry = await lstat(directory);
       if (!entry.isDirectory() || entry.isSymbolicLink()) return;
