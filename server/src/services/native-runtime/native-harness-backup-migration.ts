@@ -196,8 +196,12 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
         return "published";
       } catch (error) {
         signal.throwIfAborted();
-        if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_preservation_source_unsettled"
-          || (error as { code?: string })?.code === "55P03") return "source_changed";
+        if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && ["native_harness_preservation_source_unsettled",
+          "native_harness_archive_invalid"].includes(error.message)
+          || ((error as { code?: string; cause?: { code?: string } })?.code
+            ?? (error as { cause?: { code?: string } })?.cause?.code) === "55P03") {
+          return deferSource(source.scopeDigest, error instanceof Error ? error.message : "native_harness_source_busy", "source_changed");
+        }
         throw error;
       }
     }

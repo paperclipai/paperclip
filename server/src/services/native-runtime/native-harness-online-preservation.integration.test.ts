@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { agentTaskSessions, createDb, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -14,22 +14,26 @@ import { prestageNativeHarnessBackups } from "./native-harness-backup-migration.
 import { persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
+import * as backupStamp from "./native-harness-backup-stamp.js";
+import { nativeHarnessPrestageDatabaseUrl } from "../../maintenance/native-harness-prestage-runtime.js";
 
 describeEmbeddedPostgres("online preservation of settled legacy harness backups", () => {
   const environment = nativeRestartFixture();
   const homes: string[] = [];
   afterEach(async () => { for (const home of homes.splice(0)) await removeNativeHarnessBackup(home); vi.unstubAllEnvs(); });
-  async function fixture() {
+  async function fixture(options: { base?: string; scopeId?: string; unsafeLink?: boolean } = {}) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "51".repeat(32));
     const f = await environment.seedRun(randomUUID());
     const { companyId, agentId, runtimeRoot } = environment.current;
-    const base = join(runtimeRoot, randomUUID()); homes.push(base); await mkdir(base);
+    const base = options.base ?? join(runtimeRoot, randomUUID());
+    if (!options.base) { homes.push(base); await mkdir(base); }
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", base);
-    const sessionScopeId = randomUUID(), scopeDigest = createHash("sha256").update(sessionScopeId).digest("hex");
+    const sessionScopeId = options.scopeId ?? randomUUID(), scopeDigest = createHash("sha256").update(sessionScopeId).digest("hex");
     const root = join(base, scopeDigest, "failover-backups", "current");
     await mkdir(join(root, "codex-home", "sessions"), { recursive: true }); await mkdir(join(root, "runner"));
     const saved = { providerSessionId: randomUUID(), history: "surviving failed provider history" };
     await writeFile(join(root, "codex-home", "sessions", "history.json"), JSON.stringify(saved), { mode: 0o600 });
+    if (options.unsafeLink) await symlink("/outside-owned-backup", join(root, "codex-home", "outside-link"));
     await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({ runId: f.runId, lifecycle: "suspended" }));
     const normalizedSessionId = randomUUID(), runnerInstanceId = randomUUID(), providerLeaseId = randomUUID();
     const execution = { provider: { kind: "codex" }, binding: { companyId, issueId: f.issueId, runId: f.runId,
@@ -50,7 +54,7 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     await f.db.insert(environmentLeases).values({ companyId, issueId: f.issueId, heartbeatRunId: f.runId, providerLeaseId,
       status: "expired", metadata: { nativeHarnessBackup: stamp } });
     const storage = createStorageService(createLocalDiskStorageProvider(join(runtimeRoot, "durable-objects")));
-    return { ...f, companyId, root, scopeDigest, storage, saved, stamp, normalizedSessionId, runnerInstanceId, providerLeaseId };
+    return { ...f, companyId, base, root, scopeDigest, storage, saved, stamp, normalizedSessionId, runnerInstanceId, providerLeaseId };
   }
   it("preserves failed backup bytes online while retaining failure and unrelated active work", async () => {
     const f = await fixture(), active = await environment.seedRun(randomUUID());
@@ -144,5 +148,29 @@ describeEmbeddedPostgres("online preservation of settled legacy harness backups"
     await expect(persistNativeHarnessBackup({ ...f, owner: owner!, scopeDigest: "f".repeat(64), signal }))
       .rejects.toThrow("preservation_source_changed");
     expect(put).not.toHaveBeenCalled();
+  });
+  it("keeps the command transaction alive while exact payload verification exceeds thirty seconds", async () => {
+    const f = await fixture(), db = createDb(nativeHarnessPrestageDatabaseUrl(environment.current.temporary.connectionString));
+    const original = backupStamp.verifyNativeHarnessBackupStampAsync;
+    let slowed = false;
+    const spy = vi.spyOn(backupStamp, "verifyNativeHarnessBackupStampAsync").mockImplementation(async (...args) => {
+      if (args[3] !== undefined && !slowed) { slowed = true; await new Promise(resolve => setTimeout(resolve, 32_000)); }
+      return original(...args);
+    });
+    try {
+      expect((await db.$client.unsafe("show idle_in_transaction_session_timeout"))[0].idle_in_transaction_session_timeout).toBe("30s");
+      expect(await prestageNativeHarnessBackups(db, { storage: f.storage, signal: AbortSignal.timeout(60_000) }))
+        .toMatchObject({ published: 1, deferred: {} });
+      expect(slowed).toBe(true);
+    } finally { spy.mockRestore(); await db.$client.end({ timeout: 1 }); }
+  }, 60_000);
+  it("defers a stamped archive-invalid source and preserves the next eligible source", async () => {
+    const bad = await fixture({ scopeId: "b", unsafeLink: true });
+    const good = await fixture({ base: bad.base, scopeId: "a" });
+    expect(bad.scopeDigest < good.scopeDigest).toBe(true);
+    expect(await prestageNativeHarnessBackups(bad.db, { storage: bad.storage, signal: AbortSignal.timeout(15_000) }))
+      .toMatchObject({ inspected: 2, published: 1, deferred: { source_changed: 1 } });
+    expect(await bad.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, bad.scopeDigest))).toEqual([]);
+    expect((await good.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, good.scopeDigest)))[0].status).toBe("current");
   });
 });

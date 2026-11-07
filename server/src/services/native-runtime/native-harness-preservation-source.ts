@@ -7,6 +7,7 @@ import { nativeSha256 } from "./canonical.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 import { readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
+import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -100,8 +101,12 @@ export async function assertSettledNativeHarnessBackupSource(db: Db, owner: Sett
     || stamp.runnerInstanceId !== owner.runnerInstanceId) fail();
   if (!/^[a-f0-9]{64}$/.test(owner.scopeDigest)
     || resolve(owner.root) !== resolve(nativeHarnessStateBase(), owner.scopeDigest, "failover-backups", "current")) fail();
-  const source = await readNativeHarnessBackupSource(owner.root);
-  if (!source || source.state.runId !== owner.runId || source.state.lifecycle !== "suspended"
-    || `sha256:${createHash("sha256").update(source.manifestBytes).digest("hex")}` !== owner.manifestSha256
-    || !await verifyNativeHarnessBackupStampAsync(stamp, owner.providerLeaseId, signal, owner.root)) fail();
+  const [settings] = await db.execute<{ idle_timeout_ms: string }>(sql`select
+    extract(epoch from current_setting('idle_in_transaction_session_timeout')::interval) * 1000 as idle_timeout_ms`);
+  await withWorkspaceLockKeepalive(db, Number(settings.idle_timeout_ms), async () => {
+    const source = await readNativeHarnessBackupSource(owner.root);
+    if (!source || source.state.runId !== owner.runId || source.state.lifecycle !== "suspended"
+      || `sha256:${createHash("sha256").update(source.manifestBytes).digest("hex")}` !== owner.manifestSha256
+      || !await verifyNativeHarnessBackupStampAsync(stamp, owner.providerLeaseId, signal, owner.root)) fail();
+  });
 }
