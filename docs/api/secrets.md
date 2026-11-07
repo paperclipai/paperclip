@@ -41,6 +41,16 @@ The list never returns values, the internal `secretId` field, binding IDs, or
 config paths. An `env.*` binding implies read access through this API; an
 `access.*` binding grants API access without environment injection.
 
+`key` is the key the grant is *projected* under, which is not always the managed
+secret's own key. An `env.*` binding is listed under the managed secret key it is
+injected from, while an `access.<ALIAS>` binding is listed under `<ALIAS>`,
+normalized the same way managed secret keys are (lower-cased). So one managed
+secret can back several grants — for example `access.EVALS_OPENAI_API_KEY` and
+`access.RUNNERD_OPENAI_API_KEY` over a single shared key are listed as two
+separate `api` entries, each fetched by its own alias. A secret that has both an
+`env.*` binding and an `access.*` alias equal to its key is listed once, as
+`both`.
+
 Fetch a value only when it is needed. The request has no body and the response
 uses `Cache-Control: no-store`:
 
