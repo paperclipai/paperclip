@@ -43,7 +43,7 @@ describe("saved harness verification", () => {
     ["warn", ["cli_version_probe_mismatch"]], ["pass", [ADAPTER_AUTH_MISSING_CHECK_CODE]],
     ["warn", ["claude_hello_probe_passed", "claude_hello_probe_auth_required"]],
     ["pass", ["COPILOT_AUTH_REQUIRED"]], ["fail", ["COPILOT_MODEL_UNAVAILABLE"]],
-    ["fail", ["hermes_gateway_health_failed"]], ["fail", ["openclaw_gateway_probe_failed"]],
+    ["fail", ["hermes_gateway_health_failed"]], ["warn", ["openclaw_gateway_probe_failed"]],
   ] as const)("rejects %s with %j", (status, codes) => {
     expect(() => assertHarnessTestPassed(result(status, [...codes]))).toThrow("The harness test failed");
   });
