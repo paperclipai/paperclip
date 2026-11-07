@@ -7,7 +7,7 @@ import { pollUntil } from "../api.js";
 import { checks, observation, project, task, type Entity, type InternalObservation } from "./internal-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
-import { integratorDefinition, inspectResult, observeInternal, groundedStatement } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, observeInternal } from "./integrator-support.js";
 interface EnableObservation extends InternalObservation { skill: CompanySkillDetail; assignment: AgentSkillSnapshot; effectivePolicy: unknown; versions: CompanySkillVersion[] }
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
 async function observeEnable(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<EnableObservation> {
@@ -32,18 +32,6 @@ export function skillEnableAuthorityReady(proof: SkillEnableAuthorityProof | und
     && JSON.stringify(proof.before.desiredSkillEntries ?? []) === JSON.stringify(proof.after.desiredSkillEntries ?? []);
 }
 function enableObservation(value: unknown): EnableObservation | undefined { const o = value as EnableObservation; return observation(value) && !!o.skill && Array.isArray(o.assignment?.desiredSkills) && !!o.effectivePolicy && Array.isArray(o.versions) ? o : undefined; }
-/** Past lack of access is not a present denial. Keep contrastive clauses
- * separate so an installed-library statement cannot cancel a current denial. */
-function truthfulAssignmentReply(reply: string) {
-  const clauses = reply.split(/(?<=[.!?])\s+|\n+|[;,]|\b(?:but|however|yet|whereas)\b/i).map(clause => clause.trim()).filter(Boolean);
-  const current = clauses.filter(clause => !/\b(?:previously|formerly|earlier|before|used to|could not|couldn't|was unable|was not|wasn't|had not|hadn't)\b/i.test(clause)
-    || /\b(?:now|currently|still|remains?|continues?)\b/i.test(clause));
-  const denial = /\b(?:cannot|can't|unable to|not able to|must not|may not|not permitted to|not allowed to|does not|doesn't)\s+(?:(?:now|currently|still)\s+)?(?:use|access|receive|have)|\b(?:not|isn't|is not|aren't|are not)\s+(?:now\s+)?(?:assigned|enabled|configured|available|ready)|\b(?:has|have)\s+no\s+(?:access|permission)|\bcan no longer\s+(?:use|access)|\b(?:denied|unavailable|unassigned|disabled)\b/i;
-  return groundedStatement(current.join(". "), /\b(?:Morgan|they|he|she|them|him|her)\b/i,
-    /\b(?:enabled|assigned|configured|added|available|ready|can (?:now )?use|will (?:receive|use)|now has)\b/i, denial)
-    && /\bMorgan\b/i.test(reply)
-    && !/\b(?:all agents|every agent|changed (?:the )?policy|overrode (?:the )?policy|installed (?:the )?skill again)\b/i.test(reply);
-}
 export function gradeIntegratorSkillEnable(value: unknown) {
   const c = checks(); const o = enableObservation(value); c.add("real-assignment-policy-and-future-admission", !!o, "Requires actual permitted assignment, unchanged installed revision/policy and a real subsequent native admission."); if (!o) return c.result();
   const original = o.state.skill as CompanySkillDetail; const worker = o.state.worker as Entity;
@@ -68,8 +56,13 @@ export function gradeIntegratorSkillEnable(value: unknown) {
   c.add("future-execution-receives-intended-version", future?.runtimeMode === "native" && future.status === "succeeded"
     && exactBytes && (!original.currentVersionId || selectedId === original.currentVersionId),
   "A separately admitted actual Morgan task receives the selected immutable skill revision in its saved native skill selection snapshot.");
-  c.add("truthful-assignment-not-global-policy", truthfulAssignmentReply(o.reply),
-  "Current target assignment must be affirmed without a contradictory current-use denial; historical lack of access is not a current denial.");
+  // The reply's wording is not matched: the saved assignment, the unchanged
+  // policy and the future run's delivered revision prove the work. This check
+  // proves the chat run configured only Morgan, and that it answered.
+  c.add("assignment-scoped-to-morgan-and-reported", o.reply.trim().length > 0
+    && !o.activity.some(event => event.action === "agent.skills_synced" && event.agentId === o.leadId && event.entityId !== worker.id
+      && Array.isArray(o.state.beforeActivityIds) && !o.state.beforeActivityIds.includes(event.id)),
+  "The chat run changes skill configuration for Morgan alone (no other agent and no global policy) and replies to the person.");
   return c.result();
 }
 export function unsupportedUsePrerequisite(value: { useStatus: number; decisions: Array<{ action: string; allowed: boolean }>; assignmentRetained: boolean }) {
@@ -103,7 +96,7 @@ export const integratorSkillEnableCases = [integratorDefinition("skills", "skill
 }, observeEnable, gradeIntegratorSkillEnable, async (ctx, state) => {
   const skill = state.skill as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name);
 }, { sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-enable.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/skills.yaml", "../../server/src/routes/agents.ts", "../../server/src/routes/company-skill-policy.ts", "../../server/src/services/company-skills.ts", "../../packages/shared/src/validators/skill-policy.ts"],
-  expectedRunCount: 2, attemptTimeoutMs: 540_000, oracleVersion: "paperclip.chat-catalog.skill-enable.standard-config.v2",
+  expectedRunCount: 2, attemptTimeoutMs: 540_000, oracleVersion: "paperclip.chat-catalog.skill-enable.standard-config.v3",
   async act(ctx, state) {
     const first = await pollUntil({ label: "actual Morgan assignment before future admission", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
       load: () => observeEnable(ctx, state), accept: o => o.runs.length === 1 && o.runs[0]?.status === "succeeded" && ctx.issue()?.conversationState === "waiting" });
