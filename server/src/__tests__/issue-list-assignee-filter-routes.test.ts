@@ -19,6 +19,28 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
 
+const issueListReadHooks = vi.hoisted(() => ({
+  afterList: null as null | (() => Promise<void>),
+}));
+
+vi.mock("../services/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/index.js")>();
+  return {
+    ...actual,
+    issueService: (...args: Parameters<typeof actual.issueService>) => {
+      const svc = actual.issueService(...args);
+      return {
+        ...svc,
+        list: async (...listArgs: Parameters<typeof svc.list>) => {
+          const rows = await svc.list(...listArgs);
+          await issueListReadHooks.afterList?.();
+          return rows;
+        },
+      };
+    },
+  };
+});
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -38,6 +60,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    issueListReadHooks.afterList = null;
     __clearIssueListResponseCacheForTests();
     await db.delete(issues);
     await db.delete(activityLog);
@@ -695,6 +718,121 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(computeCount).toBe(1);
     expect(first.headers["x-paperclip-request-cache"]).toBe("miss");
     expect(second.headers["x-paperclip-request-cache"]).toBe("hit");
+  });
+
+  it("refetches the compact issue list after an issue changes within the cache lifetime", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    let computeCount = 0;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Before",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        onComputeStart() {
+          computeCount += 1;
+        },
+      },
+    });
+    const first = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body[0].title).toBe("Before");
+
+    const patched = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "After", priority: "high" });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    const second = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(second.body[0]).toMatchObject({ title: "After", priority: "high" });
+    expect(computeCount).toBe(2);
+  });
+
+  it("does not cache a compact issue list read before an issue changes", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    let listCount = 0;
+    let releaseStaleRead!: () => void;
+    const staleReadReleased = new Promise<void>((resolve) => {
+      releaseStaleRead = resolve;
+    });
+    let markStaleReadDone!: () => void;
+    const staleReadDone = new Promise<void>((resolve) => {
+      markStaleReadDone = resolve;
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Before",
+      status: "todo",
+      priority: "medium",
+    });
+
+    issueListReadHooks.afterList = async () => {
+      listCount += 1;
+      if (listCount === 1) {
+        markStaleReadDone();
+        await staleReadReleased;
+      }
+    };
+    const app = createApp(companyId);
+    const staleRequest = request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" })
+      .then((res) => res);
+    await staleReadDone;
+
+    const patched = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "After" });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    const fresh = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect(fresh.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(fresh.body[0].title).toBe("After");
+
+    releaseStaleRead();
+    const stale = await staleRequest;
+    expect(stale.status, JSON.stringify(stale.body)).toBe(200);
+    expect(stale.body[0].title).toBe("Before");
+
+    const next = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+    expect(next.status, JSON.stringify(next.body)).toBe(200);
+    expect(next.headers["x-paperclip-request-cache"]).toBe("hit");
+    expect(next.body[0].title).toBe("After");
+    expect(listCount).toBe(2);
   });
 
   it("bounds compact issue-list server cache entries", async () => {
