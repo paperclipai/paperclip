@@ -18,6 +18,7 @@ import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restricti
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
+import { readProviderFailure } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -256,6 +257,19 @@ function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOpti
     options.phase !== "setup" && run.signal == null;
 }
 
+/**
+ * A native ACP turn ended because the provider typed the agent's allowance as
+ * exhausted. The task shows the limit and its reset, and new work for the
+ * agent waits for that reset, so Sentry adds no signal. An untyped terminal
+ * limit (a context or turn limit) stays reportable.
+ */
+function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== "native_provider_usage_limit" ||
+      options.phase === "setup" || run.signal != null) return false;
+  const category = readProviderFailure(asRecord(run.resultJson)?.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
+}
+
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const result = asRecord(run.resultJson);
   return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
@@ -349,6 +363,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
+    isNativeProviderUsageLimitFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
     isRestartInterruptedSetup(run)
