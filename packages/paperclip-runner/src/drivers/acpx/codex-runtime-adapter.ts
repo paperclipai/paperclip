@@ -552,6 +552,7 @@ export async function openQualifiedAcpxRuntime(
 
   let handle: AcpRuntimeHandle | null = null;
   const ensuredSession = Promise.resolve()
+    .then(() => options.restoringSession ? undefined : resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey))
     .then(() =>
       runtime.ensureSession({
         sessionKey: options.providerSessionKey,
@@ -1123,6 +1124,24 @@ function nonEmptyRuntimeIdentity(
   value: string | undefined,
 ): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * A fresh open has no runner-recorded provider identity, so a saved record for
+ * its session key was left by an earlier bootstrap of the same session that
+ * stopped before any prompt (for example a session.open the controller gave up
+ * on). Its provider session was never used and may not be resumable: Claude
+ * saves nothing until the first prompt. Ask ACPX to start a new session instead
+ * of reusing it. A record that holds any conversation is left unchanged.
+ */
+export async function resetAbandonedBootstrapRecord(store: AcpSessionStore, sessionKey: string): Promise<boolean> {
+  const record = await store.load(sessionKey);
+  if (!record || record.acpx?.reset_on_next_ensure === true) return false;
+  // Only a record that provably holds no conversation qualifies.
+  if (!Array.isArray(record.messages) || record.messages.length > 0 || record.lastSeq !== 0 ||
+      record.lastPromptAt !== undefined) return false;
+  await store.save({ ...record, acpx: { ...record.acpx, reset_on_next_ensure: true } });
+  return true;
 }
 
 async function boundedSessionHandshake(

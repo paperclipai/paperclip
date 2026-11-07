@@ -12,13 +12,14 @@ import type {
   AcpRuntime,
   AcpRuntimeHandle,
   AcpRuntimeOptions,
+  AcpSessionRecord,
   AcpSessionStore,
 } from "acpx/runtime";
 import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime, resetAbandonedBootstrapRecord } from "./codex-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
@@ -2546,6 +2547,63 @@ describe("Codex ACPX runtime adapter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("a record left by a bootstrap that stopped before any prompt", () => {
+    const savedRecord = (overrides: Partial<AcpSessionRecord> = {}): AcpSessionRecord => ({
+      schema: "acpx.session.v1", acpxRecordId: "provider-key", acpSessionId: "never-prompted", agentCommand: "agent",
+      cwd: "/workspace", name: "provider-key", createdAt: "2026-11-07T00:32:24.053Z", lastUsedAt: "2026-11-07T00:32:24.053Z",
+      lastSeq: 0, eventLog: {} as AcpSessionRecord["eventLog"], messages: [], updated_at: "2026-11-07T00:32:24.053Z",
+      cumulative_token_usage: {}, request_token_usage: {}, acpx: { current_model_id: "claude-sonnet-5" },
+      ...overrides,
+    }) as AcpSessionRecord;
+
+    it("asks ACPX for a new session instead of reusing a never-prompted record", async () => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord());
+      expect(await resetAbandonedBootstrapRecord(sessions, "provider-key")).toBe(true);
+      expect(sessions.save).toHaveBeenCalledWith(expect.objectContaining({
+        acpSessionId: "never-prompted", acpx: { current_model_id: "claude-sonnet-5", reset_on_next_ensure: true },
+      }));
+    });
+
+    it.each([
+      ["holds a conversation", { messages: [{ User: { id: "m", content: [] } }] as unknown as AcpSessionRecord["messages"] }],
+      ["recorded a prompt", { lastPromptAt: "2026-11-07T00:33:09.553Z" }],
+      ["recorded provider events", { lastSeq: 3 }],
+    ])("keeps a record that %s", async (_label, overrides) => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord(overrides));
+      expect(await resetAbandonedBootstrapRecord(sessions, "provider-key")).toBe(false);
+      expect(sessions.save).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("resets it before a fresh open only (restoring=%s)", async (restoring) => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord());
+      const child = fakeChild();
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValue(child);
+      const runtime = fakeRuntime();
+      const order: string[] = [];
+      vi.mocked(sessions.save).mockImplementation(async () => { order.push("save"); });
+      const port = await openCodexAcpxRuntime({ ...openOptions(command), restoringSession: restoring }, {
+        createRegistry: () => registry(),
+        createStore: () => sessions,
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (runtimeOptions) => {
+          vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+            order.push("ensure");
+            runtimeOptions.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+            return HANDLE;
+          });
+          return runtime;
+        },
+      });
+      expect(order).toEqual(restoring ? ["ensure"] : ["save", "ensure"]);
+      await port.close({ reason: "test complete" });
+    });
   });
 
   it("terminates a provider spawned before the session handshake rejects", async () => {
