@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { isSocketTypeOfServiceRace, type ChaosApi } from "./api.js";
 import { parseCommand } from "./config.js";
 import { gradeR5 } from "./grader.js";
-import { latestIso, localProcessAlive, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
+import { latestIso, localProcessAlive, noteLivenessEvent, QUEUED_TRIGGER_MAX_EMPTY_SAMPLES, TaskObserver, TRIGGER_LATE_MS } from "./observer.js";
 import { observedFaultSchedule, planTasks, taskFaultSchedule, TRIGGER_DELAY_RANGE_MS } from "./scheduler.js";
 import type { ChaosLab } from "./seed.js";
 import { crashLoopShouldFire } from "./supervisor.js";
@@ -413,6 +413,31 @@ describe("R5 live evidence", () => {
     const latest = observer.record.samples.at(-1)!.runs![0]!;
     expect(latest.toolInFlight).toBeUndefined();
     expect(latest.processAlive).toBeUndefined();
+  });
+
+  it("drops tool liveness when the runner that owned the tool stops or is replaced", () => {
+    const cursor = { seq: 0, lastAt: null, openTools: 0, process: null as { pid: number; startedAt: string } | null };
+    const identity = (pid: number) => ({ eventType: "native.process_identity_recorded",
+      payload: { processPid: pid, processStartedAt: "2026-11-06T10:00:00.000Z", targetKind: "local" } });
+    noteLivenessEvent(cursor, identity(10));
+    noteLivenessEvent(cursor, { eventType: "tool.execution.started", payload: {} });
+    expect(cursor.openTools).toBe(1);
+    // A fault killed the runner mid-tool: the tool can never report its end.
+    noteLivenessEvent(cursor, { eventType: "native.local_process_stopped", payload: { processPid: 10 } });
+    expect(cursor).toMatchObject({ openTools: 0, process: null });
+    noteLivenessEvent(cursor, identity(11));
+    noteLivenessEvent(cursor, { eventType: "tool.execution.started", payload: {} });
+    // A replacement runner recorded without a stop event still resets the count.
+    noteLivenessEvent(cursor, identity(12));
+    expect(cursor).toMatchObject({ openTools: 0, process: { pid: 12 } });
+  });
+
+  it("records a due trigger the wave skipped as missed", async () => {
+    const observer = new TaskObserver({ ...base, workload: "C1", trigger: "result", triggerDelayMs: 0 },
+      scriptedApi({ runs: [], issue: { id: "i1", status: "in_progress" } }), lab, new Timeline(null), ready);
+    observer.markTriggerMissed({ kind: "K1", holdMs: 0, atMs: 0, trigger: "result", delayMs: 0 });
+    observer.markTriggerMissed({ kind: "K2", holdMs: 0, atMs: 0 });
+    expect(observer.record.triggerMissed).toEqual(["result"]);
   });
 
   it.skipIf(process.platform === "win32")("checks a local process by PID and start time, so a recycled PID is not alive", () => {

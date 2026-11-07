@@ -79,11 +79,14 @@ export function noteLivenessEvent(cursor: RunEventCursor, event: Json) {
     case "tool.execution.completed": cursor.openTools = Math.max(0, cursor.openTools - 1); break;
     case "native.process_identity_recorded":
       if (payload.targetKind === "local" && Number.isSafeInteger(payload.processPid) && typeof payload.processStartedAt === "string") {
+        // A replacement runner cannot finish a tool its predecessor started.
+        if (cursor.process && cursor.process.pid !== payload.processPid) cursor.openTools = 0;
         cursor.process = { pid: payload.processPid, startedAt: payload.processStartedAt };
       }
       break;
     case "native.local_process_stopped":
-      if (cursor.process && payload.processPid === cursor.process.pid) cursor.process = null;
+      // A stopped runner's in-flight tools can never send their completion.
+      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; }
       break;
   }
 }
@@ -232,6 +235,11 @@ export class TaskObserver {
   /** A `result` fault outside the accepted-but-unsettled window would test a different boundary. */
   private resultRunStillRunning(runs: readonly RunSample[]): boolean {
     return runs.some(run => run.id === this.record.resultRunId && run.status === "running");
+  }
+
+  /** A due fault the wave decided not to fire (for example, the storm ended during its checks). */
+  markTriggerMissed(fault: ScheduledFault) {
+    if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {

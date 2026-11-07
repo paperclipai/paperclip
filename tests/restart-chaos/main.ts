@@ -200,7 +200,16 @@ async function main(): Promise<number> {
         }
         void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
-        if (error.receipt) { faults.push(error.receipt); void persistFaultLog(); }
+        if (error.receipt) {
+          // A failed fault still crossed the tasks in flight; replay must fire it too.
+          const receipt = error.receipt;
+          faults.push(receipt);
+          for (const candidate of exposed) {
+            candidate.noteFault(receipt.faultId, receipt.startedAt);
+            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+          }
+          void persistFaultLog();
+        }
         faultFailures += 1;
         timeline.add("fault_error", { taskId: requestedBy, error: error.message });
       }));
@@ -238,7 +247,11 @@ async function main(): Promise<number> {
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
-        if (storm && !storm.mayLaunch(Date.now())) { timeline.add("fault_skipped_storm_ended", { taskId: observer.plan.taskId, fault: due.kind }); break; }
+        if (storm && !storm.mayLaunch(Date.now())) {
+          observer.markTriggerMissed(due);
+          timeline.add("fault_skipped_storm_ended", { taskId: observer.plan.taskId, fault: due.kind });
+          break;
+        }
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
         // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
