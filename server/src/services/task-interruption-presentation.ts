@@ -43,7 +43,7 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeFailedAt?: Date | null;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
-  preparationStatus?: string | null; preparationRetryAt?: number | string | null;
+  preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
   /** When the user pressed Interrupt to deliver this queued message now. */
   queuedInterruptRequestedAt?: string | null };
 type ProjectionState = {
@@ -80,8 +80,10 @@ const TASK_INTERRUPTION_REPORT_WINDOW_MS = 60 * 60_000;
 export function taskInterruptionChangedAt(input: Pick<ProjectionState, "run" | "action" | "wait" | "retryWait">): number | null {
   const { run, wait, action } = input;
   const retryWait = input.retryWait ?? wait;
+  const preparationFailedAt = retryWait?.preparationStatus === "failed" || retryWait?.preparationStatus === "cancelled"
+    ? retryWait.preparationUpdatedAt : null;
   const times: unknown[] = [run?.finishedAt ?? run?.createdAt, run?.scheduledRetryAt, run?.nativeResumeAt, run?.nativeFailedAt,
-    wait?.requestedAt, retryWait?.requestedAt, action?.updatedAt].map(value => value?.getTime());
+    wait?.requestedAt, retryWait?.requestedAt, action?.updatedAt, preparationFailedAt].map(value => value?.getTime());
   times.push(readSystemRecovery(action?.evidence)?.nextAttemptAt,
     retryWait?.preparationRetryAt == null ? null : Number(retryWait.preparationRetryAt));
   const known = times.filter((time): time is number => typeof time === "number" && Number.isFinite(time));
@@ -334,7 +336,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
-      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry") })
+      preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
+      preparationUpdatedAt: chatActions.updatedAt })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
         eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
         eq(chatActions.kind, "failed_run_retry"), sql`${chatActions.payload}->>'taskRetryIntentId' = ${agentWakeupRequests.id}::text`,

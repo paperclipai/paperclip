@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions, issues,
+  toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
@@ -455,6 +456,43 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       taskId: issue!.id, runId, runErrorCode: "native_session_interrupted" }));
     await db.update(nativeRunFinalizations).set({ updatedAt: old }).where(eq(nativeRunFinalizations.runId, runId));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "cancelled"])("reports a delayed Retry that newly becomes %s, then ages out", async status => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), intentId = randomUUID(), actionId = randomUUID();
+    const old = new Date(Date.now() - 22 * 60 * 60_000), recent = new Date(Date.now() - 60_000);
+    await db.insert(companies).values({ id: companyId, name: "Delayed chat Retry", issuePrefix: "D" + companyId.slice(0, 7) });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Chat worker", adapterType: "claude_local" });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Deferred Retry", status: "in_progress",
+      assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId: issue!.id,
+      status: "failed", createdAt: old, finishedAt: old });
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Chat",
+      applicationKey: randomUUID(), type: "chat" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id,
+      name: "Chat", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({ companyId, connectionId: connection!.id,
+      assignedAgentId: agentId, provider: "slack", publicId: randomUUID(), status: "active" }).returning();
+    const payload = { issueId: issue!.id, agentId, failedRunId: runId, taskRetryIntentId: intentId };
+    await db.insert(chatActions).values({ id: actionId, companyId, endpointId: endpoint!.id,
+      kind: "failed_run_retry", providerActionId: randomUUID(), status, payload, createdAt: old, updatedAt: recent });
+    await db.insert(agentWakeupRequests).values({ id: intentId, companyId, agentId, source: "on_demand",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: old,
+      payload: { issueId: issue!.id, taskRetry: { sourceRunId: runId, chatActionId: actionId } } });
+    captureTaskInterruptionFailure.mockClear();
+    expect((await taskInterruptionPresentations(db, companyId, [issue!])).get(issue!.id))
+      .toMatchObject({ responsibility: "system", state: "failed", nextRetryAt: null });
+    expect(captureTaskInterruptionFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      taskId: issue!.id, runId, intentId }));
+    await db.update(chatActions).set({ updatedAt: old }).where(eq(chatActions.id, actionId));
+    captureTaskInterruptionFailure.mockClear();
+    await taskInterruptionPresentations(db, companyId, [issue!]);
+    expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
+    await db.update(chatActions).set({ updatedAt: recent, payload: { ...payload, failedRunId: randomUUID() } })
+      .where(eq(chatActions.id, actionId));
     captureTaskInterruptionFailure.mockClear();
     await taskInterruptionPresentations(db, companyId, [issue!]);
     expect(captureTaskInterruptionFailure).not.toHaveBeenCalled();
