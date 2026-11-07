@@ -13,6 +13,13 @@ export interface RunnerExecutionDriver {
   codexSourceRecoveryVersion?: 1;
   /** The driver verifies a stopped, idle source for the selected ACPX provider before launch. */
   acpxSourceRecoveryVersion?: 1;
+  /** An explicitly supported host release/resume pair; absence keeps ordinary warm ownership. */
+  releaseResume?: {
+    release(identity: DurableRecoveryIdentity): Promise<void>;
+    resume(identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable">;
+    /** Confirmed Core-owned completed-session proof, used only for cache adoption. */
+    releasedSource?: DurableRecoveryIdentity;
+  };
   /** Current authenticated lease/checkpoint-writer owner; may change during warm reuse. */
   authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */

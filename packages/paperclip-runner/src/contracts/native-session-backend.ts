@@ -1,4 +1,5 @@
 import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -199,6 +200,8 @@ export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;

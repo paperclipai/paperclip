@@ -1,4 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
@@ -892,6 +893,11 @@ export class CodexHarnessSession
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
     await this.transport.close(input?.reason);
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.assertProtocolIntegrity();
+    return this.transport.release?.() ?? false;
   }
 
   async detachControllerForRestart(): Promise<void> {
