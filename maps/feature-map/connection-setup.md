@@ -29,7 +29,7 @@ policies use the ordinary Permissions screen. See [connector notes](../../doc/co
 
 ## Sub-features
 
-- `harness-pools`: `connection-setup/harness-pools` — configure reusable ordered harness/model/account pools, inspect usage and account waits, preview conversion and archive. Agents explicitly choose a pool through Paperclip Runner.
+- `harness-pools`: `connection-setup/harness-pools` — configure reusable ordered harness/model/account pools, inspect usage and account waits, preview conversion and archive. Agents explicitly choose a pool through Paperclip Runner. Management is board-only UI/API work; the retained 244-case chat campaign does not qualify this capability.
 
 - `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
   unavailable methods explain their prerequisite rather than silently switching.

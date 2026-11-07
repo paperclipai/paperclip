@@ -104,13 +104,12 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
   const [source] = await db.select({ run: heartbeatRuns, adapterType: agents.adapterType }).from(heartbeatRuns)
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
     .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId)));
-  const legacyClaudeQuota = source && source.run.runtimeMode !== "native" && (input.failureKind ?? "quota") === "quota" &&
-    (parseObject(source.run.runnerProfileJson?.adapterDispatch).adapterType ?? source.adapterType) === "claude_local";
+  const legacyQuota = source && source.run.runtimeMode !== "native" && (input.failureKind ?? "quota") === "quota";
   const proofScope = source ? { companyId: input.companyId, agentId: input.agentId, userId: source.run.responsibleUserId,
     selection: parseObject(source.run.contextSnapshot?.aiRouterSelection) as unknown as AiConnectionRouterSelection,
     credentialIdentity: input.credentialIdentity } : null;
-  const quotaProof = legacyClaudeQuota && proofScope ? await observeLegacyPoolQuota(db, proofScope, now) : null;
-  if (legacyClaudeQuota && !quotaProof) return false;
+  const quotaProof = legacyQuota && proofScope ? await observeLegacyPoolQuota(db, proofScope, now) : null;
+  if (legacyQuota && !quotaProof) return false;
   const supplied = quotaProof ? quotaProof.retryAt.getTime() : input.retryNotBefore ? Date.parse(input.retryNotBefore) : NaN;
   const deadline = new Date(Number.isFinite(supplied) && supplied > now.getTime()
     ? supplied
@@ -136,7 +135,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     }
     const context = parseObject(run.contextSnapshot);
     const selection = parseObject(context.aiRouterSelection);
-    if (legacyClaudeQuota && (!quotaProof || !proofScope || !isDeepStrictEqual(selection, proofScope.selection) ||
+    if (legacyQuota && (!quotaProof || !proofScope || !isDeepStrictEqual(selection, proofScope.selection) ||
         !(await isCurrentLegacyPoolQuotaProof(tx as unknown as Db, proofScope, quotaProof)))) return false;
     const binding = parseObject(selection.binding);
     const poolId = readNonEmptyString(selection.poolId);
@@ -170,7 +169,7 @@ export async function recordVerifiedRouterQuotaCooldown(db: Db, input: {
     if (!receiptDeadline || !Number.isFinite(Date.parse(receiptDeadline))) return false;
     const payload = { schema: `paperclip.ai-connection-${kind}-attribution.v1`, companyId: run.companyId, runId: run.id,
       agentId: run.agentId, poolId, taskKey, memberId: selection.memberId, connectionId, grantId, selection, retryAt: receiptDeadline,
-      ...(quotaProof ? { providerEvidence: "anthropic_oauth_usage_v1" } : {}),
+      ...(quotaProof ? { providerEvidence: quotaProof.providerEvidence } : {}),
       quotaIdentityHash: createHash("sha256").update(cooldownIdentity).digest("hex") };
     if (existing) {
       const [matches] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.id, existing.id),

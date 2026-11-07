@@ -205,3 +205,24 @@ The plan is complete when every selected native Pool run has one frozen concrete
 Self-review mapping: central configuration/Smart-Mid-Cheap and same-account model diversity -> Tasks 1/2/5; exact native child admission/capabilities -> Task 3; historical edits/shared cooldown/Stop/uncertain actions -> Task 4; physical and product evidence -> Task 6; PR/develop/dirty-work preservation -> Task 7. The proxy alternative is explicitly separated and does not become an unbounded second implementation project.
 
 This file is a plan only. No production source, pool, agent binding, PR content, runtime process, or provider account was changed while writing it.
+
+## Implementation status — 2026-11-08
+
+Tasks 1–5 are implemented on the existing upstream feature branch and ported to
+local develop for early testing. The existing PR remains ready for review:
+https://github.com/paperclipai/paperclip/pull/19481. No fork PR or watcher is needed.
+Subsequent review fixes are verified and integrated separately; this status is not
+an assertion that every acceptance checkbox above has passed.
+
+The Linux typecheck/build and a real Rust Runner with a controlled fake Codex
+app-server passed. Focused tests cover central management, agent choices, frozen
+admission, shared/scoped cooldowns and safe successors. These controlled tests do
+not qualify real subscription handoff or physical Stop/restart behavior.
+
+Task 6 remains open. The Windows binary builds, but the physical native test times
+out; upstream verified process snapshots do not support Windows execution. The
+browser extension is disconnected, so actual UI acceptance is unavailable. SSH,
+sandbox and live Claude-to-Codex continuation remain unqualified. Broad regression
+and CI failures retain their original evidence and must be accounted for before
+release. Do not merge upstream or describe this plan as fully completed while
+these gates are open. Local develop integration is explicitly authorized for testing.

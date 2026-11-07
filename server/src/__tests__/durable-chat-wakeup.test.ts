@@ -133,7 +133,7 @@ describe("durable inbound chat scheduler receipts", () => {
       status: "running",
       // This fixture-owned slot has no provider process/work. Its retirement
       // must not impersonate an ambiguous legacy provider failure.
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       contextSnapshot: { issueId: deferred ? issueId : randomUUID() },
     });
     runningProcesses.set(activeRunId, {
@@ -843,7 +843,7 @@ describe("durable inbound chat scheduler receipts", () => {
         execute.mockResolvedValueOnce({
           exitCode: 1, signal: null, timedOut: false,
           summary: "Fixture failed before provider work",
-          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         });
       } else {
         execute.mockRejectedValueOnce(new Error("Original chat provider outcome is unknown"));

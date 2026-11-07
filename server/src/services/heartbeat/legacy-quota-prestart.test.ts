@@ -28,16 +28,19 @@ describe("legacy quota prestart retry", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 100, resets_at: observedReset }, extra_usage: { is_enabled: false } })));
   });
   afterEach(() => vi.restoreAllMocks());
-  async function fixture(postStart = false, taskless = false) {
+  async function fixture(postStart = false, taskless = false, provider: "anthropic" | "openai" = "anthropic") {
+    const adapterType = provider === "openai" ? "codex_local" : "claude_local";
+    const credential = provider === "openai" ? JSON.stringify({ tokens: { access_token: "fixture-token", account_id: "fixture-account" } }) : "fixture-one";
+    if (provider === "openai") vi.mocked(globalThis.fetch).mockImplementation(async () => new Response(JSON.stringify({ rate_limit: { allowed: false, primary_window: { used_percent: 100, reset_at: Math.ceil(Date.parse(observedReset) / 1000) } }, credits: { has_credits: false, unlimited: false } })));
     const companyId = randomUUID(), userId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Quota prestart", issuePrefix: `Q${companyId.slice(0, 8)}` });
     await db.insert(authUsers).values({ id: userId, name: "User", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Claude", adapterType: "claude_local", status: "active" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: adapterType, adapterType, status: "active" }).returning();
     const accounts = aiConnectionService(db);
-    const first = await accounts.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "First", loginSessionId: "fixture", agentIds: [], allAgents: true }, "fixture-one");
+    const first = await accounts.save(companyId, userId, { provider, method: "subscription", ownership: "personal", name: "First", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
     const second = await accounts.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Second", loginSessionId: "fixture", agentIds: [], allAgents: true }, "fixture-two");
-    const members = [first, second].map(account => ({ id: randomUUID(), binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, ...account }, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } }));
+    const members = [first, second].map(account => ({ id: randomUUID(), binding: { mode: "delegated" as const, provider: account === first ? provider : "anthropic" as const, method: "subscription" as const, ...account }, profile: account === first && provider === "openai" ? { provider: "codex" as const, model: "gpt-5.6-sol" } : { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } }));
     const router = aiConnectionRouterService(db);
     const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
     const [updatedAgent] = await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agent.id)).returning();
@@ -46,7 +49,7 @@ describe("legacy quota prestart retry", () => {
     const runId = randomUUID(), taskKey = taskless ? runId : issue.id;
     const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: agent.id, scopeKind: taskless ? "company" : "issue", issueId: taskless ? null : issue.id, status: "running", startedAt,
       contextSnapshot: { ...(!taskless ? { issueId: issue.id } : {}), aiRouterTaskKey: taskKey }, responsibleUserId: userId }).returning();
-    const selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType: "claude_local", taskKey, skipUsageProbe: true });
+    const selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType, taskKey, skipUsageProbe: true });
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
     const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
@@ -113,6 +116,20 @@ describe("legacy quota prestart retry", () => {
       expect(cooldowns).toHaveLength(0); expect(receipts).toHaveLength(0);
       expect((await f.schedule()).outcome).toBe("not_scheduled");
     }
+  }, 30_000);
+  it.each(["healthy", "offline", "confirmed"] as const)("requires Codex account evidence for forged quota text (%s)", async mode => {
+    const f = await fixture(true, false, "openai");
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    await db.update(heartbeatRuns).set({ stdoutExcerpt: "usage limit resets 2099-01-01", error: "Provider quota exhausted" }).where(eq(heartbeatRuns.id, f.source.id));
+    if (mode === "offline") vi.mocked(globalThis.fetch).mockRejectedValue(new Error("offline"));
+    else vi.mocked(globalThis.fetch).mockImplementation(async () => new Response(JSON.stringify({ rate_limit: { allowed: mode !== "confirmed", primary_window: { used_percent: mode === "confirmed" ? 100 : 10, reset_at: Math.ceil(Date.parse(observedReset) / 1000) } }, credits: { has_credits: false, unlimited: false } })));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
+      credentialIdentity: f.credentialIdentity, retryNotBefore: "2099-01-01T00:00:00.000Z" })).toBe(mode === "confirmed");
+    const cooldowns = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    expect(cooldowns).toHaveLength(mode === "confirmed" ? 1 : 0);
+    if (mode === "confirmed") expect(cooldowns[0].retryAt.getTime()).toBe(Math.ceil(Date.parse(observedReset) / 1000) * 1000);
+    expect((await f.schedule()).outcome).toBe(mode === "confirmed" ? "scheduled" : "not_scheduled");
   }, 30_000);
   it.each(["pending_invocation", "missing_result", "pending_provider_tool", "pending_semantic_tool", "incomplete_api_receipt"])("holds a local backup for %s until its outcome is receipted", async condition => {
     const f = await fixture(true);

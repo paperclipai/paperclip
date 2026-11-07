@@ -16,7 +16,7 @@ credentials are not assumed to represent the same external account.
 Provider changes must preserve the configured execution policy. Incompatible
 CLI permission flags and custom command wrappers are rejected before selection.
 Explicit CLI/ACP engine choices remain in place for compatible local Claude and
-Codex changes. Filesystem and network restrictions keep their existing checks.
+Codex changes. A legacy CLI agent with filesystem or network restrictions cannot switch to a harness that does not enforce the same local process sandbox.
 
 Before selecting an account for a task without an existing pin, the host may
 read the responsible user's authorized Claude subscription usage. When an
@@ -32,14 +32,16 @@ scoped cooldowns. A concurrent cooldown defers fresh work without changing an
 already admitted native session. Temporary database contention leaves replacement
 pending for the existing recovery scheduler; it is not a permanent refusal.
 
-Legacy Claude quota text can come from model or tool output. It cannot by itself
-write an account-wide cooldown or authorize failover. The host confirms an
-account-wide exhausted allowance with extra usage disabled through the saved
-account's authenticated usage endpoint. It rechecks the credential epoch before
-committing attribution and uses the observed reset, ignoring CLI reset text.
-Unavailable or inconclusive usage evidence keeps the failed turn held. Historical
-legacy Claude quota receipts without account-side evidence cannot authorize a
-new pin transition; saved workspace and session evidence remain available.
+Legacy provider quota text can come from model or tool output. It cannot by itself
+write an account-wide cooldown or authorize failover. For saved Claude and Codex
+subscriptions, the host confirms an account-wide exhausted allowance through the
+saved account's authenticated usage endpoint. Claude must have extra usage disabled;
+Codex must deny account-wide admission with neither available nor unlimited credits.
+The host rechecks the credential epoch before committing attribution and uses the
+observed reset, ignoring CLI reset text. Unsupported methods/providers and unavailable
+or inconclusive usage evidence keep the failed turn held. Historical legacy quota
+receipts without account-side evidence cannot authorize a new pin transition;
+saved workspace and session evidence remain available.
 
 Healthy tasks stay on their selected account, including after a backup takes over.
 When a conversation fails because of quota, authentication, or confirmed runner

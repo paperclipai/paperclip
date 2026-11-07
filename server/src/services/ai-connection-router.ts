@@ -40,6 +40,9 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
   }
   if (["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "dangerouslySkipPermissions", "alwaysApprove"].some(key => config[key] === false)) refuse();
   if (["sandboxMode", "sandbox", "approvalPolicy", "approval_policy", "sandbox_mode"].some(key => config[key] != null)) refuse();
+  const hasLocalSandbox = config.filesystemScope === "workspace" || ["deny", "allowlist"].includes(String(config.networkScope));
+  if (sourceAdapterType !== "paperclip_runner" && hasLocalSandbox &&
+      !(["claude_local", "codex_local"].includes(targetAdapterType) && String(config.engine).trim().toLowerCase() === "cli")) refuse();
   const canonicalCommands: Record<string, string> = { claude_local: "claude", codex_local: "codex", grok_local: "grok", opencode_local: "opencode" };
   const canonicalAcpCommands: Record<string, string> = { claude_local: "claude-agent-acp", codex_local: "codex-acp" };
   for (const key of ["command", "agentCommand", "acpAgentCommand"]) {

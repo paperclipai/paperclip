@@ -56,3 +56,19 @@ it.each(["loading", "error"])("blocks archive when affected-agent inspection is 
   try{flushSync(()=>root.render(<QueryClientProvider client={client}><HarnessPoolSettings companyId="company" /></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Used pool ·"))!.click());await settle();expect(host.textContent).not.toContain("No agents");expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);expect(mocks.archive).not.toHaveBeenCalled();}
   finally{flushSync(()=>root.unmount());client.clear();}
 });
+
+it("retains cached affected agents after an inspection refresh fails while blocking archive", async () => {
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]}); mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue([{id:"used-pool",name:"Used pool",revision:1,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]}]);
+  mocks.inspect.mockRejectedValue(new Error("Inspection unavailable"));
+  const host=document.createElement("div"); const root=createRoot(host); const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  client.setQueryData(["harness-pool-inspection","company","used-pool"], { members:{},usedBy:[{id:"agent",name:"Morgan"}] });
+  try {
+    flushSync(()=>root.render(<QueryClientProvider client={client}><HarnessPoolSettings companyId="company" /></QueryClientProvider>)); await settle();
+    flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Used pool ·"))!.click()); await settle();
+    expect(host.textContent).toContain("Used by: Morgan");
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+    expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);
+    expect(mocks.archive).not.toHaveBeenCalled();
+  } finally { flushSync(()=>root.unmount()); client.clear(); host.remove(); }
+});

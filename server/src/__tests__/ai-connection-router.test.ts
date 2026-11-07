@@ -338,6 +338,18 @@ describe("durable, authorized connection routing", () => {
       .toThrow("preserve");
     expect(() => applyAiConnectionRouterTaskSettings({ alwaysApprove: false }, target, "grok_local")).toThrow("preserve");
   });
+  it.each(["claude_local", "codex_local"])("preserves local process sandbox policy when switching %s", sourceAdapter => {
+    for (const scope of [{ filesystemScope: "workspace" }, { networkScope: "allowlist", networkAllowlist: ["example.test"] }, { networkScope: "deny" }]) {
+      for (const targetAdapter of ["grok_local", "opencode_local"]) {
+        const target = { poolId: randomUUID(), memberId: randomUUID(), binding: members[0]!.binding,
+          adapterType: targetAdapter, runtimeConfig: {}, notes: [] };
+        expect(() => applyAiConnectionRouterTaskSettings({ engine: "cli", ...scope }, target, sourceAdapter)).toThrow("preserve");
+      }
+      const target = { poolId: randomUUID(), memberId: randomUUID(), binding: members[0]!.binding,
+        adapterType: sourceAdapter === "claude_local" ? "codex_local" : "claude_local", runtimeConfig: {}, notes: [] };
+      expect(applyAiConnectionRouterTaskSettings({ engine: "cli", ...scope }, target, sourceAdapter)).toMatchObject({ engine: "cli", ...scope });
+    }
+  });
   it("clears standard source ACP commands and retains portable ACP permission modes", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,
       adapterType: "claude_local", runtimeConfig: poolMemberRuntimeConfig(members[1]!, "codex_local").config, notes: [] };

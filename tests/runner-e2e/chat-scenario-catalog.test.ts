@@ -36,8 +36,16 @@ it("validates the complete planned chat catalog against its schema and feature m
     capabilities.forEach(id => mapped.add(id));
   }
   expect(ids.size).toBe(244);
-  expect([...covered].sort()).toEqual([...mapped].sort());
-  expect(mapped.size).toBe(192);
+  // Native Pool management is board-only UI/API work, outside this retained
+  // 244-case chat campaign. Keep that gap explicit instead of inventing a pass
+  // or rewriting the campaign's pinned definitions and account/spend bounds.
+  const outsideChatCampaign = ["connection-setup/harness-pools"];
+  for (const capability of outsideChatCampaign) {
+    expect(mapped.has(capability)).toBe(true);
+    expect(covered.has(capability)).toBe(false);
+  }
+  expect([...covered, ...outsideChatCampaign].sort()).toEqual([...mapped].sort());
+  expect(mapped.size).toBe(193);
   const defaults = parseDocument(readFileSync(new URL("defaults.yaml", catalog), "utf8"), { uniqueKeys: true });
   expect(defaults.errors).toEqual([]);
   expect(defaults.toJS()).toMatchObject({ schema_version: 1, status: "planned" });

@@ -196,8 +196,12 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
 
-  it("records quota only for the host credential and exact durable pool pin", async () => {
+  it("records native quota only for the host credential and exact durable pool pin", async () => {
     const f = await fixture();
+    const [ownerIssue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Native quota owner" }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: ownerIssue.id }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: f.run.id,
+      phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
     const [app] = await db.insert(toolApplications).values({ companyId: f.run.companyId, name: "Quota", type: "rest_api" }).returning();
     const [pool, account] = await db.insert(toolConnections).values(["pool", "account"].map(name => ({
       companyId: f.run.companyId, applicationId: app.id, name, uid: name, transport: "rest_api" as const,
@@ -217,7 +221,10 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     f.input.adapterResult = { exitCode: 1, signal: null, timedOut: false, errorCode: "native_provider_usage_limit",
       resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
         category: "quota_exhausted", message: "quota", retryability: "unknown", retryAt: deadline.toISOString() } }, errorMessage: "quota" };
-    await f.completion.completeRun(f.input);
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit",
+      resultJson: f.input.adapterResult.resultJson }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { runId: f.run.id, companyId: f.run.companyId, agentId: f.agent.id,
+      credentialIdentity: `${grantId}:shared:no-auth`, retryNotBefore: deadline.toISOString() })).toBe(true);
     expect(await db.select().from(aiConnectionQuotaCooldowns)).toMatchObject([{ companyId: f.run.companyId, credentialIdentity: `grant:${grantId}:no-auth`, retryAt: deadline }]);
     const receiptId = `ai-connection-quota-attributed:${f.run.id}`;
     const receipts = () => db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
@@ -270,8 +277,11 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` }), "issue identifier").toBe(true);
     await db.delete(aiConnectionQuotaCooldowns);
     const [timerRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
-      status: "failed", errorCode: "provider_quota", invocationSource: "timer",
+      status: "failed", runtimeMode: "native", nativeIssueId: ownerIssue.id, errorCode: "native_provider_usage_limit",
+      resultJson: f.input.adapterResult.resultJson, invocationSource: "timer",
       contextSnapshot: { aiRouterTaskKey: "__heartbeat__", aiRouterSelection: selection, wakeSource: "timer" } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: timerRun.id,
+      phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
     await db.update(aiConnectionTaskPins).set({ taskKey: "__heartbeat__" }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` }), "timer task").toBe(true);
     await db.delete(aiConnectionQuotaCooldowns);
