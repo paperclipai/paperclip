@@ -11427,18 +11427,6 @@ export function issueService(db: Db) {
           patch.privacyRootIssueId = existing.privacyRootIssueId ?? existing.id;
         }
       }
-      if (existing.status !== "blocked" && issueData.status === "blocked") {
-        patch.blockedTransitionAt = patch.updatedAt;
-        patch.blockedOwnerNotifiedAt = null;
-      } else if (
-        existing.status === "blocked" &&
-        issueData.status &&
-        issueData.status !== "blocked"
-      ) {
-        patch.unblockDescriptor = null;
-        patch.blockedTransitionAt = null;
-        patch.blockedOwnerNotifiedAt = null;
-      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -11605,6 +11593,25 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        const nextDescriptor = issueData.unblockDescriptor === undefined
+          ? receiptExisting.unblockDescriptor
+          : issueData.unblockDescriptor;
+        const descriptorChanged = !isDeepStrictEqual(receiptExisting.unblockDescriptor, nextDescriptor);
+        const resumesSelfOwnedBlock = receiptExisting.blockedTransitionAt &&
+          nextDescriptor && nextDescriptor.owner !== "board" &&
+          "agentId" in nextDescriptor.owner &&
+          nextDescriptor.owner.agentId === receiptExisting.assigneeAgentId &&
+          (issueData.assigneeAgentId === undefined || issueData.assigneeAgentId === receiptExisting.assigneeAgentId) &&
+          !descriptorChanged;
+        if ((issueData.status ?? receiptExisting.status) === "blocked" &&
+            ((receiptExisting.status !== "blocked" && !resumesSelfOwnedBlock) || descriptorChanged)) {
+          patch.blockedTransitionAt = patch.updatedAt;
+          patch.blockedOwnerNotifiedAt = null;
+        } else if (receiptExisting.status === "blocked" && issueData.status && issueData.status !== "blocked") {
+          patch.unblockDescriptor = null;
+          patch.blockedTransitionAt = null;
+          patch.blockedOwnerNotifiedAt = null;
+        }
         if (issueData.executionPolicy !== undefined) assertQualityReviewPolicyMutation({ previousPolicy: receiptExisting.executionPolicy, nextPolicy: issueData.executionPolicy, actorAgentId, actorUserId });
         if ((patch.status ?? receiptExisting.status) === "done" &&
             (receiptExisting.status !== "done" || issueData.executionPolicy !== undefined)) {
