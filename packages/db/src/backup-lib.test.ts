@@ -137,6 +137,68 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   }, 30_000);
 
   it(
+    "restores JavaScript backups with Unicode line and paragraph separators",
+    async () => {
+      const source = await createTempDatabase();
+      const target = await createSiblingDatabase(source, "character_restore_target");
+      const sourceSql = postgres(source, { max: 1, onnotice: () => {} });
+      const targetSql = postgres(target, { max: 1, onnotice: () => {} });
+      const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+      process.env.PAPERCLIP_PSQL_PATH = path.join(createTempDir("missing-psql-"), "psql");
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."restore_characters" (
+            "id" integer PRIMARY KEY,
+            "payload" jsonb NOT NULL,
+            "note" text NOT NULL
+          );
+        `);
+        const payload = {
+          lineFeed: "before\nafter",
+          carriageReturn: "before\rafter",
+          crlf: "before\r\nafter",
+          lineSeparator: "before\u2028after",
+          paragraphSeparator: "before\u2029after",
+          largeLine: "x".repeat(256 * 1024),
+        };
+        const note = "before\nline\rcarriage\r\ncrlf\u2028line\u2029paragraph";
+        await sourceSql`
+          INSERT INTO "public"."restore_characters" ("id", "payload", "note")
+          VALUES (1, ${sourceSql.json(payload)}, ${note})
+        `;
+
+        const result = await runDatabaseBackup({
+          connectionString: source,
+          backupDir: createTempDir("character-backup-"),
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          backupEngine: "javascript",
+        });
+        const backupSql = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        expect(backupSql).toContain("before\u2028after");
+        expect(backupSql).toContain("before\u2029after");
+
+        await runDatabaseRestore({
+          connectionString: target,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await targetSql<{ payload: string; note: string }[]>`
+          SELECT "payload"::text AS "payload", "note"
+          FROM "public"."restore_characters"
+        `;
+        expect(rows.map((row) => ({ payload: JSON.parse(row.payload), note: row.note }))).toEqual([{ payload, note }]);
+      } finally {
+        if (originalPsqlPath === undefined) delete process.env.PAPERCLIP_PSQL_PATH;
+        else process.env.PAPERCLIP_PSQL_PATH = originalPsqlPath;
+        await sourceSql.end();
+        await targetSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "keeps the newest backup for each retained calendar month",
     async () => {
       const sourceConnectionString = await createTempDatabase();
