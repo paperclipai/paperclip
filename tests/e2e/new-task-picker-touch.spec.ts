@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type APIResponse, type Locator, type Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+    userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
+  } }));
+});
+
 async function json(response: APIResponse) {
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();
@@ -95,7 +101,7 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
     await json(await request.post(`/api/companies/${company.id}/agents`, {
       data: {
         name: `Touch Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-        adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+        adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
         runtimeConfig: { heartbeat: { enabled: false } },
       },
     }));
@@ -196,7 +202,7 @@ test.describe("desktop picker scrolling", () => {
       await json(await request.post(`/api/companies/${company.id}/agents`, {
         data: {
           name: `Wheel Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-          adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+          adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
           runtimeConfig: { heartbeat: { enabled: false } },
         },
       }));

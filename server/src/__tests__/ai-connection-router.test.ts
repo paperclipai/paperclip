@@ -1,10 +1,11 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
+import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, closeRegisteredClients, companies, agents, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import type { AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings } from "../services/ai-connection-router.js";
@@ -25,6 +26,7 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution-recovery.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({
@@ -36,6 +38,7 @@ let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
+let isolatedHome: ReturnType<typeof createIsolatedTestHome> | undefined;
 const companyId = randomUUID(), otherCompanyId = randomUUID(), agentId = randomUUID(), secondAgentId = randomUUID(), pluginId = randomUUID();
 const pluginKey = "fixture.ai-router";
 const manifest: PaperclipPluginManifestV1 = { id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Fixture router", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" }, entrypoints: { worker: "worker.js" } };
@@ -52,12 +55,14 @@ const service = () => aiConnectionRouterService(db, worker);
 const resolve = (poolId: string, taskKey: string, extra = {}) => service().resolve({ companyId, poolId, agentId, userId: "alice", adapterType: "paperclip_runner", taskKey, ...extra });
 const makePool = async (config = {}) => service().save(pluginKey, { companyId, config: { name: randomUUID(), enabled: true, mode: "round_robin", thresholdPercent: 90, members, ...config } }, "alice");
 beforeAll(async () => {
-  home = await mkdtemp(path.join(os.tmpdir(), "paperclip-router-tests-"));
+  isolatedHome = createIsolatedTestHome();
+  home = isolatedHome.home;
   vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "router-fixture");
   if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
   else { database = await startEmbeddedPostgresTestDatabase("paperclip-router-db-"); db = createDb(database.connectionString); }
   await db.insert(companies).values([{ id: companyId, name: "Router fixture", issuePrefix: "RTF" }, { id: otherCompanyId, name: "Other", issuePrefix: "RTO" }]);
   await db.insert(agents).values([agentId, secondAgentId].map(id => ({ id, companyId, name: "Router agent", adapterType: "paperclip_runner" })));
+  await db.insert(authUsers).values(["alice", "bob"].map(id => ({ id, name: id, email: `${id}@router.example.test`, createdAt: new Date(), updatedAt: new Date() }))).onConflictDoNothing();
   await db.insert(companyMemberships).values(["alice", "bob"].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
   await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: pluginKey, version: "0.1.0", manifestJson: manifest, status: "ready" });
   const accounts = aiConnectionService(db);
@@ -72,7 +77,7 @@ afterAll(async () => {
   await waitForPendingRunFailureReports();
   if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
   await db?.$client.end();
-  await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true });
+  await database?.cleanup(); vi.unstubAllEnvs(); isolatedHome?.cleanup();
 });
 
 describe("durable, authorized connection routing", () => {
@@ -110,6 +115,7 @@ describe("durable, authorized connection routing", () => {
     expect((await db.select().from(toolConnections).where(eq(toolConnections.id, members[0]!.binding.connectionId)))[0]?.status).toBe("active");
   });
   it("requires company connection management authority on pool configuration routes", async () => {
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     const app = express(); app.use(express.json());
     let actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); }); app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
@@ -117,6 +123,7 @@ describe("durable, authorized connection routing", () => {
     expect((await request(app).get(url)).status).toBe(200);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connection-pools`)).status).toBe(403);
     expect((await request(app).delete(`/api/companies/${otherCompanyId}/ai-connection-pools/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { ...actor, memberships: [{ companyId, status: "active", membershipRole: "viewer" }] };
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).post(url).send({ pluginKey, config: pool })).status).toBe(403);
@@ -125,10 +132,12 @@ describe("durable, authorized connection routing", () => {
     actor = { type: "agent", agentId, companyId, source: "agent_jwt" } as unknown as typeof actor;
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision + 1 })).status).toBe(409);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(200);
     expect((await request(app).get(url)).body.some((entry: { id: string }) => entry.id === pool.id)).toBe(false);
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
   });
   it("deletes pools without erasing pins, cursors, or admitted recovery evidence", async () => {
     const pool = await makePool(); const selected = await resolve(pool.id, "retained");
@@ -198,6 +207,9 @@ describe("durable, authorized connection routing", () => {
     expect(changed.binding).toEqual(first.binding); expect(changed.runtimeConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high" }); expect(changed.notes).toHaveLength(1);
     const claude = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { model: "gpt-5.6-sol", modelReasoningEffort: "ultra" });
     expect(claude.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }); expect(claude.notes).toHaveLength(2);
+    const claudeEffort = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.notes).toEqual([]);
     const overrides = applyAiConnectionRouterTaskSettings({ model: "claude-sonnet-5", effort: "invalid", cwd: "/fixture" }, changed);
     const native = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: projectPaperclipRunnerTaskConfig("codex_app_server", changed.runtimeConfig, overrides) });
     expect(native).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", codexReasoningEffort: "high" });
@@ -434,6 +446,54 @@ describe("durable, authorized connection routing", () => {
       expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: String(selected.runtimeConfig.model), taskSessionParams: { __paperclipConfiguredModel: selected.runtimeConfig.model, __paperclipConfigFingerprint: previous.fingerprint, __paperclipConfigFingerprintVersion: previous.version, __paperclipConfigCategoryFingerprints: previous.categoryFingerprints }, configMetadata: current, compatibleConfigMetadata }).reset).toBe(false);
     } finally { await before.cleanup(); await after.cleanup(); }
   });
+  it("admits a healthy pool member when the saved Grok connection is held", async () => {
+    const original = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true,
+      enableNativeRunner: true, enableGrokBot: true, enablePublicMcp: true, enableWorktreeRunExecution: true });
+    const pool = await makePool({ members: [members[0]!] });
+    const bindingId = randomUUID();
+    const workspace = path.join(home, "routed-grok-work");
+    await mkdir(workspace);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Routed Grok fixture", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "grok_bot", externalBindingId: bindingId, cwd: workspace },
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false, wakeOnDemand: true } } }).returning();
+    await db.insert(dotAgentBindings).values({ id: bindingId, companyId, agentId: agent.id,
+      operatorId: "alice", providerKind: "grok_bot", status: "connected" });
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    await db.insert(grokBotRoutines).values({ companyId, agentId: agent.id, bindingId, bindingGeneration: 1,
+      botName: "Unused held Bot", secretId: ref.secretId, secretVersion: 1,
+      recoveryRequiredAt: new Date(), recoveryReason: "work_session" });
+    expect(await dotRunnerBroker(db).canStartNewWork(companyId, agent.id, bindingId)).toBe(false);
+    const readiness = vi.spyOn(dotRunnerBroker(db), "canStartNewWork");
+    const beforeNative = vi.fn(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      throw new Error("fixture stopped before provider start");
+    });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {},
+      beforeNativeRuntimeSelection: beforeNative,
+      nativeSessionBackendFactory: () => { throw new Error("Unexpected provider start"); } });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Healthy routed task", status: "todo",
+      assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", triggerDetail: "system",
+        payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" } });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const saved = await heartbeat.getRun(run!.id);
+      expect(saved?.contextSnapshot?.aiRouterSelection).toMatchObject({ poolId: pool.id,
+        memberId: members[0]!.id, runtimeConfig: { provider: "codex" } });
+      expect(saved?.error).toContain("fixture stopped before provider start");
+      expect(beforeNative).toHaveBeenCalledExactlyOnceWith(run!.id);
+      expect(readiness).not.toHaveBeenCalled();
+    } finally {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      await heartbeat.drainActiveRunExecutions();
+      readiness.mockRestore();
+      await instanceSettingsService(db).updateExperimental(original);
+    }
+  }, 30_000);
+
   it("keeps session identity and fingerprints stable on authenticated refresh, but changes them on manual replacement", async () => {
     const input = { companyId, agentId, responsibleUserId: "alice", adapterType: "paperclip_runner", binding: members[0]!.binding, config: { provider: "codex", model: "gpt-5.6-sol" } };
     const first = await prepareManagedAiRuntime(db, input);
@@ -448,3 +508,6 @@ describe("durable, authorized connection routing", () => {
     } finally { await first.cleanup(); }
   });
 });
+
+
+enableRunFailureReporting();

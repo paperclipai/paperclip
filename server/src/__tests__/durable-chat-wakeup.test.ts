@@ -183,7 +183,7 @@ describe("durable inbound chat scheduler receipts", () => {
         wakeCommentId: durableChatRequest.commentId,
         durableChatRequest,
         rethrowOnError: true,
-      });
+      }) as Promise<Awaited<ReturnType<typeof heartbeat.wakeup>>> | undefined;
     return {
       companyId,
       agentId,
@@ -319,6 +319,22 @@ describe("durable inbound chat scheduler receipts", () => {
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.id)))[0]).toMatchObject({
       status: "deferred_issue_execution", runId: null,
     });
+  });
+
+  it("reconsiders the same held inbound receipt only through its live durable owner", async () => {
+    const f = await fixture();
+    const clearHold = await executionHold(f);
+    const request = f.request();
+    expect(await f.wake(request)).toBeNull();
+    await clearHold();
+    const reconsidered = createDurableChatWakeupRequest({ ...request, resumeDeferred: true });
+    const [first, second] = await Promise.all([f.wake(reconsidered), f.wake(reconsidered)]);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agentId));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ id: request.id, status: "queued", requestedAt: request.requestedAt });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, request.id))).toHaveLength(1);
+    expect(first?.id ?? second?.id).toBe(receipts[0].runId);
+    expect(f.authorize.mock.calls.length).toBeGreaterThan(1);
   });
 
   async function retryFixture(deferred = false) {

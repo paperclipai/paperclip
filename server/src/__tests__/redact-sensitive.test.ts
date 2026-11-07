@@ -229,6 +229,33 @@ describe("redactSensitive", () => {
 });
 
 describe("stripSecretBearingUrlParts", () => {
+  it("redacts the connector credentialValues envelope on an app-connect body", () => {
+    const out = redactSensitive({
+      galleryKey: "github",
+      name: "GitHub",
+      credentialValues: {
+        "credentials.authorization": "authorization-canary",
+        "headers.X-Api-Key": "header-canary",
+      },
+    }) as Record<string, unknown>;
+
+    // Diagnostics that make the failed connect debuggable must survive.
+    expect(out.galleryKey).toBe("github");
+    expect(out.name).toBe("GitHub");
+    expect(out.credentialValues).toBe("[REDACTED]");
+    expect(JSON.stringify(out)).not.toContain("canary");
+  });
+
+  it("redacts a credentialValues envelope nested below the top level", () => {
+    const out = redactSensitive({
+      connection: {
+        credentialValues: { "credentials.authorization": "nested-canary" },
+      },
+    });
+
+    expect(JSON.stringify(out)).not.toContain("nested-canary");
+  });
+
   it("keeps a request path legible while dropping its complete query and fragment", () => {
     expect(
       stripSecretBearingUrlParts(
@@ -236,4 +263,11 @@ describe("stripSecretBearingUrlParts", () => {
       ),
     ).toBe("/api/tools/oauth/callback");
   });
+});
+
+it("redacts Grok routine URL and key in setup failure logs", () => {
+  const payload = { webhookUrl: "https://bot.example/routine/url-canary", webhookKey: "key-canary" };
+  expect(JSON.stringify(redactSensitive(payload))).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookUrl);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
 });

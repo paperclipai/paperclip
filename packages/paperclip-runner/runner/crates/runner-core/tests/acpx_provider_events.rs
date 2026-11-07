@@ -736,3 +736,90 @@ fn leaves_operational_semantic_and_terminal_events_to_the_adapter() {
     .is_empty());
     assert!(normalize(AcpxRuntimeEventKind::Done, json!({"type":"done"})).is_empty());
 }
+
+#[test]
+fn claude_rate_limit_on_usage_update_becomes_an_account_notice() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    let decoded = decode_acpx_event(
+        &scope,
+        &AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"status", "tag":"usage_update",
+                "rateLimit":{
+                    "status":"allowed_warning", "rateLimitType":"five_hour",
+                    "utilization":0.86, "resetsAt":1_793_893_200
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
+        panic!("runtime usage must decode as a runtime payload");
+    };
+    let events =
+        normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event_type, "usage.reported");
+    let notice = &events[1];
+    assert_eq!(notice.event_type, "provider.notice.recorded");
+    assert_eq!(notice.payload["category"], "provider.rate_limits");
+    assert_eq!(notice.payload["scope"], "account");
+    assert_eq!(notice.payload["noticeId"], "event-7:rate-limits");
+    let snapshot: serde_json::Value =
+        serde_json::from_str(notice.payload["details"][0]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(snapshot["provider"], "anthropic");
+    assert_eq!(snapshot["windows"][0]["id"], "claude.five_hour");
+    assert_eq!(snapshot["windows"][0]["usedPercent"], 86.0);
+    assert_eq!(snapshot["windows"][0]["resetsAt"], "2026-11-05T15:40:00Z");
+
+    let plain = normalize(
+        AcpxRuntimeEventKind::Status,
+        json!({"type":"status", "tag":"usage_update"}),
+    );
+    assert_eq!(
+        plain.len(),
+        1,
+        "usage without rate-limit data stays a single event"
+    );
+}
+
+#[test]
+fn claude_status_notices_pair_by_key_and_keep_details() {
+    let notice = |phase: &str| {
+        normalize(
+            AcpxRuntimeEventKind::ProviderNotice,
+            json!({
+                "type": "provider_notice", "severity": "info", "category": "context_compaction",
+                "summary": "Compacting context", "noticeKey": "compaction-1",
+                "details": [{"name": "Phase", "value": phase}]
+            }),
+        )
+    };
+    let started = notice("running");
+    let completed = notice("completed");
+    assert_eq!(
+        started[0].payload["noticeId"],
+        completed[0].payload["noticeId"]
+    );
+    assert_eq!(started[0].payload["category"], "context_compaction");
+    assert_eq!(
+        completed[0].payload["details"],
+        json!([{"name": "Phase", "value": "completed"}])
+    );
+    let plain = normalize(
+        AcpxRuntimeEventKind::ProviderNotice,
+        json!({"type": "provider_notice", "category": "acpx_x", "summary": "x"}),
+    );
+    assert!(plain[0].payload.get("details").is_none());
+}

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { withCopilotSmokeResources } from "./copilot-smoke-resources.mjs";
+import { stopCopilotSmokeChild, withCopilotSmokeResources } from "./copilot-smoke-resources.mjs";
 
 function resources(failure) {
   const actions = [];
@@ -40,4 +40,20 @@ test("successful callback result is returned after all resource cleanup", async 
   const r = resources();
   assert.equal(await withCopilotSmokeResources(r.installation, async ({ root, fixtureRequests }) => { assert.equal(root, "/fixture/private"); assert.deepEqual(fixtureRequests, []); return "ok"; }, r.dependencies), "ok");
   assert.deepEqual(r.actions, ["workspace_created", "connections_closed", "server_closed", "lease_closed", "workspace_removed"]);
+});
+
+test("ignored SIGTERM is followed by bounded SIGKILL and confirmed process exit", async () => {
+  const { spawn } = await import("node:child_process");
+  const { once } = await import("node:events");
+  const child = spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); process.send("ready"); setInterval(() => {}, 1000);'], { stdio: ["pipe", "pipe", "pipe", "ipc"] });
+  try {
+    await Promise.race([once(child, "message"), new Promise((_, reject) => setTimeout(() => reject(new Error("child readiness timed out")), 3_000).unref())]);
+    await stopCopilotSmokeChild(child, { terminateTimeoutMs: 50, killTimeoutMs: 1_000 });
+    assert.equal(child.signalCode, "SIGKILL");
+    assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
+    }
+  }
 });

@@ -1,5 +1,17 @@
+import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
+import { supportsManagedNativeWarmSession } from "../../server/src/services/native-runtime/native-warm-capability.js";
+import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
+import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
+import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
+import { necessaryQuestionTask, necessaryQuestionDigest } from "./necessary-question.js";
+import { caseHandoffTask, caseHandoffDefinitionDigest } from "./case-handoffs-cases.js";
+import { caseReceiptTask, caseReceiptDefinitionDigest, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_MAX_TURNS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
+import { repositoryProofTasks, repositoryProofProfile, repositoryProofDigest } from "./repository-verification.js";
+import { automaticRepositoryTask, automaticRepositoryDigest } from "./automatic-repository.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { CURSOR_CLOUD_SUITE, cursorCloudArtifactTask, cursorCloudStopTask, CURSOR_CLOUD_QUIET_WINDOW_MS, cursorCloudDefinitionDigest } from "./cursor-cloud-cases.js";
+import { kimiLifecycleTasks } from "./kimi-lifecycle-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
 import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
@@ -11,10 +23,15 @@ import { NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_BASE_SHA, nativeInstructio
 import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
+import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
+import { buildAntigravityJourneySuite } from "./antigravity-journey-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
+import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -24,9 +41,12 @@ import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-l
 import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
 import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
+import { EVERYDAY_RELIABILITY_GROUP, EVERYDAY_RELIABILITY_SLOW_GROUP, RELIABILITY_FACADE_PROFILE_IDS, RELIABILITY_PLAN_PROFILE_ID, everydayReliabilityExecutionIds, reliabilityPlanCells, everydayReliabilitySignatures, everydayReliabilityTasks } from "./everyday-reliability-cases.js";
+import { REMOTE_WORKSPACE_STORAGE_SUITE, remoteWorkspaceStoragePrompt } from "./remote-workspace-storage.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
-import { firstTaskTasks } from "./first-task-cases.js";
+import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-cases.js";
+import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -71,6 +91,8 @@ const SELECTABLE_GROUPS = [
   "onboarding",
   "context-integrity",
   "stock-harness",
+  EVERYDAY_RELIABILITY_GROUP,
+  EVERYDAY_RELIABILITY_SLOW_GROUP,
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -101,6 +123,7 @@ function commonAgent(
     capabilities:
       "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
     adapterType,
+    ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
     defaultEnvironmentId: input.environmentId,
     budgetMonthlyCents: 0,
@@ -182,7 +205,7 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi" | "kimi";
   qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
@@ -211,7 +234,7 @@ function nativeProfile(input: {
       provider: input.provider,
     },
     buildAgent(buildInput) {
-      const credentialRef = input.credential === "GROK_AUTH_JSON"
+      const credentialRef = ["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(input.credential)
         ? null
         : requiredSecret(buildInput, input.credential);
       const permissionConfig =
@@ -233,7 +256,7 @@ function nativeProfile(input: {
           // Codex's supported automation credential is CODEX_API_KEY. Keep
           // OPENAI_API_KEY as the operator-facing fixture secret name and bind
           // the same encrypted reference to the runtime-specific alias.
-          ...(input.provider === "codex"
+          ...(input.provider === "codex" && credentialRef
             ? { CODEX_API_KEY: credentialRef }
             : {}),
         },
@@ -526,6 +549,7 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
           autoStopInterval: 5,
           autoArchiveInterval: 15,
           autoDeleteInterval: 60,
+          ttlMinutes: 60,
           timeoutMs: 300_000,
           livenessTimeoutMs: 30_000,
         },
@@ -650,7 +674,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildRevisionRequest: (nonce) =>
       [
         "Revise this same plan; do not implement it yet.",
-        `Remove PAPERCLIP_E2E_PLAN_DRAFT_${nonce} and include PAPERCLIP_E2E_PLAN_REVISED_${nonce}.`,
+        `Replace the first line with exactly PAPERCLIP_E2E_PLAN_REVISED_${nonce} and remove PAPERCLIP_E2E_PLAN_DRAFT_${nonce}. Use literal underscore characters with no backslashes or other text on that first line.`,
         "Change the plan from two steps to exactly three numbered steps, with verification as step 3.",
         "Publish the revised canonical Plan revision and request confirmation for that new revision.",
         "In a native runner, call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`; do not call paperclip_finish while waiting. After write_document succeeds, request_human_input must be your immediate next action using that call's returned latestRevisionId; do not emit assistant text, end the response or heartbeat, or stop after write_document alone.",
@@ -660,13 +684,13 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
       [
         "This is a planning-mode lifecycle acceptance task.",
         "First, create a small canonical Plan with exactly two numbered steps and request approval; do not implement it.",
-        `The initial Plan body must contain PAPERCLIP_E2E_PLAN_DRAFT_${nonce}.`,
+        `The initial Plan body must have exactly PAPERCLIP_E2E_PLAN_DRAFT_${nonce} as its first line, followed by exactly two numbered steps. Use literal underscore characters with no backslashes or other text on that first line.`,
         "If the plan is sent back, revise that same Plan document according to the revision note, publish a new revision-bound confirmation, and still do not implement.",
         `Before the revised Plan is accepted, do not spell, quote, repeat, announce, or include PAPERCLIP_E2E_PLAN_DONE_${nonce} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Only after the revised plan is accepted, implement it by posting one final visible task-thread response containing exactly " +
           `PAPERCLIP_E2E_PLAN_DONE_${nonce}` +
           " and mark the task Done.",
-        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal). Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Use the current turn completion revision and criterion IDs. CURRENT_TURN_REVISION and CURRENT_TURN_CRITERIA below are placeholders, not literals. CURRENT_TURN_CRITERIA must contain one {criterionId:<current criterion ID>,status:"satisfied",evidenceRefs:[]} entry for every current criterion ID. Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:CURRENT_TURN_CRITERIA,remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         `For a legacy runner, use the public Paperclip API. The first PUT of the \`plan\` issue document creates it. For every later PUT, first GET the current document and set \`baseRevisionId\` to its \`latestRevisionId\`; a 409 means you must GET again and retry with the new latest revision. Create a \`request_confirmation\` targeting the successful PUT response's \`latestRevisionId\` with \`continuationPolicy: wake_assignee\`, and move the issue to \`in_review\` while waiting. After the revised Plan is accepted, write PAPERCLIP_E2E_PLAN_DONE_${nonce} exactly once through one atomic issue PATCH with status \`done\` and that exact comment; do not POST a separate comment or perform a second write.`,
         "Do not create files, child tasks, or unrelated work, and do not expose credentials.",
       ].join("\n"),
@@ -954,7 +978,8 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
     `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
     turn === 1
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
-      : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
+      : `Before changing anything, read ${file} and verify its content is exactly these prior lines in order, each followed by a newline: ${lines.slice(0, -1).join(" | ")}. Then append exactly ${lines.at(-1)} followed by a newline.`,
+    "Each newline in this task means the actual LF character (byte 10), including in personal memory files. An escaped representation containing a literal backslash and n is not a newline. Verify the saved bytes against the requested line content and LF byte 10, independently of the string expression used to write them.",
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
     `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},attentionRequests:${JSON.stringify(reviewRequests)},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
     legacyCompletion,
@@ -963,11 +988,15 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
   ].join("\n");
 }
 
+const warmTurnDefinitionDigest = createHash("sha256").update(JSON.stringify(
+  ([1, 2, 3] as const).map(turn => warmTurnInstructions(turn, "definition")),
+)).digest("hex");
+
 function managedWarmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
   return [warmTurnInstructions(turn, nonce),
     "Also update your personal AGENT_HOME with ordinary filesystem tools. Do not edit the loaded AGENTS.md instructions and do not use an API to save these files.",
     turn === 1
-      ? `Create notes/warm-memory.txt containing exactly T1-${nonce} followed by a newline. Create notes/unchanged.bin with exactly 8388608 bytes, each byte equal to 93. Create notes/delete-me.txt containing temporary.`
+      ? `Create notes/warm-memory.txt containing exactly T1-${nonce} followed by a newline. Create notes/unchanged.bin with exactly 8388608 bytes, each byte equal to 93. Create notes/delete-me.txt with exactly the nine ASCII bytes temporary and no trailing newline.`
       : `Read notes/warm-memory.txt under AGENT_HOME and verify it contains exactly the prior turn lines ${Array.from({ length: turn - 1 }, (_, i) => `T${i + 1}-${nonce}`).join(" | ")}, each followed by a newline. Append exactly T${turn}-${nonce} and a newline. Verify notes/unchanged.bin still has 8388608 bytes, each equal to 93, and leave it unchanged. ${turn === 2 ? "Delete notes/delete-me.txt." : "Verify notes/delete-me.txt is absent."}`,
     "Perform these personal-file edits and verification before calling paperclip_finish. Paperclip saves them at the turn boundary.",
   ].join("\n");
@@ -1104,7 +1133,262 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
   ],
 };
 
+// Keep the create/edit journey and its independent byte/artifact oracles. The
+// explicit read-only check avoids shell operand and newline-escaping ambiguity
+// in the Copilot qualification prompt; it does not repair the provider's file.
+function copilotFilePrompt(nonce: string): string {
+  if (!/^[A-Za-z0-9-]{1,100}$/u.test(nonce)) throw new Error("Invalid Copilot file fixture nonce");
+  const filename = `extended-${nonce}.txt`;
+  const expectedHex = Buffer.from(`verified-${nonce}\n`).toString("hex");
+  const marker = `COPILOT-VALIDATED-${nonce}`;
+  const command = `node -e 'const b=require("node:fs").readFileSync(${JSON.stringify(filename)});if(!b.equals(Buffer.from("${expectedHex}","hex")))process.exit(1);console.log(${JSON.stringify(marker)})'`;
+  return [
+    extendedHarnessFileTask.buildPrompt(nonce),
+    "Use the exact read-only validation command below after editing. It must exit with code 0 and print the validation marker before registration or completion. A failed check requires correcting the file; do not claim success from a failed command or change the check.",
+    "Exact read-only validation command:",
+    command,
+  ].join("\n");
+}
+
+const repositoryModelProfiles = [
+  {
+    native: nativeProfile({
+      id: "runner-codex", label: "Codie staging-model diagnostic", provider: "codex", model: "gpt-6.1-sol", credential: "OPENAI_API_KEY",
+      modelQualification: { source: "candidate_runner_profile", qualificationId: "observed-staging-codie-model-2026-10-20" },
+    }),
+    legacy: runnerProfiles.find(profile => profile.id === "legacy-codex")!,
+  },
+  {
+    native: nativeProfile({
+      id: "runner-acpx-claude", label: "Claude staging-model diagnostic", provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", credential: "ANTHROPIC_API_KEY",
+      modelQualification: { source: "candidate_runner_profile", qualificationId: "observed-staging-claude-model-2026-10-20" },
+    }),
+    legacy: runnerProfiles.find(profile => profile.id === "legacy-claude")!,
+  },
+];
+
+export const cursorCloudProfile: RunnerProfileFixture = {
+  id: "runner-cursor-cloud", label: "Native Cursor Cloud (experimental)", generation: "native", groups: [],
+  adapterType: "paperclip_runner", provider: "cursor_cloud", model: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL?.trim() ?? "",
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "cursor-cloud-explicit-acceptance-env" },
+  credential: "CURSOR_API_KEY", supportedEnvironments: ["local"], expectedRuntimeMode: "native",
+  expectedRuntimeMetadata: { adapterType: "paperclip_runner", provider: "cursor_cloud" },
+  buildAgent(input) {
+    const agent = commonAgent(input, this.id, "paperclip_runner", {
+      provider: "cursor_cloud", model: this.model, lifecycleMode: "per_turn", cloudEnvType: "cloud",
+      repoUrl: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO?.trim() ?? "",
+      ...(process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF?.trim() ? { repoRef: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF.trim() } : {}),
+      autoCreatePR: false, workOnCurrentBranch: false, skipReviewerRequest: true, cursorCloudTimeoutMs: 360_000,
+      env: { CURSOR_API_KEY: requiredSecret(input, "CURSOR_API_KEY") },
+    });
+    return { ...agent, budgetMonthlyCents: 1_000 };
+  },
+};
+
+export const cursorCloudFollowupTask: RunnerTaskFixture = {
+  ...openRouterBreadthTasks.find(task => task.id === "question-resume-complete")!,
+  id: "cloud-followup", label: "Answer a question and continue the same Cloud agent", automaticRetryPolicy: "single_attempt",
+  buildTitle: nonce => `Cursor Cloud follow-up ${nonce}`,
+};
+
+const cursorCloudPlanningBase = runnerTasks.find(task => task.id === "plan-revise-accept")!;
+export const cursorCloudPlanningTask: RunnerTaskFixture = {
+  ...cursorCloudPlanningBase, automaticRetryPolicy: "single_attempt",
+  buildPrompt: nonce => cursorCloudPlanningBase.buildPrompt(nonce).replace(
+    "For a native runner, remain in the requested planning collaboration mode.",
+    "For a native runner, follow the requested Paperclip planning authority. Cursor Cloud uses its default harness for this semantic Plan workflow; do not request Cursor native Plan mode.",
+  ),
+};
+
+const daytonaControllerOutageEnvironment: EnvironmentFixture = {
+  ...daytonaWarmEnvironment,
+  configurationKey: "warm-controller-outage-v1",
+  buildEnvironment(input: EnvironmentFixtureBuildInput) {
+    const payload = daytonaWarmEnvironment.buildEnvironment(input);
+    // Keep provider idle stop beyond the outage and replacement budget.
+    return { ...payload, config: { ...(payload.config as Record<string, unknown>), autoStopInterval: 15 } };
+  },
+};
+
+function managedWarmProfiles(profiles: readonly RunnerProfileFixture[]): RunnerProfileFixture[] {
+  return profiles.filter(profile => {
+    const backend = profile.provider === "codex" ? "codex_app_server" : profile.provider === "opencode" ? "opencode_server" : "acpx_runtime";
+    return supportsManagedNativeWarmSession({ backend, acpxAgent: "acpxAgent" in profile ? profile.acpxAgent : undefined },
+      profile.credential === "COPILOT_GITHUB_TOKEN" ? { provider: "github", method: "api_key" } : undefined);
+  }).map(profile => ({ ...profile, buildAgent(input: AgentFixtureBuildInput) {
+    const agent = profile.buildAgent(input);
+    return { ...agent, adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), lifecycleMode: "warm" } };
+  } }));
+}
+
+const remoteWorkspaceStorageSuite: RunnerSuiteFixture = {
+    id: REMOTE_WORKSPACE_STORAGE_SUITE, label: "Remote workspace storage and controller replacement", manualOnly: true,
+    description: "Keep synthetic files and local Git work in the sandbox, commit saved versions to object storage, and preserve the original active execution through controller replacement.",
+    groups: [], profiles: managedWarmProfiles([(() => {
+      const profile = productionStoryProfile(repositoryModelProfiles[0]!.native);
+      return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
+        delete adapterConfig.cwd;
+        return { ...agent, adapterConfig };
+      } };
+    })()]), environments: [daytonaControllerOutageEnvironment],
+    tasks: everydayTasks.filter(task => task.id === "recover-controller").map(task => ({ ...task,
+      label: "Recover sandbox-owned files after controller replacement", expectedRunCount: task.expectedRunCount + 1,
+      automaticRetryPolicy: "single_attempt" as const,
+      buildPrompt: (nonce: string) => remoteWorkspaceStoragePrompt(task.buildPrompt(nonce)),
+    })), expectedMatrixSize: 1,
+    definitionMetadata: { version: 6, lifecycleCoverage: "warm-reusable", workspaceFileSource: "saved-exact-snapshot-with-retained-location", scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15,
+      retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", remoteWorkspaceStorage: true,
+      upgradeReadiness: "active-remote-workspace-recoverable-before-sigkill",
+      savedRunReadback: "public-runId-summary-then-bound-native-detail",
+      fileViewerSetup: "ordinary-setting-enabled-with-storage-default-preserved",
+      postControllerReplyFormat: "one-plain-text-line-marker-space-actual-command-output",
+      grading: "same-active-execution-committed-snapshots-browser-files-and-post-controller-native-continuation",
+      source: "projectless-synthetic-files-and-model-created-git", authentication: "api-key", stagingQualification: false },
+  };
+
+export const kimiRunnerProfile = nativeProfile({
+  id: "runner-acpx-kimi", label: "Runner Kimi Code",
+  provider: "acpx", acpxAgent: "kimi", qualificationCandidate: "kimi",
+  credential: "KIMI_API_KEY", model: "kimi-for-coding",
+  modelQualification: { source: "qualified_runner_profile", qualificationId: "kimi:2.3.3:native-qualified-profile17" },
+});
+
+/**
+ * ACPX facades admitted only for the reliability long-silent-command case. Like the
+ * rolling-deployment matrix, they run as ordinary released profiles: a pending
+ * candidate needs its own qualification suite and is rejected here.
+ */
+const everydayFacadeProfiles = RELIABILITY_FACADE_PROFILE_IDS
+  .map(id => [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile].find(profile => profile.id === id)!)
+  .filter(original => !original.qualificationCandidate || QUALIFIED_ACPX_PROFILES[original.qualificationCandidate].qualificationStatus !== "pending")
+  .map(original => {
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
+    return profile;
+  });
+/** Released facades currently in the reliability group; a pending one drops out. */
+export const everydayReliabilityFacadeProfileIds = everydayFacadeProfiles.map(profile => profile.id);
+/**
+ * Native OpenCode with DeepSeek 1017 through OpenRouter. It is the chat-feature
+ * candidate and the TestOps Reliability plan profile. The OpenCode server driver
+ * runs this model on Daytona exactly as it runs the qualified runner-opencode
+ * model there; only the configured model differs.
+ */
+const runnerOpenCodeDeepSeek1017Profile = nativeProfile({ id: RELIABILITY_PLAN_PROFILE_ID, label: "Native OpenCode DeepSeek 1017",
+  provider: "opencode", model: CHAT_FEATURE_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local", "daytona"],
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-feature-testops:deepseek-v4.1-flash-1017" } });
+const everydayWorkflowProfiles = [...everydayProfiles,
+  productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+  productionStoryProfile(runnerOpenCodeDeepSeek1017Profile),
+  ...everydayFacadeProfiles];
+
+/** Every reliability cell outside the deliberately small explicit matrix. */
+function everydayReliabilityExcludedIds(suiteId: string): string[] {
+  const allowed = new Set(everydayReliabilityExecutionIds(suiteId, everydayReliabilityFacadeProfileIds));
+  return everydayWorkflowProfiles.flatMap(profile => ["local", "daytona"].flatMap(environmentId =>
+    everydayReliabilityTasks.map(task => `${suiteId}.${profile.id}.${environmentId}.${task.id}`)))
+    .filter(id => !allowed.has(id));
+}
+
+
+const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
+  .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
+    && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
+  .map(original => {
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
+    return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
+      delete adapterConfig.cwd;
+      return { ...agent, adapterConfig };
+    } };
+  });
+const rollingWarmDeploymentProfiles = managedWarmProfiles(rollingDeploymentProfiles);
+
+const rollingDeploymentSuites: RunnerSuiteFixture[] = [
+  { id: ROLLING_WEB_DEPLOYMENT_SUITE, environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
+  { id: ROLLING_WEB_DEPLOYMENT_WARM_SUITE, environment: daytonaControllerOutageEnvironment },
+].map(({ id, environment }) => ({
+  ...remoteWorkspaceStorageSuite, id, label: `Rolling control-plane web deployment (${environment.configurationKey ? "warm" : "per-turn"})`,
+  description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
+  profiles: id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles, environments: [environment],
+  expectedMatrixSize: (id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles).length * remoteWorkspaceStorageSuite.tasks.length,
+  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 6, controllerDowntimeMs: 0,
+    activeWorkBoundary: "foreground-180-second-cli-reliability-soak-and-live-owner-recheck",
+    workspaceFileSource: environment.configurationKey ? "saved-exact-snapshot-with-retained-location" : "saved-exact-snapshot-after-per-turn-retirement",
+    lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable", providerCoverage: "registered-native-daytona-profiles",
+    replacement: "ready-before-traffic-switch-sigterm-delete-entire-home",
+    upgradeReadiness: "active-remote-workspace-recoverable-before-handoff",
+    grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
+}));
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  remoteWorkspaceStorageSuite,
+  ...rollingDeploymentSuites,
+  ...[
+    { id: "legacy-workspace-migration", environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
+    { id: "legacy-workspace-migration-warm", environment: daytonaControllerOutageEnvironment },
+  ].map(({ id, environment }): RunnerSuiteFixture => ({
+    id, label: `Legacy native session migration (${environment.configurationKey ? "warm" : "per-turn"})`, manualOnly: true,
+    description: "Resume an existing native session and workspace after the production offline migration and deletion of the original controller home.",
+    groups: [], profiles: environment.configurationKey ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles, environments: [environment],
+    tasks: [{ ...necessaryQuestionTask, minimumExpectedRunCount: 2, turnTimeoutMs: 6 * 60_000,
+      attemptTimeoutMs: { local: 15 * 60_000, daytona: 20 * 60_000 } }],
+    expectedMatrixSize: (environment.configurationKey ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles).length,
+    definitionMetadata: { version: 2, scheduling: "explicit-only", maximumAttemptsPerCell: 1, providerTurns: 2, budgetMonthlyCents: 1000,
+      lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable",
+      migration: "packaged-offline-entry-verified-export-delete-entire-source-home", authentication: "api-key", stagingQualification: false,
+      grading: "same-native-and-provider-session-logical-and-remote-paths-reference-bytes-question-and-final-document" },
+  })),
+  {
+    id: CURSOR_CLOUD_SUITE, label: "Native Cursor Cloud", manualOnly: true, groups: [],
+    description: "Local Paperclip controller with hosted Cursor work: verified artifact, same-agent follow-up, real active-run Stop and semantic plan revision/approval.",
+    profiles: [cursorCloudProfile], environments: runnerEnvironments.filter(environment => environment.id === "local"),
+    tasks: [cursorCloudArtifactTask, cursorCloudFollowupTask, cursorCloudStopTask, cursorCloudPlanningTask], expectedMatrixSize: 4,
+    definitionMetadata: { version: 3, definitionDigest: cursorCloudDefinitionDigest(), scheduling: "explicit-only", maximumAttemptsPerCell: 1,
+      effectiveModelAcknowledged: false, commandPermissions: "provider-managed", costCoverage: "provider-cost-unavailable",
+      quietWindowMs: CURSOR_CLOUD_QUIET_WINDOW_MS, repository: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO ?? "",
+      repositoryRef: process.env.PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF ?? "", callbackExposure: "callback-path-only-loopback-proxy" },
+  },
+  {
+    id: "daytona-restart-continuity", label: "Daytona warm controller outage continuity", manualOnly: true,
+    description: "Keep the original active native runner, reusable warm sandbox, task tools and saved files through five minutes without a controller, then continue the completed session after another replacement.",
+    groups: [], profiles: managedWarmProfiles(repositoryModelProfiles.map(({ native }) => productionStoryProfile(native))),
+    environments: [daytonaControllerOutageEnvironment],
+    tasks: everydayTasks.filter(task => task.id === "recover-controller")
+      .map(task => ({ ...task, expectedRunCount: task.expectedRunCount + 1, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: managedWarmProfiles(repositoryModelProfiles.map(({ native }) => productionStoryProfile(native))).length,
+    definitionMetadata: { version: 8, scheduling: "explicit-only", controllerDowntimeMs: 300_000, autoStopIntervalMinutes: 15, retainedControllerContinuation: true, retainedControllerFollowupTransport: "task_comment_api",
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
+      authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
+  },
+  {
+    id: "codie-latency-diagnostic",
+    label: "Native Codex latency diagnostic",
+    description: "One real Daytona turn on the staging-selected model. API-key auth and a fresh fixture do not reproduce the staging subscription, data or Slack delivery.",
+    groups: ["native"],
+    manualOnly: true,
+    profiles: [(() => {
+      const profile = nativeProfile({
+        id: "runner-codex-61-diagnostic", label: "Native Codex 6.1 diagnostic",
+        provider: "codex", model: "gpt-6.1-sol", credential: "OPENAI_API_KEY",
+        supportedEnvironments: ["daytona"],
+        modelQualification: { source: "candidate_runner_profile", qualificationId: "explicit-model-latency-diagnostic" },
+      });
+      return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        return { ...agent, budgetMonthlyCents: 1000,
+          adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), lifecycleMode: "warm", idleTimeoutMs: 300_000 } };
+      } };
+    })()],
+    environments: [daytonaWarmEnvironment],
+    tasks: runnerTasks.filter(task => task.id === "message-marker")
+      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 1,
+    definitionMetadata: { diagnostic: true, modelSource: "observed-staging-run", providerAuth: "api_key", stagingAuth: "subscription", companyData: "fresh-fixture", slackDelivery: false, maximumAutomaticRetries: 0,
+      timing: { version: 1, clock: "monotonic", responseTargetMs: 30_000, event: "first_visible_response", settlementSeparate: true } },
+  },
   {
     id: TASK_WORKSPACES_SUITE, label: "Task workspaces without projects", manualOnly: true,
     description: "Three browser-driven admissions prove deferred repository preparation, stable projectless task files and nested Git persistence across a controller restart.",
@@ -1114,6 +1398,65 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     expectedMatrixSize: 3,
     definitionMetadata: { version: 1, definitionDigest: taskWorkspaceDefinitionDigest(), scheduling: "explicit-only", providerTurns: 3,
       attempts: 1, budgetMonthlyCents: 1000, project: "none", cwd: "unconfigured-task-default", oracle: "public-file-download-and-host-nested-git", remoteLifecycle: "per_turn" },
+  },
+  {
+    id: "followup-stop-resume", label: "Follow-up, Stop and retained-context resumption", manualOnly: true,
+    description: "Send an ordinary follow-up during active work, Stop through the task composer, observe a quiet cancelled run, then explicitly resume and download retained context with the earlier direction.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionDefaultHireProfile(native)),
+    environments: runnerEnvironments.filter(environment => environment.id === "local"), tasks: [followupStopTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, definitionDigest: followupStopDigest(), scheduling: "explicit-only", attempts: 1,
+      providerTurns: 2, budgetMonthlyCents: 1000, instructions: "production-default", stopObservationWindowMs: 5000,
+      surface: "paperclip", target: "isolated-development-instance", authentication: "api-key", stagingAuthentication: "subscription",
+      stagingQualification: false, unexercisedBoundaryIsFailure: true },
+  },
+  {
+    id: "finalization-recovery", label: "Preserve completed work through finalization restart", manualOnly: true,
+    description: "Crash an owned isolated server after accepted provider output, then require real workspace recovery and one final delivery without provider replay.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionDefaultHireProfile(native)),
+    environments: runnerEnvironments.filter(environment => environment.id === "daytona"), tasks: [finalizationRecoveryTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, definitionDigest: finalizationRecoveryDigest(), scheduling: "explicit-only", attempts: 1,
+      providerTurns: 1, budgetMonthlyCents: 1000, instructions: "production-default", fault: "owned-process-crash-after-persisted-result",
+      workspacePayloadBytes: 64 * 1024 * 1024, unexercisedFaultIsFailure: true, surface: "paperclip", target: "isolated-development-instance",
+      authentication: "api-key", stagingAuthentication: "subscription", remoteLifecycle: "per_turn", stagingQualification: false },
+  },
+  {
+    id: "necessary-question", label: "Necessary free-text question and verified confirmation", manualOnly: true,
+    description: "One required private input, a visible question and context, and one exactly bound answer continuation.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionDefaultHireProfile(native)),
+    environments: runnerEnvironments, tasks: [necessaryQuestionTask], expectedMatrixSize: 4,
+    definitionMetadata: { version: 1, definitionDigest: necessaryQuestionDigest(), scheduling: "explicit-only", attempts: 1,
+      providerTurns: "1-2; provider pause or one semantic successor", budgetMonthlyCents: 1000, instructions: "production-default",
+      surface: "paperclip", target: "isolated-development-instance", authentication: "api-key", stagingAuthentication: "subscription",
+      remoteLifecycle: "per_turn", stagingQualification: false },
+  },
+  ...([false, true] as const).map(conversion => ({
+    id: conversion ? "legacy-conversion" : "configured-repository",
+    label: conversion ? "Legacy conversion with verified delivery" : "Configured repository with verified delivery",
+    manualOnly: true, description: "Production instructions, retained configuration, and a downloaded result checked against an independent Git and file baseline.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native, legacy }) => repositoryProofProfile(native, conversion ? legacy : undefined)),
+    environments: runnerEnvironments, tasks: repositoryProofTasks.filter(task => task.id === (conversion ? "convert-and-deliver" : "repository-output")), expectedMatrixSize: 4,
+    definitionMetadata: { version: 1, definitionDigest: repositoryProofDigest(), scheduling: "explicit-only", providerTurns: 1, attempts: 1,
+      budgetMonthlyCents: 1000, instructions: "production-default", surface: "paperclip", oracle: "registered-download-and-independent-configured-checkout",
+      target: "isolated-development-instance", authentication: "api-key", stagingAuthentication: "subscription", remoteLifecycle: "per_turn", stagingQualification: false },
+  })),
+  {
+    id: "automatic-repository", label: "Automatic repository continuation", manualOnly: true,
+    description: "A projectless user request stages its managed repository, continues automatically, and delivers independently verified downloaded bytes.",
+    groups: [], profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(taskWorkspaceProfile).map(productionDefaultHireProfile),
+    environments: runnerEnvironments, tasks: [automaticRepositoryTask], expectedMatrixSize: 4,
+    definitionMetadata: { version: 1, definitionDigest: automaticRepositoryDigest(), scheduling: "explicit-only",
+      providerTurns: 2, attempts: 1, budgetMonthlyCents: 1000, project: "none", instructions: "production-default",
+      surface: "paperclip", oracle: "registered-download-and-independent-checkout", remoteLifecycle: "per_turn" },
+  },
+  {
+    id: "automatic-repository-configured-models", label: "Automatic repository with recorded staging models", manualOnly: true,
+    description: "Replay projectless setup with the recorded Codie and Claude models while keeping development authentication and lifecycle differences explicit.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionDefaultHireProfile(taskWorkspaceProfile(native))),
+    environments: runnerEnvironments, tasks: [automaticRepositoryTask], expectedMatrixSize: 4,
+    definitionMetadata: { version: 1, definitionDigest: automaticRepositoryDigest(), scheduling: "explicit-only", providerTurns: 2, attempts: 1,
+      budgetMonthlyCents: 1000, instructions: "production-default", surface: "paperclip", target: "isolated-development-instance",
+      authentication: "api-key", stagingAuthentication: "subscription", remoteLifecycle: "per_turn", stagingQualification: false },
   },
   {
     id: "pi-controls", label: "Pi active controls", manualOnly: true,
@@ -1146,20 +1489,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     excludedExecutionIds: ["pi-native.runner-acpx-pi.daytona.restrictive-denial", "pi-native.runner-acpx-pi.local.native-pending-provider-death"],
     definitionMetadata: { version: 23, remoteProcExit: "separately-confirmed-absence-after-read-failure", taskCreation: "explicit-title-and-creation-response-id", agentMemoryParent: "public-managed-file-seed-before-admission", incompleteTerminalCleanup: "retirement-retained-with-failed-watch", qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, agentMemoryContent: "utf8-nonce-plus-final-lf", agentMemoryPrompt: "single-json-write-and-content-bound-native-read-both-runs", agentMemoryReadAuthority: "local-withheld-or-exact-remote-agent-run-file", taskPromptTransport: "fenced-markdown-paste-and-multiline-literal-escapes", nativeFinish: "current-contract-objective-evidence-refs", providerDeath: "daytona-exact-pi-child-pidfd-production-expiry", providerFaultExecutable: "stable-preinstalled-runner-link-and-snapshot-node-inode-with-held-bootstrap-fd-3-or-7", remoteBootstrapAdmission: "owned-active-lease-with-native-runtime-readiness-rpc-v1", remoteBootstrapApproval: "exact-published-native-read-public-accept-once-v1", remoteDenyAll: "unsupported-native-bootstrap-read-is-denied", remoteEvidence: "owned-lease-sealed-observer", pendingControllerRestart: "same-live-native-request-trusted-ancestry-cleanup" },
   },
-  {
-    id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
-    description: "Stop while one exact Cursor or Copilot native permission remains unanswered; require cancelled provider settlement, caller-owned acknowledgement, stale-answer refusal and independent retirement/no effects.",
-    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => ["cursor", "copilot"].includes(profile.qualificationCandidate ?? "")),
-    environments: runnerEnvironments, tasks: nativeActiveStopTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v2", pendingObservation: "retained-api-before-caller-uuid-stop", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" },
-  },
-  {
-    id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
-    description: "Exact native denial with independently correlated provider settlement and acknowledged run Stop, plus attached command settlement with independent process evidence.",
-    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
-    environments: runnerEnvironments, tasks: copilotProtectionTasks, expectedMatrixSize: 4,
-    definitionMetadata: { version: 9, outputProhibition: "separate-publication-and-attachment", semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v2", qualification: "pending", naturalSettlementObservationMs: 2000, scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "correlated-provider-settlement-and-audited-run-stop", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v3", activeTurnCancellation: "not-implied-by-completed-provider-turn", settlement: "attached-finite-command-only", settlementMarker: "private-diagnostic-not-deliverable", remoteEvidence: "owned-lease-sealed-observer" },
-  },
+
+
   {
     id: "rich-acp-warm-continuity", label: "Rich ACP warm continuity", manualOnly: true,
     description: "Three browser-driven turns with stable native session, runner process and workspace identity for Cursor, Copilot and Pi.",
@@ -1177,7 +1508,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
       turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } }],
     expectedMatrixSize: 6,
-    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start", agentFiles: "unchanged-home-process-continuity" },
+    definitionMetadata: { version: 3, warmPromptDigest: warmTurnDefinitionDigest, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start", agentFiles: "unchanged-home-process-continuity" },
   },
   {
     id: "public-mcp", label: "Paperclip through an assistant", manualOnly: true,
@@ -1214,7 +1545,30 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["legacy"], profiles: runnerProfiles.filter(p => ["legacy-codex", "legacy-claude"].includes(p.id)).map(blockerProfile),
     environments: [localEnvironment], tasks: blockerTasks, expectedMatrixSize: 6,
     definitionMetadata: { version: 1, instructions: "production-coordination-skill", grading: "saved-human-decision-ownership-and-resume", scheduling: "explicit-only" },
-  }, {
+  },
+
+  {
+    id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
+    description: "Stop while one exact Cursor or Copilot native permission remains unanswered; require cancelled provider settlement, caller-owned acknowledgement, stale-answer refusal and independent retirement/no effects.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => ["cursor", "copilot"].includes(profile.qualificationCandidate ?? "")),
+    environments: runnerEnvironments, tasks: nativeActiveStopTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 20, copilotDefinition: { version: 19, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", processAuthority: "local-native-root-or-attested-remote-root", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", bootstrapPrompt: "already-exposed-dedicated-context-before-native-edit", editOrigin: "exact-permission-target-and-native-call-identity", stopAcknowledgement: "retained-current-mainline-api-response", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v3", pendingObservation: "retained-api-before-stop-with-fixture-correlation", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" }, qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v2", pendingObservation: "retained-api-before-caller-uuid-stop", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" },
+  },
+  {
+    id: "copilot-provider-death", label: "Copilot provider death", manualOnly: true,
+    description: "Terminate only the verified owned Copilot child with an unanswered permission; require callback expiry, stale-answer refusal, no replay and independent retirement.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
+    environments: runnerEnvironments, tasks: copilotProviderDeathTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 17, titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", linuxDeathExecutable: "verified-inherited-descriptor-and-live-executable-inode", processAuthority: "local-native-root-or-attested-remote-root", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", finalUiStatus: "blocked-with-current-mainline-attention-label", bootstrapPrompt: "already-exposed-dedicated-context-before-native-edit", editOrigin: "exact-permission-target-and-native-call-identity", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.copilot-provider-death.v1", signal: "SIGKILL", target: "owned-native-child-only", permissionPolicy: "approve-reads", lifecycle: "per_turn", automaticRetries: 0 },
+  },
+  {
+    id: "copilot-protection", label: "Copilot native protection", manualOnly: true,
+    description: "Exact native denial with independently correlated provider settlement and acknowledged run Stop, plus attached command settlement with independent process evidence.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "copilot"),
+    environments: runnerEnvironments, tasks: copilotProtectionTasks, expectedMatrixSize: 4,
+    definitionMetadata: { version: 24, denialIssueOutcome: "in-progress-or-proven-blocked-recovery", titleCreation: "explicit-search-composer", taskBinding: "browser-creation-response-id", remoteTerminalDiagnostics: "bounded-incomplete-reasons-with-strict-failure", remoteSetupOrder: "observed-action-published-before-context-approval", remoteBootstrapContext: "already-exposed-dedicated-tool-no-http-substitution", denialContext: "already-exposed-dedicated-tool-before-write", stopAcknowledgement: "retained-current-mainline-api-response", contextPermission: "context-and-bounded-attested-discovery-sequence-await-origin-rows", permissionCard: "current-operation-and-decision-control-excludes-history", semanticCompletionEvidence: "paperclip.e2e.copilot-semantic-completion.v4", qualification: "pending", naturalSettlementObservationMs: 2000, scheduling: "explicit-only", evidence: "copilot_tool_evidence_v1", profileVersion: QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion, denialTerminal: "correlated-provider-settlement-and-audited-run-stop", denialSettlementEvidence: "paperclip.e2e.copilot-denial-settlement.v4", activeTurnCancellation: "not-implied-by-completed-provider-turn", settlement: "attached-finite-command-released-after-native-finish-receipt", settlementMarker: "private-diagnostic-not-deliverable", remoteEvidence: "owned-lease-sealed-observer" },
+  },
+  {
     id: "native-provider-loss", label: "Lose a runtime with an unanswered native permission", manualOnly: true,
     description: "Lose the owned Cursor runtime while a native mutation remains unanswered; require a visible failed run, closed unanswerable input, stale-answer refusal and independent retirement with no effects or replay.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
@@ -1229,13 +1583,15 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       buildMatchers: () => [],
     }], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", fault: "observed-per-turn-run-root-loss", remoteFaultAuthority: "pidfd-start-ticks-boot-id", replayAllowed: false },
-  },  {
+  },
+
+  {
     id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,
     description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
     groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
     tasks: [...openRouterBreadthTasks, localIntegrityTasks[1]!, extendedHarnessFileTask],
     expectedMatrixSize: 30,
-    definitionMetadata: { version: 5, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28", piFileEvidence: "seed-edit-single-execute-public-download-v2", piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" },
+    definitionMetadata: { version: 6, copilotFileValidation: "exact-read-only-byte-check-v1", qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28", piFileEvidence: "seed-edit-single-execute-public-download-v2", piFileArtifactTitle: "exact-filename", piFileCommandTransport: "fenced-bash-markdown-paste" },
   },
   {
     id: "instruction-persistence", label: "Instruction Persistence",
@@ -1278,12 +1634,47 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 2, binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
   },
   {
+    id: "kimi-qualification", label: "Kimi Code Qualification", manualOnly: true,
+    description: "Kimi Code replies, semantic planning and questions, verified file delivery, Stop and controller continuation through local and Daytona user journeys.",
+    groups: ["native"],
+    profiles: [kimiRunnerProfile],
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    environmentOverrides: Object.fromEntries(kimiLifecycleTasks.map(task => [task.id, {
+      daytona: runnerEnvironments.find(environment => environment.id === "daytona")!,
+    }])),
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks, extendedHarnessFileTask,
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+      ...kimiLifecycleTasks,
+    ].map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 20,
+    definitionMetadata: { version: 7, binary: "2.3.3", model: "kimi-for-coding",
+      candidateAdmission: "ordinary-released-profile-without-candidate-grant-v1", profileVersion: QUALIFIED_ACPX_PROFILES.kimi.agentProfileVersion,
+      stopNewRunAccounting: "three-native-provider-runs-authored-reset-and-verified-predispatch-wait-v1",
+      planPromptContract: "literal-first-line-markers-v2",
+      modelDiscovery: "exact-model-authenticated-observed", qualification: "qualified",
+      scheduling: "explicit-only", maximumAttemptsPerCell: 1, repetitionsRequired: 1,
+      instructionAdmission: "native-effective-prompt-digest-on-create-load",
+      nativeQuestions: "not-claimed", nativePlans: "not-claimed", accounting: "usage-and-cost-unavailable",
+      artifactOracle: "independent-workspace-and-public-download-bytes", stopBoundary: "provider-turn-started",
+      remoteLifecycleBootstrap: "observer-bound-scoped-get-task-context-dual-turn-workspace-binding-full-semantic-command-ack-and-bounded-native-receipt",
+      nativeWriteLifecycle: "pending-permission-stop-and-exact-native-worker-loss", nativeWriteCleanup: "continuous-no-effects-through-owned-tree-retirement" },
+  },
+  {
     id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
     description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
     groups: [], environments: runnerEnvironments,
     profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
     tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,
+    description: "Install an authorized complete API artifact in Daytona and independently verify the delivered bytes.",
+    groups: [], environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiArtifactTransferTask], expectedMatrixSize: 1,
+    definitionMetadata: { version: 3, grading: "server-capture-provenance-redacted-receipt-source-and-delivery-digest", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
   },
   {
     id: "task-titles", label: "Automatic task titles", manualOnly: true,
@@ -1353,11 +1744,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
-    groups: ["native"], profiles: [...everydayProfiles,
-      productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
-    ], environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks.map(task => ["hire-reuse", "delegate-feedback"].includes(task.id)
-      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), expectedMatrixSize: 52,
+    groups: ["native"], profiles: everydayWorkflowProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
+    // The S49 turn-3 failure needed an ephemeral per-turn lease, not the warm one.
+    environmentOverrides: { "three-turn-revise": { daytona: runnerEnvironments.find(environment => environment.id === "daytona")! } },
+    tasks: [...everydayTasks.map(task => ["hire-reuse", "delegate-feedback", "recover-controller"].includes(task.id)
+      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), ...everydayReliabilityTasks],
+    // 52 everyday cells; one native Codex Daytona cell per reliability case, six DeepSeek plan cells (queue-steer needs
+    // Codex steering) and released facades for the silent command.
+    expectedMatrixSize: 52 + 2 * everydayReliabilityTasks.length - 1 + everydayFacadeProfiles.length,
     excludedExecutionIds: [...everydayProfiles.flatMap(profile => everydayTasks
       .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
       .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`)),
@@ -1365,8 +1759,18 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         `everyday-workflows.runner-opencode.daytona.${task.id}`,
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
+      // ACPX facades and the DeepSeek plan profile join only reliability cells.
+      ...[...everydayFacadeProfiles, runnerOpenCodeDeepSeek1017Profile].flatMap(profile => everydayTasks.flatMap(task =>
+        ["local", "daytona"].map(environmentId => `everyday-workflows.${profile.id}.${environmentId}.${task.id}`))),
+      ...everydayReliabilityExcludedIds("everyday-workflows"),
     ],
-    definitionMetadata: { version: 6, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 12, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      reliability: { group: EVERYDAY_RELIABILITY_GROUP, selection: "explicit-group-only", signatures: everydayReliabilitySignatures,
+        productRule: "interrupted-work-resumes-automatically-or-offers-a-working-first-retry", companyAndLeadBudgetCents: 1_000,
+        testOpsPlan: { profile: RELIABILITY_PLAN_PROFILE_ID, cells: reliabilityPlanCells,
+          cadence: "testops-launch-or-manual-dispatch", extras: "explicit-only-codex-and-acpx-cells" } },
+      controllerDowntimeMs: 125_000,
+      remoteCodexRestart: "bounded-main-server-outage-receipt-empty-cache-same-active-process-and-finalization",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
   },
   {
@@ -1434,12 +1838,40 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     },
   },
   {
+    id: APPROVAL_HISTORY_SUITE, label: "Onboarding approval history", manualOnly: true,
+    description: "Interview, partial plan approval, approved hiring, a separate execution confirmation, and the writer’s saved result.",
+    groups: ["onboarding", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: [onboardingApprovalHistoryTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, sourceDigest: approvalHistoryDefinitionDigest(), scheduling: "explicit-only",
+      automaticRetryPolicy: "single_attempt", maximumAttemptsPerCell: 1, expectedWorkRuns: 7,
+      companyTaskBudgetCents: 500, maximumCompanyRuns: 12, attemptTimeoutMs: 900_000,
+      instructions: "production-wizard-and-first-task", approvalSequence: "plan-checkbox-subset/hiring-checkbox/execution-confirmation",
+      oracle: "persisted-human-decisions/current-plan-revision/assigned-child/one-worker-execution/saved-document/reload" },
+  },
+  {
     id: "first-task", label: "First-task onboarding",
     description: "Production onboarding, first replies, approval, and durable task execution.",
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 56,
+    definitionMetadata: { version: 9, runGrading: "accepted-execution-or-explicit-plan-only", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
+  },
+  {
+    id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
+    description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
+    groups: ["chat", "native"],
+    profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
+      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+      chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile)],
+    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
+    excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
+    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+      instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
+      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
+      maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
+      scenarios: chatFeatureScenarios.map(({ id, capabilities }) => ({ id, capabilities })) },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
@@ -1495,10 +1927,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["chat", "native"],
     profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
-    environments: [localEnvironment],
+    environments: [localEnvironment, runnerEnvironments.find(environment => environment.id === "daytona")!],
+    excludedExecutionIds: ["runner-codex", "runner-acpx-claude"].flatMap(profile =>
+      [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks]
+        .map(task => `confirmation-replies.${profile}.daytona.${task.id}`)
+        .filter(id => id !== "confirmation-replies.runner-codex.daytona.task-card-accept")),
     tasks: [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks],
-    expectedMatrixSize: 12,
-    definitionMetadata: { version: 6, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
+    expectedMatrixSize: 13,
+    definitionMetadata: { version: 8, planApproval: "execute-accepted-interview-scope", managedOnboarding: "ui-owned-qualification-and-physical-file", managedExpectedTaskRuns: 4, managedAutomaticRetries: 0, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
   },
   {
     id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
@@ -1509,10 +1945,21 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
     expectedMatrixSize: 10,
-    definitionMetadata: { version: 27, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    definitionMetadata: { version: 29, runGrading: "accepted-execution-or-explicit-plan-only", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "run-isolated-task-directory", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
 
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
+  {
+    id: FEEDBACK_PERSISTENCE_SUITE, label: "Feedback Persistence", manualOnly: true,
+    description: "Real complaint and suggestion submissions, durable bodies, and retained tool receipts.",
+    groups: ["native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: runnerEnvironments, tasks: [feedbackPersistenceTask(runnerTasks.find(task => task.id === "message-marker")!)], expectedMatrixSize: 4,
+    definitionMetadata: { version: 2, owner: "runner-e2e-maintainers", scheduling: "explicit-only",
+      sourceDigest: feedbackPersistenceDigest(runnerTasks.find(task => task.id === "message-marker")!), expectedWorkRuns: 1, automaticRetryPolicy: "single_attempt",
+      budgetCents: 1_000, forecast: "unmeasured; gateway manifest required for bounded qualification",
+      grading: "retained-exact-bodies-and-run-attributed-completed-tools", feedback: "synthetic-disposable-items" },
+  },
   {
     id: "core-compatibility",
     label: "Core Runner Compatibility",
@@ -1565,7 +2012,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
-    definitionMetadata: { version: 3, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
+    definitionMetadata: { version: 5, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024,
+      managedSaveReceipt: "latest-paginated-run-log-instruction-save" },
   },
   {
     id: "daytona-journal-continuity",
@@ -1577,7 +2025,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaLargeJournalTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 5, nativeInstructions: "fixed-external", journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
+    definitionMetadata: { version: 6, warmPromptDigest: warmTurnDefinitionDigest, nativeInstructions: "fixed-external", journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
   },
   {
     id: "daytona-git-streaming",
@@ -1613,9 +2061,32 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     }],
     tasks: [daytonaGitStreamingTask],
     expectedMatrixSize: 1,
-    definitionMetadata: { version: 8, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+    definitionMetadata: { version: 9, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+  },
+  {
+    id: "case-handoffs", label: "Persistent same-task case handoffs", manualOnly: true,
+    description: "Explicit arithmetic and receipt workflows route one persistent case task through three native agents, with durable documents, public history and native tool receipts.",
+    groups: ["native"],
+    profiles: [nativeCompletionProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription", provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
+      ...runnerProfiles.filter(profile => profile.id === "runner-codex").map(nativeCompletionProfile)],
+    environments: [localEnvironment], tasks: [caseHandoffTask, caseReceiptTask],
+    expectedMatrixSize: 4,
+    definitionMetadata: { version: 4,
+      definitionDigest: createHash("sha256").update(caseHandoffDefinitionDigest()).update(caseReceiptDefinitionDigest()).digest("hex"),
+      scheduling: "explicit-only", maximumProviderTurns: 6, maximumAttemptsPerCell: 1,
+      grading: "public-primary-task-handoff-ledger-durable-documents-and-native-tool-receipts",
+      credentialModes: ["isolated-company-subscription-login", "company-encrypted-api-secret-reference"],
+      cases: {
+        "same-task-roundtrip": { definitionDigest: caseHandoffDefinitionDigest(), budgetMonthlyCents: 1000, maximumProviderTurns: 6 },
+        "receipt-smoke": { definitionDigest: caseReceiptDefinitionDigest(), budgetMonthlyCents: CASE_RECEIPT_BUDGET_CENTS,
+          maximumProviderTurns: CASE_RECEIPT_MAX_TURNS, minimumProviderTurns: CASE_RECEIPT_MAX_TURNS,
+          runTimeoutMs: CASE_RECEIPT_RUN_TIMEOUT_MS, reasoningEffort: "low", attemptTimeoutMs: 300_000,
+          agentDailyRunCaps: { triage: 1, builder: 2, verifier: 1 } },
+      } },
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
+  buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
+  buildAntigravityJourneySuite(runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -1642,6 +2113,11 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: environment.id,
           configurationKey: environment.configurationKey ?? "default",
         })),
+        ...(suite.environmentOverrides ? { environmentOverrides: Object.entries(suite.environmentOverrides).map(([taskId, overrides]) => ({
+          taskId, environments: Object.values(overrides).flatMap(environment => environment ? [{
+            id: environment.id, configurationKey: environment.configurationKey ?? "default",
+          }] : []),
+        })) } : {}),
         tasks: suite.tasks.map((task) => ({
           id: task.id,
           flow: task.flow,
@@ -1670,28 +2146,36 @@ export function buildRunnerMatrix(
         )
         .flatMap((environment) =>
           suite.tasks
-            .map((task) => ({
-              id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
-              suite,
-              suiteDefinitionHash: suiteDefinitionHash(suite),
-              profile,
-              environment,
-              task: suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
-                ? { ...task, buildPrompt: piFilePrompt } : task,
-              groups: [
-                ...new Set([
-                  ...suite.groups,
-                  ...profile.groups,
-                  ...environment.groups,
-                  ...task.groups,
-                ]),
-              ],
-              requiredCredentials: [
-                ...(task.flow === "provider_connection" ? [] : [profile.credential]),
-                ...(task.flow !== "provider_connection" && environment.credential ? [environment.credential] : []),
-                ...(task.requiredCredentials ?? []),
-              ],
-            }))
+            .map((task) => {
+              const selectedEnvironment = suite.environmentOverrides?.[task.id]?.[environment.id] ?? environment;
+              if (selectedEnvironment.id !== environment.id) throw new Error(`Fixture environment override changed provider ID for ${suite.id}.${task.id}`);
+              return {
+                id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
+                suite,
+                suiteDefinitionHash: suiteDefinitionHash(suite),
+                profile,
+                environment: selectedEnvironment,
+                task: suite.id === "confirmation-replies" && profile.id === "runner-codex" && environment.id === "daytona" && task.id === "task-card-accept"
+                  ? { ...task, expectedRunCount: 4, automaticRetryPolicy: "single_attempt" as const }
+                  : suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
+                    ? { ...task, buildPrompt: piFilePrompt }
+                    : suite.id === "extended-harnesses" && profile.qualificationCandidate === "copilot" && task.id === "file-edit-validate"
+                      ? { ...task, buildPrompt: copilotFilePrompt } : task,
+                groups: [
+                  ...new Set([
+                    ...suite.groups,
+                    ...profile.groups,
+                    ...selectedEnvironment.groups,
+                    ...task.groups,
+                  ]),
+                ],
+                requiredCredentials: [
+                  ...(["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) ? [] : [profile.credential]),
+                  ...(!["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(task.flow) && selectedEnvironment.credential ? [selectedEnvironment.credential] : []),
+                  ...(task.requiredCredentials ?? []),
+                ],
+              };
+            })
             .filter((execution) => !excludedExecutionIds.has(execution.id)),
         ),
     );
@@ -1736,8 +2220,9 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 
 export function validateRunnerCatalog(): MatrixExecution[] {
   const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
-  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const allProfiles = [cursorCloudProfile, ...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    cursorCloudArtifactTask, cursorCloudFollowupTask, cursorCloudStopTask,
     repositorySkillsTask,
     ...piNativeTasks,
     ...copilotProtectionTasks,
@@ -1750,6 +2235,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...continuationTasks,
     questionResumeTask,
     ...everydayTasks,
+    ...everydayReliabilityTasks,
     ...taskTitleTasks,
     ...runnerTasks,
     ...localIntegrityTasks,
@@ -1866,3 +2352,5 @@ export function runnerExecutionById(id: string): MatrixExecution {
   if (!execution) throw new Error(`Unknown runner E2E execution id: ${id}`);
   return execution;
 }
+
+export { productJourneys } from "./product-journeys/catalog.js";

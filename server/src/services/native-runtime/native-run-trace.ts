@@ -1,5 +1,7 @@
+import { getRunExecutionTraceContext } from "../execution-preparation-timing.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { isSpanContextValid, ROOT_CONTEXT, trace } from "@opentelemetry/api";
 
 import { runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
@@ -136,6 +138,7 @@ interface NativeRunSpanScopeState extends NativeRunSpanScope {
   context: unknown;
   attributes: Record<string, string | number | boolean>;
   ended: boolean;
+  persistRunLog: boolean;
 }
 
 const NOOP_SPAN: SpanHandle = {
@@ -147,6 +150,7 @@ const NOOP_SPAN: SpanHandle = {
 const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
   "bytesTransferred",
+  "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
   "duration_ms",
@@ -210,6 +214,10 @@ export function createNativeRunTrace(input: {
   const runIdHash = hashedId(input.runId);
   let rootSpan: SpanHandle;
   try {
+    const owned = getRunExecutionTraceContext(input.runId);
+    const trigger = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()
+      ? (owned ? trace.getSpan(owned) : trace.getActiveSpan())?.spanContext()
+      : undefined;
     rootSpan = tracing.tracer.startSpan("task.provider_session", {
       startTime: traceStartedAtMs,
       attributes: {
@@ -218,7 +226,8 @@ export function createNativeRunTrace(input: {
         "paperclip.task.run.trace_schema_version":
           NATIVE_RUN_TRACE_SCHEMA_VERSION,
       },
-    });
+      ...(trigger && isSpanContextValid(trigger) ? { links: [{ context: trigger }] } : {}),
+    }, ROOT_CONTEXT);
   } catch {
     rootSpan = NOOP_SPAN;
   }
@@ -316,6 +325,8 @@ export function createNativeRunTrace(input: {
       parentName?: string;
       startedAtMs?: number;
       attributes?: Record<string, string | number | boolean>;
+      /** False only when an existing durable diagnostic batch already contains the measurements. */
+      persistRunLog?: boolean;
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
@@ -338,7 +349,7 @@ export function createNativeRunTrace(input: {
             ),
           },
         },
-        parent.context,
+        parent.context ?? ROOT_CONTEXT,
       );
     } catch {
       span = NOOP_SPAN;
@@ -357,6 +368,7 @@ export function createNativeRunTrace(input: {
       context,
       attributes,
       ended: false,
+      persistRunLog: options.persistRunLog !== false,
     };
     scopes.add(state);
     openScopes.add(state);
@@ -404,13 +416,9 @@ export function createNativeRunTrace(input: {
       duration_ms: durationMs,
       outcome,
     });
-    try {
-      if (outcome === "failed") state.span.setStatus({ code: 2 });
-      state.span.end(endedAtMs);
-    } catch {
-      // Tracing is diagnostic-only and must never change runner control flow.
-    }
-    await emitCompletedSpanEvent({
+    if (outcome === "failed") { try { state.span.setStatus({ code: 2 }); } catch {} }
+    try { state.span.end(endedAtMs); } catch {}
+    if (state.persistRunLog) await emitCompletedSpanEvent({
       name: state.name,
       parentName: state.parentName,
       startedAtMs: state.startedAtMs,
@@ -455,11 +463,12 @@ export function createNativeRunTrace(input: {
     );
   };
 
-  const record = async (span: NativeRunHistoricalSpan): Promise<void> => {
+  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean } = {}): Promise<void> => {
     const scope = start(span.name, {
       parentName: span.parentName,
       startedAtMs: span.startedAtMs,
       attributes: span.attributes,
+      persistRunLog: options.persistRunLog,
     });
     await end(scope, {
       endedAtMs: span.endedAtMs,
@@ -494,17 +503,10 @@ export function createNativeRunTrace(input: {
     for (const scope of [...openScopes].reverse()) {
       await end(scope, { endedAtMs, outcome });
     }
-    try {
-      rootSpan.setAttribute(
-        "paperclip.task.run.wall_ms",
-        endedAtMs - traceStartedAtMs,
-      );
-      rootSpan.setAttribute("paperclip.task.run.outcome", outcome);
-      if (outcome === "failed") rootSpan.setStatus({ code: 2 });
-      rootSpan.end(endedAtMs);
-    } catch {
-      // Tracing is diagnostic-only and must never change runner control flow.
-    }
+    try { rootSpan.setAttribute("paperclip.task.run.wall_ms", endedAtMs - traceStartedAtMs); } catch {}
+    try { rootSpan.setAttribute("paperclip.task.run.outcome", outcome); } catch {}
+    if (outcome === "failed") { try { rootSpan.setStatus({ code: 2 }); } catch {} }
+    try { rootSpan.end(endedAtMs); } catch {}
     // Preserve the historical run-log record without emitting a duplicate
     // full-width child span into the OpenTelemetry waterfall.
     await emitCompletedSpanEvent({
@@ -531,6 +533,22 @@ export function createNativeRunTrace(input: {
 }
 
 export type NativeRunTrace = ReturnType<typeof createNativeRunTrace>;
+
+/** Group already-normalized provider measurements without exporting provider attributes. */
+export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace, spans: NativeRunHistoricalSpan[]): Promise<void> {
+  if (!spans.length) return;
+  try {
+    const scope = trace.start("provider.runtime", { parentName: "native.session.execute",
+      startedAtMs: Math.min(...spans.map(span => span.startedAtMs)), persistRunLog: false });
+    try {
+      for (const span of spans) await trace.record({ name: span.name, parentName: "provider.runtime",
+        startedAtMs: span.startedAtMs, endedAtMs: span.endedAtMs, outcome: span.outcome }, { persistRunLog: false });
+    } finally {
+      await trace.end(scope, { endedAtMs: Math.max(...spans.map(span => span.endedAtMs)),
+        outcome: spans.some(span => span.outcome === "failed") ? "failed" : "ok" });
+    }
+  } catch { /* Diagnostics cannot replace the work's result. */ }
+}
 
 /** Emit preparation failure even when execution aborts before a native session exists. */
 export async function recordFailedSkillPreparation(input: {
