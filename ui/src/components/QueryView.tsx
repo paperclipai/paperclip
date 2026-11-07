@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useConnectivity, useConnectivityStore, type ConnectivityStatus } from "@/lib/connectivity";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 export type QueryViewKind = "loading" | "ready" | "stale" | "reconnecting" | "error";
 
@@ -138,6 +139,7 @@ const NOT_RETRYABLE: ReadonlySet<ErrorKind> = new Set(["auth", "forbidden", "not
  * from `describeError` and a Retry button. Never renders a raw error code.
  */
 export function QueryErrorState({ error, size = "panel", action, onRetry, retrying = false, className }: QueryErrorStateProps) {
+  const { t } = useTranslation();
   const kind = classifyError(error);
   const { title, body } = describeError(error, { action });
   const retryButton = onRetry && !NOT_RETRYABLE.has(kind) ? (
@@ -149,7 +151,7 @@ export function QueryErrorState({ error, size = "panel", action, onRetry, retryi
       disabled={retrying}
     >
       <RefreshCcw aria-hidden="true" className={cn(retrying && "animate-spin")} />
-      {retrying ? "Retrying…" : "Retry"}
+      {retrying ? t("common.QueryView.retrying") : t("common.QueryView.retry")}
     </Button>
   ) : null;
 
@@ -201,23 +203,25 @@ export interface QueryPlaceholderProps {
 }
 
 /** A quiet placeholder for `loading` and `reconnecting`: it fills in by itself. */
-export function QueryPlaceholder({ size = "panel", label = "Loading", className }: QueryPlaceholderProps) {
+export function QueryPlaceholder({ size = "panel", label, className }: QueryPlaceholderProps) {
+  const { t } = useTranslation();
+  const busyLabel = label ?? t("common.QueryView.loading");
   if (size === "page") {
     return (
-      <div role="status" aria-busy="true" aria-label={label} data-query-view="placeholder" className={className}>
+      <div role="status" aria-busy="true" aria-label={busyLabel} data-query-view="placeholder" className={className}>
         <PageSkeleton variant="detail" />
       </div>
     );
   }
   if (size === "inline") {
     return (
-      <span role="status" aria-busy="true" aria-label={label} data-query-view="placeholder" className={cn("inline-flex", className)}>
+      <span role="status" aria-busy="true" aria-label={busyLabel} data-query-view="placeholder" className={cn("inline-flex", className)}>
         <Skeleton className="h-4 w-24" />
       </span>
     );
   }
   return (
-    <div role="status" aria-busy="true" aria-label={label} data-query-view="placeholder" className={cn("space-y-2 py-1", className)}>
+    <div role="status" aria-busy="true" aria-label={busyLabel} data-query-view="placeholder" className={cn("space-y-2 py-1", className)}>
       <Skeleton className="h-4 w-2/3" />
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-1/2" />
@@ -227,9 +231,10 @@ export function QueryPlaceholder({ size = "panel", label = "Loading", className 
 
 /** The small hint above stale content, for surfaces that opt in with `staleHint`. */
 export function QueryStaleHint({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <p role="status" data-query-view="stale" className={cn("text-xs text-muted-foreground", className)}>
-      Updating paused while reconnecting…
+      {t("common.QueryView.stalePaused")}
     </p>
   );
 }
@@ -266,12 +271,13 @@ export function QueryView<TData>({
   className,
   children,
 }: QueryViewProps<TData>) {
+  const { t } = useTranslation();
   const view = useQueryView(query);
   switch (view.kind) {
     case "loading":
       return <>{loading ?? <QueryPlaceholder size={size} className={className} />}</>;
     case "reconnecting":
-      return <>{reconnecting ?? loading ?? <QueryPlaceholder size={size} label="Reconnecting" className={className} />}</>;
+      return <>{reconnecting ?? loading ?? <QueryPlaceholder size={size} label={t("common.QueryView.reconnecting")} className={className} />}</>;
     case "error":
       if (view.errorKind === "not_found" && notFound !== undefined) return <>{notFound}</>;
       return (

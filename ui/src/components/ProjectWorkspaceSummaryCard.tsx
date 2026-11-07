@@ -1,4 +1,5 @@
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
@@ -10,8 +11,8 @@ import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"]) {
-  return kind === "execution_workspace" ? "Execution workspace" : "Project workspace";
+function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"], t: (key: string) => string) {
+  return kind === "execution_workspace" ? t("workspaces.card.kindExecution") : t("workspaces.card.kindProject");
 }
 
 function truncatePath(path: string) {
@@ -46,6 +47,7 @@ export function ProjectWorkspaceSummaryCard({
   onRuntimeAction,
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
+  const { t } = useTranslation();
   const { hideHostPaths } = useManagedSandboxOnly();
   const visibleIssues = summary.issues.slice(0, 4);
   const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
@@ -63,10 +65,10 @@ export function ProjectWorkspaceSummaryCard({
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="border-border bg-background px-2.5 py-1 text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                {workspaceKindLabel(summary.kind)}
+                {workspaceKindLabel(summary.kind, t)}
               </Badge>
               <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-muted-foreground">
-                Updated {timeAgo(summary.lastUpdatedAt)}
+                {t("workspaces.card.updated", { time: timeAgo(summary.lastUpdatedAt) })}
               </Badge>
               {summary.serviceCount > 0 ? (
                 <Badge variant="outline"
@@ -83,7 +85,7 @@ export function ProjectWorkspaceSummaryCard({
                       hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40",
                     )}
                   />
-                  {summary.runningServiceCount}/{summary.serviceCount} services
+                  {t("workspaces.card.servicesCount", { running: summary.runningServiceCount, total: summary.serviceCount })}
                 </Badge>
               ) : null}
               {summary.executionWorkspaceStatus ? (

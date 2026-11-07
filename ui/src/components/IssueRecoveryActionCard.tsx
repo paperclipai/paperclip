@@ -2,6 +2,7 @@ import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
+import { t, useTranslation } from "@/i18n";
 import type {
   Agent,
   GitWorktreeBranchAncestryVerdict,
@@ -32,6 +33,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
+import { isMonitorOffsetNow } from "@/lib/issue-monitor";
 import { agentUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -130,38 +132,42 @@ export interface IssueRecoveryActionCardProps {
   className?: string;
 }
 
-const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "Missing Disposition",
-  deliberate_wait_without_target: "Wait Without A Target",
-  stranded_assigned_issue: "Stranded Task",
-  workspace_validation: "Workspace Validation",
-  configuration_validation: "Configuration Validation",
-  active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Task Needs Next Step",
-};
+function kindLabels(): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition: t("issues.IssueRecoveryActionCard.kindLabels.missing_disposition"),
+    deliberate_wait_without_target: t("issues.IssueRecoveryActionCard.kindLabels.deliberate_wait_without_target"),
+    stranded_assigned_issue: t("issues.IssueRecoveryActionCard.kindLabels.stranded_assigned_issue"),
+    workspace_validation: t("issues.IssueRecoveryActionCard.kindLabels.workspace_validation"),
+    configuration_validation: t("issues.IssueRecoveryActionCard.kindLabels.configuration_validation"),
+    active_run_watchdog: t("issues.IssueRecoveryActionCard.kindLabels.active_run_watchdog"),
+    issue_graph_liveness: t("issues.IssueRecoveryActionCard.kindLabels.issue_graph_liveness"),
+  };
+}
 
-const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition:
-    "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
-  deliberate_wait_without_target:
-    "This task's last run stopped to wait, but there is no reviewer, blocker, monitor, or approval to wait for. Paperclip is repairing the next step; the task stays with its owner.",
-  stranded_assigned_issue:
-    "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
-  workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
-  configuration_validation:
-    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
-  active_run_watchdog:
-    "The active run has been silent. Recovery is observing without interrupting it.",
-  issue_graph_liveness:
-    "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
-};
+function kindHeadlines(): Record<IssueRecoveryActionKind, string> {
+  return {
+    missing_disposition:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.missing_disposition"),
+    deliberate_wait_without_target:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.deliberate_wait_without_target"),
+    stranded_assigned_issue:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.stranded_assigned_issue"),
+    workspace_validation:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.workspace_validation"),
+    configuration_validation:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.configuration_validation"),
+    active_run_watchdog:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.active_run_watchdog"),
+    issue_graph_liveness:
+      t("issues.IssueRecoveryActionCard.kindHeadlines.issue_graph_liveness"),
+  };
+}
 
 /** Shared shell for the retry-timing pill so every timing state reads as the same control. */
 const RETRY_PILL_CLASS =
   "rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground";
 
-const STATE_TONE: Record<RecoveryCardCardState, {
+function stateTones(): Record<RecoveryCardCardState, {
   label: string;
   containerClass: string;
   iconWrapClass: string;
@@ -169,69 +175,73 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   labelClass: string;
   Icon: typeof TriangleAlert;
   divider: string;
-}> = {
-  needed: {
-    label: "RECOVERY NEEDED",
-    containerClass:
-      "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
-    iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
-    iconClass: "text-amber-700 dark:text-amber-300",
-    labelClass: "text-amber-900 dark:text-amber-200",
-    Icon: TriangleAlert,
-    divider: "border-amber-300/60 dark:border-amber-500/30",
-  },
-  in_progress: {
-    label: "RECOVERY IN PROGRESS",
-    containerClass:
-      "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
-    iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
-    iconClass: "text-sky-700 dark:text-sky-300",
-    labelClass: "text-sky-900 dark:text-sky-200",
-    Icon: RefreshCw,
-    divider: "border-sky-300/60 dark:border-sky-500/30",
-  },
-  observe_only: {
-    label: "OBSERVING ACTIVE RUN",
-    containerClass:
-      "border-border bg-muted/40 text-foreground dark:bg-muted/20",
-    iconWrapClass: "bg-muted text-foreground/70",
-    iconClass: "text-muted-foreground",
-    labelClass: "text-muted-foreground",
-    Icon: Eye,
-    divider: "border-border/70",
-  },
-  escalated: {
-    label: "RECOVERY ESCALATED",
-    containerClass:
-      "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
-    iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
-    iconClass: "text-red-700 dark:text-red-300",
-    labelClass: "text-red-900 dark:text-red-200",
-    Icon: OctagonAlert,
-    divider: "border-red-400/50 dark:border-red-500/30",
-  },
-  resolved: {
-    label: "RECOVERY RESOLVED",
-    containerClass:
-      "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
-    iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
-    iconClass: "text-emerald-700 dark:text-emerald-300",
-    labelClass: "text-emerald-900 dark:text-emerald-200",
-    Icon: Sparkles,
-    divider: "border-emerald-300/60 dark:border-emerald-500/30",
-  },
-};
+}> {
+  return {
+    needed: {
+      label: t("issues.IssueRecoveryActionCard.stateTones.needed"),
+      containerClass:
+        "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+      iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
+      iconClass: "text-amber-700 dark:text-amber-300",
+      labelClass: "text-amber-900 dark:text-amber-200",
+      Icon: TriangleAlert,
+      divider: "border-amber-300/60 dark:border-amber-500/30",
+    },
+    in_progress: {
+      label: t("issues.IssueRecoveryActionCard.stateTones.inProgress"),
+      containerClass:
+        "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
+      iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
+      iconClass: "text-sky-700 dark:text-sky-300",
+      labelClass: "text-sky-900 dark:text-sky-200",
+      Icon: RefreshCw,
+      divider: "border-sky-300/60 dark:border-sky-500/30",
+    },
+    observe_only: {
+      label: t("issues.IssueRecoveryActionCard.stateTones.observeOnly"),
+      containerClass:
+        "border-border bg-muted/40 text-foreground dark:bg-muted/20",
+      iconWrapClass: "bg-muted text-foreground/70",
+      iconClass: "text-muted-foreground",
+      labelClass: "text-muted-foreground",
+      Icon: Eye,
+      divider: "border-border/70",
+    },
+    escalated: {
+      label: t("issues.IssueRecoveryActionCard.stateTones.escalated"),
+      containerClass:
+        "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
+      iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
+      iconClass: "text-red-700 dark:text-red-300",
+      labelClass: "text-red-900 dark:text-red-200",
+      Icon: OctagonAlert,
+      divider: "border-red-400/50 dark:border-red-500/30",
+    },
+    resolved: {
+      label: t("issues.IssueRecoveryActionCard.stateTones.resolved"),
+      containerClass:
+        "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
+      iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
+      iconClass: "text-emerald-700 dark:text-emerald-300",
+      labelClass: "text-emerald-900 dark:text-emerald-200",
+      Icon: Sparkles,
+      divider: "border-emerald-300/60 dark:border-emerald-500/30",
+    },
+  };
+}
 
-const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
-  restored: "restored",
-  handed_back: "handed back to original owner",
-  owner_completed: "completed by recovery owner",
-  delegated: "delegated to follow-up",
-  false_positive: "false positive",
-  blocked: "blocked",
-  escalated: "escalated",
-  cancelled: "cancelled",
-};
+function outcomeLabels(): Record<IssueRecoveryActionOutcome, string> {
+  return {
+    restored: t("issues.IssueRecoveryActionCard.outcomeLabels.restored"),
+    handed_back: t("issues.IssueRecoveryActionCard.outcomeLabels.handed_back"),
+    owner_completed: t("issues.IssueRecoveryActionCard.outcomeLabels.owner_completed"),
+    delegated: t("issues.IssueRecoveryActionCard.outcomeLabels.delegated"),
+    false_positive: t("issues.IssueRecoveryActionCard.outcomeLabels.false_positive"),
+    blocked: t("issues.IssueRecoveryActionCard.outcomeLabels.blocked"),
+    escalated: t("issues.IssueRecoveryActionCard.outcomeLabels.escalated"),
+    cancelled: t("issues.IssueRecoveryActionCard.outcomeLabels.cancelled"),
+  };
+}
 
 function readEvidenceString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -392,23 +402,25 @@ function readWorkspaceDivergence(action: IssueRecoveryAction): WorkspaceDivergen
   };
 }
 
-const ANCESTRY_BADGE: Record<
+function ancestryBadges(): Record<
   GitWorktreeBranchAncestryVerdict,
   { label: string; className: string }
-> = {
-  ancestor: {
-    label: "Forward-only",
-    className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  },
-  diverged: {
-    label: "Diverged",
-    className: "border-red-400/50 bg-red-500/10 text-red-700 dark:text-red-300",
-  },
-  unknown: {
-    label: "Ancestry unknown",
-    className: "border-border bg-muted/60 text-muted-foreground",
-  },
-};
+> {
+  return {
+    ancestor: {
+      label: t("issues.IssueRecoveryActionCard.ancestryBadges.forwardOnly"),
+      className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    },
+    diverged: {
+      label: t("issues.IssueRecoveryActionCard.ancestryBadges.diverged"),
+      className: "border-red-400/50 bg-red-500/10 text-red-700 dark:text-red-300",
+    },
+    unknown: {
+      label: t("issues.IssueRecoveryActionCard.ancestryBadges.unknown"),
+      className: "border-border bg-muted/60 text-muted-foreground",
+    },
+  };
+}
 
 function BranchFacet({
   label,
@@ -419,6 +431,7 @@ function BranchFacet({
   branch: string | null;
   sha: string | null;
 }) {
+  const { t } = useTranslation();
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
@@ -430,7 +443,7 @@ function BranchFacet({
         {branch ? (
           <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-muted-foreground">{t("issues.IssueRecoveryActionCard.BranchFacet.detachedUnknown")}</span>
         )}
       </div>
       <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
@@ -447,7 +460,8 @@ function DivergenceDiagnosis({
   divergence: WorkspaceDivergence;
   dividerClass: string;
 }) {
-  const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  const { t } = useTranslation();
+  const badge = ancestryBadges()[divergence.ancestryVerdict ?? "unknown"];
   return (
     <div
       data-testid="recovery-divergence-diagnosis"
@@ -458,7 +472,7 @@ function DivergenceDiagnosis({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Divergence diagnosis
+          {t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.title")}
         </span>
         <Badge variant="outline"
           data-testid="recovery-ancestry-verdict"
@@ -472,12 +486,12 @@ function DivergenceDiagnosis({
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <BranchFacet
-          label="Expected · recorded"
+          label={t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.expected")}
           branch={divergence.expectedBranch}
           sha={divergence.expectedHeadSha}
         />
         <BranchFacet
-          label="Live · checked out"
+          label={t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.live")}
           branch={divergence.liveBranch}
           sha={divergence.liveHeadSha}
         />
@@ -492,10 +506,10 @@ function DivergenceDiagnosis({
         >
           <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
-            Worktree claimed by{" "}
+            {t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.contentionClaimedBy")}{" "}
             <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
-            {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
-            can&apos;t run while another workspace holds the live branch.
+            {divergence.contention.hasActiveRun ? t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.contentionActiveRun") : t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.contentionClaimHeld")}{" "}{t("issues.IssueRecoveryActionCard.DivergenceDiagnosis.contentionNotice")}
+            
           </span>
         </p>
       ) : null}
@@ -506,7 +520,7 @@ function DivergenceDiagnosis({
 function contentionLabel(contention: WorkspaceContention): string {
   return (
     contention.claimedByIssueIdentifier ??
-    (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
+    (contention.claimedByIssueId ? t("issues.IssueRecoveryActionCard.contentionLabel.issue", { id: contention.claimedByIssueId.slice(0, 8) }) : t("issues.IssueRecoveryActionCard.contentionLabel.anotherTask"))
   );
 }
 
@@ -526,10 +540,11 @@ function BreakGlassOverride({
   onConfirm: (reason: string) => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation();
   const [reason, setReason] = useState("");
   const trimmedReason = reason.trim();
   const canSubmit = trimmedReason.length > 0 && !pending;
-  const verdictBadge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
+  const verdictBadge = ancestryBadges()[divergence.ancestryVerdict ?? "unknown"];
   const expectedSha = formatShortSha(divergence.expectedHeadSha);
   const liveSha = formatShortSha(divergence.liveHeadSha);
   return (
@@ -544,7 +559,7 @@ function BreakGlassOverride({
           className="border-red-400/60 text-red-700 hover:bg-red-500/10 dark:border-red-500/40 dark:text-red-300"
         >
           <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-          I&apos;ve verified this — reconcile anyway
+          {t("issues.IssueRecoveryActionCard.BreakGlassOverride.trigger")}
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -559,13 +574,13 @@ function BreakGlassOverride({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
           >
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-            Break-glass reconciliation
+            {t("issues.IssueRecoveryActionCard.BreakGlassOverride.title")}
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
-            branch{" "}
-            <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
-            the divergence below and record why before continuing.
+            {t("issues.IssueRecoveryActionCard.BreakGlassOverride.introLive")}
+            {" "}
+            <span className="font-medium text-foreground/80">{t("issues.IssueRecoveryActionCard.BreakGlassOverride.introUnproven")}</span>{t("issues.IssueRecoveryActionCard.BreakGlassOverride.introConfirm")}
+            
           </p>
         </div>
         <dl
@@ -573,33 +588,33 @@ function BreakGlassOverride({
           className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.BreakGlassOverride.recordedExpected")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "detached"}
+              {divergence.expectedBranch ?? t("issues.IssueRecoveryActionCard.detached")}
               {expectedSha ? ` @ ${expectedSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.BreakGlassOverride.liveChecked")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
+              {divergence.liveBranch ?? t("issues.IssueRecoveryActionCard.detached")}
               {liveSha ? ` @ ${liveSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.BreakGlassOverride.verdict")}</dt>
             <dd className="font-medium">{verdictBadge.label}</dd>
           </div>
         </dl>
         <div className="space-y-1">
           <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">
-            Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+            {t("issues.IssueRecoveryActionCard.BreakGlassOverride.reasonLabel")}{" "}<span className="text-red-600 dark:text-red-400">{t("issues.IssueRecoveryActionCard.BreakGlassOverride.reasonRequired")}</span>
           </Label>
           <Textarea
             id="recovery-breakglass-reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
+            placeholder={t("issues.IssueRecoveryActionCard.BreakGlassOverride.placeholder")}
             className="min-h-20 text-xs"
             data-testid="recovery-breakglass-reason"
             aria-required="true"
@@ -617,7 +632,7 @@ function BreakGlassOverride({
             onConfirm(trimmedReason);
           }}
         >
-          {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+          {pending ? t("issues.IssueRecoveryActionCard.BreakGlassOverride.reconciling") : t("issues.IssueRecoveryActionCard.BreakGlassOverride.confirm")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -645,11 +660,12 @@ function RepairWorkspace({
   disabled: boolean;
   disabledReason: string | null;
 }) {
+  const { t } = useTranslation();
   const dirtyCount = divergence.dirtyFileCount;
   const dirtyLabel =
     dirtyCount === null
-      ? "Uncommitted changes"
-      : `${dirtyCount} uncommitted ${dirtyCount === 1 ? "change" : "changes"}`;
+      ? t("issues.IssueRecoveryActionCard.RepairWorkspace.uncommittedUnknown")
+      : t("issues.IssueRecoveryActionCard.RepairWorkspace.uncommittedCount", { count: dirtyCount });
   const trigger = (
     <Button
       type="button"
@@ -664,7 +680,7 @@ function RepairWorkspace({
       ) : (
         <Wrench className="h-3.5 w-3.5" aria-hidden />
       )}
-      Repair workspace — quarantine changes &amp; restore branch
+      {t("issues.IssueRecoveryActionCard.RepairWorkspace.repairTrigger")}
     </Button>
   );
   if (disabled) {
@@ -696,12 +712,12 @@ function RepairWorkspace({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
           >
             <Wrench className="h-3.5 w-3.5" aria-hidden />
-            Repair workspace
+            {t("issues.IssueRecoveryActionCard.RepairWorkspace.title")}
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
-            rescue branch, then the recorded branch is restored so the task can resume. The live branch
-            is left exactly as it is.
+            {t("issues.IssueRecoveryActionCard.RepairWorkspace.intro")}
+            
+            
           </p>
         </div>
         <dl
@@ -709,32 +725,32 @@ function RepairWorkspace({
           className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.dirtyChanges")}</dt>
             <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
               {dirtyLabel}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.liveBranch")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
-              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+              {divergence.liveBranch ?? t("issues.IssueRecoveryActionCard.detached")}
+              <span className="ml-1 font-sans text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.leftUntouched")}</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.rescueBranch")}</dt>
             <dd
               data-testid="recovery-repair-rescue-branch"
               className="min-w-0 truncate font-mono text-foreground/90"
             >
               {divergence.rescueBranchPreview}
-              <span className="text-muted-foreground">&lt;timestamp&gt;</span>
+              <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.timestamp")}</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("issues.IssueRecoveryActionCard.RepairWorkspace.restoreTo")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "recorded branch"}
+              {divergence.expectedBranch ?? t("issues.IssueRecoveryActionCard.recordedBranch")}
             </dd>
           </div>
         </dl>
@@ -749,7 +765,7 @@ function RepairWorkspace({
             onConfirm();
           }}
         >
-          {pending ? "Repairing…" : "Quarantine changes & restore branch"}
+          {pending ? t("issues.IssueRecoveryActionCard.RepairWorkspace.repairing") : t("issues.IssueRecoveryActionCard.RepairWorkspace.confirm")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -761,17 +777,17 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "An agent will be asked to choose the next step";
+  if (type === "wake_owner") return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeOwner");
   if (type === "bounded_owner_disposition_repair") {
-    return "Paperclip is retrying the original owner";
+    return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeBoundedOwnerRepair");
   }
-  if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
-  if (type === "board_escalation") return "Board decision required";
-  if (type === "manual") return "Manual follow-up needed";
-  if (type === "manual_repair_required") return "Repair needed before retry";
+  if (type === "bounded_recovery_owner") return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeRecoveryOwner");
+  if (type === "board_escalation") return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeBoard");
+  if (type === "manual") return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeManual");
+  if (type === "manual_repair_required") return t("issues.IssueRecoveryActionCard.readWakePolicySummary.wakeManualRepair");
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Check scheduled · ${interval}` : "Check scheduled";
+    return interval ? t("issues.IssueRecoveryActionCard.readWakePolicySummary.monitorScheduled", { interval }) : t("issues.IssueRecoveryActionCard.readWakePolicySummary.monitor");
   }
   return type.replaceAll("_", " ");
 }
@@ -785,7 +801,7 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0 ? t("issues.IssueRecoveryActionCard.formatTimeShort.inMinutes", { minutes: absMin }) : t("issues.IssueRecoveryActionCard.formatTimeShort.minutesAgo", { minutes: absMin });
     }
     return date.toLocaleString(undefined, {
       month: "short",
@@ -834,11 +850,12 @@ function AgentLink({
   agentMap?: ReadonlyMap<string, Agent>;
   fallback?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!agentId) {
     return fallback ? <span>{fallback}</span> : <MissingValue />;
   }
   const agent = agentMap?.get(agentId);
-  const label = agent?.name ?? `agent ${agentId.slice(0, 8)}`;
+  const label = agent?.name ?? t("issues.IssueRecoveryActionCard.AgentLink.agentFallback", { id: agentId.slice(0, 8) });
   if (agent) {
     return (
       <Link
@@ -861,12 +878,13 @@ function RunChip({
   agentId: string | null | undefined;
   status?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!runId) return <MissingValue />;
   const short = shortenRunId(runId);
   const inner = (
     <>
       <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
-        run {short}
+        {t("issues.IssueRecoveryActionCard.RunChip.run", { id: short })}
       </code>
       {status ? (
         <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
@@ -904,26 +922,26 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
   if (lineage.lane === "native_run") {
-    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
-    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
-    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
-    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
-    return "The existing run still needs recovery. Review the recorded failure before retrying.";
+    if (lineage.liveRunId) return t("issues.IssueRecoveryActionCard.lineageHeadline.liveRun");
+    if (lineage.exhausted) return t("issues.IssueRecoveryActionCard.lineageHeadline.nativeExhausted");
+    if (lineage.retryExpired) return t("issues.IssueRecoveryActionCard.lineageHeadline.nativeRetryExpired");
+    if (lineage.nextRetryAt) return t("issues.IssueRecoveryActionCard.lineageHeadline.nativeNextRetry");
+    return t("issues.IssueRecoveryActionCard.lineageHeadline.nativeFallback");
   }
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
+    return t("issues.IssueRecoveryActionCard.lineageHeadline.retryExpired");
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
-      ? "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner."
-      : "This task's last run stopped to wait, but nothing was waiting for it. Paperclip is retrying the original owner to record a real next step. The task stays with its owner, and no action is needed yet.";
+      ? t("issues.IssueRecoveryActionCard.lineageHeadline.sourceOwnerExhausted")
+      : t("issues.IssueRecoveryActionCard.lineageHeadline.sourceOwnerRetrying");
   }
   if (lineage.lane === "recovery_owner") {
-    return "The original owner could not record a next step within its retry budget. A recovery owner is now repairing the path only — the task itself still belongs to its original owner.";
+    return t("issues.IssueRecoveryActionCard.lineageHeadline.recoveryOwner");
   }
-  return "Automatic recovery is exhausted, so the board must choose the next step. The task itself still belongs to its original owner.";
+  return t("issues.IssueRecoveryActionCard.lineageHeadline.fallback");
 }
 
 /** Spent/remaining attempts as pips. The readable count lives beside it in text. */
@@ -945,43 +963,45 @@ function AttemptMeter({ lineage }: { lineage: RecoveryRetryLineage }) {
   );
 }
 
-const RESOLVE_OPTIONS: Array<{
+function resolveOptions(): Array<{
   outcome: RecoveryResolveOutcome;
   label: string;
   description: string;
   destructive?: boolean;
   boardOnly?: boolean;
-}> = [
-  {
-    outcome: "todo",
-    label: "Try again",
-    description: "Dismiss recovery and return the source task to todo.",
-  },
-  {
-    outcome: "done",
-    label: "Mark task done",
-    description: "Restore by recording the requested work as complete.",
-  },
-  {
-    outcome: "in_review",
-    label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
-  },
-  {
-    outcome: "false_positive_done",
-    label: "False positive, done",
-    description: "Dismiss recovery and mark the source task complete.",
-    destructive: true,
-    boardOnly: true,
-  },
-  {
-    outcome: "false_positive_in_review",
-    label: "False positive, review",
-    description: "Dismiss recovery and send the source task for review.",
-    destructive: true,
-    boardOnly: true,
-  },
-];
+}> {
+  return [
+    {
+      outcome: "todo",
+      label: t("issues.IssueRecoveryActionCard.resolveOptions.tryAgain"),
+      description: t("issues.IssueRecoveryActionCard.resolveOptions.tryAgainDescription"),
+    },
+    {
+      outcome: "done",
+      label: t("issues.IssueRecoveryActionCard.resolveOptions.markDone"),
+      description: t("issues.IssueRecoveryActionCard.resolveOptions.markDoneDescription"),
+    },
+    {
+      outcome: "in_review",
+      label: t("issues.IssueRecoveryActionCard.resolveOptions.sendReview"),
+      description: t("issues.IssueRecoveryActionCard.resolveOptions.sendReviewDescription"),
+    },
+    {
+      outcome: "false_positive_done",
+      label: t("issues.IssueRecoveryActionCard.resolveOptions.falseDone"),
+      description: t("issues.IssueRecoveryActionCard.resolveOptions.falseDoneDescription"),
+      destructive: true,
+      boardOnly: true,
+    },
+    {
+      outcome: "false_positive_in_review",
+      label: t("issues.IssueRecoveryActionCard.resolveOptions.falseReview"),
+      description: t("issues.IssueRecoveryActionCard.resolveOptions.falseReviewDescription"),
+      destructive: true,
+      boardOnly: true,
+    },
+  ];
+}
 
 export function IssueRecoveryActionCard({
   action,
@@ -1001,35 +1021,36 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
+  const { t } = useTranslation();
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
-  const tone = STATE_TONE[cardState];
+  const tone = stateTones()[cardState];
   const ToneIcon = tone.Icon;
   const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
   const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
-      return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
+      return t("issues.IssueRecoveryActionCard.headlineResolved", { outcome: outcomeLabels()[action.outcome] ?? action.outcome });
     }
     if (
       (cardState === "needed" || cardState === "escalated") &&
       action.kind === "active_run_watchdog" &&
       action.ownerType === "board"
     ) {
-      return "This recovery needs a human decision. Review the recorded failure and choose the next step.";
+      return t("issues.IssueRecoveryActionCard.headlineHumanDecision");
     }
     if (lineage) return lineageHeadline(lineage);
-    return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, action.ownerType, cardState, lineage]);
+    return kindHeadlines()[action.kind] ?? kindHeadlines().missing_disposition;
+  }, [action.kind, action.outcome, action.ownerType, cardState, lineage, t]);
 
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.
   const wakeSummary = lineage?.retryExpired
-    ? "The scheduled retry did not run — a retry or a decision is needed"
+    ? t("issues.IssueRecoveryActionCard.wakeNotRun")
     : lineage?.exhausted && !lineage.liveRunId && lineage.lane !== "board"
-    ? "Automatic retries are finished — a decision is needed"
+    ? t("issues.IssueRecoveryActionCard.wakeFinished")
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
   const sourceRunId = readEvidenceRunId(action, "sourceRunId") ?? readEvidenceRunId(action, "latestRunId");
@@ -1059,14 +1080,14 @@ export function IssueRecoveryActionCard({
   const updatedAtLabel = formatTimeShort(action.updatedAt);
 
   const ariaState = ({
-    needed: "needed",
-    in_progress: "in progress",
-    observe_only: "observing active run",
-    escalated: "escalated",
-    resolved: "resolved",
+    needed: t("issues.IssueRecoveryActionCard.ariaState.needed"),
+    in_progress: t("issues.IssueRecoveryActionCard.ariaState.inProgress"),
+    observe_only: t("issues.IssueRecoveryActionCard.ariaState.observeOnly"),
+    escalated: t("issues.IssueRecoveryActionCard.ariaState.escalated"),
+    resolved: t("issues.IssueRecoveryActionCard.ariaState.resolved"),
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
-  const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+  const visibleResolveOptions = resolveOptions().filter((option) => {
     if (action.cause === "native_workspace_finalization_owner_unverified") return false;
     if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
     if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
@@ -1082,7 +1103,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     reissueBaseRef !== null;
   const reissueVerdictBadge = divergence
-    ? ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"]
+    ? ancestryBadges()[divergence.ancestryVerdict ?? "unknown"]
     : null;
   // Action 1 — the ancestry-proven safe path. Only offered when the server-computed verdict is
   // "ancestor"; the server re-verifies before mutating, so this gate mirrors (not replaces) it.
@@ -1108,7 +1129,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)}${showReissueAction ? " — re-issue on an isolated workspace instead." : "."}`
+    ? (showReissueAction ? t("issues.IssueRecoveryActionCard.repairHeldByReissue", { label: contentionLabel(repairContention) }) : t("issues.IssueRecoveryActionCard.repairHeldBy", { label: contentionLabel(repairContention) }))
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1125,7 +1146,7 @@ export function IssueRecoveryActionCard({
   return (
     <section
       role="status"
-      aria-label={`Recovery action: ${ariaState}`}
+      aria-label={t("issues.IssueRecoveryActionCard.ariaRecoveryAction", { state: ariaState })}
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       data-recovery-lane={lineage?.lane}
@@ -1150,7 +1171,7 @@ export function IssueRecoveryActionCard({
             <span className={tone.labelClass}>{tone.label}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
             <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) tracking-normal text-muted-foreground">
-              {KIND_LABEL[action.kind] ?? action.kind}
+              {kindLabels()[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
               <>
@@ -1168,7 +1189,7 @@ export function IssueRecoveryActionCard({
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
         {lineage ? (
           <>
-            <MetadataRow label="Task owner">
+            <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.taskOwner")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-source-owner"
@@ -1176,12 +1197,12 @@ export function IssueRecoveryActionCard({
                 <AgentLink
                   agentId={sourceOwnerAgentId}
                   agentMap={agentMap}
-                  fallback="unassigned"
+                  fallback={t("issues.IssueRecoveryActionCard.unassigned")}
                 />
-                <span className="text-muted-foreground">keeps this task</span>
+                <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.ownerKeepsTask")}</span>
               </span>
             </MetadataRow>
-            <MetadataRow label="Recovery owner">
+            <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.recoveryOwner")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-recovery-owner"
@@ -1189,28 +1210,28 @@ export function IssueRecoveryActionCard({
                 {lineage.lane === "native_run" && (action.ownerType !== "board" || Boolean(lineage.liveRunId)) ? (
                   <>
                     <span className="font-medium">Paperclip</span>
-                    <span className="text-muted-foreground">recovers the existing run</span>
+                    <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.recoversExistingRun")}</span>
                   </>
                 ) : recoveryOwnerIsSourceOwner ? (
-                  <span className="font-medium">Original owner — retrying itself</span>
+                  <span className="font-medium">{t("issues.IssueRecoveryActionCard.originalRetrying")}</span>
                 ) : action.ownerType === "agent" && action.ownerAgentId ? (
                   <>
                     <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
-                    <span className="text-muted-foreground">repairs the next step only</span>
+                    <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.repairsNextOnly")}</span>
                   </>
                 ) : action.ownerType === "board" ? (
                   <>
                     <span className="font-medium">Board</span>
-                    <span className="text-muted-foreground">decides the next step only</span>
+                    <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.decidesNextOnly")}</span>
                   </>
                 ) : action.ownerType === "user" && action.ownerUserId ? (
-                  <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+                  <span className="font-medium">{t("issues.IssueRecoveryActionCard.userOwner", { id: action.ownerUserId.slice(0, 6) })}</span>
                 ) : (
-                  <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+                  <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.ownerUnassigned")}</span>
                 )}
               </span>
             </MetadataRow>
-            <MetadataRow label="Retry progress">
+            <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.retryProgress")}>
               <span
                 className="inline-flex flex-wrap items-center gap-x-2 gap-y-1"
                 data-testid="recovery-retry-progress"
@@ -1219,14 +1240,14 @@ export function IssueRecoveryActionCard({
                 data-recovery-max-attempts={lineage.maxAttempts ?? undefined}
               >
                 <AttemptMeter lineage={lineage} />
-                <span>{attemptLabel ?? "Attempts not bounded"}</span>
+                <span>{attemptLabel ?? t("issues.IssueRecoveryActionCard.attemptsUnbounded")}</span>
                 {lineage.liveRunId ? (
                   <span
                     className={RETRY_PILL_CLASS}
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
-                    Attempt running now
+                    {t("issues.IssueRecoveryActionCard.attemptRunningNow")}
                   </span>
                 ) : lineage.retryExpired ? (
                   // The due time is stated plainly as missed. Rendering it as "Next try 5m
@@ -1237,7 +1258,7 @@ export function IssueRecoveryActionCard({
                     data-testid="recovery-next-retry"
                     data-recovery-retry-expired="true"
                   >
-                    {retryOffset ? `Retry missed ${retryOffset}` : "Retry missed"}
+                    {retryOffset ? t("issues.IssueRecoveryActionCard.retryMissedOffset", { offset: retryOffset }) : t("issues.IssueRecoveryActionCard.retryMissed")}
                   </span>
                 ) : retryOffset ? (
                   <span
@@ -1245,59 +1266,59 @@ export function IssueRecoveryActionCard({
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
-                    {retryOffset === "now" ? "Next try now" : `Next try ${retryOffset}`}
+                    {lineage?.nextRetryAt && isMonitorOffsetNow(lineage.nextRetryAt) ? t("issues.IssueRecoveryActionCard.nextTryNow") : t("issues.IssueRecoveryActionCard.nextTryOffset", { offset: retryOffset })}
                   </span>
                 ) : lineage.exhausted ? (
                   <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">
-                    Automatic retries used up
+                    {t("issues.IssueRecoveryActionCard.autoRetriesUsedUp")}
                   </span>
                 ) : null}
               </span>
             </MetadataRow>
             {lineage.lane !== "source_owner" && lineage.sourceMaxAttempts !== null ? (
-              <MetadataRow label="Owner retries">
+              <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.ownerRetries")}>
                 <span data-testid="recovery-source-attempts">
-                  The original owner used {lineage.sourceAttempt ?? lineage.sourceMaxAttempts} of{" "}
-                  {lineage.sourceMaxAttempts} automatic attempts.
+                  {t("issues.IssueRecoveryActionCard.sourceAttemptsUsed", { used: lineage.sourceAttempt ?? lineage.sourceMaxAttempts, max: lineage.sourceMaxAttempts })}
+                  
                 </span>
               </MetadataRow>
             ) : null}
           </>
         ) : (
-        <MetadataRow label="Owner">
+        <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.owner")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.recoveryColon")}</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
               <span className="font-medium">Board</span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
-              <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+              <span className="font-medium">{t("issues.IssueRecoveryActionCard.userOwner", { id: action.ownerUserId.slice(0, 6) })}</span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">{t("issues.IssueRecoveryActionCard.system")}</span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.ownerUnassigned")}</span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.returnsTo")}</span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
           </span>
         </MetadataRow>
         )}
-        <MetadataRow label="Source run">
+        <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.sourceRun")}>
           <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
         </MetadataRow>
         {correctiveRunId ? (
-          <MetadataRow label="Corrective run">
+          <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.correctiveRun")}>
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
           </MetadataRow>
         ) : null}
-        <MetadataRow label="Evidence">
+        <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.evidence")}>
           {evidenceSummary ? (
             evidenceSummary.isCode ? (
               <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
@@ -1310,28 +1331,28 @@ export function IssueRecoveryActionCard({
             <MissingValue />
           )}
         </MetadataRow>
-        <MetadataRow label="Next action">
+        <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.nextAction")}>
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Follow-up">
+        <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.followUp")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                attempt {action.attemptCount} of {action.maxAttempts}
+                {t("issues.IssueRecoveryActionCard.attemptOfMax", { attempt: action.attemptCount, max: action.maxAttempts })}
               </span>
             ) : null}
             {showTimeoutInline ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
+                {t("issues.IssueRecoveryActionCard.timesOut", { time: formatTimeShort(action.timeoutAt) ?? t("issues.IssueRecoveryActionCard.soon") })}
               </span>
             ) : null}
           </span>
         </MetadataRow>
         {cardState === "resolved" && action.outcome ? (
-          <MetadataRow label="Resolution">
+          <MetadataRow label={t("issues.IssueRecoveryActionCard.labels.resolution")}>
             <span className={cn("font-medium", tone.labelClass)}>
-              Resolved as {OUTCOME_LABEL[action.outcome]}
+              {t("issues.IssueRecoveryActionCard.resolvedAs", { outcome: outcomeLabels()[action.outcome] })}
               {action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}
             </span>
           </MetadataRow>
@@ -1349,9 +1370,9 @@ export function IssueRecoveryActionCard({
                   size="sm"
                   variant="default"
                   data-testid="recovery-action-resolve-trigger"
-                  aria-label="Resolve recovery"
+                  aria-label={t("issues.IssueRecoveryActionCard.resolveRecovery")}
                 >
-                  Resolve…
+                  {t("issues.IssueRecoveryActionCard.resolveTrigger")}
                 </Button>
               </PopoverTrigger>
               <PopoverContent
@@ -1360,7 +1381,7 @@ export function IssueRecoveryActionCard({
                 className="w-72 p-1.5"
               >
                 <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                  Resolve recovery
+                  {t("issues.IssueRecoveryActionCard.resolveRecovery")}
                 </div>
                 <div className="flex flex-col">
                   {visibleResolveOptions.map((option) => (
@@ -1396,7 +1417,7 @@ export function IssueRecoveryActionCard({
               ) : (
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden />
               )}
-              Reconcile forward &amp; continue
+              {t("issues.IssueRecoveryActionCard.reconcileForward")}
             </Button>
           ) : null}
           {showRepairAction && divergence ? (
@@ -1424,13 +1445,13 @@ export function IssueRecoveryActionCard({
                   ) : (
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
                   )}
-                  Re-issue on isolated workspace
+                  {t("issues.IssueRecoveryActionCard.reissueIsolated")}
                   {reissueRecommended ? (
                     <span
                       data-testid="recovery-reissue-recommended"
                       className="ml-1 rounded-sm bg-background/25 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)"
                     >
-                      Recommended
+                      {t("issues.IssueRecoveryActionCard.recommended")}
                     </span>
                   ) : null}
                 </Button>
@@ -1438,27 +1459,27 @@ export function IssueRecoveryActionCard({
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
                   <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Re-issue on isolated workspace
+                    {t("issues.IssueRecoveryActionCard.reissueIsolated")}
                   </div>
                   <p className="text-xs leading-5 text-muted-foreground">
-                    Creates a fresh copy of this task on an isolated git worktree based on the live
-                    branch. Your current workspace and its commits are left untouched.
+                    {t("issues.IssueRecoveryActionCard.reissueBody")}
+                    
                   </p>
                 </div>
                 <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Base ref</dt>
+                    <dt className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.baseRef")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Recorded</dt>
+                    <dt className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.recorded")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/80">
                       {divergence.expectedBranch ?? "—"}
                     </dd>
                   </div>
                   {reissueVerdictBadge ? (
                     <div className="flex items-center justify-between gap-2">
-                      <dt className="text-muted-foreground">Ancestry</dt>
+                      <dt className="text-muted-foreground">{t("issues.IssueRecoveryActionCard.ancestry")}</dt>
                       <dd className="font-medium">{reissueVerdictBadge.label}</dd>
                     </div>
                   ) : null}
@@ -1478,7 +1499,7 @@ export function IssueRecoveryActionCard({
                     })
                   }
                 >
-                  {reissuePending ? "Creating…" : "Create isolated re-issue"}
+                  {reissuePending ? t("issues.IssueRecoveryActionCard.creating") : t("issues.IssueRecoveryActionCard.createReissue")}
                 </Button>
               </PopoverContent>
             </Popover>
@@ -1493,11 +1514,11 @@ export function IssueRecoveryActionCard({
           {showResolveActions ? (
             cardState === "observe_only" ? (
               <span className="text-(length:--text-micro) text-muted-foreground">
-                Recovery is observing without interrupting the live run.
+                {t("issues.IssueRecoveryActionCard.observingHint")}
               </span>
             ) : (
               <span className="text-(length:--text-micro) text-muted-foreground">
-                The card stays open until an explicit decision is recorded.
+                {t("issues.IssueRecoveryActionCard.staysOpenHint")}
               </span>
             )
           ) : null}

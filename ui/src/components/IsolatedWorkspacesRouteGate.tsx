@@ -3,6 +3,7 @@ import { Navigate, Outlet } from "@/lib/router";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
+import { t } from "@/i18n";
 
 /**
  * Route gate for the isolated-workspace pages: the workspaces board, the
@@ -33,7 +34,7 @@ export function IsolatedWorkspacesRouteGate() {
         <QueryErrorState
           size="page"
           error={view.error}
-          action="load workspaces"
+          action={t("errorActions.loadWorkspaces")}
           onRetry={view.retry}
           retrying={view.isFetching}
         />

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { resolveTaskStatusPresentation, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
+import { useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
@@ -48,14 +49,15 @@ export function StatusBadge({ status, label, className }: { status: string; labe
  * renders as "idle" (alias for dead code).
  */
 export function AgentStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const cssVar = agentStatusVar[status] ?? agentStatusVarDefault;
-  const label = status === "active" ? "idle" : status;
+  const label = status === "active" ? t("agents.status.idle") : t(`agents.status.${status}`, { defaultValue: status.replace(/_/g, " ") });
   return (
     <span
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {label}
     </span>
   );
 }

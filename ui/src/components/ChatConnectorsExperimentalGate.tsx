@@ -8,6 +8,7 @@ import {
   chatProviderVisible,
 } from "@/hooks/useChatConnectorsEnabled";
 import { Navigate, useParams, useSearchParams } from "@/lib/router";
+import { t } from "@/i18n";
 
 function ProviderEndpointGate({
   endpointId,
@@ -30,7 +31,7 @@ function ProviderEndpointGate({
         size="page"
         className="p-6"
         error={endpoint.error}
-        action="load this endpoint"
+        action={t("errorActions.loadThisEndpoint")}
         onRetry={endpointView.retry}
         retrying={endpointView.isFetching}
       />

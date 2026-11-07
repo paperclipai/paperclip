@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { i18n, t } from ".";
 import en from "./locales/en.json";
-import { localeMessages } from "./locales";
+import { supportedLocales, loadLocaleMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
@@ -11,12 +11,13 @@ describe("locale validation", () => {
     expect(t("app.missing")).toBe("app.missing");
   });
 
-  it("accepts registered locale files", () => {
-    expect(Object.keys(localeMessages)).toContain("en");
-    for (const [locale, messages] of Object.entries(localeMessages)) {
+  it("accepts registered locale files", async () => {
+    expect(supportedLocales).toContain("en");
+    const catalogs = await Promise.all(supportedLocales.map(async (locale) => [locale, await loadLocaleMessages(locale)] as const));
+    for (const [locale, messages] of catalogs) {
       expect(validateLocaleMessages(messages), locale).toEqual([]);
     }
-  });
+  }, 60_000);
 
   it("rejects missing and extra nested keys", () => {
     expect(
@@ -99,4 +100,11 @@ describe("locale validation", () => {
       "message is too long: 200 characters exceeds 133",
     ]);
   });
+});
+
+describe("on-demand locales", () => {
+  it("loads a non-English catalog through i18n", async () => {
+    await i18n.loadLanguages("pt-BR");
+    expect(t("app.noCompanies.title", { lng: "pt-BR" })).not.toBe(en.app.noCompanies.title);
+  }, 60_000);
 });

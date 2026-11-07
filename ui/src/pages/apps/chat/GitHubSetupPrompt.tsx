@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { buildSetupPrompt, SetupPrompt } from "./SetupPrompt";
 
 export const githubSetupPrompt = `Help me set up a GitHub review bot in Paperclip. Use your embedded browser to operate the real Paperclip and GitHub interfaces. Do not use a Chrome extension. If you do not have embedded browser tools, tell me before starting.
@@ -43,5 +44,6 @@ export function buildGitHubSetupPrompt(instanceUrl: string) {
 }
 
 export function GitHubSetupPrompt({ instanceUrl = window.location.origin }: { instanceUrl?: string }) {
-  return <SetupPrompt prompt={buildGitHubSetupPrompt(instanceUrl)} description="Paste this into your agent to configure your GitHub review bot." />;
+  const { t } = useTranslation();
+  return <SetupPrompt prompt={buildGitHubSetupPrompt(instanceUrl)} description={t("apps.GitHubSetupPrompt.description")} />;
 }

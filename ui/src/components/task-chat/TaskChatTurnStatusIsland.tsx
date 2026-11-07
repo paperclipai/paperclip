@@ -7,6 +7,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { t, useTranslation } from "@/i18n";
 import type {
   TaskChatItem,
   TaskChatProtocolStep,
@@ -193,7 +194,7 @@ const STEP_STATUS_LABEL: Record<TaskChatProtocolStep["status"], string> = {
 };
 
 function fileCountLabel(files: number): string {
-  return `${files} ${files === 1 ? "file" : "files"} changed`;
+  return t("issues.TaskChatTurnStatusIsland.filesChanged", { count: files });
 }
 
 function WorkspaceStats({ workspace, compact }: { workspace: WorkspaceSegment; compact?: boolean }) {
@@ -275,6 +276,7 @@ export interface TaskChatTurnPlanProps {
 }
 
 export function TaskChatTurnPlan({ plan, workspace = null, defaultCollapsed = false, compact = false }: TaskChatTurnPlanProps) {
+  const { t } = useTranslation();
   const listId = useId();
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -359,7 +361,7 @@ export function TaskChatTurnPlan({ plan, workspace = null, defaultCollapsed = fa
       {expanded ? (
         <ol
           id={listId}
-          aria-label="Within-turn checklist"
+          aria-label={t("issues.TaskChatTurnStatusIsland.checklist")}
           className="flex max-h-(--sz-turn-plan-list-max-h) flex-col gap-0.5 overflow-y-auto p-1.5"
         >
           {rows.map((row) => (

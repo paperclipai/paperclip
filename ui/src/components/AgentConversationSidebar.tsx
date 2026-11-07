@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Link, useNavigate } from "@/lib/router";
 import { agentRouteRef, cn } from "@/lib/utils";
+import { useTranslation } from "@/i18n";
 
 export interface AgentConversationSidebarProps {
   agents: Agent[];
@@ -34,6 +35,7 @@ export interface AgentConversationSidebarProps {
 
 /** Searchable navigation for one conversation per agent. */
 export function AgentConversationSidebar({ agents, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction }: AgentConversationSidebarProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -54,22 +56,22 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
         <Input ref={searchRef} aria-label="Search chats" placeholder="Search chats" value={search} onChange={event => setSearch(event.target.value)}
           onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); setSearch(""); } }}
           className="h-9 pl-8 pr-8 text-xs md:text-xs" />
-        {search && <Button variant="ghost" size="icon-xs" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={focusSearch}><X className="size-3" /></Button>}
+        {search && <Button variant="ghost" size="icon-xs" aria-label={t("agents.AgentConversationSidebar.clearSearch")} className="absolute right-1 top-1/2 -translate-y-1/2" onClick={focusSearch}><X className="size-3" /></Button>}
       </div>
     </div>
     <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3 scrollbar-auto-hide">
-      <span role="status" className="sr-only">{loading ? "Loading agents" : `${visible.length} ${visible.length === 1 ? "agent" : "agents"}`}</span>
-      {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">Loading chat history…</p>}
+      <span role="status" className="sr-only">{loading ? t("agents.AgentConversationSidebar.loadingAgents") : t("agents.AgentConversationSidebar.agentsCount", { count: visible.length })}</span>
+      {historyLoading && <p role="status" className="px-2 text-xs text-muted-foreground">{t("agents.AgentConversationSidebar.loadingHistory")}</p>}
       {historyError && <div role="alert" className="flex flex-col items-start gap-2 px-2 py-3">
-        <p className="text-xs text-muted-foreground">Some chat history couldn’t load.</p>
-        <Button variant="outline" size="sm" onClick={onRetryHistory}>Retry chat history</Button>
+        <p className="text-xs text-muted-foreground">{t("agents.AgentConversationSidebar.historyFailed")}</p>
+        <Button variant="outline" size="sm" onClick={onRetryHistory}>{t("agents.AgentConversationSidebar.retryHistory")}</Button>
       </div>}
-      {error ? <div role="alert" className="flex flex-col items-start gap-2 px-2 py-6"><p className="text-sm">Couldn’t load your chats.</p><Button variant="outline" size="sm" onClick={onRetry}>Try again</Button></div> : loading ? <div aria-hidden="true" className="flex flex-col gap-1">
+      {error ? <div role="alert" className="flex flex-col items-start gap-2 px-2 py-6"><p className="text-sm">{t("agents.AgentConversationSidebar.loadChatsFailed")}</p><Button variant="outline" size="sm" onClick={onRetry}>{t("agents.AgentConversationSidebar.tryAgain")}</Button></div> : loading ? <div aria-hidden="true" className="flex flex-col gap-1">
         {[0, 1, 2, 3].map(index => <div key={index} className="flex items-center gap-3 rounded-md px-2 py-3 motion-safe:animate-pulse">
           <div className="size-8 shrink-0 rounded-lg bg-muted" />
           <div className="flex flex-1 flex-col gap-2"><div className="h-3 w-2/3 rounded-sm bg-muted" /><div className="h-2 w-full rounded-sm bg-muted" /></div>
         </div>)}
-      </div> : visible.length ? <nav aria-label="Agent conversations" className="flex flex-col gap-1">
+      </div> : visible.length ? <nav aria-label={t("agents.AgentConversationSidebar.navLabel")} className="flex flex-col gap-1">
         {visible.map(agent => {
           const unreadCount = unreadMessageCounts?.get(agent.id) ?? 0;
           const hasUnread = unreadCount > 0 || unreadIds.has(agent.id);
@@ -81,17 +83,17 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           <AgentAvatar agent={agent} size={40} />
           <span className="agent-pin-text flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-sm font-medium">{agent.name}</span>
-            <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? "Terminated" : agent.title ?? agent.role}</span>
+            <span className="truncate text-xs text-muted-foreground">{agent.status === "terminated" ? t("agents.AgentConversationSidebar.terminated") : agent.title ?? agent.role}</span>
           </span>
-          {unreadCount > 0 ? <Badge variant="ghost" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"} from ${agent.name}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
-            : unreadIds.has(agent.id) && <span role="img" aria-label={`Unread messages from ${agent.name}`} className="size-2 shrink-0 rounded-full bg-primary" />}
+          {unreadCount > 0 ? <Badge variant="ghost" aria-label={t("agents.AgentChatPicker.unreadMessages", { count: unreadCount, name: agent.name })} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>
+            : unreadIds.has(agent.id) && <span role="img" aria-label={t("agents.AgentConversationSidebar.unreadFrom", { name: agent.name })} className="size-2 shrink-0 rounded-full bg-primary" />}
         </Link>{renderAgentAction?.(agent)}</div>;
         })}
       </nav> : !agents.length && (historyLoading || historyError) ? null : <div className="flex flex-col items-start gap-2 px-2 py-6">
-        <p className="text-sm font-medium">{agents.length ? "No agents found" : "No chats yet"}</p>
-        <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? "Try another name or role." : "Choose an agent to start a conversation."}</p>
-        {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>Choose an agent</Button>}
-        {agents.length > 0 && <Button variant="outline" size="sm" onClick={focusSearch}>Clear search</Button>}
+        <p className="text-sm font-medium">{agents.length ? t("agents.AgentConversationSidebar.noAgentsFound") : t("agents.AgentConversationSidebar.noChatsYet")}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{agents.length ? t("agents.AgentConversationSidebar.tryAnotherNameRole") : t("agents.AgentConversationSidebar.chooseAgentToStart")}</p>
+        {!agents.length && <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>{t("agents.AgentConversationSidebar.chooseAgent")}</Button>}
+        {agents.length > 0 && <Button variant="outline" size="sm" onClick={focusSearch}>{t("agents.AgentConversationSidebar.clearSearch")}</Button>}
       </div>}
       {onCreateAgent && !loading && !error && <button type="button" onClick={onCreateAgent}
         className="flex min-w-0 items-center gap-3 rounded-md px-2.5 py-3 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
@@ -101,7 +103,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
     </div>
     {onBrowse && <div className="shrink-0 px-3 py-4">
       <Button variant="ghost" size="sm" className="w-full justify-start gap-2 px-2 text-muted-foreground" onClick={onBrowse}>
-        <Users className="size-4" />Browse all agents
+        <Users className="size-4" />{t("agents.AgentConversationSidebar.browseAll")}
       </Button>
     </div>}
     <AgentChatPicker agents={availableAgents} open={pickerOpen} onOpenChange={setPickerOpen}

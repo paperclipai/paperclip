@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
 
@@ -25,17 +26,18 @@ export function AccessRetryBanner({ message, error, pending, onRetry }: {
   pending: boolean;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation();
   const recoveryUrl = githubAccessRecoveryUrl(error);
   return (
     <div role="status">
-      <p>{message || "GitHub access could not be checked. Try again."}</p>
+      <p>{message || t("apps.accessRetryBanner.fallbackMessage")}</p>
       {recoveryUrl ? (
         <Button asChild variant="outline">
-          <a href={recoveryUrl} target="_blank" rel="noreferrer">Open installation settings on GitHub</a>
+          <a href={recoveryUrl} target="_blank" rel="noreferrer">{t("apps.accessRetryBanner.openSettingsOnGitHub")}</a>
         </Button>
       ) : null}
       <Button variant="outline" disabled={pending} onClick={onRetry}>
-        Retry access
+        {t("apps.accessRetryBanner.retryAccess")}
       </Button>
     </div>
   );

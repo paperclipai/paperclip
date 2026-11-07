@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -144,6 +145,7 @@ export function ProposalsTab({
   companyId: string;
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  const { t } = useTranslation();
   const proposalsQuery = useQuery({
     queryKey: queryKeys.secrets.proposals(companyId, "pending"),
     queryFn: () => secretsApi.listProposals(companyId, "pending"),
@@ -170,7 +172,7 @@ export function ProposalsTab({
       <div className="py-4">
         <QueryErrorState
           error={proposalsQuery.error}
-          action="load proposals"
+          action={t("secrets.proposals.loadAction")}
           onRetry={proposalsView.retry}
           retrying={proposalsView.isFetching}
         />

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -73,17 +74,21 @@ function orderProjectWorkspaceTabItems(items: OrderedProjectWorkspaceTabItem[]) 
     .map(({ item }) => item);
 }
 
-const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
-  { value: "local_path", label: "Local git checkout", description: "A local path Paperclip can use directly." },
-  { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
-  { value: "git_repo", label: "Remote git repo", description: "A repo URL with optional refs and local checkout." },
-  { value: "remote_managed", label: "Remote-managed workspace", description: "A hosted workspace tracked by external reference." },
-];
+function getSourceTypeOptions(t: (key: string, opts?: any) => string) {
+  return [
+    { value: "local_path" as const, label: t("workspaces.projectDetail.options.sourceTypes.localGit", { defaultValue: "Local git checkout" }), description: t("workspaces.projectDetail.options.sourceTypes.localGitDesc", { defaultValue: "A local path Paperclip can use directly." }) },
+    { value: "non_git_path" as const, label: t("workspaces.projectDetail.options.sourceTypes.nonGit", { defaultValue: "Local non-git path" }), description: t("workspaces.projectDetail.options.sourceTypes.nonGitDesc", { defaultValue: "A local folder without git semantics." }) },
+    { value: "git_repo" as const, label: t("workspaces.projectDetail.options.sourceTypes.gitRepo", { defaultValue: "Remote git repo" }), description: t("workspaces.projectDetail.options.sourceTypes.gitRepoDesc", { defaultValue: "A repo URL with optional refs and local checkout." }) },
+    { value: "remote_managed" as const, label: t("workspaces.projectDetail.options.sourceTypes.remoteManaged", { defaultValue: "Remote-managed workspace" }), description: t("workspaces.projectDetail.options.sourceTypes.remoteManagedDesc", { defaultValue: "A hosted workspace tracked by external reference." }) },
+  ];
+}
 
-const VISIBILITY_OPTIONS: Array<{ value: ProjectWorkspaceVisibility; label: string }> = [
-  { value: "default", label: "Default" },
-  { value: "advanced", label: "Advanced" },
-];
+function getVisibilityOptions(t: (key: string, opts?: any) => string) {
+  return [
+    { value: "default" as const, label: t("workspaces.projectDetail.options.visibility.default", { defaultValue: "Default" }) },
+    { value: "advanced" as const, label: t("workspaces.projectDetail.options.visibility.advanced", { defaultValue: "Advanced" }) },
+  ];
+}
 
 function isSafeExternalUrl(value: string | null | undefined) {
   if (!value) return false;
@@ -247,6 +252,9 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 export function ProjectWorkspaceDetail() {
+  const { t } = useTranslation();
+  const sourceTypeOptions = useMemo(() => getSourceTypeOptions(t), [t]);
+  const visibilityOptions = useMemo(() => getVisibilityOptions(t), [t]);
   const { companyPrefix, projectId, workspaceId } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -356,7 +364,7 @@ export function ProjectWorkspaceDetail() {
       setErrorMessage(null);
     },
     onError: (error) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to save workspace.");
+      setErrorMessage(error instanceof Error ? error.message : t("workspaces.projectDetail.failedSave", { defaultValue: "Failed to save workspace." }));
     },
   });
 
@@ -367,7 +375,7 @@ export function ProjectWorkspaceDetail() {
       setErrorMessage(null);
     },
     onError: (error) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to update workspace.");
+      setErrorMessage(error instanceof Error ? error.message : t("workspaces.projectDetail.failedUpdate", { defaultValue: "Failed to update workspace." }));
     },
   });
 
@@ -389,26 +397,26 @@ export function ProjectWorkspaceDetail() {
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setErrorMessage(error instanceof Error ? error.message : t("workspaces.projectDetail.failedControl", { defaultValue: "Failed to control workspace commands." }));
     },
   });
 
   if (projectQuery.isLoading || projectView.kind === "reconnecting") {
-    return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+    return <p className="text-sm text-muted-foreground">{t("workspaces.projectDetail.loadingWorkspace", { defaultValue: "Loading workspace…" })}</p>;
   }
   if (projectView.kind === "error") {
     return (
       <QueryErrorState
         size="page"
         error={projectQuery.error}
-        action="load this workspace"
+        action={t("workspaces.actions.loadThisWorkspace", { defaultValue: "load this workspace" })}
         onRetry={projectView.retry}
         retrying={projectView.isFetching}
       />
     );
   }
   if (!project || !workspace || !form || !initialState) {
-    return <p className="text-sm text-muted-foreground">Workspace not found for this project.</p>;
+    return <p className="text-sm text-muted-foreground">{t("workspaces.projectDetail.notFound", { defaultValue: "Workspace not found for this project." })}</p>;
   }
 
   const canRunWorkspaceCommands = Boolean(workspace.cwd);
@@ -432,7 +440,7 @@ export function ProjectWorkspaceDetail() {
     updateWorkspace.mutate(patch);
   };
 
-  const sourceTypeDescription = SOURCE_TYPE_OPTIONS.find((option) => option.value === form.sourceType)?.description ?? null;
+  const sourceTypeDescription = sourceTypeOptions.find((option) => option.value === form.sourceType)?.description ?? null;
   const handleTabChange = (tab: ProjectWorkspaceTab) => {
     const workspacePath = projectWorkspaceUrl(project, routeWorkspaceId);
     if (isProjectWorkspacePluginTab(tab)) {
@@ -503,16 +511,16 @@ export function ProjectWorkspaceDetail() {
             <Separator className="my-5" />
 
             <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Workspace name">
+              <Field label={t("workspaces.projectDetail.fields.name", { defaultValue: "Workspace name" })}>
                 <input
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.name}
                   onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
-                  placeholder="Workspace name"
+                  placeholder={t("workspaces.projectDetail.fields.namePlaceholder", { defaultValue: "Workspace name" })}
                 />
               </Field>
 
-              <Field label="Visibility">
+              <Field label={t("workspaces.projectDetail.fields.visibility", { defaultValue: "Visibility" })}>
                 <select
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.visibility}
@@ -520,7 +528,7 @@ export function ProjectWorkspaceDetail() {
                     setForm((current) => current ? { ...current, visibility: event.target.value as ProjectWorkspaceVisibility } : current)
                   }
                 >
-                  {VISIBILITY_OPTIONS.map((option) => (
+                  {visibilityOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
@@ -528,7 +536,7 @@ export function ProjectWorkspaceDetail() {
             </div>
 
             <div className="mt-4 grid gap-4">
-              <Field label="Source type" hint={sourceTypeDescription ?? undefined}>
+              <Field label={t("workspaces.projectDetail.fields.sourceType", { defaultValue: "Source type" })} hint={sourceTypeDescription ?? undefined}>
                 <select
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                   value={form.sourceType}
@@ -536,7 +544,7 @@ export function ProjectWorkspaceDetail() {
                     setForm((current) => current ? { ...current, sourceType: event.target.value as ProjectWorkspaceSourceType } : current)
                   }
                 >
-                  {SOURCE_TYPE_OPTIONS.map((option) => (
+                  {sourceTypeOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
@@ -550,12 +558,12 @@ export function ProjectWorkspaceDetail() {
               */}
               {!hideHostPaths && (
                 <div className="grid gap-4 md:grid-cols-(--gtc-13)">
-                  <Field label="Local path">
+                  <Field label={t("workspaces.projectDetail.fields.localPath", { defaultValue: "Local path" })}>
                     <input
                       className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                       value={form.cwd}
                       onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                      placeholder="/absolute/path/to/workspace"
+                      placeholder={t("workspaces.projectDetail.fields.localPathPlaceholder", { defaultValue: "/absolute/path/to/workspace" })}
                     />
                   </Field>
                   <div className="flex items-end">
@@ -565,7 +573,7 @@ export function ProjectWorkspaceDetail() {
               )}
 
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Repo URL">
+                <Field label={t("workspaces.projectDetail.fields.repoUrl", { defaultValue: "Repo URL" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.repoUrl}
@@ -573,7 +581,7 @@ export function ProjectWorkspaceDetail() {
                     placeholder="https://github.com/org/repo"
                   />
                 </Field>
-                <Field label="Repo ref">
+                <Field label={t("workspaces.projectDetail.fields.repoRef", { defaultValue: "Repo ref" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.repoRef}
@@ -584,7 +592,7 @@ export function ProjectWorkspaceDetail() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Default ref">
+                <Field label={t("workspaces.projectDetail.fields.defaultRef", { defaultValue: "Default ref" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.defaultRef}
@@ -592,7 +600,7 @@ export function ProjectWorkspaceDetail() {
                     placeholder="origin/main"
                   />
                 </Field>
-                <Field label="Shared workspace key">
+                <Field label={t("workspaces.projectDetail.fields.sharedWorkspaceKey", { defaultValue: "Shared workspace key" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.sharedWorkspaceKey}
@@ -603,7 +611,7 @@ export function ProjectWorkspaceDetail() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Remote provider">
+                <Field label={t("workspaces.projectDetail.fields.remoteProvider", { defaultValue: "Remote provider" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none"
                     value={form.remoteProvider}
@@ -611,7 +619,7 @@ export function ProjectWorkspaceDetail() {
                     placeholder="codespaces"
                   />
                 </Field>
-                <Field label="Remote workspace ref">
+                <Field label={t("workspaces.projectDetail.fields.remoteWorkspaceRef", { defaultValue: "Remote workspace ref" })}>
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.remoteWorkspaceRef}
@@ -622,7 +630,7 @@ export function ProjectWorkspaceDetail() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <Field label="Setup command" hint="Runs when this workspace needs custom bootstrap">
+                <Field label={t("workspaces.projectDetail.fields.setupCommand", { defaultValue: "Setup command" })} hint={t("workspaces.projectDetail.fields.setupCommandHint", { defaultValue: "Runs when this workspace needs custom bootstrap" })}>
                   <textarea
                     className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.setupCommand}
@@ -630,7 +638,7 @@ export function ProjectWorkspaceDetail() {
                     placeholder="pnpm install && pnpm dev"
                   />
                 </Field>
-                <Field label="Cleanup command" hint="Runs before project-level execution workspace teardown">
+                <Field label={t("workspaces.projectDetail.fields.cleanupCommand", { defaultValue: "Cleanup command" })} hint={t("workspaces.projectDetail.fields.cleanupCommandHint", { defaultValue: "Runs before project-level execution workspace teardown" })}>
                   <textarea
                     className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                     value={form.cleanupCommand}
@@ -641,12 +649,12 @@ export function ProjectWorkspaceDetail() {
               </div>
 
               <details className="rounded-xl border border-dashed border-border/70 bg-background px-3 py-3">
-                <summary className="cursor-pointer text-sm font-medium">Advanced runtime JSON</summary>
+                <summary className="cursor-pointer text-sm font-medium">{t("workspaces.projectDetail.fields.advancedRuntimeJson", { defaultValue: "Advanced runtime JSON" })}</summary>
                 <p className="mt-2 text-sm text-muted-foreground">
                   Paperclip derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
                 </p>
                 <div className="mt-3">
-                  <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                  <Field label={t("workspaces.projectDetail.fields.commandsJson", { defaultValue: "Workspace commands JSON" })} hint={t("workspaces.projectDetail.fields.commandsJsonHint", { defaultValue: "Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs." })}>
                     <textarea
                       className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                       value={form.runtimeConfig}
@@ -676,7 +684,7 @@ export function ProjectWorkspaceDetail() {
               </Button>
               {errorMessage ? <p className="text-sm text-destructive">{errorMessage}</p> : null}
               {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
-              {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
+              {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">{t("workspaces.projectDetail.fields.noUnsavedChanges", { defaultValue: "No unsaved changes." })}</p> : null}
             </div>
           </Card>
         </div>
@@ -688,18 +696,18 @@ export function ProjectWorkspaceDetail() {
               <h2 className="text-lg font-semibold">Current state</h2>
             </div>
             <Separator className="my-4" />
-            <DetailRow label="Project">
+            <DetailRow label={t("workspaces.projectDetail.facts.project", { defaultValue: "Project" })}>
               <Link to={`/projects/${canonicalProjectRef}`} className="hover:underline">{project.name}</Link>
             </DetailRow>
-            <DetailRow label="Workspace ID">
+            <DetailRow label={t("workspaces.projectDetail.facts.workspaceId", { defaultValue: "Workspace ID" })}>
               <span className="break-all font-mono text-xs">{workspace.id}</span>
             </DetailRow>
             {hideHostPaths ? null : (
-              <DetailRow label="Local path">
-                <span className="break-all font-mono text-xs">{workspace.cwd ?? "None"}</span>
+              <DetailRow label={t("workspaces.projectDetail.facts.localPathLabel", { defaultValue: "Local path" })}>
+                <span className="break-all font-mono text-xs">{workspace.cwd ?? t("workspaces.projectDetail.facts.none", { defaultValue: "None" })}</span>
               </DetailRow>
             )}
-            <DetailRow label="Repo">
+            <DetailRow label={t("workspaces.projectDetail.facts.repo", { defaultValue: "Repo" })}>
               {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
                 <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                   {workspace.repoUrl}
@@ -707,10 +715,10 @@ export function ProjectWorkspaceDetail() {
                 </a>
               ) : workspace.repoUrl ? (
                 <span className="break-all font-mono text-xs">{workspace.repoUrl}</span>
-              ) : "None"}
+              ) : t("workspaces.projectDetail.facts.none", { defaultValue: "None" })}
             </DetailRow>
-            <DetailRow label="Default ref">{workspace.defaultRef ?? "None"}</DetailRow>
-            <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
+            <DetailRow label={t("workspaces.projectDetail.facts.defaultRefLabel", { defaultValue: "Default ref" })}>{workspace.defaultRef ?? t("workspaces.projectDetail.facts.none", { defaultValue: "None" })}</DetailRow>
+            <DetailRow label={t("workspaces.projectDetail.facts.updated", { defaultValue: "Updated" })}>{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
           </Card>
 
           <Card className="block p-5">
@@ -757,12 +765,12 @@ export function ProjectWorkspaceDetail() {
           />
         ) : pluginDetailSlotsLoading || pluginDetailSlotsError ? (
           <div className="rounded-lg border border-dashed border-border bg-background px-4 py-8 text-sm text-muted-foreground">
-            {pluginDetailSlotsError ? pluginDetailSlotsError : "Loading workspace plugin..."}
+            {pluginDetailSlotsError ? pluginDetailSlotsError : t("workspaces.projectDetail.loadingPlugin", { defaultValue: "Loading workspace plugin..." })}
           </div>
         ) : (
           <MissingPluginTabPlaceholder
             defaultTabHref={`${projectWorkspaceUrl(project, routeWorkspaceId)}?tab=configuration`}
-            defaultTabLabel="Back to configuration"
+            defaultTabLabel={t("workspaces.projectDetail.tabs.backToConfiguration", { defaultValue: "Back to configuration" })}
           />
         )
       ) : null}

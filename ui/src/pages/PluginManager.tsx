@@ -5,6 +5,7 @@
  * @see PLUGIN_SPEC.md §9 — Plugin Marketplace / Manager
  */
 import { useEffect, useMemo, useState } from "react";
+import { t, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -41,7 +42,7 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function getPluginErrorSummary(plugin: PluginRecord): string {
-  return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
+  return firstNonEmptyLine(plugin.lastError) ?? t("plugins.error.unknownState", { defaultValue: "Plugin entered an error state without a stored error message." });
 }
 
 function isExperimentalPluginIdentity(input: {
@@ -87,6 +88,7 @@ function ExperimentalBadge() {
  * @see doc/plugins/PLUGIN_SPEC.md §3 — Plugin Lifecycle for status semantics.
  */
 export function PluginManager() {
+  const { t } = useTranslation();
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -132,10 +134,10 @@ export function PluginManager() {
       invalidatePluginQueries();
       setInstallDialogOpen(false);
       setInstallPackage("");
-      pushToast({ title: "Plugin installed successfully", tone: "success" });
+      pushToast({ title: t("plugins.toasts.installSuccess", { defaultValue: "Plugin installed successfully" }), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to install plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("plugins.toasts.installFailed", { defaultValue: "Failed to install plugin" }), body: err.message, tone: "error" });
     },
   });
 
@@ -143,10 +145,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.uninstall(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin uninstalled successfully", tone: "success" });
+      pushToast({ title: t("plugins.toasts.uninstallSuccess", { defaultValue: "Plugin uninstalled successfully" }), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to uninstall plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("plugins.toasts.uninstallFailed", { defaultValue: "Failed to uninstall plugin" }), body: err.message, tone: "error" });
     },
   });
 
@@ -154,10 +156,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.enable(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin enabled", tone: "success" });
+      pushToast({ title: t("plugins.toasts.enableSuccess", { defaultValue: "Plugin enabled" }), tone: "success" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to enable plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("plugins.toasts.enableFailed", { defaultValue: "Failed to enable plugin" }), body: err.message, tone: "error" });
     },
   });
 
@@ -165,10 +167,10 @@ export function PluginManager() {
     mutationFn: (pluginId: string) => pluginsApi.disable(pluginId),
     onSuccess: () => {
       invalidatePluginQueries();
-      pushToast({ title: "Plugin disabled", tone: "info" });
+      pushToast({ title: t("plugins.toasts.disableSuccess", { defaultValue: "Plugin disabled" }), tone: "info" });
     },
     onError: (err: Error) => {
-      pushToast({ title: "Failed to disable plugin", body: err.message, tone: "error" });
+      pushToast({ title: t("plugins.toasts.disableFailed", { defaultValue: "Failed to disable plugin" }), body: err.message, tone: "error" });
     },
   });
 
@@ -190,14 +192,14 @@ export function PluginManager() {
   );
 
   if (isLoading || pluginsView.kind === "reconnecting") {
-    return <div className="p-4 text-sm text-muted-foreground">Loading plugins...</div>;
+    return <div className="p-4 text-sm text-muted-foreground">{t("plugins.loading", { defaultValue: "Loading plugins..." })}</div>;
   }
   if (pluginsView.kind === "error") {
     return (
       <QueryErrorState
         size="page"
         error={error}
-        action="load plugins"
+        action={t("plugins.actions.loadPlugins", { defaultValue: "load plugins" })}
         onRetry={pluginsView.retry}
         retrying={pluginsView.isFetching}
       />
@@ -209,7 +211,7 @@ export function PluginManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Plugin Manager</h1>
+          <h1 className="text-xl font-semibold">{t("plugins.title", { defaultValue: "Plugin Manager" })}</h1>
         </div>
         
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
@@ -221,14 +223,14 @@ export function PluginManager() {
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Install Plugin</DialogTitle>
+              <DialogTitle>{t("plugins.installDialog.title", { defaultValue: "Install Plugin" })}</DialogTitle>
               <DialogDescription>
                 Enter the npm package name of the plugin you wish to install.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label htmlFor="packageName">npm Package Name</Label>
+                <Label htmlFor="packageName">{t("plugins.installDialog.packageLabel", { defaultValue: "npm Package Name" })}</Label>
                 <Input
                   id="packageName"
                   placeholder="@paperclipai/plugin-example"
@@ -238,12 +240,12 @@ export function PluginManager() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => setInstallDialogOpen(false)}>{t("plugins.installDialog.cancel", { defaultValue: "Cancel" })}</Button>
               <Button
                 onClick={() => installMutation.mutate({ packageName: installPackage })}
                 disabled={!installPackage || installMutation.isPending}
               >
-                {installMutation.isPending ? "Installing..." : "Install"}
+                {installMutation.isPending ? t("plugins.installDialog.installing", { defaultValue: "Installing..." }) : t("plugins.installDialog.install", { defaultValue: "Install" })}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -254,7 +256,7 @@ export function PluginManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">Plugins are alpha.</p>
+            <p className="font-medium text-foreground">{t("plugins.alpha.title", { defaultValue: "Plugins are alpha." })}</p>
             <p className="text-muted-foreground">
               The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.
             </p>
@@ -265,8 +267,8 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
-          <Badge variant="outline">Bundled</Badge>
+          <h2 className="text-base font-semibold">{t("plugins.available.title", { defaultValue: "Available Plugins" })}</h2>
+          <Badge variant="outline">{t("plugins.available.bundledBadge", { defaultValue: "Bundled" })}</Badge>
         </div>
 
         {installErrorMessage && (
@@ -276,17 +278,17 @@ export function PluginManager() {
         )}
 
         {bundledQuery.isLoading || bundledView.kind === "reconnecting" ? (
-          <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
+          <div className="text-sm text-muted-foreground">{t("plugins.available.loading", { defaultValue: "Loading bundled plugins..." })}</div>
         ) : bundledView.kind === "error" ? (
           <QueryErrorState
             error={bundledQuery.error}
-            action="load bundled plugins"
+            action={t("plugins.actions.loadBundled", { defaultValue: "load bundled plugins" })}
             onRetry={bundledView.retry}
             retrying={bundledView.isFetching}
           />
         ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
-            No bundled plugins were found in this checkout.
+            {t("plugins.available.noneFound", { defaultValue: "No bundled plugins were found in this checkout." })}
           </div>
         ) : (
           <Card className="block py-0">
@@ -305,7 +307,7 @@ export function PluginManager() {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{bundledPlugin.displayName}</span>
                         <Badge variant="outline">
-                          {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
+                          {bundledPlugin.tag === "first-party" ? t("plugins.badges.firstParty", { defaultValue: "First-party" }) : t("plugins.badges.example", { defaultValue: "Example" })}
                         </Badge>
                         {isExperimentalPluginIdentity({
                           packageName: bundledPlugin.packageName,
@@ -320,13 +322,13 @@ export function PluginManager() {
                             {installedPlugin.status}
                           </Badge>
                         ) : (
-                          <Badge variant="secondary">Not installed</Badge>
+                          <Badge variant="secondary">{t("plugins.badges.notInstalled", { defaultValue: "Not installed" })}</Badge>
                         )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
                       {installPending && !bundledPlugin.hasBuiltEntrypoints && (
-                        <p className="mt-2 text-xs text-muted-foreground">Building plugin...</p>
+                        <p className="mt-2 text-xs text-muted-foreground">{t("plugins.building", { defaultValue: "Building plugin..." })}</p>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -344,7 +346,7 @@ export function PluginManager() {
                           )}
                           <Button variant="outline" size="sm" asChild>
                             <Link to={`/company/settings/instance/plugins/${installedPlugin.id}`}>
-                              {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
+                              {installedPlugin.status === "ready" ? t("plugins.actions.openSettings", { defaultValue: "Open Settings" }) : t("plugins.actions.review", { defaultValue: "Review" })}
                             </Link>
                           </Button>
                         </>
@@ -359,7 +361,7 @@ export function PluginManager() {
                             })
                           }
                         >
-                          {installPending ? "Installing..." : "Install"}
+                          {installPending ? t("plugins.installDialog.installing", { defaultValue: "Installing..." }) : t("plugins.installDialog.install", { defaultValue: "Install" })}
                         </Button>
                       )}
                     </div>
@@ -375,14 +377,14 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Puzzle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Installed Plugins</h2>
+          <h2 className="text-base font-semibold">{t("plugins.installed.title", { defaultValue: "Installed Plugins" })}</h2>
         </div>
 
         {!installedPlugins.length ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No plugins installed</p>
+              <p className="text-sm font-medium">{t("plugins.installed.emptyTitle", { defaultValue: "No plugins installed" })}</p>
               <p className="text-xs text-muted-foreground mt-1">
                 Install a plugin to extend functionality.
               </p>
@@ -423,7 +425,7 @@ export function PluginManager() {
                       </p>
                     </div>
                     <p className="text-sm text-muted-foreground truncate mt-0.5" title={plugin.manifestJson.description}>
-                      {plugin.manifestJson.description || "No description provided."}
+                      {plugin.manifestJson.description || t("plugins.noDescription", { defaultValue: "No description provided." })}
                     </p>
                     {plugin.status === "error" && (
                       <div className="mt-3 rounded-md border border-red-500/25 bg-red-500/[0.06] px-3 py-2">
@@ -431,7 +433,7 @@ export function PluginManager() {
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 text-sm font-medium text-red-700 dark:text-red-300">
                               <AlertTriangle className="h-4 w-4 shrink-0" />
-                              <span>Plugin error</span>
+                              <span>{t("plugins.error.title", { defaultValue: "Plugin error" })}</span>
                             </div>
                             <p
                               className="mt-1 text-sm text-red-700/90 dark:text-red-200/90 break-words"
@@ -474,7 +476,7 @@ export function PluginManager() {
                           variant="outline"
                           size="icon-sm"
                           className="h-8 w-8"
-                          title={plugin.status === "ready" ? "Disable" : "Enable"}
+                          title={plugin.status === "ready" ? t("plugins.actions.disable", { defaultValue: "Disable" }) : t("plugins.actions.enable", { defaultValue: "Enable" })}
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
@@ -490,7 +492,7 @@ export function PluginManager() {
                           variant="outline"
                           size="icon-sm"
                           className="h-8 w-8 text-destructive hover:text-destructive"
-                          title="Uninstall"
+                          title={t("plugins.actions.uninstall", { defaultValue: "Uninstall" })}
                           onClick={() => {
                             setUninstallPluginId(plugin.id);
                             setUninstallPluginName(plugin.manifestJson.displayName ?? plugin.packageName);
@@ -522,13 +524,13 @@ export function PluginManager() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Uninstall Plugin</DialogTitle>
+            <DialogTitle>{t("plugins.uninstallDialog.title", { defaultValue: "Uninstall Plugin" })}</DialogTitle>
             <DialogDescription>
-              Are you sure you want to uninstall <strong>{uninstallPluginName}</strong>? This action cannot be undone.
+              {t("plugins.uninstallDialog.description", { name: uninstallPluginName, defaultValue: `Are you sure you want to uninstall ${uninstallPluginName}? This action cannot be undone.` })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setUninstallPluginId(null)}>{t("plugins.uninstallDialog.cancel", { defaultValue: "Cancel" })}</Button>
             <Button
               variant="destructive"
               disabled={uninstallMutation.isPending}
@@ -540,7 +542,7 @@ export function PluginManager() {
                 }
               }}
             >
-              {uninstallMutation.isPending ? "Uninstalling..." : "Uninstall"}
+              {uninstallMutation.isPending ? t("plugins.uninstallDialog.uninstalling", { defaultValue: "Uninstalling..." }) : t("plugins.uninstallDialog.uninstall", { defaultValue: "Uninstall" })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -552,9 +554,9 @@ export function PluginManager() {
       >
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Error Details</DialogTitle>
+            <DialogTitle>{t("plugins.errorDialog.title", { defaultValue: "Error Details" })}</DialogTitle>
             <DialogDescription>
-              {errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.
+              {t("plugins.errorDialog.description", { name: errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? t("plugins.pluginFallback", { defaultValue: "Plugin" }), defaultValue: `${errorDetailsPlugin?.manifestJson.displayName ?? errorDetailsPlugin?.packageName ?? "Plugin"} hit an error state.` })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -566,13 +568,13 @@ export function PluginManager() {
                     What errored
                   </p>
                   <p className="text-red-700/90 dark:text-red-200/90 break-words">
-                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : "No error summary available."}
+                    {errorDetailsPlugin ? getPluginErrorSummary(errorDetailsPlugin) : t("plugins.errorDialog.noSummary", { defaultValue: "No error summary available." })}
                   </p>
                 </div>
               </div>
             </div>
             <div className="space-y-2">
-              <p className="text-sm font-medium">Full error output</p>
+              <p className="text-sm font-medium">{t("plugins.errorDialog.fullOutput", { defaultValue: "Full error output" })}</p>
               <pre className="max-h-(--sz-50vh) overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>

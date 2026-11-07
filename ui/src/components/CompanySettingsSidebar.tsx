@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -43,6 +44,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
@@ -84,7 +86,7 @@ export function CompanySettingsSidebar() {
   return (
     <ContextualSidebarFrame
       surface="settings"
-      title="Settings"
+      title={t("settings.CompanySettingsSidebar.settings")}
       showHeader={false}
       className={primarySidebarStyles.surface}
     >
@@ -93,20 +95,20 @@ export function CompanySettingsSidebar() {
         className="flex h-(--sz-60px) shrink-0 items-center px-3"
       >
         <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
-          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+          <SidebarNavItem to="/dashboard" label={t("settings.CompanySettingsSidebar.backToApp")} icon={ArrowLeft} />
         </div>
       </div>
       <nav
-        aria-label="Settings"
+        aria-label={t("settings.CompanySettingsSidebar.settings")}
         data-slot="contextual-sidebar-nav"
         className={primarySidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to="/company/settings" label={t("settings.CompanySettingsSidebar.general")} icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
-              label="Profile"
+              label={t("settings.CompanySettingsSidebar.profile")}
               icon={UserRoundPen}
               end
             />
@@ -114,7 +116,7 @@ export function CompanySettingsSidebar() {
           {showPage("company.members") && (
             <SidebarNavItem
               to="/company/settings/members"
-              label="Members"
+              label={t("settings.CompanySettingsSidebar.members")}
               icon={Users}
               badge={badges?.joinRequests ?? 0}
               end
@@ -132,30 +134,30 @@ export function CompanySettingsSidebar() {
               />
             ))}
           {showPage("company.secrets") && (
-            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+            <SidebarNavItem to="/company/settings/secrets" label={t("settings.CompanySettingsSidebar.secrets")} icon={KeyRound} end />
           )}
           {showPage("instance.environments") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-              label="Environments"
+              label={t("settings.CompanySettingsSidebar.environments")}
               icon={MonitorCog}
               end
             />
           )}
-          <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
+          <SidebarNavItem to="/company/settings/connections" label={t("settings.CompanySettingsSidebar.connections")} icon={Link2} end />
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-              label="Access"
+              label={t("settings.CompanySettingsSidebar.access")}
               icon={Shield}
               end
             />
           )}
           {showPage("company.export") && (
-            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+            <SidebarNavItem to="/company/export" label={t("settings.CompanySettingsSidebar.export")} icon={Download} />
           )}
           {!isCloud && showPage("company.import") && (
-            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+            <SidebarNavItem to="/company/import" label={t("settings.CompanySettingsSidebar.import")} icon={Upload} end />
           )}
           {showPage("instance.experimental") && (
             <SidebarNavItem

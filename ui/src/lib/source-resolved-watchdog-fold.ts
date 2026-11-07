@@ -1,4 +1,5 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 export type SourceResolvedFoldCleanupOutcome =
   | "terminated"
@@ -104,28 +105,34 @@ export function readSourceResolvedWatchdogFold(
   return parseSourceResolvedWatchdogFold(record.sourceResolvedWatchdogFold);
 }
 
-const CLEANUP_OUTCOME_LABELS: Record<string, string> = {
-  terminated: "terminated",
-  termination_sent_still_running: "termination sent (still running)",
-  failed: "failed",
-  not_running: "not running",
-  no_process_metadata: "no process metadata",
-  skipped_non_local_adapter: "skipped (non-local adapter)",
-};
-
 export function formatCleanupOutcome(outcome: string): string {
-  return CLEANUP_OUTCOME_LABELS[outcome] ?? outcome.replace(/_/g, " ");
+  switch (outcome) {
+    case "terminated":
+      return t("issues.sourceResolvedFold.cleanup.terminated");
+    case "termination_sent_still_running":
+      return t("issues.sourceResolvedFold.cleanup.terminationSentStillRunning");
+    case "failed":
+      return t("issues.sourceResolvedFold.cleanup.failed");
+    case "not_running":
+      return t("issues.sourceResolvedFold.cleanup.notRunning");
+    case "no_process_metadata":
+      return t("issues.sourceResolvedFold.cleanup.noProcessMetadata");
+    case "skipped_non_local_adapter":
+      return t("issues.sourceResolvedFold.cleanup.skippedNonLocalAdapter");
+    default:
+      return outcome.replace(/_/g, " ");
+  }
 }
 
 export function formatSilenceAgeMs(ms: number | null | undefined): string | null {
   if (!ms || ms <= 0) return null;
   const totalMinutes = Math.floor(ms / 60_000);
-  if (totalMinutes < 1) return "under 1 minute";
-  if (totalMinutes < 60) return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  if (totalMinutes < 1) return t("common.time.underMinute");
+  if (totalMinutes < 60) return t("common.time.minutes", { count: totalMinutes });
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  if (minutes === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${hours}h ${minutes}m`;
+  if (minutes === 0) return t("common.time.hours", { count: hours });
+  return t("common.time.hoursMinutesShort", { hours, minutes });
 }
 
 export function shortenEvidenceId(id: string): string {

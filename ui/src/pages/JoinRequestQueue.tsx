@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { UserPlus2 } from "lucide-react";
 import { accessApi } from "@/api/access";
@@ -12,6 +13,7 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function JoinRequestQueue() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -45,7 +47,7 @@ export function JoinRequestQueue() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyMembers(selectedCompanyId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!) });
-      pushToast({ title: "Join request approved", tone: "success" });
+      pushToast({ title: t("inbox.joinRequestQueue.toastApproved"), tone: "success" });
     },
   });
 
@@ -53,16 +55,16 @@ export function JoinRequestQueue() {
     mutationFn: (requestId: string) => accessApi.rejectJoinRequest(selectedCompanyId!, requestId),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId!, `${status}:${requestType}`) });
-      pushToast({ title: "Join request rejected", tone: "success" });
+      pushToast({ title: t("inbox.joinRequestQueue.toastRejected"), tone: "success" });
     },
   });
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select an organization to review join requests.</div>;
+    return <div className="text-sm text-muted-foreground">{t("inbox.joinRequestQueue.selectOrgPrompt")}</div>;
   }
 
   if (requestsQuery.isLoading || requestsView.kind === "reconnecting") {
-    return <div className="text-sm text-muted-foreground">Loading join requests…</div>;
+    return <div className="text-sm text-muted-foreground">{t("inbox.joinRequestQueue.loading")}</div>;
   }
 
   if (requestsView.kind === "error") {
@@ -77,7 +79,7 @@ export function JoinRequestQueue() {
       <QueryErrorState
         size="page"
         error={requestsQuery.error}
-        action="load join requests"
+        action={t("inbox.joinRequestQueue.loadAction")}
         onRetry={requestsView.retry}
         retrying={requestsView.isFetching}
       />

@@ -1,8 +1,9 @@
 import { createPortal } from "react-dom";
 import { Button } from "./ui/button";
+import { t } from "@/i18n";
 
 /** Out of document flow so a failed optional read cannot move task rows. */
-export function IssueRowDetailsNotice({ error, onRetry, message = "Some task details couldn’t load.", retryLabel = "Retry details" }: {
+export function IssueRowDetailsNotice({ error, onRetry, message = t("issues.issueRowDetailsNotice.message"), retryLabel = t("issues.issueRowDetailsNotice.retryLabel") }: {
   error: Error | null;
   onRetry: () => void;
   message?: string;

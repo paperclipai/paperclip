@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
@@ -54,6 +55,7 @@ function useOnboardingInProgress(companyId: string | null) {
 export type AnnouncementPlacement = "sidebar" | "floating";
 
 export function AnnouncementWell({ health, placement = "floating" }: { health?: HealthStatus; placement?: AnnouncementPlacement }) {
+  const { t } = useTranslation();
   const { userId: accountId, settled } = useAccountIdentity();
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
@@ -65,8 +67,8 @@ export function AnnouncementWell({ health, placement = "floating" }: { health?: 
     userId, companyId: selectedCompanyId,
     enabled: Boolean(userId && !loading && selectedCompanyId && !onboardingOpen && !onboardingInProgress),
     onSaveFailure: (savedLocally) => toastActions?.pushToast({
-      title: savedLocally ? "Dismissed in this browser" : "Dismissed for this visit",
-      body: "Couldn’t save across devices. We’ll retry when you reconnect or return.",
+      title: savedLocally ? t("app.AnnouncementWell.dismissedInBrowser") : t("app.AnnouncementWell.dismissedForVisit"),
+      body: t("app.AnnouncementWell.saveFailedBody"),
       tone: "info", dedupeKey: "announcement-dismissal-sync",
     }),
   });
@@ -74,7 +76,7 @@ export function AnnouncementWell({ health, placement = "floating" }: { health?: 
   if (!announcement || modalOpen || (toasts?.length ?? 0) > 0) return null;
   return (
     <aside
-      aria-label="Paperclip announcements"
+      aria-label={t("app.AnnouncementWell.announcementsAria")}
       data-placement={placement}
       className={cn(
         "announcement-well",

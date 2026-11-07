@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useTranslation } from "@/i18n";
 import { ChevronRight } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -34,13 +35,14 @@ export function SetupPanel({
   permissionsLoading: boolean;
   onOpenPermissions: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-10">
       {identities}
-      <SetupLinkSection title="Agents" summary={agentsSummary} onClick={onOpenPermissions} />
+      <SetupLinkSection title={t("apps.SetupPanel.agents")} summary={agentsSummary} onClick={onOpenPermissions} />
       <SetupLinkSection
-        title="Actions"
-        summary={permissionsLoading ? "Loading permissions…" : permissionsSummary ?? "Manage permissions"}
+        title={t("apps.SetupPanel.actions")}
+        summary={permissionsLoading ? t("apps.SetupPanel.loadingPermissions") : permissionsSummary ?? t("apps.SetupPanel.managePermissions")}
         onClick={onOpenPermissions}
       />
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
@@ -104,26 +106,27 @@ export function connectionProviderName(
 }
 
 function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const { t } = useTranslation();
   const raw = connection.config?.methodConfig;
   const config = raw && typeof raw === "object" && !Array.isArray(raw)
     ? raw as Record<string, unknown>
     : {};
-  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
-  const features = typeof config.features === "string" ? config.features : "None";
-  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? t("apps.PostHogConfigurationSection.signIn") : t("apps.PostHogConfigurationSection.personalApiKey");
+  const features = typeof config.features === "string" ? config.features : t("apps.PostHogConfigurationSection.none");
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : t("apps.PostHogConfigurationSection.none");
   const rows = [
-    ["Connection method", method],
-    ["Project pin", typeof config.projectId === "string" ? config.projectId : "Use active project"],
-    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
-    ["Feature groups", features],
-    ["Individual tools", tools],
-    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+    [t("apps.PostHogConfigurationSection.connectionMethod"), method],
+    [t("apps.PostHogConfigurationSection.projectPin"), typeof config.projectId === "string" ? config.projectId : t("apps.PostHogConfigurationSection.useActiveProject")],
+    [t("apps.PostHogConfigurationSection.readOnlyMode"), config.readOnly === true ? t("apps.PostHogConfigurationSection.on") : t("apps.PostHogConfigurationSection.off")],
+    [t("apps.PostHogConfigurationSection.featureGroups"), features],
+    [t("apps.PostHogConfigurationSection.individualTools"), tools],
+    [t("apps.PostHogConfigurationSection.responseMode"), typeof config.mode === "string" ? config.mode : "tools"],
   ];
   return (
     <section>
-      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
+      <h2 className="text-sm font-bold text-foreground">{t("apps.PostHogConfigurationSection.title")}</h2>
       <p className="mt-0.5 text-sm text-muted-foreground">
-        PostHog uses its normal account defaults unless you narrow the optional controls below.
+        {t("apps.PostHogConfigurationSection.defaultsNote")}
       </p>
       <dl className="mt-4 divide-y divide-border">
         {rows.map(([label, value]) => (
@@ -155,6 +158,7 @@ function GoogleSheetsAllowlistSection({
   disabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const ids = currentSpreadsheetIds(connection);
@@ -164,15 +168,15 @@ function GoogleSheetsAllowlistSection({
   return (
     <section>
       <div>
-        <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
+        <h2 className="text-sm font-bold text-foreground">{t("apps.GoogleSheetsAllowlistSection.title")}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          Agents can only use the sheets listed here.
+          {t("apps.GoogleSheetsAllowlistSection.description")}
         </p>
       </div>
 
       <div className="mt-4 space-y-2">
         {ids.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No sheets are connected yet.</div>
+          <div className="text-sm text-muted-foreground">{t("apps.GoogleSheetsAllowlistSection.noSheets")}</div>
         ) : (
           ids.map((id) => {
             const sheetUrl = googleSheetsUrlForId(id);
@@ -184,12 +188,12 @@ function GoogleSheetsAllowlistSection({
                   rel="noreferrer"
                   className="min-w-0 flex-1 text-sm font-medium text-foreground underline-offset-2 hover:underline"
                 >
-                  <span className="block truncate">Open sheet</span>
+                  <span className="block truncate">{t("apps.GoogleSheetsAllowlistSection.openSheet")}</span>
                   <span className="block truncate font-mono text-xs font-normal text-muted-foreground">
                     {sheetUrl}
                   </span>
                   <span className="block truncate font-mono text-(length:--text-micro) font-normal text-muted-foreground/80">
-                    ID: {id}
+                    {t("apps.GoogleSheetsAllowlistSection.sheetId", { id })}
                   </span>
                 </a>
                 <Button
@@ -197,10 +201,10 @@ function GoogleSheetsAllowlistSection({
                   size="sm"
                   variant="outline"
                   disabled={disabled || ids.length <= 1}
-                  title={ids.length <= 1 ? "Add another sheet before removing this one." : undefined}
+                  title={ids.length <= 1 ? t("apps.GoogleSheetsAllowlistSection.addAnotherSheet") : undefined}
                   onClick={() => saveIds(ids.filter((current) => current !== id))}
                 >
-                  Remove
+                  {t("apps.GoogleSheetsAllowlistSection.remove")}
                 </Button>
               </div>
             );
@@ -225,18 +229,18 @@ function GoogleSheetsAllowlistSection({
           onClick={() => {
             const parsed = parseGoogleSheetIds(draft);
             if (parsed.ids.length === 0) {
-              setError("Paste a Google Sheets link.");
+              setError(t("apps.GoogleSheetsAllowlistSection.pasteLink"));
               return;
             }
             if (parsed.invalidCount > 0) {
-              setError("That doesn't look like a Google Sheets link.");
+              setError(t("apps.GoogleSheetsAllowlistSection.notSheetsLink"));
               return;
             }
             saveIds(Array.from(new Set([...ids, ...parsed.ids])));
             setDraft("");
           }}
         >
-          Add sheet
+          {t("apps.GoogleSheetsAllowlistSection.addSheet")}
         </Button>
       </div>
       {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
@@ -253,6 +257,7 @@ export function QuarantinedActionsReview({
   disabled: boolean;
   onSubmit: (enabledIds: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
@@ -261,10 +266,10 @@ export function QuarantinedActionsReview({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-            Review {count} new {count === 1 ? "action" : "actions"}
+            {t("apps.QuarantinedActionsReview.reviewNew", { count })}
           </div>
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            Turn on the actions agents may use. Anything left off stays blocked when you save.
+            {t("apps.QuarantinedActionsReview.intro")}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -274,7 +279,7 @@ export function QuarantinedActionsReview({
             disabled={disabled}
             onClick={() => setEnabledIds(new Set(entries.map((entry) => entry.id)))}
           >
-            Turn all on
+            {t("apps.QuarantinedActionsReview.turnAllOn")}
           </button>
           <button
             type="button"
@@ -282,7 +287,7 @@ export function QuarantinedActionsReview({
             disabled={disabled}
             onClick={() => setEnabledIds(new Set())}
           >
-            Turn all off
+            {t("apps.QuarantinedActionsReview.turnAllOff")}
           </button>
         </div>
       </div>
@@ -299,7 +304,7 @@ export function QuarantinedActionsReview({
                 )}
               </div>
               <ToggleSwitch
-                aria-label={`${label} allowed`}
+                aria-label={t("apps.QuarantinedActionsReview.allowedAria", { label })}
                 checked={enabled}
                 disabled={disabled}
                 onCheckedChange={(next) => {
@@ -317,10 +322,10 @@ export function QuarantinedActionsReview({
       </div>
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
-          {selectedIds.length} of {count} will be on
+          {t("apps.QuarantinedActionsReview.willBeOn", { selected: selectedIds.length, total: count })}
         </span>
         <Button size="sm" disabled={disabled} onClick={() => onSubmit(selectedIds)}>
-          {disabled ? "Saving…" : "Save choices"}
+          {disabled ? t("apps.QuarantinedActionsReview.saving") : t("apps.QuarantinedActionsReview.saveChoices")}
         </Button>
       </div>
     </section>

@@ -1,41 +1,54 @@
 import { Database, Gauge, ReceiptText } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-
-const SURFACES = [
-  {
-    title: "Inference ledger",
-    description: "Request-scoped usage and billed runs from cost_events.",
-    icon: Database,
-    points: ["tokens + billed dollars", "provider, biller, model", "subscription and overage aware"],
-    tone: "from-sky-500/12 via-sky-500/6 to-transparent",
-  },
-  {
-    title: "Finance ledger",
-    description: "Account-level charges that are not one prompt-response pair.",
-    icon: ReceiptText,
-    points: ["top-ups, refunds, fees", "Bedrock provisioned or training charges", "credit expiries and adjustments"],
-    tone: "from-amber-500/14 via-amber-500/6 to-transparent",
-  },
-  {
-    title: "Live quotas",
-    description: "Provider or biller windows that can stop traffic in real time.",
-    icon: Gauge,
-    points: ["provider quota windows", "biller credit systems", "errors surfaced directly"],
-    tone: "from-emerald-500/14 via-emerald-500/6 to-transparent",
-  },
-] as const;
+import { useTranslation } from "@/i18n";
 
 export function AccountingModelCard() {
+  const { t } = useTranslation();
+  const SURFACES = [
+    {
+      title: t("costs.AccountingModelCard.inference.title"),
+      description: t("costs.AccountingModelCard.inference.description"),
+      icon: Database,
+      points: [
+        t("costs.AccountingModelCard.inference.point1"),
+        t("costs.AccountingModelCard.inference.point2"),
+        t("costs.AccountingModelCard.inference.point3"),
+      ],
+      tone: "from-sky-500/12 via-sky-500/6 to-transparent",
+    },
+    {
+      title: t("costs.AccountingModelCard.finance.title"),
+      description: t("costs.AccountingModelCard.finance.description"),
+      icon: ReceiptText,
+      points: [
+        t("costs.AccountingModelCard.finance.point1"),
+        t("costs.AccountingModelCard.finance.point2"),
+        t("costs.AccountingModelCard.finance.point3"),
+      ],
+      tone: "from-amber-500/14 via-amber-500/6 to-transparent",
+    },
+    {
+      title: t("costs.AccountingModelCard.quotas.title"),
+      description: t("costs.AccountingModelCard.quotas.description"),
+      icon: Gauge,
+      points: [
+        t("costs.AccountingModelCard.quotas.point1"),
+        t("costs.AccountingModelCard.quotas.point2"),
+        t("costs.AccountingModelCard.quotas.point3"),
+      ],
+      tone: "from-emerald-500/14 via-emerald-500/6 to-transparent",
+    },
+  ] as const;
+
   return (
     <Card className="relative overflow-hidden border-border/70">
       <div className="absolute inset-0 bg-(image:--gradient-extract-3)" />
       <CardHeader className="relative px-5 pt-5 pb-2">
         <CardTitle className="text-sm font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-          Accounting model
+          {t("costs.AccountingModelCard.title")}
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">
-          Paperclip now separates request-level inference usage from account-level finance events.
-          That keeps provider reporting honest when the biller is OpenRouter, Cloudflare, Bedrock, or another intermediary.
+          {t("costs.AccountingModelCard.description")}
         </CardDescription>
       </CardHeader>
       <CardContent className="relative grid gap-3 px-5 pb-5 md:grid-cols-3">

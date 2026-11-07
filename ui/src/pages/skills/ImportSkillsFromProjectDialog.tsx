@@ -49,6 +49,7 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
 import { describeError } from "@/api/errors";
+import { t, useTranslation } from "@/i18n";
 
 type Step = "pick" | "scanning" | "select" | "result";
 export type SkillSelection = { workspaceId: string; path: string; slug?: string };
@@ -274,6 +275,7 @@ function CandidateStatusBadge({
 }
 
 export function ImportSkillsFromProjectDialog({
+
   open,
   onOpenChange,
   companyId,
@@ -571,7 +573,7 @@ export function ImportSkillsFromProjectDialog({
             <div className="min-w-0 flex-1 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5">
                 <Link2 className="h-3.5 w-3.5 shrink-0" />
-                Files stay in the project — Studio edits save directly to them.
+                {t('skills.projectImport.filesStayHint', { defaultValue: 'Files stay in the project — Studio edits save directly to them.' })}
               </span>
             </div>
           ) : (
@@ -603,7 +605,7 @@ export function ImportSkillsFromProjectDialog({
                   </div>
                 )}
                 <Button variant="outline" size="sm" onClick={backToPick}>
-                  <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Back
+                  <ArrowLeft className="mr-1 h-3.5 w-3.5" /> {t('skills.projectImport.back', { defaultValue: 'Back' })}
                 </Button>
                 {!scanError && candidates.length > 0 && (
                   <Button
@@ -614,10 +616,10 @@ export function ImportSkillsFromProjectDialog({
                   >
                     {importMutation.isPending ? (
                       <>
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Importing…
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> {t('skills.projectImport.importing', { defaultValue: 'Importing…' })}
                       </>
                     ) : (
-                      `Import ${selectedCount} skill${selectedCount === 1 ? "" : "s"}`
+                      t('skills.projectImport.importCount', { count: selectedCount, defaultValue: `Import ${selectedCount} skill${selectedCount === 1 ? '' : 's'}` })
                     )}
                   </Button>
                 )}
@@ -686,7 +688,7 @@ function PickProjectStep({
           <QueryErrorState
             className="m-5"
             error={error}
-            action="load projects"
+            action={t("errorActions.loadProjects")}
             onRetry={onRetry}
             retrying={retrying}
           />
@@ -866,7 +868,7 @@ function ProjectSkillBrowser({
           <QueryErrorState
             className="m-6"
             error={browseQuery.error}
-            action="load the folder"
+            action={t("errorActions.loadTheFolder")}
             onRetry={browseView.retry}
             retrying={browseView.isFetching}
           />

@@ -1,5 +1,6 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "@/i18n";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
 import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
@@ -307,6 +308,7 @@ function AuditUpsell() {
 }
 
 export function AuditFeed({
+  
   companyId,
   lockedAgentId,
   lockedRunId,
@@ -322,6 +324,7 @@ export function AuditFeed({
   onEntityIdChange,
   onClearFilters,
 }: AuditFeedProps) {
+  const { t } = useTranslation();
   const caseHref = useCaseHref();
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
@@ -546,7 +549,7 @@ export function AuditFeed({
     } catch (error) {
       pushToast({
         title: "Export failed",
-        body: describeError(error, { action: "export the audit log" }).body,
+        body: describeError(error, { action: t("errorActions.exportTheAuditLog") }).body,
         tone: "error",
       });
     } finally {
@@ -575,8 +578,8 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList className="design-view-toggle" aria-label="Activity scope">
-            <TabsTrigger value="all">Activity</TabsTrigger>
+          <TabsList className="design-view-toggle" aria-label={t("audit.feed.scopeAria")}>
+            <TabsTrigger value="all">{t("audit.feed.allActivity")}</TabsTrigger>
             <TabsTrigger
               value="agents"
               disabled={accessTier === "basic"}
@@ -606,7 +609,7 @@ export function AuditFeed({
             <span>Agent</span>
             <Select value={agent} onValueChange={setAgent}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder={t("audit.feed.filterAgent")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>All agents</SelectItem>
@@ -625,7 +628,7 @@ export function AuditFeed({
             <Select value={responsibleUser} onValueChange={setResponsibleUser}>
               {/* Wide enough for "All responsible users" — w-44 truncated it. */}
               <SelectTrigger className="w-52">
-                <SelectValue placeholder="Responsible user" />
+                <SelectValue placeholder={t("audit.feed.filterResponsibleUser")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>All responsible users</SelectItem>
@@ -642,7 +645,7 @@ export function AuditFeed({
           <span>Action</span>
           <Select value={actionDomain} onValueChange={setActionDomain}>
             <SelectTrigger className="w-40">
-              <SelectValue placeholder="Action" />
+              <SelectValue placeholder={t("audit.feed.filterAction")} />
             </SelectTrigger>
             <SelectContent>
               {ACTION_DOMAINS.map((d) => (
@@ -658,7 +661,7 @@ export function AuditFeed({
             <span>Entity</span>
             <Select value={entityType} onValueChange={setEntityType}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Entity" />
+                <SelectValue placeholder={t("audit.feed.filterEntity")} />
               </SelectTrigger>
               <SelectContent>
                 {ENTITY_TYPES.map((e) => (
@@ -675,7 +678,7 @@ export function AuditFeed({
             <span>Case</span>
             <Input
               type="search"
-              aria-label="Case ID or identifier"
+              aria-label={t("audit.feed.caseIdAria")}
               placeholder="CAS-C1"
               value={entityIdDraft}
               onChange={event => {
@@ -697,7 +700,7 @@ export function AuditFeed({
           <span>From</span>
           <Input
             type="date"
-            aria-label="From date"
+            aria-label={t("audit.feed.fromDateAria")}
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -708,7 +711,7 @@ export function AuditFeed({
           <span>To</span>
           <Input
             type="date"
-            aria-label="To date"
+            aria-label={t("audit.feed.toDateAria")}
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
@@ -717,7 +720,7 @@ export function AuditFeed({
         </label>
         {hasActiveFilters ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
+            {t("audit.feed.clearFilters")}
           </Button>
         ) : null}
         {canUseAdvancedControls ? (
@@ -747,7 +750,7 @@ export function AuditFeed({
       ) : feedView.kind === "error" ? (
         <QueryErrorState
           error={feedView.error}
-          action="load the audit log"
+          action={t("audit.feed.loadAction")}
           onRetry={feedView.retry}
           retrying={feedView.isFetching}
         />
@@ -757,14 +760,14 @@ export function AuditFeed({
             <ScrollText className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-medium text-foreground">
-                {hasActiveFilters ? "No actions match these filters" : "Nothing here yet"}
+                {hasActiveFilters ? t("audit.feed.emptyFiltered") : t("audit.feed.emptyInitial")}
               </p>
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
-                  ? "Try a wider date range or different filters."
+                  ? t("audit.feed.emptyFilteredHint")
                   : resolvedMode === "agents"
-                    ? "As soon as your agents start doing things, their actions show up here."
-                    : "As soon as anyone in your organization does something, it shows up here."}
+                    ? t("audit.feed.emptyAgentsHint")
+                    : t("audit.feed.emptyAllHint")}
               </p>
             </div>
             {hasActiveFilters ? (
@@ -776,7 +779,7 @@ export function AuditFeed({
         </Card>
       ) : (
         <div className="border-y border-border">
-          <ul className={cn("divide-y divide-border")} aria-label="Audit activity">
+          <ul className={cn("divide-y divide-border")} aria-label={t("audit.feed.listAria")}>
             {items.map((record) => (
               <AuditRow
                 key={record.id}
@@ -798,7 +801,7 @@ export function AuditFeed({
             onClick={() => feed.fetchNextPage()}
             disabled={feed.isFetchingNextPage}
           >
-            {feed.isFetchingNextPage ? "Loading…" : "Load more"}
+            {feed.isFetchingNextPage ? t("common.loading") : t("audit.feed.loadMore")}
           </Button>
         </div>
       ) : null}

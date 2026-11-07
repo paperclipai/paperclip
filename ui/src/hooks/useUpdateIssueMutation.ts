@@ -11,6 +11,7 @@ import { describeError, isTransientError } from "@/api/errors";
 import { issuesApi, type IssueUpdateResponse } from "@/api/issues";
 import { useToastActions } from "@/context/ToastContext";
 import { useConnectivityStore } from "@/lib/connectivity";
+import { t } from "@/i18n";
 import { applyOptimisticIssueFieldUpdate, matchesIssueRef } from "@/lib/optimistic-issue-comments";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -185,7 +186,7 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const connectivity = useConnectivityStore();
-  const { companyId, invalidateKeys, onSuccess, onSettled, action = "update the task" } = options;
+  const { companyId, invalidateKeys, onSuccess, onSettled, action = t("errorActions.updateTheTask") } = options;
 
   const mutationOptions = {
     waitForTurn: (variables: UpdateIssueVariables) => issueWriteTurns.get(variables)?.ready,

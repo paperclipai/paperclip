@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { t } from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import { AgentIdentityChipContent, agentIdentityChipClass } from "@/components/agents/AgentIdentityChip";
 import { Link } from "@/lib/router";
@@ -72,12 +73,12 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
         ))}
         {hidden > 0 ? (
           <button type="button" className={toggleClass} onClick={() => setExpanded(true)}>
-            +{hidden} more
+            {t("agents.detail.reports.more", { count: hidden, defaultValue: `+${hidden} more` })}
           </button>
         ) : null}
         {expanded && shown < reports.length ? (
           <button type="button" className={toggleClass} onClick={() => setExpanded(false)}>
-            Show less
+            {t("agents.detail.reports.showLess", { defaultValue: "Show less" })}
           </button>
         ) : null}
       </div>

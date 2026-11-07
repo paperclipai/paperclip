@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Check, ChevronsUpDown, X } from "lucide-react";
 import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -98,9 +99,9 @@ export function SearchableSelect<
   groups,
   onValueChange,
   placeholder,
-  searchPlaceholder = "Search...",
-  emptyMessage = "No options found.",
-  loadingMessage = "Loading...",
+  searchPlaceholder,
+  emptyMessage,
+  loadingMessage,
   loading = false,
   disabled = false,
   className,
@@ -121,6 +122,7 @@ export function SearchableSelect<
   listFooter,
   createItem,
 }: SearchableSelectProps<TValue, TOption>) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
@@ -272,7 +274,7 @@ export function SearchableSelect<
           <button
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Close selector"
+            aria-label={t("agents.SearchableSelect.closeSelector")}
             onClick={() => closePopover({ suppressTriggerFocus: true })}
           >
             <X className="size-5" />
@@ -282,7 +284,7 @@ export function SearchableSelect<
           <CommandInput
             value={query}
             onValueChange={setQuery}
-            placeholder={searchPlaceholder}
+            placeholder={searchPlaceholder ?? t("agents.SearchableSelect.searchPlaceholder")}
           />
           <CommandList
             className="overscroll-contain touch-pan-y"
@@ -293,12 +295,12 @@ export function SearchableSelect<
             }}
           >
             {loading ? (
-              <div className="px-3 py-6 text-center text-sm text-muted-foreground">{loadingMessage}</div>
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">{loadingMessage ?? t("agents.SearchableSelect.loadingMessage")}</div>
             ) : (
               <>
-                {!hasOptions && !createItem ? <CommandEmpty>{emptyMessage}</CommandEmpty> : null}
+                {!hasOptions && !createItem ? <CommandEmpty>{emptyMessage ?? t("agents.SearchableSelect.emptyMessage")}</CommandEmpty> : null}
                 {!hasOptions && createItem ? (
-                  <div className="px-3 py-3 text-center text-xs text-muted-foreground">{emptyMessage}</div>
+                  <div className="px-3 py-3 text-center text-xs text-muted-foreground">{emptyMessage ?? t("agents.SearchableSelect.emptyMessage")}</div>
                 ) : null}
                 {filteredGroups.map((group) => (
                   <CommandGroup key={group.id} heading={group.label}>

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Plug, Plus, Search, X } from "lucide-react";
 import { Link } from "@/lib/router";
+import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,7 @@ import {
   type ToolCapability,
   type WizardSelections,
 } from "./profile-model";
+import { useTranslation } from "@/i18n";
 import { LoadingState } from "../shared";
 
 type NewToolsAction = "deny" | "allow";
@@ -103,7 +105,7 @@ export function WizardToolsStep(props: WizardToolsStepProps) {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search tools…"
+            placeholder={t("tools.profiles.wizardTools.searchTools", { defaultValue: "Search tools…" })}
             className="pl-8"
           />
         </div>
@@ -270,7 +272,7 @@ function NewToolsRadio({
   ];
   return (
     <fieldset className="space-y-2 rounded-lg border border-border p-4">
-      <legend className="px-1 text-sm font-medium text-foreground">New tools that appear later</legend>
+      <legend className="px-1 text-sm font-medium text-foreground">{t("tools.profiles.wizardTools.newToolsLaterLegend", { defaultValue: "New tools that appear later" })}</legend>
       <div className="space-y-2">
         {options.map((opt) => (
           <label key={opt.value} className="flex cursor-pointer items-start gap-2.5">
@@ -289,7 +291,7 @@ function NewToolsRadio({
                     Recommended
                   </Badge>
                 ) : (
-                  <span className="text-xs font-normal text-amber-600">(risky)</span>
+                  <span className="text-xs font-normal text-amber-600">{t("tools.profiles.wizardTools.risky", { defaultValue: "(risky)" })}</span>
                 )}
               </span>
               <span className="text-xs text-muted-foreground">{opt.hint}</span>
@@ -349,7 +351,7 @@ function AdvancedRules({
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border border-border">
       <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left">
-        <span className="text-sm font-medium text-foreground">Advanced rules</span>
+        <span className="text-sm font-medium text-foreground">{t("tools.profiles.wizardTools.advancedRules", { defaultValue: "Advanced rules" })}</span>
         <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-180")} />
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-3 border-t border-border px-4 py-3">

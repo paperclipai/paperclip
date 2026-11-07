@@ -12,7 +12,11 @@ describe("connection review setup", () => {
 
   it("matches a label the current connector setup actually renders", async () => {
     const source = await readFile(new URL("../../ui/src/features/connections/ConnectionSetupFlow.tsx", import.meta.url), "utf8");
-    const labels = [...source.matchAll(/"(Check link|Save and continue)"/g)].map(match => match[1]!);
+    const en = JSON.parse(await readFile(new URL("../../ui/src/i18n/locales/en.json", import.meta.url), "utf8"));
+    const keys = [...source.matchAll(/t\("([\w.]+)"\)/g)].map(match => match[1]!);
+    const labels = keys
+      .map(key => key.split(".").reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], en))
+      .filter((value): value is string => value === "Check link" || value === "Save and continue");
     expect(labels.length).toBeGreaterThan(0);
     expect(labels.every(label => CONNECTOR_SETUP_NEXT_STEP.test(label))).toBe(true);
   });

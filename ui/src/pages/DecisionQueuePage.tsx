@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Settings2, X } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
@@ -61,6 +62,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popove
  * is surfaced.
  */
 export function DecisionQueuePage() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -128,7 +130,7 @@ export function DecisionQueuePage() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: queue?.title ?? queueKey }]);
+    setBreadcrumbs([{ label: t("inbox.whatNeedsMe.title"), href: "/decisions" }, { label: queue?.title ?? queueKey }]);
   }, [setBreadcrumbs, queue?.title, queueKey]);
 
   // Re-hydrate per-company preferences when the company changes.
@@ -207,14 +209,14 @@ export function DecisionQueuePage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) }),
     onError: (err) =>
       pushToast({
-        title: "Could not update seeding",
+        title: t("inbox.decisionQueue.toastUpdateSeedingFailed"),
         body: describeError(err).body,
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
+    return <p className="text-sm text-muted-foreground">{t("inbox.whatNeedsMe.emptyCompany")}</p>;
   }
   // Keep a loaded queue on screen through a failed refetch; only a real
   // failure, or an outage before the first load, replaces the page.
@@ -226,7 +228,7 @@ export function DecisionQueuePage() {
       <QueryErrorState
         size="page"
         error={feedView.error}
-        action="load this queue"
+        action={t("inbox.decisionQueue.loadAction")}
         onRetry={feedView.retry}
         retrying={feedView.isFetching}
       />
@@ -444,6 +446,7 @@ function QueueItemRow({
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
   onExcluded: () => void;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -460,12 +463,12 @@ function QueueItemRow({
     onSuccess: () => {
       setOpen(false);
       setReason("");
-      pushToast({ title: "Removed from queue", body: item.subject.title ?? undefined, tone: "info" });
+      pushToast({ title: t("inbox.decisionQueue.toastRemoved"), body: item.subject.title ?? undefined, tone: "info" });
       onExcluded();
     },
     onError: (err) =>
       pushToast({
-        title: "Could not exclude",
+        title: t("inbox.decisionQueue.toastExcludeFailed"),
         body: describeError(err).body,
         tone: "error",
       }),

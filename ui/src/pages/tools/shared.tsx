@@ -9,10 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { QueryErrorState } from "@/components/QueryView";
 import { StatusBadge } from "@/components/StatusBadge";
+import { useTranslation } from "@/i18n";
 
 /** Risk classification badge for a catalog tool. */
 export function RiskBadge({ risk }: { risk: ToolRiskLevel | null | undefined }) {
-  if (!risk) return <Badge variant="outline">unknown</Badge>;
+  const { t } = useTranslation();
+  if (!risk) return <Badge variant="outline">{t("tools.shared.risk.unknown", { defaultValue: "unknown" })}</Badge>;
   const variant =
     risk === "high" || risk === "critical"
       ? "destructive"
@@ -32,11 +34,12 @@ export function CapabilityBadges({
   isWrite?: boolean;
   isDestructive?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <span className="inline-flex flex-wrap gap-1">
-      {isReadOnly ? <Badge variant="outline">read-only</Badge> : null}
-      {isWrite ? <Badge variant="secondary">write</Badge> : null}
-      {isDestructive ? <Badge variant="destructive">destructive</Badge> : null}
+      {isReadOnly ? <Badge variant="outline">{t("tools.shared.capabilities.readOnly", { defaultValue: "read-only" })}</Badge> : null}
+      {isWrite ? <Badge variant="secondary">{t("tools.shared.capabilities.write", { defaultValue: "write" })}</Badge> : null}
+      {isDestructive ? <Badge variant="destructive">{t("tools.shared.capabilities.destructive", { defaultValue: "destructive" })}</Badge> : null}
     </span>
   );
 }
@@ -116,7 +119,8 @@ export function DecisionBadge({ decision }: { decision: ToolPolicyDecision | str
 
 /** Compact relative time, falling back to absolute. */
 export function RelativeTime({ value }: { value: Date | string | null | undefined }) {
-  if (!value) return <span className="text-muted-foreground">never</span>;
+  const { t } = useTranslation();
+  if (!value) return <span className="text-muted-foreground">{t("tools.shared.never", { defaultValue: "never" })}</span>;
   const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return <span className="text-muted-foreground">—</span>;
   const diffMs = Date.now() - date.getTime();
@@ -124,11 +128,13 @@ export function RelativeTime({ value }: { value: Date | string | null | undefine
   const mins = Math.round(abs / 60000);
   const isFuture = diffMs < 0;
   let text: string;
-  if (mins < 1) text = "just now";
+  if (mins < 1) text = t("tools.shared.justNow", { defaultValue: "just now" });
   else {
-    const value =
+    const val =
       mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.round(mins / 60)}h` : `${Math.round(mins / 1440)}d`;
-    text = isFuture ? `in ${value}` : `${value} ago`;
+    text = isFuture
+      ? t("tools.shared.inTime", { value: val, defaultValue: `in ${val}` })
+      : t("tools.shared.timeAgo", { value: val, defaultValue: `${val} ago` });
   }
   return (
     <span title={date.toLocaleString()} className="text-muted-foreground">
@@ -157,11 +163,13 @@ export function ToolsPageHeader({
   );
 }
 
-export function LoadingState({ label = "Loading…" }: { label?: string }) {
+export function LoadingState({ label }: { label?: string }) {
+  const { t } = useTranslation();
+  const displayLabel = label ?? t("tools.shared.loading", { defaultValue: "Loading…" });
   return (
     <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
       <span className="h-4 w-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
-      {label}
+      {displayLabel}
     </div>
   );
 }
@@ -181,7 +189,15 @@ export function ErrorState({
   onRetry?: () => void;
   action?: string;
 }) {
-  return <QueryErrorState error={error} action={action ?? "load Tools & Access"} onRetry={onRetry} size="panel" />;
+  const { t } = useTranslation();
+  return (
+    <QueryErrorState
+      error={error}
+      action={action ?? t("tools.shared.loadToolsAndAccess", { defaultValue: "load Tools & Access" })}
+      onRetry={onRetry}
+      size="panel"
+    />
+  );
 }
 
 /**
@@ -198,6 +214,7 @@ export function PendingBackendNotice({
   body: ReactNode;
   issue?: { identifier: string; href: string };
 }) {
+  const { t } = useTranslation();
   return (
     <Card className="border-dashed">
       <CardContent className="flex flex-col gap-2 py-8">
@@ -208,7 +225,7 @@ export function PendingBackendNotice({
         <p className="max-w-2xl text-sm text-muted-foreground">{body}</p>
         {issue ? (
           <a href={issue.href} className="text-sm font-medium text-primary hover:underline">
-            Tracked in {issue.identifier} →
+            {t("tools.shared.trackedIn", { identifier: issue.identifier, defaultValue: `Tracked in ${issue.identifier} →` })}
           </a>
         ) : null}
       </CardContent>

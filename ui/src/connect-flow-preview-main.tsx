@@ -29,6 +29,7 @@ import {
 import { OnboardingHeading } from "./components/onboarding/OnboardingPrimitives";
 import { AgentCharacter } from "./components/AgentCharacter";
 import { SleepingZs } from "./components/onboarding/SleepingZs";
+import { useTranslation } from "@/i18n";
 import { Stepper } from "./components/onboarding/Stepper";
 import "./index.css";
 
@@ -128,9 +129,10 @@ function ConnectFlowPreview({
   const [apiKey, setApiKey] = useState("");
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
+  const { t } = useTranslation();
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
   const providerName = selectedId === "codex_local" ? "OpenAI" : "Claude";
-  const signInLabel = `Sign in to ${providerName}`;
+  const signInLabel = t("apps.ConnectFlowPreview.signIn", { provider: providerName });
   /*
     Claude takes a code back from the customer; OpenAI hands one over. That is
     the only difference between the two cards — the sentence and the last row —
@@ -139,8 +141,8 @@ function ConnectFlowPreview({
   const apiMode = mode === "api";
   const handsOverCode = !apiMode && selectedId === "codex_local";
   const instructionTail = handsOverCode
-    ? " by providing the authorization code below"
-    : " then come back and enter authorization code";
+    ? t("apps.ConnectFlowPreview.tailCode")
+    : t("apps.ConnectFlowPreview.tailEnter");
   const authUrl = OAUTH_URL[selectedId ?? "claude_local"]!;
 
   const after = (ms: number, fn: () => void) => {
@@ -277,18 +279,18 @@ function ConnectFlowPreview({
     phase === "unwindCard"
       ? { label: signInLabel, icon: "none" as const, disabled: true }
       : done
-      ? { label: "Start over", icon: "arrow" as const, disabled: false }
+      ? { label: t("apps.ConnectFlowPreview.startOver"), icon: "arrow" as const, disabled: false }
       : phase === "ready" && apiMode
         ? // A key is typed here rather than fetched elsewhere, so the button is
           // the submit and stays dead until there is something to submit.
-          { label: "Connect", icon: "arrow" as const, disabled: !apiKey.trim() }
+          { label: t("apps.ConnectFlowPreview.connect"), icon: "arrow" as const, disabled: !apiKey.trim() }
         : phase === "ready"
         ? { label: signInLabel, icon: "none" as const, disabled: false }
         : phase === "waiting"
           ? { label: selectedId === "codex_local" ? "Waiting for auth…" : "Waiting for code", icon: "spinner" as const, disabled: true }
           : phase === "connecting"
-            ? { label: "Connecting", icon: "spinner" as const, disabled: true }
-            : { label: "Next", icon: "arrow" as const, disabled: true };
+            ? { label: t("apps.ConnectFlowPreview.connecting"), icon: "spinner" as const, disabled: true }
+            : { label: t("apps.ConnectFlowPreview.next"), icon: "arrow" as const, disabled: true };
 
   return (
     <MotionConfig reducedMotion="user">
@@ -308,11 +310,11 @@ function ConnectFlowPreview({
         <div className="pt-6">
           <OnboardingHeading
             center
-            title={done ? "Connected" : "Connect a model"}
+            title={done ? t("apps.ConnectFlowPreview.connected") : t("apps.ConnectFlowPreview.connectModel")}
             lede={
               done
-                ? "The step advances straight to Review — there is no success screen."
-                : "Paperclip works with your existing subscription or API keys."
+                ? t("apps.ConnectFlowPreview.reviewLede")
+                : t("apps.ConnectFlowPreview.intro")
             }
           />
         </div>
@@ -321,7 +323,7 @@ function ConnectFlowPreview({
           <>
             <div className="space-y-2 pt-12">
               <ModelSourceTiles
-                label="Model source"
+                label={t("apps.ConnectFlowPreview.modelSource")}
                 sources={MODEL_SOURCES}
                 mode={mode}
                 selectedId={selectedId}
@@ -397,7 +399,7 @@ function ConnectFlowPreview({
                         // No link, because there is nowhere to sign in to. The
                         // key is pasted straight in, so the sentence only has
                         // to say what is wanted.
-                        `Provide your ${providerName} API key to connect`
+                        t("apps.ConnectFlowPreview.provideKey", { provider: providerName })
                       ) : (
                         <>
                           {/* The same destination as the button below. Two ways
@@ -420,8 +422,8 @@ function ConnectFlowPreview({
                     {/* The one place the three paths differ. */}
                     {apiMode ? (
                       <OnboardingCardField
-                        label="API key"
-                        placeholder="Enter API key here"
+                        label={t("apps.ConnectFlowPreview.apiKeyLabel")}
+                        placeholder={t("apps.ConnectFlowPreview.apiKeyPlaceholder")}
                         masked
                         value={apiKey}
                         onChange={setApiKey}
