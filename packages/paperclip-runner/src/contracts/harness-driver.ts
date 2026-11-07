@@ -1,4 +1,5 @@
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -583,6 +584,8 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean }): Promise<void>;

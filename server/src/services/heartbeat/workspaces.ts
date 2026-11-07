@@ -1,4 +1,5 @@
 import { retainCurrentWorkspaceSource } from "../workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "../execution-workspace-source-roots.js";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
@@ -3401,7 +3402,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       managedBase && workspace.repoUrl
         ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
     ].filter((value): value is string => Boolean(value));
-    await retainCurrentWorkspaceSource(workspace.cwd ?? workspace.providerRef ?? "./");
+    for (const sourceCwd of localWorkspaceSourcePaths(workspace)) await retainCurrentWorkspaceSource(sourceCwd);
     const cwd = await resolvePersistedGitWorkspaceSource({
       companyId: agent.companyId,
       projectId: sourceProjectId,
