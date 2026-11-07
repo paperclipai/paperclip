@@ -319,6 +319,35 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
     expect(await hasLocalNativeHarnessObligations(db)).toBe(false);
   });
+  it.each(["codex-home", "opencode", "acpx"])("retains omitted %s history after switching to a preconfigured home", async directory => {
+    const f = await fixture("none");
+    const execution = parseNativeExecutionInput({ ...f.execution, schema: "paperclip.native-execution-input.v7", homeMode: "preconfigured",
+      provider: { kind: "codex", model: null, approvalPolicy: "never" } });
+    expect(scopedRunnerdStateRoot(execution)).toBe(f.sourceRoot);
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before!.runnerProfileJson,
+      nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.runId));
+    const history = join(f.sourceRoot, directory, "history.json");
+    await mkdir(join(history, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(history, "original provider history", { mode: 0o600 });
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("unverified");
+    expect(await readFile(history, "utf8")).toBe("original provider history");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!.runnerProfileJson)
+      .not.toHaveProperty("nativeHarnessFilesystemIndependence");
+    expect(await hasLocalNativeHarnessObligations(db)).toBe(true);
+  });
+  it("permits a preconfigured home only when no omitted provider directory remains", async () => {
+    const f = await fixture("none");
+    const execution = parseNativeExecutionInput({ ...f.execution, schema: "paperclip.native-execution-input.v7", homeMode: "preconfigured",
+      provider: { kind: "codex", model: null, approvalPolicy: "never" } });
+    expect(scopedRunnerdStateRoot(execution)).toBe(f.sourceRoot);
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...before!.runnerProfileJson,
+      nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.runId));
+    await preserveNativeHarnessFilesystemIndependence(db, f.input);
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(await hasLocalNativeHarnessObligations(db)).toBe(false);
+  });
   it("retains the first authenticated controller archive when a capture uploads late", async () => {
     const f = await controllerFixture();
     let release!: () => void, entered!: () => void, delay = true;

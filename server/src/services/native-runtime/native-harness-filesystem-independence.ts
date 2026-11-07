@@ -276,12 +276,15 @@ function runtimeFiles(skill: { bundle: { digest: string; manifestDigest: string;
 async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, assets: Awaited<ReturnType<typeof assetBindings>>,
   storage: StorageService, db: Db, verifyStorage: boolean, signal: AbortSignal, controller: ControllerBinding, plans = new Map<string, FileManifestEntry[]>()) {
   const root = scopedRunnerdStateRoot(facts.execution), metadata: unknown[] = [], store = skillPackageStore(db, storage);
+  const directories = resolveNativeHarnessPersistenceProfile(facts.execution).directories;
   const stat = async (path: string) => lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
   const rootStat = await stat(root);
   if (rootStat) {
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) fail();
     const names = await readdir(root);
     if (names.some(name => !isKnownNativeSessionRootEntry(name))) fail();
+    if (names.some(name => ["runner", "codex-home", "opencode", "acpx"].includes(name)
+      && !directories.some(directory => directory.name === name))) fail();
     const control = await stat(join(root, "control-plane"));
     if (control && (!control.isDirectory() || control.isSymbolicLink()
       || (await readdir(join(root, "control-plane"))).some(name => name !== "control-plane-state.json"))) fail();
@@ -300,7 +303,7 @@ async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, asse
   const runtime = "runtimeContext" in facts.execution ? facts.execution.runtimeContext : null;
   if (!runtime) fail();
   let bytes = 0, count = 0;
-  for (const directory of resolveNativeHarnessPersistenceProfile(facts.execution).directories) {
+  for (const directory of directories) {
     const path = join(root, directory.name), directoryStat = await stat(path);
     metadata.push([directory.name, directoryStat && [directoryStat.dev, directoryStat.ino, directoryStat.ctimeMs]]);
     if (!directoryStat) continue;
