@@ -626,10 +626,13 @@ export function classifyAdapterFailureForRecovery(
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
+  // A refused exact resume keeps its interrupted attempt for operators in
+  // `error` and `nativeExactResumeRefusal`. Recovery follows the refusal only.
+  const { nativeExactResumeRefusal: _interruptedAttempt, ...currentResult } = resultJson;
   const error = [
     latestRun.errorCode ?? "",
-    latestRun.error ?? "",
-    JSON.stringify(resultJson),
+    failureClassificationText(latestRun) ?? "",
+    JSON.stringify(currentResult),
   ].join("\n");
   if (
     latestRun.errorCode === "configuration_incomplete" ||
