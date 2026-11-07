@@ -6,7 +6,7 @@ export type IssueProjectReferenceSourceKind =
 
 /**
  * Reverse-lookup candidates for a task's project references, kept by triggers
- * in the same statement as each source write (migration 0438). A superset of
+ * in the same statement as each source write (migration 0439). A superset of
  * the structured parser's result: every UUID inside a `project://` link.
  * `accepted_plan` rows come from accepted plan confirmations (source: the
  * immutable revision). No foreign keys: a key check would lock the task row
