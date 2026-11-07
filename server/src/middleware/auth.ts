@@ -1,3 +1,4 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
@@ -672,6 +673,7 @@ async function resolveCloudTenantActorOnce(
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
         await notifyChatCompanyAuthorityChange(tx, { companyId });
+        if(membershipRole!=="viewer")await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
       }
       return tx
         .insert(companyMemberships)

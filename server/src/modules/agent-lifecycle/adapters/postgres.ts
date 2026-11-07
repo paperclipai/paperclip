@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, budgetPolicies, type Db } from "@paperclipai/db";
 import type { AgentLifecycleOperation } from "@paperclipai/shared";
-import { AgentLifecycleConflict, compatibilityStatus, isLifecycleWorkPending, transition, type LifecycleCommand } from "../domain/policy.js";
+import { AgentLifecycleConflict, canConfigureAgentConnection, compatibilityStatus, isLifecycleWorkPending, transition, type LifecycleCommand } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
 import type { LifecycleStore } from "../application/ports.js";
 
@@ -81,6 +81,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
   };
   if (next === "ready") operation.resumeState = "ready";
   const status = compatibilityStatus(next, agent.status);
+  if(!canConfigureAgentConnection(agent)&&canConfigureAgentConnection({lifecycleState:next,status}))await effects.beforeConnectionEligibilityRestore?.(tx,agent.companyId,agent.id);
   if (status !== agent.status) await effects.beforeStatusChange(tx, agent.companyId, agent.id, agent.status, status);
   if (isLifecycleWorkPending(next)) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({
