@@ -1493,6 +1493,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               }
             }
             if (running) {
+              running.markStopRequested?.();
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,

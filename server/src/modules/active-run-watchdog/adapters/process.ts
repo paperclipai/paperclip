@@ -26,6 +26,7 @@ export function createProcessAdapter(): RunProcessController {
       }
 
       const running = runningProcesses.get(input.runId);
+      running?.markStopRequested?.();
       const registeredPid = running?.child.pid ?? null;
       const registeredProcessGroupId = running?.processGroupId ?? null;
       const pid = isValidPositivePid(registeredPid)
