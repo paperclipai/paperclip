@@ -3,7 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
 import { CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
@@ -11,9 +11,9 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
@@ -46,13 +46,23 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
+    fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
+      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
+    }));
+    await renderSidebar();
+    const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(20);
+    expect(region.textContent).not.toContain("Recents");
+    expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
+  });
   it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
@@ -80,6 +90,18 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("keeps mixed pins in stored order and prevents native link dragging", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(saved));
+    await renderSidebar();
+    const links = [...container.querySelectorAll<HTMLAnchorElement>(".design-sidebar-pins a")];
+    expect(links.map(link => link.textContent)).toEqual(["CTO", "Artifacts", "Dashboard"]);
+    expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:reviewer")!)).toEqual(saved);
+    const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    act(() => links[1].dispatchEvent(nativeDrag));
+    expect(nativeDrag.defaultPrevented).toBe(true);
+  });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
     fixture.enableCases = enabled;
     await renderSidebar();
@@ -103,7 +125,7 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it.each([false, true])("keeps pins above More without a separate section, restores and unpins when collapsed is %s", async collapsed => {
+  it.each([false, true])("restores and unpins pages in the Pinned section when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
     expect(pinnedPage("/projects")).toBeNull();
@@ -113,9 +135,9 @@ describe("Coordinator pinned pages", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(pinnedPage("/projects")?.textContent).toBe("Projects");
     expect(navigation().querySelector('[aria-label="Pinned pages"]')).toBeNull();
-    expect(navigation().querySelector('[data-slot="sidebar-group-label"]')).toBeNull();
+    if (!collapsed) expect(navigation().querySelector('[data-slot="sidebar-group-label"]')?.textContent).toBe("Pinned");
     const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
-    expect(pinnedPage("/projects")!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(more.compareDocumentPosition(pinnedPage("/projects")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderSidebar();

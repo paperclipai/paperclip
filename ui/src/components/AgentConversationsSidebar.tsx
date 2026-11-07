@@ -9,6 +9,8 @@ import { useQueries } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
+import { useDialogActions } from "@/context/DialogContext";
+import { AgentChatPin } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
 export function AgentConversationsSidebar() {
@@ -18,6 +20,7 @@ export function AgentConversationsSidebar() {
       ? [[chat.conversationAgentId, chat.unreadMessageCount] as const] : [])), [chats.data]);
   const openChat = useOpenAgentChat(companyId, userId);
   const navigate = useNavigate();
+  const { openNewAgent } = useDialogActions();
   const memberships = useResourceMemberships(companyId);
   const { isMobile, setSidebarOpen } = useSidebar();
   const { pathname } = useLocation();
@@ -61,6 +64,7 @@ export function AgentConversationsSidebar() {
     activeId={active?.id} previews={previews}
     unreadAgentIds={unreadAgentIds}
     unreadMessageCounts={unreadMessageCounts}
+    onCreateAgent={openNewAgent} renderAgentAction={agent => <AgentChatPin agent={agent} />}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.
     loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}
