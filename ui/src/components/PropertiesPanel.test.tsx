@@ -65,15 +65,22 @@ describe("PropertiesPanel", () => {
     panelVisible = true,
     taskDetailLayout = false,
     content = <div data-testid="panel-content">content</div>,
-  }: { panelVisible?: boolean; taskDetailLayout?: boolean; content?: ReactNode } = {}) {
+    inLayoutRow = false,
+  }: { panelVisible?: boolean; taskDetailLayout?: boolean; content?: ReactNode; inLayoutRow?: boolean } = {}) {
     mockPanelState.panelContent = content;
     mockPanelState.panelVisible = panelVisible;
     root ??= createRoot(container);
+    const panel = <PropertiesPanel taskDetailLayout={taskDetailLayout} />;
     flushSync(() => {
       root!.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <PropertiesPanel taskDetailLayout={taskDetailLayout} />
+            {inLayoutRow ? (
+              <div data-testid="layout-row">
+                <main id="main-content" />
+                {panel}
+              </div>
+            ) : panel}
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -142,6 +149,7 @@ describe("PropertiesPanel", () => {
     container.remove();
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
     vi.clearAllMocks();
+    vi.restoreAllMocks();
     document.documentElement.style.removeProperty("--design-page-aside-width");
   });
 
@@ -194,6 +202,34 @@ describe("PropertiesPanel", () => {
       expect(container.querySelector("aside")).toBe(aside);
       expect(aside.style.width).toBe("344px");
       expect(window.localStorage.getItem(storageKey)).toBe("700");
+    });
+
+    it("fits the pane to its layout row so it is never clipped at the right edge", async () => {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+      window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "624");
+      const geometry = { rowRight: 1280, centerLeft: 700 };
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+        if (this.id === "main-content") return new DOMRect(geometry.centerLeft, 0, 0, 800);
+        if (this.getAttribute("data-testid") === "layout-row") return new DOMRect(0, 0, geometry.rowRight, 800);
+        return new DOMRect();
+      });
+
+      await renderPanel({ taskDetailLayout: true, inLayoutRow: true });
+      const aside = container.querySelector("aside")!;
+      expect(aside.style.width).toBe("260px");
+
+      geometry.centerLeft = 488;
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+      expect(aside.style.width).toBe("372px");
+      const inner = aside.querySelector<HTMLDivElement>(":scope > div:not([role]) > div");
+      expect(inner!.style.width).toBe("372px");
+      expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("624");
+
+      geometry.rowRight = 1440;
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+      expect(aside.style.width).toBe("532px");
     });
 
     it("renders the Paper task-detail rail width with a drag grip and a maximize button", async () => {

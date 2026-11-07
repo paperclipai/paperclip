@@ -94,6 +94,7 @@ const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
 /** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
 const RESERVED_LAYOUT_WIDTH = 656;
+const MIN_CENTER_WIDTH = 420;
 /** Content cap while maximized so text doesn't span the full viewport. */
 const MAXIMIZED_CONTENT_MAX_WIDTH = 840;
 /**
@@ -109,12 +110,23 @@ function readProposalPaneWidth(fallback: number): number {
   return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
 }
 
-function clampPaneWidth(width: number): number {
+function clampPaneWidth(width: number, fittedMax: number | null = null): number {
   const max =
-    typeof window === "undefined"
+    fittedMax ??
+    (typeof window === "undefined"
       ? Number.POSITIVE_INFINITY
-      : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
+      : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH));
   return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), max);
+}
+
+function measureFittedPaneMax(aside: HTMLElement | null): number | null {
+  const row = aside?.parentElement;
+  const main = row?.querySelector<HTMLElement>("#main-content");
+  if (!row || !main) return null;
+  const rowRight = row.getBoundingClientRect().right;
+  const centerLeft = main.getBoundingClientRect().left;
+  if (rowRight <= centerLeft) return null;
+  return Math.max(MIN_PANE_WIDTH, Math.floor(rowRight - centerLeft - MIN_CENTER_WIDTH));
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
@@ -207,8 +219,29 @@ function ResizablePropertiesPanel({
   }, [panelVisible]);
 
   const asideRef = useRef<HTMLElement | null>(null);
+  const [fittedMax, setFittedMax] = useState<number | null>(null);
+  const fittedMaxRef = useRef(fittedMax);
+  fittedMaxRef.current = fittedMax;
+  const displayWidth = fittedMax === null ? width : Math.min(width, fittedMax);
   const widthRef = useRef(width);
   widthRef.current = width;
+  const displayWidthRef = useRef(displayWidth);
+  displayWidthRef.current = displayWidth;
+
+  useLayoutEffect(() => {
+    if (!panelVisible) return;
+    const row = asideRef.current?.parentElement;
+    const update = () => setFittedMax(measureFittedPaneMax(asideRef.current));
+    update();
+    window.addEventListener("resize", update);
+    const observer = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    if (row) observer?.observe(row);
+    return () => {
+      window.removeEventListener("resize", update);
+      observer?.disconnect();
+    };
+  }, [panelVisible]);
+
   const dragStateRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(
     null,
   );
@@ -262,7 +295,7 @@ function ResizablePropertiesPanel({
     dragStateRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
-      startWidth: widthRef.current,
+      startWidth: displayWidthRef.current,
     };
     previousBodyUserSelectRef.current = document.body.style.userSelect;
     document.body.style.userSelect = "none";
@@ -273,7 +306,7 @@ function ResizablePropertiesPanel({
     const drag = dragStateRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) return;
     // The grip sits on the panel's LEFT border: moving left widens the panel.
-    setWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX)));
+    setWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX), fittedMaxRef.current));
   }, []);
 
   const handleGripPointerUp = useCallback(
@@ -335,7 +368,7 @@ function ResizablePropertiesPanel({
       const rowRight = row
         ? row.getBoundingClientRect().right
         : window.innerWidth - pane.rightInset;
-      return { ...pane, left: rowRight - widthRef.current };
+      return { ...pane, left: rowRight - displayWidthRef.current };
     });
     clearRestoreTimer();
     restoreTimerRef.current = window.setTimeout(finishRestore, RESTORE_FALLBACK_DELAY);
@@ -372,7 +405,7 @@ function ResizablePropertiesPanel({
         <div
           aria-hidden
           className="hidden md:block shrink-0"
-          style={{ width: panelVisible ? width : 0 }}
+          style={{ width: panelVisible ? displayWidth : 0 }}
         />
       ) : null}
       <aside
@@ -399,7 +432,7 @@ function ResizablePropertiesPanel({
                 left: fixedPane.left,
                 right: fixedPane.rightInset,
               }
-            : { width: panelVisible ? width : 0, opacity: panelVisible ? 1 : 0 }
+            : { width: panelVisible ? displayWidth : 0, opacity: panelVisible ? 1 : 0 }
         }
         onTransitionEnd={handleTransitionEnd}
       >
@@ -429,7 +462,7 @@ function ResizablePropertiesPanel({
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <div
             className={cn("flex shrink-0 flex-col min-h-0", !maximized && "border-l border-border", isFixed && "w-full")}
-            style={isFixed ? undefined : { width, minWidth: width }}
+            style={isFixed ? undefined : { width: displayWidth, minWidth: displayWidth }}
           >
             <SidePanelFrame
               presentation="docked"
