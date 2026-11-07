@@ -15,7 +15,7 @@ const actor = "migration:native-warm-follow-up-default";
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     try {
       const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Warm default', 'WD1') RETURNING id`;
-      const candidates: Array<{ name: string; adapterType?: string; config: Record<string, unknown>; explicit?: boolean; migrates: boolean }> = [
+      const candidates: Array<{ name: string; adapterType?: string; config: Record<string, string | number>; explicit?: boolean; migrates: boolean }> = [
         { name: "Codex default", config: { provider: "codex", model: "m", lifecycleMode: "per_turn", codexPermissionMode: "never" }, migrates: true },
         { name: "OpenCode default", config: { provider: "opencode", model: "m", lifecycleMode: "per_turn" }, migrates: true },
         { name: "Claude default", config: { provider: "acpx", acpxAgent: "claude", model: "m", lifecycleMode: "per_turn" }, migrates: true },
@@ -54,7 +54,7 @@ const actor = "migration:native-warm-follow-up-default";
       await applyPendingMigrations(database.connectionString);
 
       const rows = await sql`SELECT id, adapter_config FROM agents WHERE company_id = ${company!.id}`;
-      const configOf = (name: string) => rows.find(row => row.id === ids.get(name))!.adapter_config as Record<string, unknown>;
+      const configOf = (name: string) => rows.find(row => row.id === ids.get(name))!.adapter_config as Record<string, string | number>;
       for (const candidate of candidates) {
         if (candidate.migrates) {
           const { lifecycleMode: _cleared, ...rest } = candidate.config;
