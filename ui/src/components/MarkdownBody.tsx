@@ -1,3 +1,4 @@
+import { PatchLines } from "./PatchLines";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -41,6 +42,7 @@ import {
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "../lib/task-status-presentation";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
@@ -188,17 +190,18 @@ function MarkdownIssueLink({
   }
 
   if (documentLink) {
-    return <SidebarDocumentLink href={href} onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
-      <span className="min-w-0 truncate text-foreground underline underline-offset-4">{children}</span>
+    return <SidebarDocumentLink href={href} variant="inline" onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
+      <span className="underline underline-offset-4">{children}</span>
     </SidebarDocumentLink>;
   }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
-  const issueLabel = title !== identifier
-    ? t("common.markdownBody.issueLabelWithTitle", { identifier, title })
-    : t("common.markdownBody.issueLabel", { identifier });
+  // Same presentation inputs as every task view, so a covered blocked task is
+  // the blue in-queue glyph here too, not the red blocked one (BUG-07).
+  const statusIconProps = data && status ? taskStatusIconProps({ ...data, status }) : null;
+  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   // Until the fetch settles we don't yet know whether this viewer can read the
   // issue. Keep the mention a plain link (clickable, styled as today) but hold
@@ -227,8 +230,8 @@ function MarkdownIssueLink({
       title={title}
       aria-label={issueLabel}
     >
-      {status ? (
-        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
+      {statusIconProps ? (
+        <StatusIcon {...statusIconProps} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>
@@ -586,6 +589,10 @@ function CodeBlock({
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
   const { t } = useTranslation();
+  const code = Array.isArray(children) ? children.find(isValidElement) : children;
+  const patchCode = isValidElement<{ className?: string; children?: ReactNode }>(code)
+    && /\blanguage-(diff|patch)\b/i.test(code.props.className ?? "");
+  const patchText = patchCode ? flattenText(code.props.children) : null;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -595,7 +602,7 @@ function CodeBlock({
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopy = useCallback(async () => {
-    const text = preRef.current?.innerText ?? flattenText(children);
+    const text = patchText ?? preRef.current?.innerText ?? flattenText(children);
     try {
       await copyTextToClipboard(text);
       setFailed(false);
@@ -609,7 +616,7 @@ function CodeBlock({
       setCopied(false);
       setFailed(false);
     }, 1500);
-  }, [children]);
+  }, [children, patchText]);
 
   const copyLabel = failed
     ? t("common.markdownBody.copyFailed")
@@ -635,7 +642,7 @@ function CodeBlock({
             : null),
         }}
       >
-        {children}
+        {patchText !== null ? <code className="language-diff"><PatchLines text={patchText} /></code> : children}
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"
@@ -879,8 +886,8 @@ function MarkdownBodyImpl({
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
-        return <SidebarDocumentLink href={href}>
-          <span className="min-w-0 truncate text-foreground underline underline-offset-4">{linkChildren}</span>
+        return <SidebarDocumentLink href={href} variant="inline">
+          <span className="underline underline-offset-4">{linkChildren}</span>
         </SidebarDocumentLink>;
       }
       if (issueRef) {

@@ -1159,6 +1159,12 @@ async function consumeTurn(
           typeof failure.message === "string" ? failure.message : undefined,
           readProviderFailure(failure.providerFailure),
         );
+        if ((receipt.disposition === "committed" || receipt.disposition === "duplicate") && !providerFailure.recoverable && failure.code === "provider_exited"
+          && failure.expected === false && failure.completedByExitedProcess === false
+          && failure.previousTurnCompleted === false && failure.provider === input.provider.kind
+          && event.runId === input.binding.runId && event.normalizedSessionId === session.identity().sessionId) {
+          throw providerFailure;
+        }
       }
       const request =
         payload.request &&
@@ -2860,11 +2866,15 @@ export async function executeNativeSession(
             // Retain the older consumer's permanent-model classification while
             // preserving structured provider metadata. A provider explicitly
             // permitting retry must not become permanent merely from its text.
+            // A driver's closed provider-failure category also marks a model
+            // rejection, without putting provider text in the failure message.
+            const providerFailure = readProviderFailure(failure.providerFailure);
             const modelRejected =
               !recoverable &&
-              /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
-                message,
-              );
+              (providerFailure?.category === "model_unavailable" ||
+                /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
+                  message,
+                ));
             throw new NativeProviderTerminalFailure(
               typeof failure.code === "string"
                 ? failure.code
@@ -2873,7 +2883,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
-              readProviderFailure(failure.providerFailure),
+              providerFailure,
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

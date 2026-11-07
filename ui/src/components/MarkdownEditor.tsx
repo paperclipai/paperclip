@@ -59,6 +59,7 @@ import {
 } from "../lib/angle-bracket-markdown";
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { unescapeIntrawordUnderscores } from "../lib/underscore-markdown";
+import { unescapeEqualsSigns } from "../lib/equals-markdown";
 import { restoreTrailingMarkdownSpaces } from "../lib/trailing-markdown-spaces";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
@@ -192,9 +193,9 @@ function prepareMarkdownForEditor(value: string): string {
  */
 function toStoredMarkdown(markdown: string): string {
   const withTrailingSpaces = restoreTrailingMarkdownSpaces(markdown);
-  // Unescape underscores first, on the exporter's exact text: removing `\<` or
-  // `\>` can turn following lines into HTML or blockquotes and move code ranges.
-  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeIntrawordUnderscores(withTrailingSpaces)));
+  // Unescape underscores and `=` first, on the exporter's exact text: removing `\<`
+  // or `\>` can turn following lines into HTML or blockquotes and move code ranges.
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeEqualsSigns(unescapeIntrawordUnderscores(withTrailingSpaces))));
 }
 
 function escapeRegExp(value: string): string {

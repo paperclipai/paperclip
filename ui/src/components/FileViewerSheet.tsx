@@ -1,5 +1,6 @@
 import { t, useTranslation } from "@/i18n";
 import { CsvPreview } from "./CsvPreview";
+import { createUnifiedDiffClassifier, isPatchFile } from "@/lib/patch";
 import { isCsvFile } from "@/lib/csv-preview";
 import {
   useCallback,
@@ -264,6 +265,12 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
     return null;
   }, [content.content.data, resource.previewKind]);
 
+  const patchLineKinds = useMemo(() => {
+    if (!lines || !isPatchFile(resource.displayPath || resource.title, resource.contentType)) return null;
+    const classify = createUnifiedDiffClassifier();
+    return lines.map((line) => classify(line.replace(/\r$/, "")).kind);
+  }, [lines, resource.displayPath, resource.title, resource.contentType]);
+
   const codeScrollRef = useRef<HTMLDivElement>(null);
   const highlightedLineRef = useRef<HTMLDivElement>(null);
 
@@ -349,7 +356,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
       role="region"
       aria-label={t("workspaces.fileContentViewer.sourceLabel", { title: resource.title })}
       tabIndex={0}
-      className="paperclip-file-viewer-code flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="paperclip-file-viewer-code min-w-0 flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <pre className="m-0 font-mono text-xs leading-5">
         {lines.map((lineText, index) => {
@@ -360,8 +367,11 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
               key={lineNumber}
               ref={isHighlighted ? highlightedLineRef : undefined}
               data-line-number={lineNumber}
+              data-patch-line={patchLineKinds?.[index]}
+              data-line-selected={isHighlighted || undefined}
               className={cn(
                 "grid grid-cols-(--gtc-5)",
+                patchLineKinds && "paperclip-patch-line",
                 // Batch 4 resolved the former half-migrated var(--x, fallback)
                 // pattern here into --code-highlight-bg-resolved (see
                 // ui/src/index.css MISC token block + TOKEN-AUDIT.md Batch 4 log).
@@ -373,6 +383,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
                 className={cn(
                   "sticky left-0 z-10 shrink-0 select-none pl-3 pr-4 text-right text-(--code-gutter-fg-resolved) opacity-70",
                   "bg-(--code-bg-resolved)",
+                  patchLineKinds && "text-(--patch-meta-fg) opacity-100",
                   isHighlighted &&
                     "opacity-100 bg-(--code-highlight-bg-resolved) border-l-2 border-(--code-highlight-border-resolved)",
                 )}
@@ -380,7 +391,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
               >
                 {lineNumber}
               </span>
-              <code className="min-w-0 whitespace-pre-wrap break-words pr-4">{lineText.length === 0 ? "​" : lineText}</code>
+              <code className={cn("min-w-0 whitespace-pre-wrap break-words pr-4", patchLineKinds && "wrap-anywhere")}>{lineText.length === 0 ? "​" : lineText}</code>
             </div>
           );
         })}
