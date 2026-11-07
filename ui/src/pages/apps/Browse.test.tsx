@@ -1871,6 +1871,41 @@ describe("Connectors landing page", () => {
     return Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.includes("default for OpenAI") || item.textContent === "Default for OpenAI");
   }
 
+  it("bounds account lookup work when a large provider group expands and saves", async () => {
+    const fixture = aiFixture();
+    const count = 400;
+    let reads = 0;
+    const accounts = Array.from({ length: count }, (_, index) => ({
+      ...fixture.accounts()[1],
+      get id() {
+        if (++reads > count * 30) throw new Error("Account lookup exceeded its linear work budget");
+        return `large-account-${index}`;
+      },
+      grantId: `large-grant-${index}`, name: `OpenAI account ${index}`, isDefault: index === 0,
+    }));
+    fixture.replace(accounts);
+    listConnectionsMock.mockResolvedValue({ connections: accounts.map(account => connection({
+      id: account.id, companyId: account.companyId, applicationId: "app-openai", connectionPurpose: "ai", credentialPolicy: "per_user", name: account.name,
+      config: { sourceTemplateKey: "openai", ai: { provider: "openai", method: "api_key" } },
+    })) });
+    setAiDefaultMock.mockImplementation(() => new Promise(() => {}));
+    reads = 0;
+    await renderBrowse();
+    const row = container.querySelector('[data-app-slug="openai"]')!;
+    await clickButton(`${count} connections`, row);
+    expect(row.querySelectorAll('[aria-label^="Manage OpenAI account"]')).toHaveLength(count);
+    expect(row.querySelector('[aria-label="Your default for OpenAI"]')).not.toBeNull();
+    await act(() => row.querySelector('[aria-label="Manage OpenAI account 1 connection"]')!
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await flushReact();
+    const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find(element => element.textContent === "Set as default for OpenAI")!;
+    await act(() => item.click());
+    await flushReact();
+    expect(setAiDefaultMock).toHaveBeenCalledExactlyOnceWith("company-1", "large-grant-1");
+    expect(reads).toBeLessThanOrEqual(count * 30);
+  });
+
   it("sets a provider default by grant, keeps the old crown pending, and refetches the saved choice", async () => {
     const fixture = aiFixture();
     let release!: () => void;

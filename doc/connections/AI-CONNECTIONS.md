@@ -79,7 +79,9 @@ the crown for its label. In another personal account's menu, choose **Set as
 default for OpenAI**, **Set as default for Claude**, or the matching provider.
 Subscription and API-key accounts share one provider default. The current default
 has a disabled **Default for {provider}** menu item. The list API's `canSetDefault`
-flag projects the existing configure policy; shared accounts, other owners,
+flag projects human self-service configure authority once per list request.
+Agent list responses omit this optional UI field and retain their existing
+write authorization. Shared accounts, other owners,
 routed profiles, and callers without permission do not receive this action.
 
 While saving, the previous crown stays visible and other default writes for that

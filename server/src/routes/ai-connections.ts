@@ -234,15 +234,16 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       ?.some(m => m.companyId === companyId && m.membershipRole === "viewer");
     const management = connectionManagementService(db);
     const context = connectionRequestContext(req);
-    const connections = await Promise.all(accounts.map(async account => ({
+    const personalDefaultCapability = req.actor.type === "board" ? !viewer && (await management.capability(req.actor, "connections:configure", {
+      type: "connection_management", companyId, purpose: "ai", selfServiceUserId: currentUserId,
+      operation: "PUT /companies/:companyId/ai-connections/default", readOnly: false,
+    }, { mutation: false, readContext: context })).allowed : undefined;
+    const connections = accounts.map(account => ({
       ...account,
-      canSetDefault: !viewer && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing
-        ? (await management.capability(req.actor, "connections:configure", {
-          type: "connection_management", companyId, purpose: "ai", connectionId: account.id,
-          operation: "PUT /companies/:companyId/ai-connections/default", readOnly: false,
-        }, { mutation: false, readContext: context })).allowed
-        : false,
-    })));
+      ...(personalDefaultCapability === undefined ? {} : {
+        canSetDefault: personalDefaultCapability && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing,
+      }),
+    }));
     res.json({
       currentUserId,
       pools: await filterConnectionManagementRows(db, req, "connections:read", await pools.selectable(companyId, currentUserId), pool => ({ connectionId: pool.id })),

@@ -13,7 +13,7 @@ import {
 } from "@paperclipai/shared";
 import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
-import { aiAccountForConnection, useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
+import { useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
 import { AiDefaultCrown, AiDefaultError, AiDefaultMenuItem } from "@/components/ai-connections/AiConnectionDefault";
 import { AI_PROVIDERS } from "@/components/ai-connections/model";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -443,6 +443,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   });
   const aiDefaults = useAiConnectionDefaults(selectedCompanyId, { userId: viewingUserId, settled: identitySettled },
     connectionsQuery.data?.connections.some(connection => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection)) ?? false);
+  const aiDefaultsView = useQueryView(aiDefaults.accounts);
   const chatEndpointsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
@@ -1018,8 +1019,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : null}
 
       {refreshAggregator.error ? <p role="alert" className="text-sm text-destructive">Couldn’t refresh the gateway. Last known accounts are shown.</p> : null}
-      {aiDefaults.accounts.isError && <QueryErrorState size="inline" error={aiDefaults.accounts.error} action="load AI account defaults"
-        onRetry={() => void aiDefaults.accounts.refetch()} retrying={aiDefaults.accounts.isFetching} />}
+      {aiDefaultsView.kind === "error" && <QueryErrorState size="inline" error={aiDefaultsView.error} action="load AI account defaults"
+        onRetry={aiDefaultsView.retry} retrying={aiDefaultsView.isFetching} />}
       {aiDefaults.error && aiDefaults.failedProvider && <AiDefaultError provider={AI_PROVIDERS[aiDefaults.failedProvider].name}
         pending={aiDefaults.pending(aiDefaults.failedProvider)} onRetry={aiDefaults.retry} />}
 
@@ -1475,7 +1476,7 @@ function ConnectionAccountRow({
     row.name,
     owner,
   );
-  const account = aiDefaults?.data && aiAccountForConnection(connection, aiDefaults.data.connections, aiDefaults.data.currentUserId);
+  const account = aiDefaults?.accountForConnection(connection);
 
   return (
     <ConnectionAccountRowLayout state={state} accountName={accountName} owner={owner}
@@ -1508,7 +1509,7 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {account?.canSetDefault && aiDefaults && !aiDefaults.accounts.isError && <AiDefaultMenuItem account={account}
+            {account?.canSetDefault && aiDefaults && !aiDefaults.accounts.error && <AiDefaultMenuItem account={account}
               pending={aiDefaults.pending(account.provider)} onSelect={() => aiDefaults.choose(account)} />}
             <DropdownMenuItem
               onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}

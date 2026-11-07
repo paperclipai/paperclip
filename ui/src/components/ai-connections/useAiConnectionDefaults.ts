@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AiConnectionList, AiManagedConnectionSummary, AiProvider, ToolConnection } from "@paperclipai/shared";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
@@ -12,10 +12,18 @@ export function isOwnAiAccount(account: Pick<AiManagedConnectionSummary, "owners
   return account.ownership === "personal" && account.ownerUserId === userId && !account.routing;
 }
 
-export function aiAccountForConnection(connection: ToolConnection, accounts: AiManagedConnectionSummary[], userId: string) {
-  if (connection.connectionPurpose !== "ai" || aiConnectionRouterPluginKey(connection)) return undefined;
-  const candidates = accounts.filter(account => account.id === connection.id && account.companyId === connection.companyId && isOwnAiAccount(account, userId));
-  return candidates.length === 1 ? candidates[0] : candidates.find(account => account.isDefault);
+export function indexAiAccounts(accounts: AiManagedConnectionSummary[], userId: string) {
+  const groups = new Map<string, AiManagedConnectionSummary[]>();
+  for (const account of accounts) {
+    if (!isOwnAiAccount(account, userId)) continue;
+    const key = JSON.stringify([account.companyId, account.id]);
+    const group = groups.get(key);
+    if (group) group.push(account);
+    else groups.set(key, [account]);
+  }
+  return new Map([...groups].map(([key, candidates]) => [key,
+    candidates.length === 1 ? candidates[0] : candidates.find(account => account.isDefault),
+  ]));
 }
 
 type DefaultTarget = { account: AiManagedConnectionSummary; retry: boolean; scope: string };
@@ -49,7 +57,6 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
   });
   const mutation = useMutation({
     mutationKey,
-    retry: false,
     mutationFn: async (target: DefaultTarget) => {
       const snapshot = target.retry ? (await accounts.refetch({ throwOnError: true })).data : accounts.data;
       const account = snapshot?.connections.find(candidate => candidate.id === target.account.id && candidate.grantId === target.account.grantId);
@@ -82,12 +89,15 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
     mutation.mutate({ account, retry, scope: targetScope });
   }
   const data = identity.settled && (!identity.userId || accounts.data?.currentUserId === identity.userId) ? accounts.data : undefined;
+  const indexedAccounts = useMemo(() => data ? indexAiAccounts(data.connections, data.currentUserId) : undefined, [data]);
   return {
     accounts,
     data,
+    accountForConnection: (connection: ToolConnection) => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection)
+      ? indexedAccounts?.get(JSON.stringify([connection.companyId, connection.id])) : undefined,
     choose,
     pending: (provider: AiProvider) => pendingProviders.includes(provider),
-    error: mutation.isError && mutation.variables.scope === scope ? mutation.error : null,
+    error: mutation.variables?.scope === scope ? mutation.error : null,
     failedProvider: mutation.variables?.account.provider,
     retry: () => { if (mutation.variables) choose(mutation.variables.account, true, mutation.variables.scope); },
   };
