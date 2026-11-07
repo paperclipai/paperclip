@@ -1,4 +1,5 @@
 import { agentAppearanceSchema } from "../agent-appearance.js";
+import { harnessPoolBindingSchema } from "../harness-pools.js";
 import { aiRuntimeConnectionBindingSchema as aiConnectionBindingSchema } from "../ai-connection-router.js";
 import { z } from "zod";
 import {
@@ -70,11 +71,13 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
+  harnessPool: harnessPoolBindingSchema.optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
 }).catchall(z.unknown()).superRefine((value, ctx) => {
+  if (value.harnessPool && value.aiConnection) ctx.addIssue({ code: "custom", path: ["aiConnection"], message: "A Pool harness owns its account selection; remove the direct connection binding" });
   if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
