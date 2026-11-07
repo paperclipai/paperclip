@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
-import type { Db } from "@paperclipai/db";
+import { companies, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import { agentCommentaryQuerySchema, isUuidLike } from "@paperclipai/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { submitAgentCommentary } from "../services/agent-commentary.js";
@@ -14,8 +15,16 @@ export function agentCommentaryRoutes(db: Db) {
   const access = accessService(db);
 
   async function authorizeRead(req: Request, companyId: string) {
-    assertBoard(req);
     assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      // Agents can submit commentary but never read it. Name the human page so
+      // an agent can send the person somewhere useful instead of a dead end.
+      const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+      throw forbidden("Board access required", company ? {
+        remediation: `Agent commentary is readable only by people with commentary access. Send the person to /${company.issuePrefix}/activity/commentary.`,
+      } : undefined);
+    }
+    assertBoard(req);
     if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
       && (!req.actor.userId || !await access.canUser(companyId, req.actor.userId, "commentary:view"))) {
       throw forbidden("Missing permission: commentary:view");

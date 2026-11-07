@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { activityLog, agentApiKeys, agentCommentary, agents, authUsers, companyMemberships, heartbeatRuns, issues, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agentCommentary, agents, authUsers, companies, companyMemberships, heartbeatRuns, issues, nativeRunResults } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { submitAgentCommentary } from "../services/agent-commentary.js";
@@ -123,6 +123,20 @@ describe("internal agent commentary through both transports", () => {
     expect((await request(boardApp).post(`/api/companies/${f.companyId}/agent-commentary`).send({ ...input, kind: "complaint" })).status).toBe(403);
     await expect(submitAgentCommentary(server.db, { ...f, companyId: f.foreignCompanyId }, { ...input, kind: "complaint" })).rejects.toThrow(/authenticated/);
     expect(await rows(f)).toHaveLength(0);
+  });
+
+  it("tells an agent denied a commentary read where a person can see it, for its own company only", async () => {
+    const f = await legacy();
+    const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const read = (companyId: string) => fetch(`${server.apiUrl}/api/companies/${companyId}/agent-commentary`, { headers: { Authorization: `Bearer ${f.token}` } });
+    const own = await read(f.companyId);
+    expect(own.status).toBe(403);
+    const body = await own.json() as { error: string; remediation?: string };
+    expect(body.error).toBe("Board access required");
+    expect(body.remediation).toContain(`/${company!.issuePrefix}/activity/commentary`);
+    const foreign = await read(f.foreignCompanyId);
+    expect(foreign.status).toBe(403);
+    expect(((await foreign.json()) as { remediation?: string }).remediation).toBeUndefined();
   });
 
   it.each(["cancelled", "succeeded", "failed"])("rejects submissions and replay after the run is %s", async (status) => {
