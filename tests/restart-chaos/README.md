@@ -183,8 +183,10 @@ re-arms the task's own triggered faults instead of using their offsets.
 - B5 passes only when `bench.sh` wrote its own completion record showing it
   ran, and the harness itself saw at least three `.bench/progress` values
   while polling. This is best-effort against a deliberately adversarial agent.
-- R4 allows at most one active (queued, running or scheduled-retry) run per
-  sample. A wake comment may be served again only after a run that did not
+- R4 fails when two runs of the issue executed at the same time: both
+  `running` in one sample, or overlapping started→finished windows. A queued
+  or scheduled wake behind a running run is not a duplicate unless it starts
+  executing. A wake comment may be served again only after a run that did not
   succeed.
 - T-oracle commands (B1 tests and CLI) run agent-editable code. They run under
   a macOS Seatbelt sandbox with a scratch `HOME`, no network and no read access
