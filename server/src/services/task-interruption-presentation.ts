@@ -59,6 +59,10 @@ type ProjectionState = {
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
   approval: boolean;
+  /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
+  ownerStopRequired?: boolean;
+  /** The latest wake for a task with no run yet, when admission refused it. */
+  admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
 };
 
 function boundedJsonString(value: SQL, limit: number) {
@@ -80,6 +84,10 @@ const retryWaitMessages: Record<string, string> = {
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  // Another click cannot release a copyback owner that stopped without reporting.
+  // Retry starts a new recovery generation; the agent does not repeat its work.
+  saved_work_recovery_failed: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work.",
+  workspace_owner_stop_required: "Retry is waiting for a board member to confirm that the previous server stopped copying files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
@@ -87,6 +95,12 @@ const retryWaitMessages: Record<string, string> = {
   retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
+};
+
+// A task that never started can wait for a temporary admission hold. The
+// assigned-task liveness sweep admits it once the hold clears; no Retry needed.
+const admissionWaitMessages: Record<string, string> = {
+  "budget.blocked": "Waiting for the budget to allow new work. The task starts automatically when it does.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -104,7 +118,20 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
   const retryWait = input.retryWait ?? wait;
-  if (!run) return null;
+  if (!run) {
+    const admission = input.admissionWait;
+    if (!admission || admission.status !== "skipped" || !Object.hasOwn(admissionWaitMessages, admission.reason ?? "")
+        || issue.status !== "todo" || admission.agentId !== issue.assigneeAgentId) return null;
+    const waiting: TaskInterruptionPresentation = { intentId: admission.id, responsibility: "system", state: "working",
+      nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: [], observedRunId: null };
+    // Budget pauses, ordinary pauses and approvals wait on a person; only an
+    // accounting hold settles by itself. Admission records all of them as budget.blocked.
+    const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval ? "approval"
+      : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
+        ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
+    if (userAction) return { ...waiting, responsibility: "user", state: "waiting_for_user", userAction };
+    return { ...waiting, retryWait: { reason: admission.reason!, message: admissionWaitMessages[admission.reason!] } };
+  }
   const system = readSystemRecovery(action?.evidence);
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
@@ -121,6 +148,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // The previous controller cannot confirm its own stop. Name the one board
+  // action instead of showing the fenced run as working (RC-47).
+  if (input.ownerStopRequired) return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop" };
   // The task's existing dependency UI owns this wait. Keep actual recovery and
   // Retry preparation failures authoritative; this does not change admission.
   if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
@@ -187,7 +217,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"].includes(reason), retryWait: { reason,
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
@@ -223,7 +253,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const isRetryWait = sql<boolean>`coalesce(jsonb_typeof(${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}') = 'string', false)`;
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
-  const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
+  const startingIssueIds = selected.filter(issue => issue.status === "todo" && issue.assigneeAgentId).map(issue => issue.id);
+  const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows, admissionWaits] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
       agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt,
@@ -301,6 +332,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       .where(and(eq(issueApprovals.companyId, companyId), inArray(issueApprovals.issueId, ids),
         inArray(approvals.status, ["pending", "revision_requested"]))),
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
+    // Only consulted for tasks without a run: the latest wake says whether admission refused it.
+    startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, agentId: agentWakeupRequests.agentId })
+      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
+      .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
   ]);
   // Advertise a pending resume only when the scheduler would admit it, using
   // its own check, so the task never hides Retry behind a deferred candidate
@@ -353,6 +389,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
+  const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
+    runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+    eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), eq(issueRecoveryActions.ownerType, "board"),
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
+    sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
+    sql`coalesce(${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}', '') <> 'resuming'`,
+  )) : [];
+  const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
@@ -393,6 +439,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
+  const admissionWaitMap = byIssue(admissionWaits);
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
@@ -404,6 +451,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
+      ownerStopRequired: ownerStopRequired.has(`${issue.id}:${runMap.get(issue.id)?.id}`),
+      admissionWait: admissionWaitMap.get(issue.id),
     });
     result.set(issue.id, presentation);
     const run = runMap.get(issue.id);

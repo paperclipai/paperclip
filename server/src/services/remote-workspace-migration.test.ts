@@ -521,7 +521,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   });
   async function gitArchiveFixture(repoUrl = "https://example.invalid/repository.git", home = root) {
     const f = await seed(), projectId = randomUUID(), projectWorkspaceId = randomUUID(), branchName = "saved-task";
-    vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    await fs.mkdir(home, { recursive: true });
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(home)); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
     const base = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId, repoName: "repository" });
     await fs.mkdir(base, { recursive: true }); await git(base, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(base, "base.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
@@ -1143,7 +1144,13 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("new local edits\n");
   });
   it("imports dirty unpushed Git work and restores it after the original folder disappears", async () => {
-    const f = await seed(); await git(f.cwd, "init", "-q", "-b", "feature");
+    let f = await seed();
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, f.issueId);
+    await fs.mkdir(path.dirname(cwd), { recursive: true }); await fs.rename(f.cwd, cwd);
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, f.workspaceId));
+    f = { ...f, cwd };
+    await git(f.cwd, "init", "-q", "-b", "feature");
     await git(f.cwd, "add", "."); await git(f.cwd, "commit", "-qm", "unpushed work");
     await git(f.cwd, "remote", "add", "origin", "https://example.invalid/repository.git");
     const head = await git(f.cwd, "rev-parse", "HEAD");

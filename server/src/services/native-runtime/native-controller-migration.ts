@@ -3,7 +3,7 @@ import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
@@ -150,6 +150,31 @@ function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof
     && checkpoint.recoveryEvidence.normalizedSessionId === sessionId;
 }
 
+async function preservedDatabaseOnlyFailedCheckpoint(selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  checkpoint: Awaited<ReturnType<typeof loadNativeRunnerCheckpoint>>) {
+  const snapshot = record(source.runnerProfileJson.sessionCheckpoint), identity = record(snapshot.identity);
+  if (source.status !== "failed" || source.runtimeMode !== "native" || !checkpoint
+    || source.companyId !== selected.companyId || source.agentId !== selected.agentId
+    || source.nativeIssueId !== selected.issueId || source.nativeSessionId !== selected.sessionId
+    || identity.companyId !== selected.companyId || identity.agentId !== selected.agentId
+    || identity.issueId !== selected.issueId || identity.runId !== source.id || identity.sessionId !== selected.sessionId
+    || typeof snapshot.sessionId !== "string" || !snapshot.sessionId.trim()
+    || checkpoint.runId !== source.id || checkpoint.recoveryEvidence.runnerInstanceId !== source.runnerInstanceId
+    || checkpoint.recoveryEvidence.normalizedSessionId !== selected.sessionId) return false;
+  const header = inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  if (header?.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
+    || header.normalizedSessionId !== selected.sessionId) return false;
+  const paths = await localPaths(source);
+  for (const file of [paths.controlFile, paths.supervisorPath]) {
+    const present = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined; throw error;
+    });
+    if (present) return false;
+  }
+  return true;
+}
+
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
@@ -165,6 +190,8 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
     });
+    if (!present && source.status === "failed" && source.runnerProfileJson.sessionCheckpoint != null
+      && await preservedDatabaseOnlyFailedCheckpoint(selected, source, await loadNativeRunnerCheckpoint(db, binding))) continue;
     if (present && source.status === "failed") {
       const archiveStorage = storage === undefined ? durableNativeHarnessStorage() : storage;
       const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
@@ -234,6 +261,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
     if (preservedFailedCheckpoint(source, selected.sessionId, checkpoint)) { counts.preservedFailed++; continue; }
+    if (await preservedDatabaseOnlyFailedCheckpoint(selected, source, checkpoint)) { counts.preservedFailed++; continue; }
     if (hasMatchingControllerRecovery(selected, source, checkpoint)) { counts.unchanged++; continue; }
     const { paths, legacyControllerState, legacyRunnerArtifact, supervisor } = await readMigrationMaterial(db, selected, source, checkpoint);
     if (!checkpoint && legacyControllerState === undefined) { counts.sourceAlreadyAbsent++; continue; }

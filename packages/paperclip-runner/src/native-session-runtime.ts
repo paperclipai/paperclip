@@ -19,8 +19,14 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+  PROVIDER_STATE_INCOMPATIBLE,
+  type HarnessThreadGoal,
+} from "./contracts/harness-driver.js";
+import {
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
@@ -601,11 +607,11 @@ function retainUnadmittedSessionCleanup(
         return;
       } catch (error) {
         if (error instanceof NativeSessionCloseUnrecoverableError) {
-          quarantineSessionCleanup(session, cleanupDomain, true);
+          quarantineSessionCleanup(session, cleanupDomain, true, error);
           throw error;
         }
         if (retryCount >= MAX_FAILED_SESSION_CLOSE_RETRIES) {
-          quarantineSessionCleanup(session, cleanupDomain);
+          quarantineSessionCleanup(session, cleanupDomain, false, error);
           throw error;
         }
         retryCount += 1;
@@ -763,15 +769,86 @@ function retainFailedSessionCleanupOwner(
     .catch(() => undefined);
 }
 
+export interface NativeSessionCleanupQuarantine {
+  companyId: string;
+  runId: string;
+  issueId: string;
+  sessionId: string;
+  operatorRecoveryRequired: boolean;
+  /** Bounded error name/code/message of the close failure that caused it. */
+  cause: string;
+  /** Bounded settlement facts of an unrecoverable close, when it reported them. */
+  settlement: Record<string, unknown> | null;
+}
+type NativeSessionCleanupQuarantineListener = (
+  quarantine: NativeSessionCleanupQuarantine,
+) => void;
+const cleanupQuarantineListeners = new Set<NativeSessionCleanupQuarantineListener>();
+
+/** Observe every cleanup quarantine when it is created or escalates to
+ * operator recovery, with its cause. Observation grants no authority. */
+export function onNativeSessionCleanupQuarantined(
+  listener: NativeSessionCleanupQuarantineListener,
+): () => void {
+  cleanupQuarantineListeners.add(listener);
+  return () => cleanupQuarantineListeners.delete(listener);
+}
+
+function boundedSettlement(cause: unknown): Record<string, unknown> | null {
+  if (!(cause instanceof NativeSessionCloseUnrecoverableError) || !cause.settlement) return null;
+  try {
+    const text = JSON.stringify(cause.settlement);
+    return text.length <= 4_000 ? (JSON.parse(text) as Record<string, unknown>) : { truncated: true };
+  } catch {
+    return { unreadable: true };
+  }
+}
+
+function announceCleanupQuarantine(
+  session: NativeSession,
+  operatorRecoveryRequired: boolean,
+  cause: unknown,
+): void {
+  if (cleanupQuarantineListeners.size === 0) return;
+  let identity: ReturnType<NativeSession["identity"]> | null = null;
+  try {
+    identity = session.identity();
+  } catch {
+    // Observation must not fail quarantine.
+  }
+  const error = cause instanceof Error ? cause : null;
+  const code = error && "code" in error && typeof error.code === "string" ? error.code : null;
+  const quarantine: NativeSessionCleanupQuarantine = {
+    companyId: identity?.companyId ?? "",
+    runId: identity?.runId ?? "",
+    issueId: identity?.issueId ?? "",
+    sessionId: identity?.sessionId ?? "",
+    operatorRecoveryRequired,
+    cause: [error?.name, code, error?.message ?? (cause === undefined ? null : String(cause))]
+      .filter((part): part is string => Boolean(part)).join(": ").slice(0, 1_000) || "unknown",
+    settlement: boundedSettlement(cause),
+  };
+  for (const listener of cleanupQuarantineListeners) {
+    try {
+      listener(structuredClone(quarantine));
+    } catch {
+      // Observers cannot change cleanup ownership.
+    }
+  }
+}
+
 function quarantineSessionCleanup(
   session: NativeSession,
   cleanupDomain: NativeSessionCleanupDomain,
   operatorRecoveryRequired = false,
+  cause?: unknown,
 ): void {
   const existing = [...quarantinedSessionCleanups].find(
     (entry) => entry.session === session,
   );
   if (existing) {
+    if (operatorRecoveryRequired && !existing.operatorRecoveryRequired)
+      announceCleanupQuarantine(session, true, cause);
     if (operatorRecoveryRequired) {
       existing.operatorRecoveryRequired = true;
       if (existing.timer) clearTimeout(existing.timer);
@@ -790,6 +867,7 @@ function quarantineSessionCleanup(
     operatorRecoveryRequired,
   };
   quarantinedSessionCleanups.add(cleanup);
+  announceCleanupQuarantine(session, operatorRecoveryRequired, cause);
   if (operatorRecoveryRequired) return;
   startQuarantinedSessionCleanupRecovery(
     cleanup,
@@ -835,6 +913,8 @@ function startQuarantinedSessionCleanupRecovery(
         announceCleanupSettled(cleanup.domain);
       } catch (error) {
         if (error instanceof NativeSessionCloseUnrecoverableError) {
+          if (!cleanup.operatorRecoveryRequired)
+            announceCleanupQuarantine(cleanup.session, true, error);
           cleanup.operatorRecoveryRequired = true;
         }
         // Retain the quarantine after this finite, sequential retry batch.
@@ -2348,6 +2428,16 @@ export async function executeNativeSession(
             reason: "driver does not support recovery",
           };
     if (!recovery.recovered || !recovery.session) {
+      // A deterministic refusal left the saved state unchanged and repeats on
+      // every retry. A replacement would archive that state and, with a pending
+      // side-effecting call, could repeat or lose the external action. Stop here
+      // for an operator regardless of the checkpoint's replacement policy.
+      if (recovery.failureClass === PROVIDER_SIDE_EFFECT_PENDING) {
+        throw new NativeProviderSideEffectPendingError(recovery.reason ?? "unknown");
+      }
+      if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
+        throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+      }
       if (!replacementAllowed) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
@@ -2484,11 +2574,11 @@ export async function executeNativeSession(
             return;
           } catch (error) {
             if (error instanceof NativeSessionCloseUnrecoverableError) {
-              quarantineSessionCleanup(session, cleanupDomain, true);
+              quarantineSessionCleanup(session, cleanupDomain, true, error);
               throw error;
             }
             if (retryCount >= MAX_FAILED_SESSION_CLOSE_RETRIES) {
-              quarantineSessionCleanup(session, cleanupDomain);
+              quarantineSessionCleanup(session, cleanupDomain, false, error);
               throw error;
             }
             retryCount += 1;

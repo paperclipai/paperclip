@@ -10,7 +10,7 @@ import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { localRepositoryPath } from "./local-repository-path.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
-import { ensureSavedGitCommit, gitCacheCommand, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
+import { ensureSavedGitCommit, gitCacheCommand, GitCacheRestorationFailure, restorationFailureAt } from "./git-workspace-restoration.js";
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit, loadGitRestorePoint, type GitRestorePointRef } from "./git-restore-point-storage.js";
 import { copyVerifiedGitExcludes } from "./git-repository-excludes.js";
 import { importRestorePoint } from "./git-restore-point.js";
@@ -291,30 +291,36 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
       }
       const savedRestorePoint = checkout.restorePoint && input.isolateRepositories
         ? await loadGitRestorePoint({ storage: input.storage ?? getStorageService(), workspace, ref: checkout.restorePoint }) : null;
+      let preparationFailure: GitCacheRestorationFailure | null = null;
       const result = await materializeManagedProjectWorkspace(destination, { repoUrl: checkout.source.repoUrl,
         gitObjectSource: gitObjectSource ? { cwd: gitObjectSource, commits: [checkout.commit, ...(savedRestorePoint?.manifest.prerequisites ?? [])] } : undefined,
         resolveGitAuth: input.resolveGitAuth, beforePublish: async temporary => {
-          if (gitObjectSource && checkout.restorePoint) await copyVerifiedGitExcludes(gitObjectSource, temporary);
-          if (savedRestorePoint) {
-            const { payload, manifest } = savedRestorePoint;
-            await ensureCheckoutPrerequisites(temporary, checkout, manifest, input.resolveGitAuth);
-            await importRestorePoint({ repositoryCwd: temporary, payload });
-          } else if (checkout.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage ?? getStorageService(), workspace,
-            ref: checkout.restorePoint, repositoryCwd: temporary });
-          await ensureSavedGitCommit(temporary, checkout.source.repoUrl, checkout.commit, input.resolveGitAuth);
-          if (checkout.branchName) await gitCacheCommand(temporary, ["check-ref-format", "--branch", checkout.branchName]);
-          await gitCacheCommand(temporary, checkout.branchName
-            ? ["checkout", "-B", checkout.branchName, checkout.commit] : ["checkout", "--detach", checkout.commit]);
-          if (checkout.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage ?? getStorageService(), workspace,
-            ref: checkout.restorePoint, repositoryCwd: temporary, worktreePath: temporary, preserveImportedHistory: input.isolateRepositories });
-          await gitCacheCommand(temporary, ["reflog", "expire", "--expire=now", "--all"]);
-          await restoreSettings(temporary, checkout.settings, input, relative);
-          await input.authorizeSource(checkout.source);
-          await recheck?.();
-          if (gitObjectSource && !await isVerifiedNestedRepositoryBase(gitObjectSource, candidates!, checkout.source.repoUrl)) throw new GitCacheRestorationFailure();
-        } });
+          try {
+            if (gitObjectSource && checkout.restorePoint) await copyVerifiedGitExcludes(gitObjectSource, temporary);
+            if (savedRestorePoint) {
+              const { payload, manifest } = savedRestorePoint;
+              await ensureCheckoutPrerequisites(temporary, checkout, manifest, input.resolveGitAuth);
+              await importRestorePoint({ repositoryCwd: temporary, payload });
+            } else if (checkout.restorePoint) await ensureGitRestorePointCommit({ storage: input.storage ?? getStorageService(), workspace,
+              ref: checkout.restorePoint, repositoryCwd: temporary });
+            await ensureSavedGitCommit(temporary, checkout.source.repoUrl, checkout.commit, input.resolveGitAuth);
+            if (checkout.branchName) await gitCacheCommand(temporary, ["check-ref-format", "--branch", checkout.branchName]);
+            await gitCacheCommand(temporary, checkout.branchName
+              ? ["checkout", "-B", checkout.branchName, checkout.commit] : ["checkout", "--detach", checkout.commit]);
+            if (checkout.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage ?? getStorageService(), workspace,
+              ref: checkout.restorePoint, repositoryCwd: temporary, worktreePath: temporary, preserveImportedHistory: input.isolateRepositories });
+            await gitCacheCommand(temporary, ["reflog", "expire", "--expire=now", "--all"]);
+            await restoreSettings(temporary, checkout.settings, input, relative);
+            await input.authorizeSource(checkout.source);
+            await recheck?.();
+            if (gitObjectSource && !await isVerifiedNestedRepositoryBase(gitObjectSource, candidates!, checkout.source.repoUrl)) throw new GitCacheRestorationFailure();
+          } catch (error) {
+            preparationFailure = restorationFailureAt("workspace_contents", error);
+            throw preparationFailure;
+          }
+        } }).catch(error => { throw preparationFailure ?? error; });
       if (result.warning) throw new GitCacheRestorationFailure();
     }
     await restoreSettings(input.cwd, input.contents.settings, input, CLAUDE_SETTINGS_PATH);
-  } catch { throw new GitCacheRestorationFailure(); }
+  } catch (error) { throw restorationFailureAt("workspace_contents", error); }
 }

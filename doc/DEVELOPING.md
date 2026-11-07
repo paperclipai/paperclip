@@ -3557,6 +3557,29 @@ or cancelled result must retire that session and collect its managed files befor
 heartbeat stops the reusable sandbox. A later retry can resume the same sandbox
 without inheriting the stopped provider transport.
 
+A rejected warm-session close retains its owner, even when no managed instruction
+copy exists. Idle expiry, failed-turn release, and restart must not report that
+owner as quiet or launch a replacement over it. The next retirement attempt uses
+the same owner and must finish provider closure and stopped-file collection.
+The existing explicit-reset exception still requires its typed retirement proof.
+
+`heartbeatService(...).prepareIdleWarmNativeSessionsForSleep({ canRetire })`
+delegates to the native owner's retirement path for idle owners. Its caller owns
+the admission hold and supplies a synchronous
+current-authority check. The check runs before each retirement and after its
+awaited effects. A started cleanup settles if the hold expires, but no further
+owner retires under that expired hold. Busy turns remain active and do not inherit
+a close-on-release request from an abandoned sleep attempt. Counts describe the
+attempt; the caller must still validate its hold and final local-work proof.
+Diagnostic-only inspection must never invoke this resource preparation.
+
+The privileged `task-drain?idleSleepSafety=1` preflight invokes this operation only
+for the exact current, unexpired idle owner with no active admitted work. It tracks
+the actual cleanup promise, rejects concurrent work or a changed hold, and then
+takes a fresh durable/local safety snapshot. Busy or failed retirement keeps the
+instance awake. Plain drain reads and `idleSleepDiagnostics=1` remain passive with
+respect to native retirement.
+
 An idle warm owner proves only the exact prior run in the same company, session,
 workspace and environment. Mutable configuration compatibility is checked
 separately: changed settings retire the owned provider before a replacement can
@@ -4510,6 +4533,16 @@ retryable restoration failure. It never substitutes the default branch.
 Reopening failures reject the consuming request with HTTP 409 before saving a
 comment or changing its task. The response preserves the restoration message, so
 the composer keeps an editable draft and permits retry after access is restored.
+It also carries `diagnostic: { step, kind }`, and the server log records the same
+pair. Both are closed values: `step` names the failed stage (for example
+`source_materialize`, `restore_point` or `saved_commit`), and `kind` names the
+failure class (`remote_unavailable`, `auth_rejected`, `commit_unavailable`,
+`timeout`, `verification`, `filesystem`, `git_command` or `unknown`). They never
+contain paths, repository URLs or Git output.
+Nested checkout failures retain their original restore step. The checkout
+wrapper keeps process error codes and timeout flags privately for classification;
+it does not attach the raw command error as a cause or add those flags to the
+public error object.
 
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner
@@ -5016,6 +5049,39 @@ database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
 
+
+### Dedicated native recovery test database
+
+The native idle continuation fixture reads `PAPERCLIP_RECOVERY_TEST_DATABASE_URL`
+and passes it through `nativeRestartFixture({ dedicatedDatabaseUrl })`. The URL
+must name a dedicated PostgreSQL database ending in `_test`, without database-name
+or connection-option overrides. This explicit option applies pending migrations
+and closes registered clients at cleanup; it does not create or drop that
+database. Its provisioning owner remains responsible for disposal. The environment
+variable alone does not opt other `startRecoveryPostgres()` callers into shared
+storage: they retain their existing fresh-database allocation and cleanup.
+
+The native idle-sleep continuation integration uses a controlled local provider
+with the real heartbeat queue, authorized comment wake, native session
+checkpoint, files, retained secret encryption and fresh resolution, and owned
+idle preflight. Credential resolution through the secret owner does not prove
+production backend credential injection. It uses an explicit two-connection
+main pool, alongside the production auxiliary pools, and verifies the driver's
+actual setting. It does not
+exercise the remote Runner harness backup transport or a live provider.
+
+The workspace runtime lifecycle test uses the actual local runtime owner and an
+ephemeral HTTP child. Normal run release must remove the original PID, listener,
+and service registry entry before the same owner starts another useful service
+from the retained workspace files. This is physical local resource retirement
+and next-use coverage; it does not establish global tenant quiet.
+
+The plugin idle manager lifecycle test uses a real SDK worker process and a
+controlled host state handler that persists worker requests to a temporary file.
+It checks the actual manifest generation, refusal of work under the owned hold,
+and a second useful write after release. This boundary does not exercise the
+production plugin database loader or plugin jobs. Unsupported manifests, active
+manual resources, and missing completion receipts remain sleep blockers.
 
 ### Read resilience during deploys
 

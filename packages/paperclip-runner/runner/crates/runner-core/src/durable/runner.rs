@@ -99,6 +99,17 @@ impl CommandLifecycle {
         }
     }
 
+    /// A rejected suspension changed no provider state: the provider still
+    /// owns its session. Keep the runner serving its controller so it can
+    /// retry, instead of recording `suspended` over a live provider and
+    /// exiting. A failed shutdown still stops the runner.
+    fn after_failure(command: &Command) -> Self {
+        match command.command_type.as_str() {
+            "runner.suspend" => Self::Continue,
+            _ => Self::for_terminal(command),
+        }
+    }
+
     fn merge(self, next: Self) -> Self {
         match (self, next) {
             (Self::Shutdown, _) | (_, Self::Shutdown) => Self::Shutdown,
@@ -1974,6 +1985,23 @@ fn deliver_warm_attachment(
     }
 }
 
+/// A replayed terminal command must reproduce the lifecycle its fence
+/// recorded. One legacy exception: runners built before a failed
+/// `runner.suspend` stopped being terminal persisted a `suspended` fence for
+/// it. Its replay now continues; honour that old fence so an upgraded runner
+/// can still deliver the journaled result and finish the old transition.
+fn replay_satisfies_terminal_fence(
+    pending: &PendingTerminalDelivery,
+    result_status: &str,
+    lifecycle: CommandLifecycle,
+) -> bool {
+    lifecycle.durable_state() == Some(pending.lifecycle.as_str())
+        || (pending.command_type == "runner.suspend"
+            && pending.lifecycle == "suspended"
+            && matches!(result_status, "failed" | "rejected")
+            && lifecycle == CommandLifecycle::Continue)
+}
+
 fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
@@ -1998,7 +2026,7 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
             ));
         }
         let (result, lifecycle) = process_command(state, store, config, executor, command)?;
-        if lifecycle.durable_state() != Some(pending.lifecycle.as_str()) {
+        if !replay_satisfies_terminal_fence(&pending, &result.status, lifecycle) {
             return Err(DurableRunnerError::invalid(
                 "pending terminal command did not replay its durable lifecycle",
             ));
@@ -2293,6 +2321,8 @@ fn process_command<E: CommandExecutor>(
                     // the old receipt must not replace the newer command cursor
                     // with another terminal-delivery fence at an older sequence.
                     CommandLifecycle::Continue
+                } else if result.status == "failed" {
+                    CommandLifecycle::after_failure(command)
                 } else {
                     CommandLifecycle::for_terminal(command)
                 };
@@ -2340,7 +2370,7 @@ fn process_command<E: CommandExecutor>(
             }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
-            return Ok((result, CommandLifecycle::for_terminal(command)));
+            return Ok((result, CommandLifecycle::after_failure(command)));
         }
     };
     if matches!(
@@ -5685,7 +5715,10 @@ mod tests {
     #[test]
     fn failed_lifecycle_commands_replay_their_terminal_transition() {
         for (command_type, expected_lifecycle) in [
-            ("runner.suspend", CommandLifecycle::Suspend),
+            // A rejected suspension leaves the provider's session live, so the
+            // runner keeps serving its controller (which may retry) rather
+            // than recording `suspended` over it and exiting.
+            ("runner.suspend", CommandLifecycle::Continue),
             ("runner.shutdown", CommandLifecycle::Shutdown),
         ] {
             let directory = std::env::temp_dir().join(format!(
@@ -5940,6 +5973,87 @@ mod tests {
         assert_eq!(first_stop, CommandLifecycle::Shutdown);
         assert_eq!(replay_stop, CommandLifecycle::Shutdown);
         assert_eq!(executor.calls, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_failed_suspend_fence_still_reconciles_after_upgrade() {
+        let fence = |command_type: &str, lifecycle: &str| PendingTerminalDelivery {
+            command_id: "command_1".to_owned(),
+            controller_seq: 1,
+            command_type: command_type.to_owned(),
+            lifecycle: lifecycle.to_owned(),
+        };
+        // An old runner persisted `suspended` for a failed suspend; the
+        // upgraded replay continues, and must still satisfy that fence.
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Suspend
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Shutdown
+        ));
+        // A completed suspend or a shutdown must still replay its own lifecycle.
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Continue
+        ));
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+    }
+
+    #[test]
+    fn rejected_suspend_keeps_the_runner_serving_its_controller() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-rejected-suspend-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = FailingExecutor { calls: 0 };
+        let command = command("runner.suspend");
+
+        let (result, lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+        let (replayed, replay_lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(replayed.status, "failed");
+        // The provider still owns its session: no `suspended` lifecycle and no
+        // exit, so a fresh runner.suspend from the controller can be served.
+        assert_eq!(lifecycle, CommandLifecycle::Continue);
+        assert_eq!(replay_lifecycle, CommandLifecycle::Continue);
+        assert_eq!(lifecycle.durable_state(), None);
+        assert_eq!(executor.calls, 1);
+        let mut retry = CountingExecutor { calls: 0 };
+        let (_, retry_lifecycle) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut retry,
+            &Command {
+                command_id: "command-suspend-retry".to_owned(),
+                controller_seq: 2,
+                ..command.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(retry_lifecycle, CommandLifecycle::Suspend);
         fs::remove_dir_all(directory).unwrap();
     }
 

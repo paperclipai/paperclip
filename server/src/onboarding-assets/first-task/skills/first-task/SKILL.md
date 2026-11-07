@@ -31,12 +31,15 @@ Work in this order.
 
    - If they wrote a message instead of answering the card, treat the message as the `task` path.
 
+   - Determine the requested outcome before choosing an approval boundary. The interview path and requests to build, improve, or deliver something are execution requests: the plan is an intermediate artifact. Treat a request as plan-only only when the user explicitly limits the deliverable to planning. Asking to review a plan before work begins does not make it plan-only. Preserve any separate hiring or execution approvals the user explicitly requests and any applicable company policies.
+
    - If the user asks to continue onboarding in your chat with them instead, ask your questions there. Your first question in the chat replaces this task's pending question cards, and Paperclip closes this task with a link to the chat. From then on the chat replaces this task for the rest of this workflow: save the plan and post proposal cards in the chat, create accepted child tasks from the chat, and report their results there. Skip the steps below that keep this task `in_review`, save documents on it, or make it wait for a child. Do not reopen this task or ask the user what should happen to it.
 
 2. Propose, then wait for acceptance.
 
    - Choose the proposal form from the user’s request first: an explicit plan request or the interview path always requires a saved plan, even when the task description says `confirmation`.
-   - If they want a plan, save a `plan` document on this onboarding task describing the goal, scope, steps, proposed team, and what done means. Post one `request_checkbox_confirmation` targeting the saved plan revision. A card or thread message alone is not a saved plan. This applies to explicit plan requests regardless of the single-task proposal mode. Proposing a team does not authorize hiring it.
+   - For the interview path or an explicit plan request, save a `plan` document on this onboarding task describing the goal, scope, steps, proposed team, and what done means. Post one `request_checkbox_confirmation` targeting the saved plan revision. A card or thread message alone is not a saved plan. This applies to explicit plan requests regardless of the single-task proposal mode. Proposing a team alone does not authorize hiring it; the recorded acceptance authorizes only the team and work actually included in the accepted scope, subject to normal hiring and budget policies.
+   - For an execution request, make the saved plan and approval card say "Approve this plan and start the described work." Describe the tasks and any proposed hires the user is approving. Do not add a separate implementation-approval requirement unless the user or an applicable policy requires it. For an explicitly plan-only request, make the card say "Approve this plan only; do not start implementation."
    - If they want one thing done, propose exactly one child task with a clear outcome and scope. Ask them to accept it before creating the child. Do not produce the requested finished work inside the proposal, even when it is quick to do.
    - For a single-task proposal, follow the `Single-task proposal mode` saved in the task description: `confirmation` means one `request_confirmation` card describing the child task, without a plan document; `plan` means save a short `plan` document describing that same child task and post one `request_checkbox_confirmation` targeting its saved revision.
    - With native tools, create those proposal cards using `request_human_input`: `interactionKind: "confirmation"` creates `request_confirmation`; `interactionKind: "checkbox"` creates `request_checkbox_confirmation`. Use `continuationPolicy: "wake_assignee"` so acceptance and rejection both return the decision to you; only a saved acceptance authorizes the approved work. Use `interactionKind: "questions"` only to collect scope or clarification answers. An Approve/Revise choice question is still a question, so answering it does not record proposal acceptance or authorize child creation. Present the proposal through the matching confirmation kind instead.
@@ -65,19 +68,19 @@ Work in this order.
    }
    ```
 
-   For a native single-task proposal in plan mode, save the plan first, then call `request_human_input` with a checkbox card bound to its actual revision. Replace `<child-title>` and `<plan-revision-id>`; make the options describe the scope the user is approving. For a plan-only request, the option approves the plan alone and does not authorize implementation or hiring.
+   For a native single-task proposal in plan mode, save the plan first, then call `request_human_input` with a checkbox card bound to its actual revision. Replace `<child-title>` and `<plan-revision-id>`; make the options describe the scope the user is approving. For an explicitly plan-only request, change the prompt and option to approve the plan alone without implementation or hiring.
 
    ```json
    {
      "idempotencyKey": "first-task-proposal-plan:<plan-revision-id>",
      "interactionKind": "checkbox",
-     "title": "Approve child task plan",
-     "prompt": "Approve the proposed scope in this saved plan?",
+     "title": "Approve plan and start work",
+     "prompt": "Approve this plan and start the described work?",
      "continuationPolicy": "wake_assignee",
      "payload": {
        "version": 1,
        "supersedeOnUserComment": false,
-       "options": [{ "id": "scope", "label": "Approve the proposed scope for <child-title>" }],
+       "options": [{ "id": "scope", "label": "Approve the plan and start <child-title>" }],
        "defaultSelectedOptionIds": ["scope"],
        "minSelected": 1,
        "maxSelected": 1,
@@ -97,7 +100,10 @@ Work in this order.
 4. Carry out the accepted scope.
 
    - For a plan-only request, retain the accepted plan on this task. Do not start its implementation or hire the proposed team without authorization to do that work.
+   - For an accepted interview execution plan, create or resume the minimum execution tasks needed for the approved outcome. Link them to this onboarding task and assign each to yourself or an approved agent, ready to run. Use normal hiring controls for any approved hires. Check for existing tasks from this proposal first so later wakes and retries continue the same work.
+   - A recorded acceptance of an execution proposal authorizes starting its selected work. Start that work without asking the user to approve the same scope again. Honor an accepted proposal that explicitly reserved a later approval; never expand its authorization retroactively. Missing credentials or connections block only the steps that require them; continue independent approved work.
    - For an accepted single task, check for an existing child from this proposal before creating anything. Create exactly one child linked to this onboarding task and assign it to yourself. On later wakes, continue that same child instead of creating another.
+   - A saved, approved plan alone does not complete an execution request. Follow the execution and result-delivery steps below for the approved tasks, and report the actual output before completing onboarding. An explicitly plan-only request is complete when its accepted plan is retained.
    - If the accepted child work requires a file deliverable, include the approved scope, document requirements, and requested filenames in a self-contained child description. Delegate the work to the child's own Paperclip execution, even when the child is assigned to yourself. That execution must save the document and publish the requested file on the child before marking it done. Do not create or register that file from the onboarding run, or mark the child done before its execution delivers the file. Native `register_deliverable` is bound to its current task.
    - Copy required input payloads verbatim, including encoded bytes, nonces, constraints, and requested filenames, from the accepted request and its accepted corrections into the child description. The child has its own execution context and does not inherit this conversation. Do not leave references such as "provided above" or "same as the parent" in place of actual inputs. When an input is not inline, include its actual retrievable source reference as an identifier link such as `[BRA-2](/BRA/issues/BRA-2#document-plan)`, not a raw UUID, and ensure the child is authorized to read it. Keep credentials and secrets out of handoff text.
    - Parent-child linkage is not a dependency. Do not put this onboarding task in the child's `blockedByTaskIds`: the child must execute before this task can finish. Create the child ready to run, then make this onboarding task wait for the child.

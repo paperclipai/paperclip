@@ -125,13 +125,15 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(input.run.id);
   });
 
-  it.each(["preserved", "changed_binding", "changed_cwd"])("pins the verified Retry workspace during environment selection (%s)", async mode => {
+  it.each((["resume_stopped_native_workspace", "reuse_issue_workspace"] as const).flatMap(retainedMode =>
+    ["preserved", "changed_binding", "changed_cwd"].map(mode => [retainedMode, mode] as const)))(
+    "pins the verified Retry workspace during environment selection (%s, %s)", async (retainedMode, mode) => {
     const { input, issue, workspace } = await fixture();
     const saved = await workspace();
     await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
     input.task.issueRef!.executionWorkspaceId = saved.id;
     input.task.issueRef!.executionWorkspacePreference = null;
-    input.task.freshWorkspace = { mode: "resume_stopped_native_workspace", retryIntentId: randomUUID(),
+    input.task.freshWorkspace = { mode: retainedMode, retryIntentId: randomUUID(),
       sourceRunId: randomUUID(), workspaceId: saved.id, cwd: home };
     if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
     if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });

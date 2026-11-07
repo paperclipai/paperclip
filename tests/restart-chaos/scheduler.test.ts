@@ -163,6 +163,21 @@ describe("K13 restart storm", () => {
     expect(new Set(storm.faults.map(fault => fault.kind)).size).toBeGreaterThan(1);
   });
 
+  it("lets result-trigger tasks join a storm with their own K1 or K2, while time cells stay K13", () => {
+    const tasks = planTasks({ ...stormOptions, tasks: 36, triggers: ["time", "result"] });
+    const result = tasks.filter(task => task.trigger === "result");
+    expect(result.length).toBeGreaterThan(0);
+    for (const task of result) {
+      expect(task.workload).toBe("C1");
+      expect(["K1", "K2"]).toContain(task.fault);
+      expect(taskFaultSchedule(task)).toEqual([{ kind: task.fault, holdMs: 0, atMs: task.fireAfterMs, trigger: "result", delayMs: task.triggerDelayMs }]);
+    }
+    for (const task of tasks.filter(candidate => candidate.trigger === undefined)) expect(task.fault).toBe("K13");
+    expect(() => planTasks({ ...stormOptions, faults: ["K4", "K6"], triggers: ["result"], workloads: ["C1"] })).toThrow(/needs K1 or K2/);
+    // A plain wave keeps its plan for a seed.
+    expect(planTasks({ ...options, triggers: ["time"] })).toEqual(planTasks({ ...options, triggers: undefined }));
+  });
+
   it("gives storm tasks no fault of their own", () => {
     const plan = planWave("w-20261106T101112-s42", stormOptions);
     expect(plan.storm?.faults.length).toBeGreaterThan(10);

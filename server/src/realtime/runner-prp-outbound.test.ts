@@ -366,6 +366,67 @@ describe("runner provider-ingress WebSocket wire", () => {
     }
   });
 
+  it.each(["readiness", "authenticated observer"])("does not start liveness when quiesce wins %s", async mode => {
+    vi.useFakeTimers();
+    const create = sockets.create, socket = new FakeSocket();
+    sockets.create = () => openingSocket(socket);
+    const endpoint = { kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://fixture.example.test/connect", secretHeaders: [], generation: "fixture",
+      refresh: vi.fn(async () => endpoint), close: vi.fn(async () => {}) };
+    const handle = connectRunnerPrpIngress({ authority: {
+      attachWireConnection: () => ({ isAuthenticated: () => {
+        if (mode === "readiness") handle.quiesce();
+        return true;
+      } }),
+    } as unknown as DurablePrpControlPlane, endpoint,
+    onStateChange: state => { if (state === "authenticated" && mode === "authenticated observer") handle.quiesce(); } });
+    try {
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(socket.ping).not.toHaveBeenCalled();
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(endpoint.refresh).not.toHaveBeenCalled();
+    } finally { await handle.close(); sockets.create = create; vi.useRealTimers(); }
+  });
+
+  it("quiets liveness and reconnect while preserving the final receive/ACK path", async () => {
+    vi.useFakeTimers();
+    const create = sockets.create;
+    const socket = new FakeSocket();
+    let opens = 0;
+    sockets.create = () => { opens += 1; return openingSocket(socket); };
+    const endpoint = { kind: "authenticated_websocket" as const,
+      websocketUrl: "wss://fixture.example.test/connect", secretHeaders: [], generation: "fixture",
+      refresh: vi.fn(async () => endpoint), close: vi.fn(async () => {}) };
+    const received = vi.fn();
+    const attach = vi.fn((wire: WsJsonWireConnection) => {
+      wire.onJson(value => { received(value); wire.sendJson({ kind: "ack" }); });
+      return { isAuthenticated: () => true };
+    });
+    const handle = connectRunnerPrpIngress({ authority: { attachWireConnection: attach } as unknown as DurablePrpControlPlane,
+      endpoint, livenessIntervalMs: 10, livenessTimeoutMs: 30 });
+    const failure = vi.fn();
+    void handle.failure.catch(failure);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await handle.ready;
+      handle.quiesce();
+      socket.ping.mockClear();
+      socket.emit("message", Buffer.from(JSON.stringify({ kind: "last_event" })), false);
+      expect(received).toHaveBeenCalledWith({ kind: "last_event" });
+      expect(socket.send).toHaveBeenCalledWith(JSON.stringify({ kind: "ack" }));
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(socket.ping).not.toHaveBeenCalled();
+      expect(socket.terminate).not.toHaveBeenCalled();
+      expect(socket.close).not.toHaveBeenCalled();
+      socket.close();
+      await vi.advanceTimersByTimeAsync(100_000);
+      expect(opens).toBe(1);
+      expect(endpoint.refresh).not.toHaveBeenCalled();
+      expect(failure).not.toHaveBeenCalled();
+    } finally { await handle.close(); sockets.create = create; vi.useRealTimers(); }
+  });
+
   it("does not report intentional close as an active-run ingress failure", async () => {
     const endpoint = {
       kind: "authenticated_websocket" as const,

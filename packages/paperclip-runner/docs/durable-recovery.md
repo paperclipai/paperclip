@@ -112,6 +112,13 @@ after a failed resume, it opens a fresh provider session as before. Otherwise th
 run fails with `native_provider_state_incompatible` and is not retried. A board
 Retry then continues the task in a fresh provider session in the same workspace.
 
+A Codex `run.attach` that would change the durable provider profile or a
+protected launch argument fails with the closed classification
+`provider_attach_refused`. An attach blocked by a pending tool call fails with
+`provider_side_effect_pending`. Neither refusal changes the saved state. The
+controller never opens a replacement session after either class, whatever the
+checkpoint's recovery policy, and stops the run for an operator.
+
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the
 executable, each by path and SHA-256). Cursor Cloud does not re-bind. A changed

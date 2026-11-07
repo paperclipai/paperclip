@@ -1,10 +1,12 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
-import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
+import { logActivity } from "./activity-log.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 import { createCostEventInTransaction } from "./costs.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
@@ -35,6 +37,7 @@ async function readAccountingClosure(db: Db, runId: string) {
     preProviderFailure: sql<boolean>`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
       or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false') is true`,
     coordinatorId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
+    providerWorkNeverStarted: sql<boolean>`(${nativeProviderWorkNeverStarted}) is true`,
     processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
   }).from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(
     eq(nativeRunFinalizations.runId, heartbeatRuns.id), eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
@@ -73,10 +76,15 @@ const remoteExecutionTerminated = sql`exists (select 1 from ${environmentLeases}
  *   does not clear the recorded remote process identity.
  * Missing identity alone is never proof. One predicate serves the reconciler
  * scan and settlement so they cannot disagree. */
-const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
-  and exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+/** Native recovery will not run this provider again: it ended in terminal
+ * failure, or the run's result was already accepted. */
+const settledNativeCoordinator = sql`exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
     and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-    and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
+    and ((${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} = 'terminal_failure')
+      or ${nativeRunFinalizations.resultId} is not null))`;
+
+const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
+  and ${settledNativeCoordinator}
   and ((${heartbeatRuns.status} = 'failed'
     and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
     and (select process_event.event_type from ${heartbeatRunEvents} process_event
@@ -86,10 +94,54 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
       order by process_event.seq desc limit 1) = 'native.local_process_stopped')
     or (${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted') and ${remoteExecutionTerminated}))`;
 
-async function nativeReceiptSourceClosed(db: Db, runId: string) {
-  const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}` }).from(heartbeatRuns)
+/** A native run whose provider never started has nothing to account: recovery
+ * settled, not one usage receipt was ever journaled for the run (a provider
+ * turn journals one as soon as it starts), and its local process either never
+ * launched or was verified stopped. Settle it at once, like a pre-provider
+ * failure, instead of holding company work. */
+const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
+  and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
+  and ${settledNativeCoordinator}
+  and coalesce((${heartbeatRuns.usageJson}->>'accountingReceiptSequence')::int, 0) = 0
+  and ${heartbeatRuns.usageJson}->'accountingReceiptSourceFences' is null
+  and not exists (select 1 from ${runUsageReceipts} journaled_receipt
+    where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
+  and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+  and coalesce((select process_event.event_type from ${heartbeatRunEvents} process_event
+      where process_event.company_id = ${heartbeatRuns.companyId} and process_event.run_id = ${heartbeatRuns.id}
+        and process_event.source_event_id is null
+        and process_event.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by process_event.seq desc limit 1), 'native.local_process_stopped') = 'native.local_process_stopped'`;
+
+/** Waiting for closure evidence is bounded. Past the remote runner reconnect
+ * grace plus a margin, a terminal run whose recovery has settled no longer
+ * holds new company work: its debt settles as unpriced, flagged so the
+ * blocking policy still counts it and the board sees which run it was. */
+export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
+/** `at` is one shared cutoff, so the actionable scan and the wake query
+ * cannot both miss a run whose bound falls between them. */
+function closureEvidenceTimedOut(at: Date = new Date()) {
+  return sql`${heartbeatRuns.runtimeMode} = 'native'
+  and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
+  and ${settledNativeCoordinator}
+  and coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
+    <= ${at.toISOString()}::timestamptz - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`;
+}
+
+async function readNativeReceiptClosure(db: Db, runId: string) {
+  const [row] = await db.select({ closed: sql<boolean>`${closedNativeReceiptSource}`,
+    timedOut: sql<boolean>`${closureEvidenceTimedOut()}`, neverStarted: sql<boolean>`${nativeProviderWorkNeverStarted}` }).from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, runId));
-  return row?.closed === true;
+  if (row?.neverStarted === true) return "no_provider_work" as const;
+  if (row?.closed === true) return "closed" as const;
+  return row?.timedOut === true ? "timed_out" as const : null;
+}
+
+function withClosureTimeoutEvidence(provenance: Record<string, unknown>, timedOut: boolean) {
+  if (!timedOut) return provenance;
+  const evidence = text(provenance.evidence);
+  return { source: "unknown", version: "accounting-receipt/v1", ...provenance,
+    evidence: [evidence, "closure evidence never arrived; settled after the accounting closure timeout, and the run may have spent more"].filter(Boolean).join("; ") };
 }
 
 /** A receipt lost with its stopped provider still carries the usage observed
@@ -135,7 +187,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     ? receiptIndex ?? await indexPendingUsageReceipts() : undefined;
   const closure = await readAccountingClosure(db, runId);
   if (!closure) return false;
-  if (!identity.accountedAt && closure.runtimeMode === "native" && !closure.preProviderFailure
+  if (!identity.accountedAt && closure.runtimeMode === "native" && !closure.preProviderFailure && !closure.providerWorkNeverStarted
     && closure.coordinatorId && !closure.resultId && closure.phase !== "terminal_failure") return false;
   const pendingReceipts = !identity.accountedAt
     ? await readPendingRunUsageReceipts({ companyId: identity.companyId, runId }, undefined, index) : [];
@@ -172,8 +224,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // A failed capture may follow an older complete attempt. Neither replay
     // nor terminal status can certify that the missing work was free.
     if (object(run.usageJson).accountingCaptureFailed === true) return false;
+    const providerWorkNeverStarted = run.runtimeMode === "native" && object(run.usageJson).accountingReceiptReady === false
+      && await readNativeReceiptClosure(tx, run.id) === "no_provider_work";
     const preProviderFailure = object(object(run.resultJson).executionRecovery).providerWorkStarted === false
-      || object(run.usageJson).accountingProviderWorkStarted === false;
+      || object(run.usageJson).accountingProviderWorkStarted === false || providerWorkNeverStarted;
     // A failed native turn is not necessarily the end of this heartbeat: the
     // coordinator can resume the same run. Only its closed provider boundary
     // authorizes acknowledgement; finalization may still run after a result.
@@ -188,7 +242,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // deliver it: settle the known part as unpriced usage. A later receipt
     // still posts through late-receipt reconciliation.
     const receiptUnavailable = !preProviderFailure && object(run.usageJson).accountingReceiptReady === false;
-    if (receiptUnavailable && !(await nativeReceiptSourceClosed(tx, run.id))) return false;
+    const receiptClosure = receiptUnavailable ? await readNativeReceiptClosure(tx, run.id) : null;
+    if (receiptUnavailable && !receiptClosure) return false;
+    const closureTimedOut = receiptClosure === "timed_out";
     if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
@@ -216,6 +272,14 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
     const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";
+    // A lost receipt that already carries a provider-reported cost settles at
+    // that cost, as an estimate marked as a lower bound, not as unpriced.
+    const reportedLowerBound = receiptUnavailable && knownCostUsd !== null && billingType !== "subscription_included"
+      && usdToUnits(knownCostUsd) > 0n;
+    const lowerBoundProvenance = reportedLowerBound ? { source: "provider_reported", version: "accounting-receipt/v1",
+      ...object(usage.pricingProvenance),
+      evidence: [text(object(usage.pricingProvenance).evidence), "final receipt lost; provider-reported cost of the observed usage is a lower bound"]
+        .filter(Boolean).join("; ") } : null;
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
     const [agent] = await tx.select({ adapterType: agents.adapterType }).from(agents).where(eq(agents.id, run.agentId));
@@ -228,9 +292,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       issueId: text(scope.issueId), projectId: text(scope.projectId), billingCode: text(scope.billingCode),
       provider: text(usage.provider) ?? "unknown", biller: text(usage.biller) ?? text(usage.provider) ?? "unknown",
       providerRequestId: text(usage.providerRequestId),
-      pricingProvenance: lostReceiptEstimate?.pricingProvenance ?? object(usage.pricingProvenance),
+      pricingProvenance: withClosureTimeoutEvidence(lostReceiptEstimate?.pricingProvenance ?? lowerBoundProvenance ?? object(usage.pricingProvenance), closureTimedOut),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: lostReceiptEstimate ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: lostReceiptEstimate || reportedLowerBound ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -267,11 +331,19 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       // A complete receipt arriving later may price this charge (see usage-receipts).
       ...(receiptUnavailable ? { usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
         accountingReceiptUnavailable: true,
+        // Unlike a verified stop, the run may still have spent: the blocking
+        // unpriced-usage policy keeps counting this charge.
+        ...(closureTimedOut ? { accountingClosureTimedOut: true } : {}),
         // Late reconciliation measures a later receipt from the accepted money.
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
           pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
+        ...(lowerBoundProvenance ? { costStatus: "estimated", pricingProvenance: lowerBoundProvenance } : {}),
       })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
+    if (closureTimedOut) await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting",
+      action: "cost.accounting_closure_timed_out", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+      details: { reason: "Final usage never arrived and no stop of its provider was verified; the run's known usage was recorded as a lower bound, or as unpriced when it had no price.",
+        timeoutMinutes: ACCOUNTING_CLOSURE_TIMEOUT_MS / 60_000 } }, publications);
     return true;
   }), { "budget.accounting.owner": "run" });
   for (const file of recoveredFiles) {
@@ -281,7 +353,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
   return accounted;
 }
 
-function actionableRunAccounting() {
+function actionableRunAccounting(at: Date = new Date()) {
   return and(
     eq(heartbeatRuns.costAccountingPending, true), inArray(heartbeatRuns.status, terminalStatuses),
     or(and(sql`${heartbeatRuns.costAccountedAt} is not null`,
@@ -295,7 +367,7 @@ function actionableRunAccounting() {
         and ${heartbeatRuns.runtimeMode} = 'native' and ${nativeRunFinalizations.resultId} is null
         and ${nativeRunFinalizations.phase} <> 'terminal_failure'))`,
       sql`(${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' or ${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false' or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
-        or (${closedNativeReceiptSource}))`,
+        or (${closedNativeReceiptSource}) or (${closureEvidenceTimedOut(at)}) or (${nativeProviderWorkNeverStarted}))`,
     )),
   );
 }
@@ -303,7 +375,8 @@ function actionableRunAccounting() {
 /** Only unfinished, actionable debt warrants retries. Incomplete provider
  * receipts retain their accounting/idle hold and wake when evidence arrives. */
 export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDirectory?: string) {
-  const [pending] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting()).limit(1);
+  const cutoff = new Date(now);
+  const [pending] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(actionableRunAccounting(cutoff)).limit(1);
   const [deadline] = await db.execute<{ at: Date | string | null }>(sql`
     select min(started_at) + interval '120 seconds 1 millisecond' as at from (
       select ${decisionInvocations.startedAt} as started_at from ${decisionInvocations}
@@ -312,7 +385,20 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
       select ${promptInjectionInvocations.startedAt} from ${promptInjectionInvocations}
         where ${promptInjectionInvocations.status} = 'running'
     ) running_service_invocations`);
-  const nextRunAt = deadline?.at == null ? null : new Date(deadline.at).getTime();
+  // Wake when a run waiting for closure evidence reaches its bound.
+  const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true), isNull(heartbeatRuns.costAccountedAt),
+      sql`${heartbeatRuns.usageJson}->>'accountingReceiptReady' = 'false'`,
+      sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
+      sql`${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')`,
+      settledNativeCoordinator,
+      // Only future bounds: a run already past it is in the actionable scan,
+      // and a past deadline must never schedule an immediate pass again.
+      sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})
+        > ${cutoff.toISOString()}::timestamptz - make_interval(secs => ${ACCOUNTING_CLOSURE_TIMEOUT_MS / 1000})`));
+  const closureAt = closure?.at == null ? null : new Date(closure.at).getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1;
+  const serviceAt = deadline?.at == null ? null : new Date(deadline.at).getTime();
+  const nextRunAt = serviceAt === null ? closureAt : closureAt === null ? serviceAt : Math.min(serviceAt, closureAt);
   const receipts = await indexPendingUsageReceipts(receiptDirectory);
   return {
     pending: !!pending || receipts.size > 0 || (nextRunAt !== null && nextRunAt <= now),
