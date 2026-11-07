@@ -33,6 +33,10 @@ export interface ControllerOutageReceipt extends ControllerOutage {
  * inside that grace, so this does not loosen the qualification contract.
  */
 export const MAX_CONTROLLER_OUTAGE_MS = 600_000;
+/** Runner suites need the replacement ready inside the Runner's 7-minute
+ * reconnect grace, counted from the start of the outage. Chaos holds that
+ * deliberately outlast the grace pass a later bound to `replaceController`. */
+export const CONTROLLER_READY_BY_MS = 420_000;
 
 export function parseControllerOutage(value: unknown): ControllerOutage {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid controller outage");
@@ -67,7 +71,8 @@ export function controllerOutageForExecution(execution: MatrixExecution, env: No
 /** A fault receipt is required in addition to the runner's continuity receipts. */
 export function validControllerOutageReceipt(value: unknown, expected?: ControllerOutage, requestId?: string,
   expectedArtifacts?: { previous: Pick<ServingArtifact, "revision" | "treeSha256">;
-    replacement: Pick<ServingArtifact, "revision" | "treeSha256"> }): value is ControllerOutageReceipt {
+    replacement: Pick<ServingArtifact, "revision" | "treeSha256"> },
+  readyByMs = CONTROLLER_READY_BY_MS): value is ControllerOutageReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const r = value as ControllerOutageReceipt;
   try { parseControllerOutage(r); } catch { return false; }
@@ -81,7 +86,7 @@ export function validControllerOutageReceipt(value: unknown, expected?: Controll
     && durations.every(ms => typeof ms === "number" && Number.isFinite(ms) && ms >= 0)
     && r.replacementStartedAfterMs! - r.stoppedAfterMs! >= r.holdMs
     && r.readyAfterMs! >= r.replacementStartedAfterMs!
-    && r.readyAfterMs! < 420_000
+    && r.readyAfterMs! < readyByMs
     && ((!r.previousArtifact && !r.replacementArtifact) || Boolean(r.previousArtifact && r.replacementArtifact
       && [r.previousArtifact, r.replacementArtifact].every(a => /^[a-f0-9]{40}$/.test(a.revision)
         && /^[a-f0-9]{64}$/.test(a.treeSha256) && typeof a.version === "string"
@@ -113,6 +118,8 @@ export async function replaceController<T extends { pid?: number }>(input: {
   replacementArtifact?: () => ServingArtifact | undefined;
   afterStopped?: (receipt: ControllerOutageReceipt) => Promise<void>;
   afterReady?: (receipt: ControllerOutageReceipt, record: () => Promise<void>) => Promise<void>;
+  /** Upper bound on `readyAfterMs`; defaults to the Runner reconnect grace. */
+  readyByMs?: number;
 }): Promise<ControllerOutageReceipt> {
   const outage = parseControllerOutage(input.outage);
   const started = performance.now();
@@ -149,7 +156,7 @@ export async function replaceController<T extends { pid?: number }>(input: {
     if (!receipt.replacementArtifact) throw new Error("Replacement has no verified serving artifact");
   }
   await record();
-  if (!validControllerOutageReceipt(receipt, outage, input.requestId)) throw new Error("Controller outage did not produce a qualifying replacement receipt");
+  if (!validControllerOutageReceipt(receipt, outage, input.requestId, undefined, input.readyByMs)) throw new Error("Controller outage did not produce a qualifying replacement receipt");
   await input.afterReady?.(receipt, record);
   return receipt;
 }
