@@ -1,5 +1,5 @@
 {
-  "id": "8a80c649-fc28-43df-b4ed-6f9be307edfd",
+  "id": "a2ec96c6-3cf1-4c51-8ee8-b35f090bfd42",
   "prevId": "0c990bdc-6df0-44ca-8f21-28124f7b39e7",
   "version": "7",
   "dialect": "postgresql",
@@ -3966,28 +3966,6 @@
           ],
           "isUnique": true,
           "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue_disposition_repair:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_wakeup_requests_review_handoff_retry_idempotency_uq": {
-          "name": "agent_wakeup_requests_review_handoff_retry_idempotency_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "idempotency_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'review-handoff:%' AND \"agent_wakeup_requests\".\"status\" <> 'skipped'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -44791,6 +44769,12 @@
         "controller_pid": {
           "name": "controller_pid",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_host_hash": {
+          "name": "controller_host_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
