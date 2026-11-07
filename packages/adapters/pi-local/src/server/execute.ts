@@ -65,6 +65,15 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+// Linux caps ONE command-line argument at MAX_ARG_STRLEN = 32 * PAGE_SIZE
+// (131072 bytes on 4 KiB pages), independent of the 2 MiB total ARG_MAX. A
+// prompt passed as a single argv string therefore sets a hard ceiling on how
+// long an issue thread can grow before every wake fails with `spawn E2BIG`
+// before the model is ever called. The prompt is delivered on stdin instead;
+// these constants only drive the diagnostic that flags a runaway thread.
+const MAX_ARG_STRLEN_BYTES = 131_072;
+const LARGE_PROMPT_WARN_BYTES = 96 * 1024;
+
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
 
@@ -653,7 +662,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return notes;
     })();
 
-    const buildArgs = (sessionFile: string, userPrompt: string): string[] => {
+    const buildArgs = (sessionFile: string): string[] => {
       const args: string[] = [];
 
       // Use JSON mode for structured output with print mode (non-interactive)
@@ -674,9 +683,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (extraArgs.length > 0) args.push(...extraArgs);
       args.push("--extension", attributionExtensionPath);
 
-      // Add the user prompt as the last argument
-      args.push(userPrompt);
-
+      // The run prompt is NOT an argument: see MAX_ARG_STRLEN_BYTES above. It is
+      // handed to Pi on stdin, the same carrier claude/codex/cursor/opencode
+      // local use. Pi prepends piped stdin to the first prompt.
       return args;
     };
 
@@ -711,13 +720,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const promptMetrics = {
         systemPromptChars: renderedSystemPromptExtension.length,
         promptChars: userPrompt.length,
+        // Bytes, not chars: the kernel limit is a byte limit, and a thread with
+        // em-dashes or CJK crosses it well before its character count suggests.
+        promptBytes: Buffer.byteLength(userPrompt, "utf8"),
         bootstrapPromptChars: attemptBootstrapPrompt.length,
         wakePromptChars: attemptWakePrompt.length,
         taskContextChars: attemptSections.taskContextNote.length,
         sessionHandoffChars: sessionHandoffNote.length,
         heartbeatPromptChars: attemptRenderedHeartbeatPrompt.length,
       };
-      const args = buildArgs(sessionFile, userPrompt);
+      const args = buildArgs(sessionFile);
+      if (promptMetrics.promptBytes >= LARGE_PROMPT_WARN_BYTES) {
+        await onLog(
+          "stderr",
+          `[paperclip] Large run prompt: ${promptMetrics.promptBytes} bytes for run ${runId}. `
+            + `A single argv string is capped at ${MAX_ARG_STRLEN_BYTES} bytes, so this prompt could `
+            + "never have been passed as an argument; it is delivered on stdin. "
+            + "Consider trimming thread replay or moving the remaining work to a child issue.\n",
+        );
+      }
       if (onMeta) {
         await onMeta({
           adapterType: "pi_local",
@@ -772,6 +793,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
+        stdin: userPrompt,
         timeoutSec,
         graceSec,
         onSpawn,
