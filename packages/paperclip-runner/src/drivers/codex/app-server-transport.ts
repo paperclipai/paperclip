@@ -1,4 +1,5 @@
 import { configuredEnvironment } from "../../configured-environment.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -46,8 +47,17 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** Establish a fresh owned provider lifetime before reading a retained conversation. */
+  prepareConversationResume?(params: Record<string, unknown>): Promise<void>;
   /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
   takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
+  /**
+   * The provider turn that this run's latest durable `turn.start` command
+   * result accepted, or null when no such authenticated result exists. A
+   * controller can die after the runner accepts its turn/start but before the
+   * controller checkpoints the turn; recovery uses this to adopt that turn.
+   */
+  controllerAcceptedTurnId?(): string | null;
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
@@ -62,6 +72,8 @@ export interface CodexAppServerTransport {
    * diagnostic context; transports must not forward it to the provider.
    */
   close(reason?: string): Promise<void>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
@@ -251,7 +263,11 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
-  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+  // Secret-bearing launch material must come from the controller's explicit environment.
+  for (const key of [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  ]) {
     if (explicit?.[key] !== undefined) environment[key] = explicit[key];
   }
   Object.assign(environment, githubCredentialEnvironment(source), configuredEnvironment(explicit));

@@ -82,6 +82,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  remoteWorkspaceStorageEnabled: {
+    title: "Remote workspace storage",
+    description: "Keep eligible new native sandbox workspaces remote when durable storage is configured, and save verified snapshots in object storage.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
   enableIsolatedWorkspacesByDefault: {
     title: "Isolated Workspaces By Default",
     description:
@@ -161,6 +168,20 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enablePaperclipNotebook: {
+    title: "Paperclip Notebook",
+    description: "Allow Paperclip Notebook connections and publishing through an explicitly enabled instance rollout.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableGoogleWorkspaceConnector: {
+    title: "Google Workspace connector (Paperclip)",
+    description: "Show and allow the built-in Google Workspace connector while its Google app verification is pending. When off, Google apps are offered through Composio and Arcade instead.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",
     description: "Deprecated compatibility key. MCP aggregators are always enabled; stored and managed values are ignored.",
@@ -177,12 +198,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAgentChat: {
-    title: "Agent Chat",
-    description:
-      "Persistent task-backed conversations that clarify goals and hand work off to tasks. Chat leads the Work group with an agent rail, and each chat's side panel shows the agent's tasks and artifacts as cards.",
+    title: "Agent Chat (compatibility)",
+    description: "Deprecated compatibility key. Agent Chat is always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableCombinedInboxTasks: {
     title: "Combined Inbox + Task List",
@@ -191,6 +211,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
+  },
+  enableArtifactsV1: {
+    title: "Artifacts V1",
+    description:
+      "The artifact presentation from the artifact directions lab: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
@@ -204,6 +232,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Classic Task Interface",
     description:
       "Restore the pre-chat task detail page: the page-level header with inline description editor, the plain comment thread, and the fixed Properties sidebar. Chat-only features (streaming activity folding, inline plan/question cards, the three-mode composer) are unavailable in the classic view.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableLegacyComposerSubmit: {
+    title: "Command/Ctrl+Enter to Submit",
+    description:
+      "Require Command/Ctrl+Enter to submit task replies and new tasks. Enter inserts a new line.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,

@@ -4,6 +4,7 @@ import type {
   HarnessSessionRecoveryOptions,
   PersistedHarnessSession,
 } from "../contracts/harness-driver.js";
+import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 import type {
   NativeSession,
   NativeSessionBackend,
@@ -34,7 +35,7 @@ const MAX_RECOVERY_SEMANTIC_RESULT_DEPTH = 128;
 export class HarnessDriverBackend implements NativeSessionBackend {
   readonly #driver: HarnessDriver;
 
-  constructor(driver: HarnessDriver, readonly preparedTaskConstraints?: readonly string[]) {
+  constructor(driver: HarnessDriver, readonly preparedTaskConstraints?: readonly string[], private readonly terminalDrainTimeoutMs?: number) {
     this.#driver = driver;
   }
 
@@ -74,7 +75,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         .catch(() => undefined);
       throw error;
     }
-    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering);
+    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering, this.terminalDrainTimeoutMs);
   }
 
   async recoverSession(
@@ -162,7 +163,11 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       recoveryOptions,
     );
     if (!recovered.recovered || recovered.session === undefined) {
-      return { recovered: false, reason: recovered.reason };
+      return {
+        recovered: false,
+        reason: recovered.reason,
+        ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+      };
     }
     try {
       assertProviderSessionIdentity(
@@ -186,6 +191,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered.session,
         recoveredTerminal,
         (await this.#driver.descriptor()).capabilities.steering,
+        this.terminalDrainTimeoutMs,
       ),
     };
   }
@@ -441,6 +447,7 @@ class HarnessNativeSession implements NativeSession {
     session: HarnessSession,
     terminal?: PrpTerminalState | null,
     steeringSupported = false,
+    private readonly terminalDrainTimeoutMs?: number,
   ) {
     this.#steeringSupported = steeringSupported;
     this.#input = structuredClone(input);
@@ -502,6 +509,11 @@ class HarnessNativeSession implements NativeSession {
     this.#input = { ...this.#input, identity: structuredClone(input.identity) };
     this.#terminal = null;
     this.#explicitlyCancelled = false;
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.#assertProtocolIntegrity();
+    return this.#session.release?.() ?? false;
   }
 
   async detachControllerForRestart(): Promise<void> {
@@ -766,6 +778,7 @@ class HarnessNativeSession implements NativeSession {
     this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
+      ...(this.terminalDrainTimeoutMs === undefined ? {} : { terminalDrainTimeoutMs: this.terminalDrainTimeoutMs }),
       cleanup:
         interrupt === undefined
           ? Promise.resolve()

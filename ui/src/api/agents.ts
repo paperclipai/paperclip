@@ -1,6 +1,8 @@
 import type { AgentPublicIdentity } from "@paperclipai/shared";
+import type { AgentProjectAccess } from "@paperclipai/shared";
 import type {
   Agent,
+  EnvironmentProbeResult,
   ConnectionIntentInteraction,
   AgentDesiredSkillEntry,
   AgentSkillAssignmentMode,
@@ -37,7 +39,7 @@ import type {
   AgentApiKeyScope,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
-import { ApiError, api } from "./client";
+import { ApiError, api, type RequestOptions } from "./client";
 
 export interface AgentKey {
   id: string;
@@ -110,6 +112,10 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  projectAccess: (id: string) => api.get<AgentProjectAccess>(`/agents/${id}/project-access`),
+  addProjectAccess: (id: string, projectIds: string[]) => api.post<AgentProjectAccess>(`/agents/${id}/project-access`, { projectIds }),
+  qualifyRunner: (id: string, expectedEnvironmentId: string, companyId?: string) =>
+    api.post<EnvironmentProbeResult>(agentPath(id, companyId, "/qualify-runner"), { expectedEnvironmentId }),
   setAvatar: (companyId: string, agentId: string, imageBase64: string | null) =>
     api.put<{ agentId: string; appearance: import("@paperclipai/shared").AgentAppearance; avatarUrl: string }>(`/companies/${companyId}/agents/${agentId}/avatar`, { imageBase64 }),
   getIdentity: (id: string, companyId?: string) =>
@@ -121,9 +127,9 @@ export const agentsApi = {
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
-  get: async (id: string, companyId?: string) => {
+  get: async (id: string, companyId?: string, options?: RequestOptions) => {
     try {
-      return await api.get<AgentDetail>(agentPath(id, companyId));
+      return await api.get<AgentDetail>(agentPath(id, companyId), options);
     } catch (error) {
       // Backward-compat fallback: if backend shortname lookup reports ambiguity,
       // resolve using company agent list while ignoring terminated agents.
@@ -139,16 +145,16 @@ export const agentsApi = {
       const urlKey = normalizeAgentUrlKey(id);
       if (!urlKey) throw error;
 
-      const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`);
+      const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`, options);
       const matches = agents.filter(
         (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.urlKey) === urlKey,
       );
       if (matches.length !== 1) throw error;
-      return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId));
+      return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId), options);
     }
   },
   getConfiguration: (id: string, companyId?: string) =>
-    api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+    api.get<import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId, "/configuration")),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>
@@ -159,8 +165,10 @@ export const agentsApi = {
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  updateRuntimeSettings: (id: string, runtimeSettings: import("@paperclipai/shared").AgentRuntimeSettingsPatch, companyId: string) =>
+    api.patch<Agent>(agentPath(id, companyId), { runtimeSettings }),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<Agent>(agentPath(id, companyId), data),
+    api.patch<Agent & import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
   instructionsBundle: (id: string, companyId?: string) =>
@@ -172,6 +180,7 @@ export const agentsApi = {
       rootPath?: string | null;
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
+      requireExistingEntry?: boolean;
     },
     companyId?: string,
   ) => api.patch<AgentInstructionsBundle>(agentPath(id, companyId, "/instructions-bundle"), data),
@@ -262,10 +271,12 @@ export const agentsApi = {
       testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },
+    options?: RequestOptions,
   ) =>
     api.post<AdapterEnvironmentTestResult>(
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
+      options,
     ),
   getAdapterAuthSignal: (companyId: string, type: string, environmentId?: string | null) => {
     const query = environmentId ? `?environmentId=${encodeURIComponent(environmentId)}` : "";
@@ -327,18 +338,18 @@ export const agentsApi = {
   // The owner response repeats the live prompt on every read while the
   // session holds an active public status, so this polling call carries the
   // same no-store request option as the active-session read below.
-  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string, options?: { signal?: AbortSignal }) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
-      { cache: "no-store" },
+      { cache: "no-store", ...options },
     ),
   // Reads the caller's active login session for one company and adapter, with
   // no session id, so the browser rediscovers its own session after a reload
   // with no local state. A 404 means no active session for the caller.
-  getActiveAdapterAuthLoginSession: (companyId: string, type: string) =>
+  getActiveAdapterAuthLoginSession: (companyId: string, type: string, options?: { signal?: AbortSignal; fresh?: boolean }) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/active`,
-      { cache: "no-store" },
+      { cache: "no-store", ...options },
     ),
   cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
     api.post<AdapterAuthSessionOwnerResponse>(
@@ -367,21 +378,23 @@ export const agentsApi = {
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,
       { adapterType: "claude_local", ...data },
     ),
-  getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
+  getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string, options?: { signal?: AbortSignal }) =>
     api.get<ClaudeSetupTokenSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+      options,
     ),
   // Reads the caller's active Claude setup-token login session, with no
   // session id, so the browser rediscovers its own session after a reload with
   // no local state. A 404 means no active session for the caller.
-  getActiveClaudeSetupTokenLoginSession: (companyId: string) =>
+  getActiveClaudeSetupTokenLoginSession: (companyId: string, options?: { signal?: AbortSignal; fresh?: boolean }) =>
     api.get<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/active`,
-      { cache: "no-store" },
+      { cache: "no-store", ...options },
     ),
-  getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
+  getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string, options?: { signal?: AbortSignal }) =>
     api.get<ClaudeSetupTokenSessionPrompt>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/prompt`,
+      options,
     ),
   submitClaudeSetupTokenBrowserCode: (companyId: string, sessionId: string, browserCode: string) =>
     api.post<ClaudeSetupTokenSessionResponse>(

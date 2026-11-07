@@ -128,7 +128,7 @@ describe("managed worktree seed source through the server spawn path", () => {
       const workspace = {
         baseCwd, cwd, source: "project_primary" as const, projectId: "project-1",
         workspaceId: "project-workspace-1", repoUrl: null, repoRef: "HEAD",
-        strategy: "git_worktree" as const, branchName: null, worktreePath: cwd,
+        strategy: "git_worktree" as const, branchName: null, branchCreatedByRuntime: false, worktreePath: cwd,
         warnings: [], created: false,
       };
       expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");

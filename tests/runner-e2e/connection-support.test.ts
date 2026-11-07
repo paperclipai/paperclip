@@ -9,9 +9,8 @@ import { connectionHarnesses, connectionScopeGaps, connectionCell, supportsConne
 import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionSecret, resolveConnectionSettings } from "./connection-config.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
-import { verifyConnectionTarget } from "./connection-target.js";
+import { ConnectionApi, verifyConnectionTarget } from "./connection-target.js";
 import { cleanupConnectionCompany, connectionCreationReceipt, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
-import type { ConnectionApi } from "./connection-target.js";
 import * as connectionConfig from "./connection-config.js";
 import * as connectionTarget from "./connection-target.js";
 import * as reportAssets from "./report-assets.js";
@@ -144,6 +143,26 @@ describe("live connection coverage", () => {
 });
 
 describe("target and selected credential boundaries", () => {
+  it("passes a bounded GET timeout and preserves the default for other readers", async () => {
+    const fetch = vi.fn(async () => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.get("/api/health", { timeoutMs: 17 });
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 17 }));
+    await api.get("/api/health");
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 30_000 }));
+    await expect(api.get("/api/health", { timeoutMs: 0 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it("keeps scoped requests on tenant APIs and bounds extended probe timeouts", async () => {
+    const fetch = vi.fn(async (_url: string, _options: unknown) => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.post("/api/companies/qa/adapters/paperclip_runner/test-environment", {}, { timeoutMs: 120_000 });
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: { Origin: "https://qa.test.paperclip.app" }, timeout: 120_000, maxRedirects: 0 });
+    fetch.mockClear();
+    for (const route of ["https://other.test/api/health", "/api/../v1/admin", "/api/%2e%2e/v1/admin"]) await expect(api.get(route)).rejects.toThrow("invalid_api_route");
+    await expect(api.post("/api/health", {}, { timeoutMs: 120_001 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("accepts local/staging origins and rejects credential-bearing or redirectable target strings", () => {
     expect(targetOrigin("http://127.0.0.1:3109/")).toBe("http://127.0.0.1:3109");
     expect(targetOrigin("https://staging.example.test")).toBe("https://staging.example.test");

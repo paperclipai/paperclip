@@ -559,7 +559,7 @@ describe("customer-success read authority", () => {
         companyId,
         companySkillId: skill.id,
         revisionNumber: 1,
-        fileInventory: [{ path: "SKILL.md", kind: "markdown", sizeBytes: 9, content: "# Example" }],
+        fileInventory: [{ path: "SKILL.md", kind: "markdown", content: "# Example" }],
       })
       .returning();
     await db

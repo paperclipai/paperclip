@@ -13,17 +13,27 @@ if (!existsSync(vitest)) {
   console.error(`${prefix} launcher/environment failure: Vitest is not installed. Run pnpm install before validation.`);
   process.exit(2);
 }
+// Load after the check: a missing install must still report the launcher failure.
+const { invocationEnv } = await import(new URL("../../scripts/ci-profile/record.mjs", import.meta.url).href);
 
 const env = { ...process.env };
 delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
 
 for (const [name, command] of [
+  // Server modules under test import the built plugin SDK (and shared) package.
+  ["Plugin build dependencies", ["scripts/ensure-plugin-build-deps.mjs"]],
   ["Vitest", [vitest, "run", "--config", "tests/runner-e2e/vitest.config.ts", ...args]],
-  ["Node tests", ["--test", "tests/runner-e2e/native-completion-checks.test.mjs",
-    "tests/runner-e2e/native-completion-git-source.test.mjs", "tests/runner-e2e/native-completion-source-contract.test.mjs"]],
+  // The wrapper adds the CI profiling reporter when PAPERCLIP_CI_PROFILE is set.
+  ["Node tests", ["scripts/ci-profile/node-test.mjs", "tests/runner-e2e/product-regression-testops.test.mjs", "tests/runner-e2e/reliability-testops.test.mjs", "tests/runner-e2e/artifact-budget.test.mjs", "tests/runner-e2e/native-completion-checks.test.mjs",
+    "tests/runner-e2e/native-completion-git-source.test.mjs", "tests/runner-e2e/native-completion-source-contract.test.mjs",
+    "tests/runner-e2e/chat-feature-testops-api.test.mjs", "tests/runner-e2e/chat-feature-testops-cli.test.mjs", "tests/runner-e2e/chat-feature-testops-results.test.mjs", "tests/runner-e2e/testops-chat-reporter.test.mjs", "tests/runner-e2e/chat-feature-testops-retained-verification.node-test.mjs",
+    "tests/runner-e2e/chat-completion-testops-api.test.mjs", "tests/runner-e2e/chat-completion-testops-contract.test.mjs",
+    "tests/runner-e2e/chat-full-catalog-testops-manifest.test.mjs", "tests/runner-e2e/chat-full-catalog-testops-reconcile.test.mjs", "tests/runner-e2e/chat-full-catalog-testops-adapter.test.mjs", "tests/runner-e2e/chat-catalog-testops-streaming.test.mjs"]],
 ]) {
-  const result = spawnSync(process.execPath, command, { cwd: root, env, stdio: "inherit" });
+  const result = spawnSync(process.execPath, command, {
+    cwd: root, env: name === "Vitest" ? invocationEnv("vitest", env) : env, stdio: "inherit",
+  });
   if (result.error || result.signal) {
     console.error(`${prefix} launcher/environment failure: ${name} ${result.error?.message ?? `terminated by ${result.signal}`}`);
     process.exit(2);

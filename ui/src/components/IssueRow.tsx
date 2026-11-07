@@ -2,7 +2,7 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Flag } from "lucide-react";
+import { Archive, Flag, CircleAlert } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TaskRowColumnCells, useTaskListColumns, type TaskRowColumnValues } from "./TaskListColumns";
 import { CellMarquee, HoveredCellContext, useCellMarqueeHover } from "./CellMarquee";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export type IssueRowUnreadState = "hidden" | "visible" | "fading";
 export type IssueRowPresentation = "legacy" | "task";
@@ -42,6 +43,8 @@ export interface IssueRowProps {
   appearance?: IssueRowAppearance;
   /** Refreshed task rows share their anatomy at either density. */
   density?: IssueRowDensity;
+  /** Reserve collection geometry while optional diagnostics arrive. */
+  stableLayout?: boolean;
   /** Opt-in complete column contract for refreshed task lists. */
   columnValues?: TaskRowColumnValues;
   /** Interactive disclosure or selection control before the canonical status glyph. */
@@ -74,6 +77,7 @@ export interface IssueRowProps {
   checklistDependencyChips?: ReactNode;
   checklistRowId?: string;
   unreadState?: IssueRowUnreadState | null;
+  showUnreadIndicator?: boolean;
   onMarkRead?: () => void;
   onArchive?: () => void;
   archiveDisabled?: boolean;
@@ -135,6 +139,7 @@ export function IssueRow({
   presentation = "legacy",
   appearance = "default",
   density = "comfortable",
+  stableLayout = false,
   columnValues,
   leadingControl,
   statusSlot,
@@ -156,6 +161,7 @@ export function IssueRow({
   checklistDependencyChips,
   checklistRowId,
   unreadState = null,
+  showUnreadIndicator = true,
   onMarkRead,
   onArchive,
   archiveDisabled,
@@ -171,10 +177,9 @@ export function IssueRow({
 
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  // Refreshed task rows communicate unread state through title typography alone.
-  // Existing presentations retain their unread control and its reserved space.
-  const showUnreadSlot = unreadState != null && !(presentation === "task" && appearance === "refreshed");
-  const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+  const isUnread = unreadState === "visible" || unreadState === "fading";
+  const showUnreadSlot = showUnreadIndicator && unreadState != null && !(presentation === "task" && appearance === "refreshed");
+  const showUnreadDot = showUnreadIndicator && isUnread;
   const unreadDotButton = (
     <button
       type="button"
@@ -218,10 +223,7 @@ export function IssueRow({
   // The row already carries the issue's own scheduled retry, so the chip can tell a retry the
   // scheduler is actually running from one whose due time simply passed.
   const recoveryIndicator = issue.interruption?.responsibility === "system" && issue.interruption.state !== "resolved"
-    ? <span className="text-xs text-muted-foreground" data-testid="issue-row-interruption">
-        {issue.interruption.state === "working" ? "Thinking"
-          : issue.interruption.state === "retry_scheduled" ? "Trying again soon" : "Retry available"}
-      </span>
+    ? null
     : recoveryAction && !requiresExecutionReconciliation(recoveryAction.cause)
     ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
     : null;
@@ -237,10 +239,9 @@ export function IssueRow({
   ) : null;
 
   if (presentation === "task") {
-    const isUnread = unreadState === "visible" || unreadState === "fading";
     const refreshed = appearance === "refreshed";
-    const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention);
-    const statusIcon = <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />;
+    const statusLabel = getStatusIconLabel(issue.status, issue.externalConversationState, issue.blockerAttention, issue.displayStatus);
+    const statusIcon = <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />;
     const status = statusSlot ?? (refreshed ? (
       <Tooltip>
         <TooltipTrigger asChild>
@@ -294,6 +295,8 @@ export function IssueRow({
           onMouseLeave={refreshed ? () => { clearHoveredCell(); setTitleFocused(false); } : undefined}
           role={refreshed && columnValues ? "row" : undefined}
           data-slot="task-row"
+          data-issue-id={issue.id}
+          data-issue-row-details={issue.id}
           data-unread={isUnread ? "true" : undefined}
           data-appearance={refreshed ? "refreshed" : undefined}
           data-density={refreshed ? density : undefined}
@@ -310,6 +313,7 @@ export function IssueRow({
             selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
             checklistCurrentStep && "bg-primary/5",
             refreshed && "task-row-refreshed",
+            stableLayout && !refreshed && "task-row-stable",
             className,
           )}
         >
@@ -377,7 +381,21 @@ export function IssueRow({
               >
                 {issue.title}{titleSuffix}
               </span>}
-              {recoveryIndicator}
+              {stableLayout && recoveryIndicator ? (
+                <span data-slot="task-row-recovery">
+                  <span className="hidden sm:inline">{recoveryIndicator}</span>
+                  {recoveryIndicator ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span tabIndex={0} aria-label="Task recovery status" className="relative z-10 inline-flex text-muted-foreground sm:hidden">
+                          <CircleAlert className="h-4 w-4" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{recoveryIndicator}</TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                </span>
+              ) : recoveryIndicator}
               {mobileTitleMeta ? (
                 <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
                   {mobileTitleMeta}
@@ -404,7 +422,9 @@ export function IssueRow({
               </>
             ) : (
               <>
-                {externalObjectSummary ? (
+                {stableLayout ? (
+                  <span data-slot="task-row-external"><ExternalObjectStatusSummary summary={externalObjectSummary} compact /></span>
+                ) : externalObjectSummary ? (
                   <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
                 ) : null}
                 {metadata ? <span data-slot="task-row-metadata" data-marquee-cell={refreshed ? "metadata" : undefined} className="min-w-0">{refreshed ? <CellMarquee cell="metadata">{metadata}</CellMarquee> : metadata}</span> : null}
@@ -431,6 +451,7 @@ export function IssueRow({
 
   return (
     <div
+      data-issue-row-details={issue.id}
       onMouseEnter={onMouseEnter}
       className={cn(
         // No color transition on the row band: hover/selection must snap
@@ -467,14 +488,14 @@ export function IssueRow({
         <span className="sr-only">Open {identifier}: {issue.title}</span>
       </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
+        {mobileLeading ?? <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />}
         {parkedBlockerIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
         <span data-slot="task-row-title-cluster" className="flex min-w-0 items-start gap-1.5 sm:order-2 sm:flex-1 sm:items-center">
           <span
             data-slot="task-row-title"
-            className={cn("min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none", titleClassName)}
+            className={cn("min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none", isUnread && "font-semibold", titleClassName)}
           >
             {issue.title}{titleSuffix}
           </span>
@@ -540,7 +561,7 @@ export function IssueRow({
           {desktopMetaLeading ?? (
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-                <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />
+                <StatusIcon {...taskStatusIconProps(issue)} size="md" className={selectedStatusClass} />
               </span>
               {checklistStep}
               <span className="shrink-0 font-mono text-xs text-muted-foreground">

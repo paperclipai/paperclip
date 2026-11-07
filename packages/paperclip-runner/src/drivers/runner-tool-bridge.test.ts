@@ -11,6 +11,7 @@ import {
 } from "../contracts/completion-result.js";
 
 import {
+  RUNNER_TOOL_SCOPE_TOKEN_HEADER,
   canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
@@ -21,6 +22,8 @@ const bridges: RunnerToolBridge[] = [];
 afterEach(async () => {
   await Promise.all(bridges.splice(0).map((bridge) => bridge.close()));
 });
+
+type ToolCallBody = { result: { content: unknown } };
 
 async function rpc(
   bridge: RunnerToolBridge,
@@ -82,6 +85,33 @@ describe("runner semantic MCP bridge", () => {
         ],
       },
     });
+  });
+
+  it("checks scoped credentials again after a delayed body before dispatch", async () => {
+    let scope = "first", token = "first-scope-token", reads = 0;
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], handler,
+      sessionScope: () => scope, scopeToken: () => { reads++; return token; } });
+    bridges.push(bridge);
+    const headers = (value: string) => ({ Authorization: `Bearer ${bridge.secret}`, "content-type": "application/json", [RUNNER_TOOL_SCOPE_TOKEN_HEADER]: `Bearer ${value}` });
+    const initialize = (value: string) => fetch(bridge.url, { method: "POST", headers: headers(value), body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize" }) });
+    expect((await rpc(bridge, { id: 0, method: "initialize" })).status).toBe(401);
+    const first = await initialize(token); expect(first.status).toBe(200);
+    const firstSession = first.headers.get("mcp-session-id")!;
+    const previousReads = reads;
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "documents.read", arguments: { path: "note" } } });
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    const pending = fetch(bridge.url, { method: "POST", headers: { ...headers(token), "mcp-session-id": firstSession },
+      body: new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; controller.enqueue(new TextEncoder().encode(body.slice(0, 20))); } }),
+      duplex: "half" } as RequestInit);
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(previousReads));
+    scope = "second"; token = "second-scope-token";
+    const second = await initialize(token); expect(second.status).toBe(200);
+    bodyController.enqueue(new TextEncoder().encode(body.slice(20))); bodyController.close();
+    expect((await pending).status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+    const accepted = await fetch(bridge.url, { method: "POST", headers: { ...headers(token), "mcp-session-id": second.headers.get("mcp-session-id")! }, body });
+    expect(accepted.status).toBe(200); expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("keeps private operations callable but undiscoverable", async () => {
@@ -246,7 +276,7 @@ describe("runner semantic MCP bridge", () => {
     });
   });
 
-  it("honors MCP cancellation after the handler starts", async () => {
+  it.each([60_000, null])("honors MCP cancellation after the handler starts (timeout=%s)", async timeoutMs => {
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       markStarted = resolve;
@@ -254,7 +284,7 @@ describe("runner semantic MCP bridge", () => {
     const aborted = vi.fn();
     const bridge = await startRunnerToolBridge({
       tools: [tool("documents.read")],
-      timeoutMs: 60_000,
+      timeoutMs,
       handler: ({ signal }) => new Promise((_resolve, reject) => {
         signal.addEventListener("abort", () => {
           aborted();
@@ -289,6 +319,23 @@ describe("runner semantic MCP bridge", () => {
       },
     });
     expect(aborted).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a lease-owned native tool when its bridge closes", async () => {
+    let admitted!: () => void;
+    const started = new Promise<void>(resolve => { admitted = resolve; });
+    let signal: AbortSignal | undefined;
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], timeoutMs: null,
+      handler: call => { signal = call.signal; admitted(); return new Promise(() => {}); },
+    });
+    bridges.push(bridge);
+    const pending = rpc(bridge, { id: "close-me", method: "tools/call", params: { name: "documents.read", arguments: {} } });
+    await started;
+    await bridge.close();
+    expect(signal?.aborted).toBe(true);
+    expect(await (await pending).json()).toMatchObject({ result: { isError: true,
+      content: [{ text: "Paperclip tool call cancelled" }],
+    } });
   });
 
   it("preserves successful mutation identity when the result is oversized", async () => {
@@ -518,7 +565,7 @@ describe("Copilot semantic receipt opt-in", () => {
       } });
       bridges.push(bridge);
       const request = { id: 3, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } };
-      const body = await (await rpc(bridge, request)).json();
+      const body = await (await rpc(bridge, request)).json() as ToolCallBody;
       expect(receipts).toHaveLength(1);
       expect(readNativeSemanticReceipt({ contents: body.result.content })).toEqual(receipts[0]);
       expect(receipts[0]).toMatchObject({ schema: "paperclip.semantic_tool_receipt.v2", inputSha256: semanticInputSha256(rawFinish),
@@ -542,11 +589,11 @@ describe("Copilot semantic receipt opt-in", () => {
     const normalizedFirst = validatePrpStructuredRunResult(rawFinish); const normalizedSecond = validatePrpStructuredRunResult(secondInput);
     if (!normalizedFirst.ok || !normalizedSecond.ok) throw new Error("Invalid fixture");
     pending.get("second")!.capture(normalizedSecond.result)(); pending.get("second")!.settle();
-    const secondReceipt = readNativeSemanticReceipt({ contents: (await (await second).json()).result.content });
+    const secondReceipt = readNativeSemanticReceipt({ contents: (await (await second).json() as ToolCallBody).result.content });
     expect(secondReceipt).toMatchObject({ inputSha256: semanticInputSha256(secondInput), normalizedInputSha256: semanticInputSha256(normalizedSecond.result) });
     pending.get("second")!.capture(normalizedFirst.result)();
     pending.get("first")!.capture(normalizedFirst.result)(); pending.get("first")!.settle();
-    const firstReceipt = readNativeSemanticReceipt({ contents: (await (await first).json()).result.content });
+    const firstReceipt = readNativeSemanticReceipt({ contents: (await (await first).json() as ToolCallBody).result.content });
     expect(firstReceipt).toMatchObject({ inputSha256: semanticInputSha256(rawFinish), normalizedInputSha256: semanticInputSha256(normalizedFirst.result) });
     expect(receipts).toEqual([secondReceipt, firstReceipt]);
   });
@@ -555,10 +602,10 @@ describe("Copilot semantic receipt opt-in", () => {
     const withEvidence = await startRunnerToolBridge({ tools: [tool("documents.read")], captureSemanticReceipt: () => () => {}, handler: async call => {
       expect(call.captureNormalizedInput).toBeUndefined(); return modelMetadata;
     } }); bridges.push(withEvidence);
-    const body = await (await rpc(withEvidence, { id: 1, method: "tools/call", params: { name: "documents.read", arguments: modelMetadata } })).json();
+    const body = await (await rpc(withEvidence, { id: 1, method: "tools/call", params: { name: "documents.read", arguments: modelMetadata } })).json() as ToolCallBody;
     expect(readNativeSemanticReceipt({ contents: body.result.content })).toHaveProperty("normalizedInputSha256", null);
     const plain = await startRunnerToolBridge({ handler: async call => { expect(call.captureNormalizedInput).toBeUndefined(); return { accepted: true }; } }); bridges.push(plain);
-    const plainBody = await (await rpc(plain, { id: 2, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } })).json();
+    const plainBody = await (await rpc(plain, { id: 2, method: "tools/call", params: { name: "paperclip_finish", arguments: rawFinish } })).json() as ToolCallBody;
     expect(readNativeSemanticReceipt({ contents: plainBody.result.content })).toBeNull();
   });
   it.each(["small", "chunked", "tagged", "error"])("preserves %s result encoding and captures scope before dispatch", async encoding => {

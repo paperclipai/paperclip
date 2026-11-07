@@ -1,3 +1,4 @@
+import { resolveGrokDisableWebSearch } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,11 +6,12 @@ import { join } from "node:path";
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
-import { probeNativeRunnerEnvironment, resolveClaudeEffort } from "../../vendor/paperclip-runner/index.js";
+import { NativeEnvironmentProbeCleanupError, probeNativeRunnerEnvironment, resolveClaudeEffort, resolveGrokEffort } from "../../vendor/paperclip-runner/index.js";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
+import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "../runner-revision-mismatch.js";
 
 /** Core verifies a real Runner; providers only implement their task API. */
 export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext,
@@ -42,7 +44,7 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       identity: managed?.identity, accountIdentity: managed?.accountIdentity,
       home: managed?.home, environment,
     });
-    const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
+    const owner = createPluginRunnerTaskOwner({ ...credentials, taskId: description.taskId, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
       harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
       credentialIdentity: managed?.identity });
     probeStarted = true;
@@ -58,15 +60,18 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
         ...(profile.provider === "acpx" ? { acpxAgent: profile.acpxAgent, acpxPermissionMode: "deny-all", acpxPermissionModePinned: true,
           ...(profile.acpxAgent === "pi" ? { piThinkingLevel: resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", context.config.piThinkingLevel) } : {}),
           ...(profile.acpxAgent === "claude" ? { claudeEffort: resolveClaudeEffort("claude", context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort) } : {}),
+          ...(profile.acpxAgent === "grok" ? { grokEffort: resolveGrokEffort("grok", context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort), grokDisableWebSearch: resolveGrokDisableWebSearch("grok", context.config.disableWebSearch) } : {}),
           acpxCandidateProfile: profile.acpxAgent === "pi" ? undefined : resolveAcpxQualification({ kind: "acpx", agent: profile.acpxAgent, model: profile.model }, process.env) } : {}),
         prpIdentity: { runnerInstanceId: runnerId, environmentLeaseId: target.leaseId, runId: binding.runId,
           normalizedSessionId: binding.sessionId, turnId: `turn-${binding.runId}`, itemId: `item-${binding.runId}` },
       },
-      onCleanupConfirmed: async () => { cleanupConfirmed = true; },
+      onCleanupConfirmed: async () => { rmSync(root, { recursive: true, force: true }); cleanupConfirmed = true; },
     });
     return { adapterType: "paperclip_runner", status: "pass", testedAt,
       checks: [{ code: "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeEnvironmentProbeCleanupError) throw error;
+    if (isRunnerRevisionMismatch(error)) return runnerRevisionMismatchTestResult("paperclip_runner", testedAt);
     // Provider failures may contain credentials or private addressing.
     return { adapterType: "paperclip_runner", status: "fail", testedAt,
       checks: [{ code: "runner_hello_probe_failed", level: "error", message: "The selected plugin environment did not complete the Runner hello probe and confirmed cleanup. Check its runtime, account, and model access." }] };

@@ -10,7 +10,7 @@ authorized primary/linked task documents and their revisions with their task
 origin. Historical case-owned documents remain readable; no document copies or
 editing controls are introduced. Native `create_case` requires kickoff and
 creates the first task before dispatch; missing kickoff creates nothing.
-Required `workflow_document_text` becomes the task's ordinary Markdown `workflow`
+Either `workflowId` or `workflow_document_text` becomes the task's ordinary Markdown `workflow`
 document. Agents read it on demand; its reference is prioritized in bounded
 context. Authoring guidance recommends both a Mermaid `stateDiagram-v2` map and
 prose explaining each transition's conditions, evidence, agent and wait/retry
@@ -61,6 +61,20 @@ Automated: [case routes](../../server/src/__tests__/cases-routes.test.ts) covers
 Manual: Inspect Work above Details in one column. Read nested values as compact dotted key/value rows; a singleton item has `items.quantity`, while multiple items use `items[0].quantity` and `items[1].quantity`. Verify keys/values remain legible on mobile without horizontal page overflow and scalar references still link to their destinations. Preview a document, inspect its revisions, and close with Escape; focus returns to the document link. Follow View in Audit to the case's retained history; filter by Cases actions or Case entities in Audit and verify agents use their configured avatars. Read attachments, follow parent/child/task links, and inspect a passive case. Case pages have no editing controls, including status, labels, documents, or handoff retry/cancel. Verify inaccessible cases fail clearly and remain distinct from pipeline-owned items.
 
 ### `case-handoff`
+
+Reusable company workflows have only a name and Markdown prompt plus ordinary
+identity/attribution. Agent/API authoring shares the Cases flag. Work shows the
+current workflow; pending intent shows the next name/phase; expanded handoffs and
+Audit retain names captured before renames. Switch A → B → A, refresh the current
+ID, or detach with null while retaining one primary task and document history.
+Shared edits affect future adoptions, and intervening case-document edits hold a
+pending adoption for recovery instead of being overwritten. Workflow authoring
+screens, graph execution and deletion lifecycle are deferred.
+
+Evidence for this extension: 2026-10-21 real-database and authenticated native-tool
+integration checks pass. The extended arithmetic Product E2E oracle requires
+adopted prompt markers and persisted transitions; registration alone is not live
+provider evidence.
 
 Start a standalone case through the agent's `handoff_case` operation or the case-handoff REST API. Open its existing case record and follow its primary task. Check that the phase and current assignee are distinct from a pending recipient. Each handoff includes a link to the same primary task; expand its history to inspect instructions. A blocked handoff shows its known reason without implying that the recipient is running. Recovery remains available through authorized APIs and existing task controls.
 

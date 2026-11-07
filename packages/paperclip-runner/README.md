@@ -76,6 +76,7 @@ retrieval instructions. Reads and excerpts are bounded; the handoff has a
 reset boundaries, deleted messages, source quarantine, and secret redaction
 apply before model submission. Successful recovery does not fetch or replay the
 handoff.
+
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
@@ -192,6 +193,14 @@ and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
+its authenticated tool bridge.
+Isolated provider admission accepts this route without a separate native MCP endpoint.
+Direct runtime-host callers must supply the native gateway binding unless they select
+PRP tool delivery and supply the semantic tool bridge.
+PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
+The selected permission and read-only policies still apply.
+
 Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation
 does not download it. Run setup as the OS user that runs Paperclip (the service
 account for a managed service). Setup writes to that account's
@@ -205,6 +214,101 @@ questions are supported. Native AskQuestion and authoritative per-run dollar usa
 are unavailable. Accepting a native plan ends the planning run successfully while
 the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
+
+Cursor Cloud is a separate experimental native provider (`cursor_cloud`, driver
+`cursor_cloud_api`). In Cursor Cloud agent setup, select **Paperclip Runner** under
+Advanced, bind `CURSOR_API_KEY`, choose an explicit model, and supply a repository
+or named Cursor Cloud environment. Existing Cursor Cloud agents keep their saved
+Legacy selection. The initial controller target is local; Cursor executes tools
+in its hosted VM. Native Cloud requires per-turn Runner lifecycle.
+For direct Runner use, configure `NativeProviderConfig` with
+`kind: "cursor_cloud"`, an explicit `model`, and a `cursorCloud` object using
+`paperclip.cursor-cloud.config.v1`. Supply a repository list or a named Cursor
+Cloud environment; the launch environment provides `CURSOR_API_KEY` and the
+scoped tool relay configuration.
+Agent environment bindings support `CURSOR_API_KEY` only. Configure hosted shell
+secrets in the Cursor Cloud environment. Other selected process variables are
+rejected; they are not silently omitted from the hosted run.
+
+Paperclip native tools use the injected `paperclip` MCP server with
+controller-managed authentication; they need no Paperclip REST credentials in the
+Cloud VM. Cursor also loads account and team MCP servers. The driver directs
+Paperclip operations to the run-bound server; Cursor controls the other account
+tools. See [Cloud MCP configuration](https://cursor.com/docs/sdk/typescript).
+
+The hosted agent needs a reachable HTTPS callback origin from the server's public
+URL configuration (for example `PAPERCLIP_PUBLIC_URL`). Forward only
+`POST /mcp/native-runs/:runId` through a callback proxy; keep the local trusted
+application private. The callback requires an expiring run capability and current
+company/run authority, then passes tool calls through normal PRP/Core dispatch.
+**Test** checks configuration, callback reachability and account/model access
+without launching a paid prompt. A passing Test does not qualify task completion.
+
+Cloud v1 provides no independent acknowledgment of the effective model or exact
+instruction digest. Paperclip records submitted inputs and treats this support as
+experimental. Cursor manages its own shell permissions; native permission,
+question and plan callbacks and fixed per-run dollar limits are unavailable.
+Paperclip planning tasks retain their pinned planning context and existing tool
+restrictions while using Cloud's default harness. Plan documents and
+revision-bound Paperclip confirmations use the normal semantic tools; this does
+not enable Cursor's native Plan API or native plan-decision callbacks.
+Production usage and dollar cost remain unknown; the Cloud usage API is not yet
+projected through the Runner facade.
+Budget policies can block further work after an unpriced run. If you accept
+unknown charges, clear **Block new work when usage has no reliable price** in
+both company and agent policies under **Costs → Budgets → Advanced settings**.
+Known-cost hard stops remain active, but cannot cap charges Cursor does not report.
+Paperclip semantic tools use their existing authorization. Stop cancels the exact
+Cloud run and requires a terminal provider receipt. Unknown cancellation remains
+unconfirmed. Recovery reuses the saved Agent/Run and stream cursor, keeps the
+original deadline, and does not replay an ambiguous paid mutation.
+
+Tool callbacks require the capability of the current turn, including fresh MCP
+initialization. Recovery retains that capability in the private checkpoint.
+Older active checkpoints without it permit cleanup, but cannot resume tool
+access. Read-only observation retries transient stream failures within the
+original deadline, with bounded backoff.
+
+Checkpoint acquisition and dead-owner takeover share a private, bounded local
+acquisition guard; no network work runs while it is held. Ordinary dead main-owner
+recovery remains automatic when that guard is absent. An abandoned or
+ownership-changed acquisition guard blocks reuse and archival as ambiguous state.
+It is retained for reconciliation, never reclaimed from its age or PID alone.
+
+Cloud deliverables use `cursor-artifact:<listed relative path>` with the exact
+byte count and SHA-256. Runner downloads the provider artifact to its private
+artifact root before normal deliverable registration. Fully verified bytes publish
+atomically without replacing an existing final file; existing files must match the
+claim. A crashed writer can leave an unreferenced private temporary file, which is
+retained rather than mistaken for a completed artifact. A completed publication
+alias is removed only for a proven inactive publisher and the exact verified
+private final inode. Active or unknown aliases remain fenced; successful handoff
+requires a single final link. A remote path never grants access to the controller's
+project files. Staging is experimental and bounded to 256 MiB and 256 new
+allocations/import attempts per artifact root, including zero-byte attempts.
+A durable reservation precedes each new download. Rejected, aborted or uncertain
+registration retains the charge and verified file for recovery. The bound survives
+session changes and seeds existing retained usage. Exact existing-file recovery
+still verifies current provider bytes without another body/temp allocation at
+capacity. An uncertain ledger, retained pending reservation or ownership lock
+blocks new imports rather than resetting the budget. See the
+[local qualification record](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
+for runnable acceptance cells and the remaining live qualification gates.
+
+Google Antigravity is an **unqualified, pending** native ACPX integration. The
+explicit `paperclipai runtime setup antigravity` command installs the verified
+Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
+It verifies both the official vendor closure and the separately pinned patched
+closure; npm installation downloads no Antigravity runtime. This setup installs
+assets only. Global release qualification remains pending and normal execution
+admission stays closed. An isolated operator can admit one company, exact model,
+local platform and pinned native closure/profile until a fixed expiry through
+trusted server startup authority. The candidate supports a managed saved Google
+subscription; the recorded acceptance reused the same owner's personal default
+grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
+consent or the separate API-key route. Google Workspace OAuth does not substitute
+for a runtime credential. See the
+[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
 
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
@@ -288,7 +392,8 @@ installation journey or a paid provider task on ARM64.
 Automatic creation selects legacy execution when a Linux host has musl, unknown
 libc, or a measured GNU libc version below the baseline. Existing agents retain
 their stored runner. Windows, 32-bit ARM, and Alpine/musl native qualification
-remain deferred.
+remain deferred. The `Runner Windows` workflow builds and tests the Rust
+workspace on Windows x64. It does not qualify Windows agent runs.
 
 Native release jobs cache Cargo dependencies per platform and OS baseline,
 including compiler, lockfile, and external generated-contract inputs. Workspace
@@ -299,7 +404,9 @@ and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
 
-Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+Pi and Claude cold provider admission have an absolute 60-second budget, and
+the runner's ACPX sidecar and the sidecar's provider session handshake bound their `session.open` at 60 seconds too. A cold
+Claude `session.open` timed out at the earlier 30-second bound on a loaded host. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
 while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;
@@ -325,6 +432,10 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
+Use the returned `nextOffset` as `offset` to read the next page. The tool and
+parameter descriptions include these bounds for providers that render numeric
+schema constraints as plain number types.
 Search returns bounded pages of names, descriptions, and input schemas. Each
 page intersects the session's pinned assignments with current gateway grants.
 An individual schema that exceeds a page returns an `inputSchemaRef`. The same
@@ -363,6 +474,12 @@ runner supplies the pinned executable, selected model, and assigned MCP tools.
 Provider inference and reasoning still contribute to time to first text. These
 startup settings do not disable model reasoning.
 
+An interrupted OpenCode turn does not request a replacement final answer.
+This also applies when an unanswered native question moves to a durable wait.
+The driver reports an interrupted idle as a cancelled terminal so the wait can
+settle. An abort acknowledgement alone does not prove that the provider stopped.
+A later authorized turn can use normal answer recovery.
+
 On macOS, the verified OpenCode executable keeps its private launch pathname
 until the provider process exits. Removing that pathname immediately after
 spawn can kill or stall the signed binary before its health check succeeds.
@@ -379,6 +496,13 @@ agent-wide setting. No automatic decision policy selects it. The model must
 support disabling reasoning; other runner providers reject an explicit selection
 before starting work. Native sessions expose support through the
 `perTurnReasoning` capability.
+
+For the native `openrouter/` route, the parent-held provider proxy retains the
+upstream OpenRouter key. The child config keeps the selected `openrouter` provider
+and exact model, using a random loopback token restricted to that model's chat
+completions endpoint. The proxy and token expire when the session closes. The
+local token remains a credential and is redacted from diagnostics; this does not
+claim isolation for every child credential or persisted value.
 
 OpenCode's proxy sends agent instructions once per turn through the system prompt. The
 task envelope retains task-specific constraints and the completion contract,
@@ -450,6 +574,12 @@ stable free-text option IDs. Legacy callers remain supported. Calls that supply
 both forms must describe the same complete form; partial forms remain invalid.
 The native recovery bridge uses the same projection for answer delivery.
 
+OpenCode 1.18.34 native questions allow a written answer by default when `custom`
+is omitted. The driver preserves that default and explicit `custom:false`; the
+native flag takes precedence over the legacy `allowCustom` alias. Choice options
+remain intact. Questions without options remain text-only, without a separate
+custom-answer field. See the [pinned native question contract](https://github.com/anomalyco/opencode/blob/v1.18.34/packages/schema/src/v1/question.ts).
+
 The server validates canonical answer constraints before persistence. Regex
 matching runs in isolated workers with a one-second deadline and at most four
 active workers. A timeout or capacity error leaves the question pending. The
@@ -518,6 +648,13 @@ pnpm --filter @paperclipai/paperclip-runner verify
 The verification command requires a stable Rust toolchain with `cargo` on
 `PATH`, in addition to Node.js 24.11+ and pnpm 9+.
 
+Rust development builds use `debug = "line-tables-only"` to reduce build storage
+while retaining file names and line numbers in backtraces. The default test
+profile inherits this setting. Incremental compilation remains enabled, and
+release profiles keep their existing settings. For full debugger support,
+including local variables and types, set `CARGO_PROFILE_DEV_DEBUG=2` and
+`CARGO_PROFILE_TEST_DEBUG=2` for the build or test command.
+
 Minimal Debian/Ubuntu hosts without root access can extract the required
 Playwright browser libraries into a user-owned cache and run the same acceptance
 sequence with:
@@ -575,6 +712,45 @@ pnpm --filter @paperclipai/paperclip-runner demo:standalone
 Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
+
+The runtime activity publisher has an offline final-command regression against the
+qualified Codex executable. Run it on a host that supports Codex's OS sandbox,
+with the pinned executable and the matching freshly built Runner helper:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+PAPERCLIP_RUNTIME_NOTIFICATION_HELPER=/absolute/path/to/paperclip-runnerd \
+cargo test --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  publisher_crosses_real_codex_tool_boundary_without_runner_state_access -- --ignored
+```
+
+This uses `app-server command/exec` without credentials or a model call. It checks
+actual shell discovery, successful durable activity recording, and denial of unrelated
+Runner state, descriptor writes and ambient secrets. The normal suite covers
+bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
+
+Codex receives write access to Runner's private activity-channel directory, with
+the lock file explicitly read-only. The FIFO itself must not be a writable
+filesystem root: Codex adds protected metadata children to writable roots, which
+cannot exist beneath a FIFO. The helper and discovery descriptor remain read-only;
+the activity grant does not expose Runner state or change workspace/network policy.
+
+To check restrictive Plan mode without credentials or a model call, run the
+actual channel/policy producer against the pinned Linux Codex sandbox:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+CODEX_NOTIFICATION_SANDBOX_RESOURCES=/absolute/path/to/pinned/executable/resources \
+cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  read_only_codex_opens_with_runtime_activity -- --ignored
+```
+
+This checks instruction reads, FIFO writes, and denial of workspace writes,
+unrelated Runner-state reads, descriptor writes, and lock writes/removal. An
+isolated non-Linux host can instead set `CODEX_NOTIFICATION_FIXTURE_EXPORT` to a
+JSON file and omit `CODEX_NOTIFICATION_SANDBOX_COMMAND`; that only exports a
+synthetic producer fixture for a separately controlled Linux sandbox. Exporting
+the fixture does not execute or verify the sandbox.
 
 ## Direct live protocol qualification
 
@@ -789,6 +965,39 @@ fit the compacted bound produces a diagnostic; the event stream continues.
 Tool output and error fields have reserved retention space and size records,
 so large input values cannot consume their output tails or make excerpts look
 complete. A separator split between reads does not count against the frame limit.
+### OpenCode MCP tool results
+
+The Runner-owned MCP bridge sends complete JSON tool results up to 1 MiB of
+UTF-8 output. It does not slice JSON text. This includes the native server's
+bounded 500 KB app-tool results and saved-result pages. OpenCode can put a long
+result in its own output file; that file must still contain the complete JSON.
+The existing `read_tool_result` artifact protocol handles larger app results.
+
+Serialization has a bounded traversal budget and checks escaped UTF-8 output.
+If delivery exceeds the limit, the bridge reports an error without a partial
+success value. The action may already have completed. Reconcile its saved
+result or receipt instead of repeating it. Replaying the same MCP call identity
+reuses the original handler execution, including when delivery failed.
+
+## Prepared harness storage
+
+An execution environment can supply an existing Claude configuration directory
+through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME`, using an absolute, non-symlinked
+path. Runner derives `CLAUDE_CONFIG_DIR` from this value, overriding any separately
+supplied value. This selects persistent harness storage without
+changing the run's permission mode or enabling preconfigured-home behavior.
+`HOME` remains the execution account's home. Each account must use its own
+configuration directory. The environment must publish the selected skills before
+admission; Runner does not copy or delete skills in this directory.
+On Unix, the directory must belong to the Runner user and use mode `0700`;
+the provider lifetime lease rejects group/world access or another owner.
+
+Runner binds the home into recovery identity and uses its existing provider
+lifetime lease. After acquiring that lease, it replaces Core-owned Claude settings
+with the current launch settings. History remains in the account directory.
+Task control files remain in the session runtime directory. Separate directories
+under one OS user are not a credential isolation boundary.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config
@@ -805,12 +1014,21 @@ Prepare authentication, skills, and external MCP servers on the execution machin
 before launching. Runner does not install skills, copy or remove credentials, or
 rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
-model, task instructions, and its internal task/completion tools. Local permission
+model, task instructions, and its internal task/completion tools. Claude session
+loads and resumes receive the same native session options as session creation,
+including allowed tools and the selected settings sources. Runner does not write
+a configured Claude effort into the user settings. A new Claude process can
+report the settings default when it loads or resumes the session, so ACPX sends
+the selected effort again on that connection. Runner admits no prompt until
+Claude acknowledges that effort. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains
 its existing provider trust boundary. Execution is unattended: native Codex uses `never`, and
-ACPX rejects requests for approval. The initial ACPX mode requires the Runner
+ACPX rejects requests for approval. When Claude starts in its home directory,
+its native user settings retain user trust even if the SDK also reports that
+same file as project settings. Other project settings keep the native trust filter.
+The initial ACPX mode requires the Runner
 setting `acpxPermissionMode: "approve-all"` (its default); other Runner modes are
 unqualified here and fail before launch. Local permission rules still apply.
 Preconfigured ACPX read-only/planning tasks also fail before provider launch
@@ -884,3 +1102,63 @@ the host restarts that resource with a new socket. Do not remove its lock marker
 while daemon work might still be running. The socket and its parent must be private,
 canonical paths owned by the same account. Local stdio assignment requires Unix;
 other platforms retain the HTTP path.
+
+## Kimi Code
+
+Kimi Code uses the pinned `@moonshot-ai/kimi-code@2.3.3` distribution through
+ACPX through the qualified native profile. Ordinary selection and Runtime Test
+require no candidate grant.
+The installation targets are macOS ARM64 and Linux x64. Platform startup,
+authenticated driver checks, and product acceptance are separate evidence levels.
+
+Run `paperclipai runtime setup kimi` on the execution host to install its complete
+verified runtime. Setup downloads public pinned dependencies without model calls
+or provider credentials. An invalid existing installation fails without ambient
+Kimi fallback. Bind a company secret as `KIMI_API_KEY` and select an exact model.
+This release uses the global Code endpoint at `https://api.kimi.ai/coding/v1`.
+Model suggestions are empty; a compatible typed model is decided by the provider.
+The account needs Kimi Code entitlement. Runtime Test verifies installation and
+queries the authenticated Code model catalog for the exact selected model. It
+sends no model prompt; an actual task verifies inference and tool execution.
+
+The qualified native profile uses ordinary setup, hiring, metadata Test and task
+startup on these two supported targets without operator admission flags. Protected
+candidate startup records remain reserved for future pending profiles; saved agent
+configuration and public requests cannot supply that authority.
+
+Existing legacy Kimi agents retain their runtime and history. Managed Kimi connections,
+ambient login borrowing, other regions/platforms, steering, native child work,
+and per-run token/dollar accounting are outside this release. Read-only Kimi work
+uses scoped Paperclip tools; native filesystem and shell tools are denied.
+The provider-owned patch binds native instructions, preserves permission arguments,
+and removes provider auth from tool subprocesses. See the
+[protocol dossier](src/providers/kimi/README.md) and
+[release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md) for
+current evidence and limits.
+
+## ACPX controller replacement regression tests
+
+`src/control-plane/acpx-controller-recovery.test.ts` runs the production Rust
+Runner and authenticated PRP controller with a scripted ACPX peer. It covers
+active-turn reconnection, checkpoint restoration after deleting controller
+storage, native transport adoption and old-controller finalization, completion
+while disconnected, a provider crash, and an explicitly closed provider.
+It builds the debug Runner before execution and requires Cargo and a POSIX host.
+No model credentials, provider requests, application server or database are used.
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+  src/control-plane/acpx-controller-recovery.test.ts --maxWorkers=1
+```
+
+Set `PAPERCLIP_ACPX_REPRO_BINARY` to an existing Runner executable to skip the
+Cargo build. All five tests still run. Set `PAPERCLIP_ACPX_REPRO_PROFILES` to an
+alternate `acpx-profiles.json` when that executable uses a different profile
+manifest. Both overrides are optional.
+
+The failure controls distinguish a lost provider from a controller outage;
+matching a diagnostic after explicit close does not identify the cause of a
+hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
+Daytona deployment continuity need their own evidence. See the
+[remote continuity guide](../../doc/testing-native-remote-continuity.md) and the
+[Daytona Product E2E suite](../../tests/runner-e2e/README.md).

@@ -1,10 +1,34 @@
+import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+import { isContextCompactionRun } from "./context-compaction.js";
+import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
+import { registerIssueRecoveryWork } from "./recovery/work.js";
+import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
+import { describeFailedAttachment } from "./native-runtime/remote-warm-session-recovery.js";
+import { createProviderLimitWait } from "./heartbeat/provider-limit-wait.js";
+import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
+import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
+import { nativeRunProjectionWork } from "./native-runtime/native-run-projection-work.js";
+import { nativeResultCommitWork } from "./native-runtime/native-result-commit-work.js";
+import { nativeStatusReassessmentWork } from "./native-runtime/native-status-reassessment-work.js";
+import { registerNativeReviewResponseWork } from "./native-runtime/native-review-response-work.js";
+import { registerNativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
+import { registerNativePendingEffectWork } from "./native-runtime/native-pending-effect-work.js";
+import { registerUnsafeWorkspaceExportWork } from "./native-runtime/native-workspace-export-recovery.js";
+import { registerAutomaticCompletionReviewWork } from "./native-runtime/automatic-completion-reviews.js";
+import { registerObsoletePolicyReviewWork } from "./native-runtime/obsolete-policy-reviews.js";
+import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
+import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
@@ -12,16 +36,20 @@ import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
+import { createRunLogWriterAuthority } from "./heartbeat/run-log-authority.js";
 import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
+import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
+import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
+import { nativeRecoveryClaimRelinquished } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
-import { selectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
+import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
 export {
   MAX_TURN_CONTINUATION_WAKE_REASON,
@@ -74,7 +102,7 @@ import {
   createHeartbeatRecovery,
 } from "./heartbeat/recovery.js";
 import {
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+  failedRunRetryBudgetSpent,
   isWorkspaceBusyDeferral,
   createHeartbeatRetries,
 } from "./heartbeat/retries.js";
@@ -123,6 +151,7 @@ export {
 
 import {
   ConfigurationIncompleteFailure,
+  classifyManagedProjectAuthFailure,
   deriveTaskKey,
   type WakeupOptions,
   mergeCoalescedContextSnapshot,
@@ -251,13 +280,15 @@ import {
 } from "./agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import {
-  recordNativeLocalProcessStop,
+  recordNativeLocalProcessStopInTransaction,
+  settleNativeRunProcess,
 } from "./native-local-process-stop.js";
 
 import {
   legacyControllerBootId,
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 
 
 import {
@@ -275,12 +306,13 @@ import {
 
 import {
   settleInterruptedNativeBootstrap,
+  settleCancelledLegacyPreparation,
 } from "./legacy-execution-recovery.js";
+import { resumePauseInterruptedWork } from "./issue-tree-resume.js";
 import {
   adapterExecutionControls,
   createAdapterExecutionControl,
 } from "./adapter-execution-control.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -343,6 +375,7 @@ import {
 
 import {
   dispatchNativeSessionResumptions,
+  prepareIdleWarmNativeSessionsForSleep,
   NativeCancellationPendingRecoveryError,
   NativeControllerDetachedForRestartError,
   prepareNativeWorkspaceSync,
@@ -356,7 +389,7 @@ import {
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
 
-import { getRunLogStore } from "./run-log-store.js";
+import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import {
   providerTraceStore,
 } from "./provider-trace-store.js";
@@ -376,11 +409,17 @@ import {
   isNativeRunnerOwnershipHeld,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "./native-runtime/native-runner-ownership.js";
+import { NativeStartupCleanupPendingError, requestNativeStartupCleanup, verifyNativeStartupCleanup, readNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
+import { settleUnstartedNativeSessionResume } from "./native-runtime/native-failed-run-owner-release.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import {
+  ReviewedChatBindingDeniedError,
+  type ReviewedChatBindingDenialReason,
+} from "./reviewed-chat-binding-diagnostics.js";
 
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
@@ -435,6 +474,7 @@ import {
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 import {
@@ -443,7 +483,6 @@ import {
   parseIssueAssigneeAdapterOverrides,
   gateProjectExecutionWorkspacePolicy,
   parseIssueExecutionWorkspaceSettings,
-  parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "./execution-workspace-policy.js";
@@ -503,11 +542,11 @@ import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 
 import {
   clearHeartbeatRunRuntimeStatus,
-  sweepExpiredHeartbeatRunRuntimeStatuses,
 } from "./heartbeat-run-runtime-status.js";
 
 import { resolveAndRetainRunTrustPreset } from "./run-trust-preset.js";
 
+import { effectiveProjectWorkspacePolicy, sourcelessProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain } from "./task-admission.js";
@@ -588,6 +627,9 @@ const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
 >();
+// Routes and the scheduler can drain/resume through different service facades.
+// Rearm through the original owner so its database and dispatch mode survive.
+const nativeRecoveryDeadlines = new Map<string, { rearm: () => void }>();
 // Shared with HTTP admission so an idle hold fences work before inspection.
 export { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain } from "./task-admission.js";
 
@@ -688,6 +730,8 @@ export function shouldAutoCheckoutIssueForWake(input: {
     return false;
   }
 
+  // A compaction run does no task work, so it never claims a parked task.
+  if (isContextCompactionRun(input.contextSnapshot)) return false;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
@@ -748,6 +792,7 @@ export interface HeartbeatServiceOptions {
    */
   nativeSessionBackendFactory?: (
     execution: NativeExecutionInput,
+    context?: { recoveryPurpose: "execution" | "stop_cleanup" },
   ) => NativeSessionBackend;
   /** Test seam for observing the native-session shutdown boundary before lease destruction. */
   closeWarmNativeSessionsForRun?: (input: {
@@ -809,6 +854,10 @@ export function heartbeatService(
     getAgent,
     resolveSessionBeforeForWakeup,
     getRun,
+    getRunCleanupState,
+    getRunExecutionWait,
+    getRunWorkspaceSettlement,
+    getRunStatus,
     ensureRuntimeState,
     getTaskSession,
     getLatestAgentConfigRevision,
@@ -818,7 +867,9 @@ export function heartbeatService(
     clearTaskSessions,
     resolveExplicitResumeSessionOverride,
     hasResolvablePriorSessionWorkspaceForWake,
+    getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
     listRuns,
     getRuntimeStateWithSessions,
     listTaskSessions,
@@ -826,6 +877,8 @@ export function heartbeatService(
     listEvents,
     getRetryExhaustedReason,
     getRunIssueSummary,
+    getRunIssueControl,
+    getActiveRunIssueControlForAgent,
     getActiveRunForAgent,
     getActiveRunIssueSummaryForAgent,
   } = createHeartbeatRunState(db);
@@ -865,11 +918,11 @@ export function heartbeatService(
     at: 0,
   };
   const WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS = 3_000;
-  const resolveWorktreeRunExecutionOverride = async () => {
+  const resolveWorktreeRunExecutionOverride = async (fresh = false) => {
     if (!inWorktreeRuntime) return { allowed: false, cutoff: null };
     const now = Date.now();
     if (
-      now - cachedWorktreeRunExecutionOverride.at <
+      !fresh && now - cachedWorktreeRunExecutionOverride.at <
       WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS
     ) {
       return cachedWorktreeRunExecutionOverride;
@@ -887,14 +940,15 @@ export function heartbeatService(
         cutoff: cutoff && !Number.isNaN(cutoff.getTime()) ? cutoff : null,
         at: now,
       };
-    } catch {
+    } catch (error) {
+      if (fresh) throw error;
       // Keep the prior (default-false) value so a settings read failure fails
       // closed to the safe suppressed state.
     }
     return cachedWorktreeRunExecutionOverride;
   };
-  const getSchedulingSuppression = async () => {
-    const override = await resolveWorktreeRunExecutionOverride();
+  const getSchedulingSuppression = async (fresh = false) => {
+    const override = await resolveWorktreeRunExecutionOverride(fresh);
     return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
       allowWorktreeRunExecution: override.allowed,
     });
@@ -958,9 +1012,7 @@ export function heartbeatService(
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
     // or interrupted run that has already consumed every bounded transient
     // attempt cannot be retried again through this lane.
-    transientRetryBudgetSpent: (run) =>
-      executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+    transientRetryBudgetSpent: failedRunRetryBudgetSpent,
   });
   const runDispatch = createRunDispatch(db);
   const {
@@ -972,6 +1024,7 @@ export function heartbeatService(
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
+    nextScheduledRetryAt,
     retryScheduledRetryNow,
     scheduleBoundedRetry,
   } = createHeartbeatRetries(db, {
@@ -994,6 +1047,7 @@ export function heartbeatService(
   });
 
   const {
+    registerResidualRecoveryWork: registerResidualRecoveryOwner,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,
     prepareHotRestartShutdown,
@@ -1002,13 +1056,19 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
+    registerScheduledRetryCancellationWork,
+    registerRetainedNativeSessionCleanupWork,
+    registerNativeWorkspaceFinalizationWork,
+    registerNativeEnvironmentSettlementWork,
   } = createHeartbeatRecovery(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
     enterShutdown: () => { shutdownInProgress = true; },
     scheduleBoundedRetryForRun,
     appendRunEvent,
     environmentRuntime,
     scheduleNativeSessionResumeDispatch,
     getRun,
+    getRunWorkspaceSettlement,
     executeRun,
     activeRunExecutionPromises,
     cancelHeartbeatNativeRun,
@@ -1283,6 +1343,7 @@ export function heartbeatService(
     trackWakeup,
     resumeQueuedRuns,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   } = heartbeatQueue;
 
@@ -1299,11 +1360,35 @@ export function heartbeatService(
     return heartbeatQueue.dispatchPendingNativeStatusWakeups(...args);
   }
 
+  function resumeQueuedRunsAfterDrain(...args: Parameters<typeof heartbeatQueue.resumeQueuedRunsAfterDrain>) {
+    for (const pending of nativeRecoveryDeadlines.values()) {
+      pending.rearm();
+    }
+    const promise = heartbeatQueue.resumeQueuedRunsAfterDrain(...args);
+    activeWakeupPromises.add(promise);
+    void promise.then(
+      () => { activeWakeupPromises.delete(promise); },
+      () => { activeWakeupPromises.delete(promise); },
+    );
+    return promise;
+  }
+
+  // Counted as a pending wake so drain and upgrade readiness see it in flight.
+  function resumeFreshQueuedRunsAtStartup() {
+    const promise = heartbeatQueue.resumeFreshQueuedRunsAtStartup();
+    activeWakeupPromises.add(promise);
+    void promise.then(
+      () => { activeWakeupPromises.delete(promise); },
+      () => { activeWakeupPromises.delete(promise); },
+    );
+    return promise;
+  }
+
   const runLifecycle = createHeartbeatLifecycle(db, {
     issuesSvc,
     recovery,
     companySkills,
-    getRun,
+    getRunStatus,
     emitTerminalAgentTaskRun,
     getIssueExecutionContext,
     budgets,
@@ -1380,7 +1465,18 @@ export function heartbeatService(
   }
 
   const runControl = createHeartbeatRunControl(db, {
+    scheduleBoundedRetry,
+    verifyStartupCleanup: async run => {
+      await verifyNativeStartupCleanup(db, run, () => envOrchestrator.releaseForRun({
+        heartbeatRunId: run.id, companyId: run.companyId, agentId: run.agentId, status: "expired",
+        cancelActiveWork: true, providerResourceDisposition: "destroy",
+      }));
+      const marker = readNativeStartupCleanup(run)!;
+      await options.pluginWorkerManager?.retireStartup?.(marker.contextId);
+    },
     getRun,
+    getRunCleanupState,
+    getRunExecutionWait,
     options,
     envOrchestrator,
     activeRunExecutions,
@@ -1518,6 +1614,10 @@ export function heartbeatService(
   const {
     triggerIssueMonitor,
     tickTimers,
+    tickAgentTimers,
+    nextAgentTimerAt,
+    tickIssueMonitors,
+    nextIssueMonitorAt,
     recoverActiveSessionGoals,
     recoverPendingSessionGoalActions,
   } = createHeartbeatScheduling(db, {
@@ -1531,6 +1631,7 @@ export function heartbeatService(
     toAgentOrgRow,
     groupAgentOrgRowsByCompany,
     parseHeartbeatPolicy,
+    nextTimerHeartbeatAt,
     claimDueTimerHeartbeat,
   });
 
@@ -1558,14 +1659,15 @@ export function heartbeatService(
     void reportRunFailure(db, updated, failureReport);
   }
 
-  async function reconcileStrandedAssignedIssues() {
+  async function reconcileStrandedAssignedIssues(opts?: Parameters<typeof recovery.reconcileStrandedAssignedIssues>[0]) {
     return recovery.reconcileStrandedAssignedIssues({
+      ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
   }
 
-  async function sweepStaleIssueLocks() {
-    return recovery.sweepStaleIssueLocks();
+  async function sweepStaleIssueLocks(opts?: Parameters<typeof recovery.sweepStaleIssueLocks>[0]) {
+    return recovery.sweepStaleIssueLocks(opts);
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -1595,10 +1697,7 @@ export function heartbeatService(
     });
   }
 
-  async function reconcileTaskWatchdogs(opts?: {
-    companyId?: string | null;
-    runId?: string | null;
-  }) {
+  async function reconcileTaskWatchdogs(opts?: Parameters<typeof taskWatchdogs.reconcileTaskWatchdogs>[0]) {
     return taskWatchdogs.reconcileTaskWatchdogs({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
@@ -1623,10 +1722,7 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
-  async function reconcileResolvedDependencyWakes(opts?: {
-    runId?: string | null;
-    companyId?: string | null;
-  }) {
+  async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
 
@@ -1657,10 +1753,15 @@ export function heartbeatService(
     }
   }
 
+  // Native ownership waits survive a temporary drain without adding a polling
+  // loop. A process restart rediscovers the same deadlines from coordinator rows.
   function scheduleNativeSessionResumeDispatch(
     runId: string,
     nextAttemptAt: Date,
+    mode?: "restart",
   ) {
+    const pending = { rearm: () => scheduleNativeSessionResumeDispatch(runId, nextAttemptAt, mode) };
+    nativeRecoveryDeadlines.set(runId, pending);
     const prior = nativeSessionResumeDispatchTimers.get(runId);
     if (prior) clearTimeout(prior);
     const delayMs = Math.max(0, nextAttemptAt.getTime() - Date.now());
@@ -1669,6 +1770,12 @@ export function heartbeatService(
       nativeSessionResumeDispatchTimers.delete(runId);
       void (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
+        if (nativeRecoveryDeadlines.get(runId) !== pending) return;
+        nativeRecoveryDeadlines.delete(runId);
+        if (mode === "restart") {
+          await recoverNativeRunsAfterRestart(new Date(), [runId]);
+          return;
+        }
         await dispatchNativeSessionResumptions({
           db,
           runnerInstanceId:
@@ -1682,7 +1789,7 @@ export function heartbeatService(
                 { err: error, runId: claim.runId },
                 "scheduled native session resume failed",
               );
-            });
+            }).finally(() => settleUnstartedNativeSessionResume(db, claim));
             activeRunExecutionPromises.add(execution);
             void execution.finally(() =>
               activeRunExecutionPromises.delete(execution),
@@ -1690,6 +1797,9 @@ export function heartbeatService(
           },
         });
       })().catch((error) => {
+        if (!nativeRecoveryDeadlines.has(runId) || nativeRecoveryDeadlines.get(runId) === pending) {
+          scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), mode);
+        }
         logger.error(
           { err: error, runId },
           "failed to dispatch scheduled native session resume",
@@ -1742,14 +1852,24 @@ export function heartbeatService(
     runOptions: {
       nativeLeaseOwner?: string;
       nativeRestartRecovery?: NativeRestartRecoveryClaim;
+      onNativeExecutionLeaseAcquired?: () => Promise<void>;
     } = {},
   ) {
     return withRunExecutionTiming(runId, () => executeRunAttempt(runId, runOptions));
   }
 
+  const { deferRunForProviderLimit } = createProviderLimitWait(db, {
+    setRunStatusIfRunning,
+    setWakeupStatus,
+    appendRunEvent,
+    scheduleBoundedRetryForRun,
+    releaseIssueExecutionAndPromote,
+    finalizeAgentStatus,
+  });
+
   async function executeRunAttempt(
     runId: string,
-    runOptions: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim },
+    runOptions: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim; onNativeExecutionLeaseAcquired?: () => Promise<void> },
   ) {
     const attemptStartedAtMs = Date.now();
     let attestedQuestionResponseAtMs: number | null = null;
@@ -1767,6 +1887,7 @@ export function heartbeatService(
 
     let legacyAdapterEntered = false;
     let legacyLocalAdapterEntered = false;
+    let legacyPreparationFailedBeforeDispatch = false;
     let persistUsageCaptureFailure: (() => Promise<void>) | undefined;
     let run = await getRun(runId);
     if (!run) return;
@@ -1852,7 +1973,7 @@ export function heartbeatService(
             )
             .returning()
             .then((rows) => rows[0] ?? null);
-          if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+          if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
           return cleared;
         });
         if (!cleared) {
@@ -1883,6 +2004,19 @@ export function heartbeatService(
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let nativeOwnershipHeld = false;
+    let nativeStartupCleanupScheduled = false;
+    let nativeStartupCleanupError: NativeStartupCleanupPendingError | undefined;
+    const requestStartupCleanup = async (error: NativeStartupCleanupPendingError) => {
+      nativeStartupCleanupError = error;
+      try {
+        nativeStartupCleanupScheduled = await requestNativeStartupCleanup(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,
+          contextId: error.contextId, deadlineAtMs: error.deadlineAtMs, leaseOwner: error.leaseOwner,
+          leaseId: error.leaseId, requiresPreparationStop: error.requiresPreparationStop });
+      } catch (writeError) {
+        scheduleNativeSessionResumeDispatch(run.id, new Date(Date.now() + 30_000), "restart");
+        throw writeError;
+      }
+    };
     let instructionWorkingCopy: ReturnType<typeof createHeartbeatInstructionWorkingCopy> | null = null;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
@@ -1895,7 +2029,8 @@ export function heartbeatService(
     const preserveNativeWorkspaceOnFailure = async () => {
       const failureRun = await getRun(run.id);
       if (failureRun?.runtimeMode === "native"
-        && parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared") {
+        && (parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared"
+          || parseObject(failureRun.runnerProfileJson?.remoteWorkspace).state === "prepared")) {
         if (!nativeRunHasNoWorkspaceAccess(failureRun)) providerResourceDispositionForRun = "stop_and_retain";
         try {
           await preserveNativeFailedWorkspace(db, failureRun, {
@@ -1927,8 +2062,8 @@ export function heartbeatService(
     let identityRedactor = createAgentIdentityRedactor();
 
     try {
-      let agent = await getAgent(run.agentId);
-      if (!agent) {
+      const loadedAgent = await timePreparation("agent_read", () => getAgent(run.agentId));
+      if (!loadedAgent) {
         await setRunStatus(runId, "failed", {
           error: "Agent not found",
           errorCode: "agent_not_found",
@@ -1942,6 +2077,7 @@ export function heartbeatService(
         if (failedRun) await releaseIssueExecutionAndPromote(failedRun);
         return;
       }
+      let agent = loadedAgent;
 
       // The claimed adapter identity is immutable recovery evidence. Do not
       // execute a newly selected adapter under a previous adapter's claim.
@@ -1953,16 +2089,23 @@ export function heartbeatService(
       const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
       const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
         && typeof run.contextSnapshot?.conversationSessionGeneration === "number";
-      if (dispatchIssueId && isConversation(await getIssueExecutionContext(run.companyId, dispatchIssueId))
-        && !resumingAdmittedConversationTurn && !(await instanceSettings.getExperimental()).enableAgentChat) {
+      const conversationIdentity = dispatchIssueId && !resumingAdmittedConversationTurn
+        ? await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+          .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, dispatchIssueId))).then(rows => rows[0] ?? null)
+        : null;
+      if (isConversation(conversationIdentity) && !(await instanceSettings.getExperimental()).enableAgentChat) {
         await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
         await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
         await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
         await finalizeAgentStatus(agent.id, "cancelled");
         return;
       }
-      run = await prepareChatCompletionTurn(db, run);
-      const preparedConversation = await prepareConversationTurn(db, run);
+      if (await deferRunForProviderLimit(run, agent, {
+        resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
+        conversation: isConversation(conversationIdentity),
+      })) return;
+      run = await timePreparation("chat_completion", () => prepareChatCompletionTurn(db, run));
+      const preparedConversation = await timePreparation("conversation", () => prepareConversationTurn(db, run));
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
         const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
@@ -1975,20 +2118,23 @@ export function heartbeatService(
         await finalizeAgentStatus(agent.id, "succeeded");
         return;
       }
-      const runtime = await ensureRuntimeState(agent);
+      const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
-      const authorizeFailedChatRetryExecution = () =>
-        db.transaction((tx) =>
-          authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
-            phase: "execution",
-            wakeupRequestId: run.wakeupRequestId,
-            companyId: run.companyId,
-            agentId: run.agentId,
-            issueId: readNonEmptyString(context.issueId),
-            runId: run.id,
-            contextSnapshot: context,
-          }),
-        );
+      const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
+        retryChatControlAdmission(async () => {
+          executionControl.controller.signal.throwIfAborted();
+          await controllerLease.assertOwned(stage);
+          return db.transaction((tx) =>
+            authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
+              phase: "execution",
+              wakeupRequestId: run.wakeupRequestId,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              issueId: readNonEmptyString(context.issueId),
+              runId: run.id,
+              contextSnapshot: context,
+            }));
+        });
       const isFailedChatRunRetry = await authorizeFailedChatRetryExecution();
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2024,6 +2170,7 @@ export function heartbeatService(
         }
         try {
           providerTraceCapture = await traceStore.prepare({
+            assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
             runId: run.id,
             companyId: run.companyId,
             provider:
@@ -2053,7 +2200,7 @@ export function heartbeatService(
         }
       }
       let issueContext = issueId
-        ? await getIssueExecutionContext(agent.companyId, issueId)
+        ? await timePreparation("issue_context", () => getIssueExecutionContext(agent.companyId, issueId))
         : null;
       const issueDependencyReadiness = issueId
         ? await issuesSvc
@@ -2133,6 +2280,7 @@ export function heartbeatService(
             context.interactionKind === "ask_user_questions" &&
             ["in_progress", "in_review"].includes(issueContext?.status ?? "")))
       ) {
+        let denialReason: ReviewedChatBindingDenialReason | null = null;
         const attested = await attestReviewedExternalChatRun({
           db,
           companyId: agent.companyId,
@@ -2143,50 +2291,14 @@ export function heartbeatService(
           onQuestionResponseAttested: (answeredAtMs) => {
             attestedQuestionResponseAtMs = answeredAtMs;
           },
+          onDenied: (reason) => {
+            denialReason = reason;
+          },
         });
-        if (!attested)
-          throw new Error("reviewed_chat_execution_binding_not_authorized");
+        if (!attested) throw new ReviewedChatBindingDeniedError(denialReason);
         context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY] = true;
       }
       const wakeCommentId = deriveCommentId(context, null);
-      const wakeCommentContext =
-        issueContext && wakeCommentId
-          ? await db
-              .select({
-                id: issueComments.id,
-                body: issueComments.body,
-                authorType: issueComments.authorType,
-                authorAgentId: issueComments.authorAgentId,
-                authorUserId: issueComments.authorUserId,
-                presentation: issueComments.presentation,
-                metadata: issueComments.metadata,
-                deletedAt: issueComments.deletedAt,
-                deletedByType: issueComments.deletedByType,
-                deletedByAgentId: issueComments.deletedByAgentId,
-                deletedByUserId: issueComments.deletedByUserId,
-                deletedByRunId: issueComments.deletedByRunId,
-                sourceTrust: issueComments.sourceTrust,
-              })
-              .from(issueComments)
-              .where(
-                and(
-                  eq(issueComments.id, wakeCommentId),
-                  eq(issueComments.issueId, issueContext.id),
-                  eq(issueComments.companyId, agent.companyId),
-                ),
-              )
-              .then((rows) => {
-                const row = rows[0] ?? null;
-                return row?.deletedAt
-                  ? {
-                      ...row,
-                      body: "",
-                      presentation: null,
-                      metadata: null,
-                    }
-                  : row;
-              })
-          : null;
       let issueAssigneeOverrides =
         issueContext && issueContext.assigneeAgentId === agent.id
           ? parseIssueAssigneeAdapterOverrides(
@@ -2203,23 +2315,11 @@ export function heartbeatService(
       const defaultIsolatedWorkspacesEnabled =
         isolatedWorkspacesEnabled &&
         experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
-      const externalProvider = heartbeatExternalProvider({ run, agent });
+      const providerApiPlacement = resolveProviderApiPlacement({ run, agent });
+      const externalProvider = heartbeatExternalProvider({ run, agent }) ?? providerApiPlacement?.provider;
       const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
       const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
-      const runtimeWorkspaceSelectionEnabled = !externalProvider && (freshWorkspace?.mode === "fresh_isolated_workspace" || taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled, hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) }));
-      const parsedIssueExecutionWorkspaceSettings =
-        parseIssueExecutionWorkspaceSettings(
-          issueContext?.executionWorkspaceSettings,
-        );
-      const issueExecutionWorkspaceSettings = runtimeWorkspaceSelectionEnabled
-        ? parsedIssueExecutionWorkspaceSettings
-        : null;
-      const environmentExecutionWorkspaceSettings =
-        selectEnvironmentExecutionWorkspaceSettings(
-          parsedIssueExecutionWorkspaceSettings,
-          runtimeWorkspaceSelectionEnabled,
-        );
       const contextProjectId = readNonEmptyString(context.projectId);
       const boundSourceWorkspace = !externalProvider && issueContext?.executionWorkspaceId
         ? await executionWorkspacesSvc.getStoredById(agent.companyId, issueContext.executionWorkspaceId) : null;
@@ -2241,6 +2341,9 @@ export function heartbeatService(
                       or nullif(btrim(${projectWorkspaces.repoUrl}), '') is not null)`,
                   )),
               ).mapWith(Boolean),
+              hasGitSource: exists(db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+                .where(and(eq(projectWorkspaces.projectId, projects.id), eq(projectWorkspaces.companyId, agent.companyId),
+                  sql`nullif(btrim(${projectWorkspaces.repoUrl}), '') is not null`))).mapWith(Boolean),
               env: projects.env,
               updatedAt: projects.updatedAt,
             })
@@ -2311,14 +2414,14 @@ export function heartbeatService(
           issueContext,
           routineEnvContext,
         });
-      const identityContext = await initializeRunIdentity(db, {
+      const identityContext = await timePreparation("run_identity", () => initializeRunIdentity(db, {
         companyId: agent.companyId,
         runId: run.id,
         responsibleUserId,
         interactionId: readNonEmptyString(context.interactionId),
         issueId,
         messageIds:
-          run.retryOfRunId || context.retryOfRunId
+          (run.retryOfRunId || context.retryOfRunId) && !isFailedChatRunRetry
             ? []
             : queuedCommentIdsFromRunContext(context).length
               ? queuedCommentIdsFromRunContext(context)
@@ -2345,7 +2448,7 @@ export function heartbeatService(
           readNonEmptyString(context.executionIdentityCause) ??
           readNonEmptyString(context.wakeReason) ??
           "dispatch",
-      });
+      }));
       // Initialization has persisted the active context, including an explicit
       // absence of identity inherited from an automatic continuation.
       responsibleUserId = identityContext.responsibleUserId;
@@ -2376,22 +2479,34 @@ export function heartbeatService(
         !boundSourceWorkspace && !taskWorkspaceIntentRow?.intent && !issueContext?.projectWorkspaceId
           ? taskProjectContext : null
       );
-      const parsedProjectExecutionWorkspacePolicy =
-        parseProjectExecutionWorkspacePolicy(
-          workspacePolicyContext?.executionWorkspacePolicy,
-        );
+      const parsedProjectExecutionWorkspacePolicy = workspacePolicyContext?.hasWorkspace
+        ? await effectiveProjectWorkspacePolicy(db, agent.companyId, workspacePolicyContext.executionWorkspacePolicy, workspacePolicyContext.hasGitSource)
+        : sourcelessProjectWorkspacePolicy(workspacePolicyContext?.executionWorkspacePolicy);
       const projectExecutionWorkspacePolicy =
         applyDefaultIsolatedExecutionWorkspacePolicy({
           projectPolicy: gateProjectExecutionWorkspacePolicy(
             parsedProjectExecutionWorkspacePolicy,
-            isolatedWorkspacesEnabled,
+            isolatedWorkspacesEnabled || Boolean(parsedProjectExecutionWorkspacePolicy?.storageProviderPluginId),
           ),
           defaultIsolatedWorkspacesEnabled,
           // Projects without workspace configuration get a plain managed
           // directory. The operator default cannot turn it into a worktree.
           hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
         });
-      const retainedTrust = await resolveAndRetainRunTrustPreset(db, {
+      const runtimeWorkspaceSelectionEnabled = !externalProvider && (freshWorkspace?.mode === "fresh_isolated_workspace" || taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled || Boolean(projectExecutionWorkspacePolicy?.storageProviderPluginId), hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) }));
+      const parsedIssueExecutionWorkspaceSettings =
+        parseIssueExecutionWorkspaceSettings(
+          issueContext?.executionWorkspaceSettings,
+        );
+      const issueExecutionWorkspaceSettings = runtimeWorkspaceSelectionEnabled
+        ? parsedIssueExecutionWorkspaceSettings
+        : null;
+      const environmentExecutionWorkspaceSettings =
+        selectEnvironmentExecutionWorkspaceSettings(
+          parsedIssueExecutionWorkspaceSettings,
+          runtimeWorkspaceSelectionEnabled,
+        );
+      const retainedTrust = await timePreparation("trust_preset", () => resolveAndRetainRunTrustPreset(db, {
         companyId: agent.companyId,
         agentId: agent.id,
         runId: run.id,
@@ -2411,7 +2526,7 @@ export function heartbeatService(
               executionPolicy: issueContext.executionPolicy,
             }
           : null,
-      });
+      }));
       const trustPreset = retainedTrust.trustPreset;
       if (retainedTrust.executionPolicy !== undefined) {
         // Later launch-context writes must preserve the boundary already made
@@ -2534,6 +2649,7 @@ export function heartbeatService(
             priority: issueContext.priority,
             workMode: issueContext.workMode,
             conversationAgentId: issueContext.conversationAgentId,
+            conversationUserId: issueContext.conversationUserId,
             reviewPolicy: issueContext.reviewPolicy,
             description: issueContext.description,
             projectId: issueContext.projectId,
@@ -2550,13 +2666,13 @@ export function heartbeatService(
         usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ ledgerScope: runLedgerScope })}::jsonb`,
       }).where(eq(heartbeatRuns.id, run.id));
       const {
-        continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext,
-      } = await prepareHeartbeatTaskContext(db, {
+        continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext, pinnedSkillTest,
+      } = await timePreparation("task_context", () => prepareHeartbeatTaskContext(db, {
         run, agent,
-        task: { issueRef, issueContext, wakeCommentContext, context, taskSession },
+        task: { issueRef, issueContext, context, taskSession },
         policy: { trustPreset, experimentalInstanceSettings, recovering: Boolean(runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner) },
         services: { issuesSvc, getPinnedSkillTestContext },
-      });
+      }));
       const sourceWorkspaceConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,
         projectPolicy: projectExecutionWorkspacePolicy,
@@ -2605,9 +2721,9 @@ export function heartbeatService(
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
-        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext },
+        task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest },
         config: { sourceWorkspaceConfig, aiBinding },
-        policy: { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory },
+        policy: { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode },
         environment: { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput },
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
         onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
@@ -2668,6 +2784,7 @@ export function heartbeatService(
         task: {
           issueRef,
           issueId,
+          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
           context,
           responsibleUserId,
           previousSessionParams,
@@ -2697,6 +2814,7 @@ export function heartbeatService(
           mergedConfig,
           configSnapshot,
           secretManifest,
+          managedAiCredentialIdentity: managedAiRuntime?.identity,
         },
         reuse: {
           requestedShouldReuseExisting,
@@ -2727,7 +2845,7 @@ export function heartbeatService(
       });
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
-        catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
+        catch (error) { throw classifyManagedProjectAuthFailure(error, agent.id); }
       }
       const remoteExecution = realizationResult.remoteExecution;
       if (nativeChatWorkspaceScope && materializeNativeChatWorktree) {
@@ -2754,10 +2872,9 @@ export function heartbeatService(
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
-        await controllerLease.assertOwned("dispatching");
         // Recheck after preparation. The final locked gate commits a dispatch
         // claim before entering adapter bootstrap or contacting a provider.
-        await authorizeFailedChatRetryExecution();
+        await authorizeFailedChatRetryExecution("dispatching");
         if (
           !(await withChatControlRecoveryGate(
             run,
@@ -2782,7 +2899,7 @@ export function heartbeatService(
           }
           return { dispatched: false };
         }
-        const enforceContinuationOwnership = Boolean(issueId && (isResolvedInteractionContinuationWakeContext(context) ||
+        const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
           ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
@@ -2813,19 +2930,28 @@ export function heartbeatService(
       const dispatchResolvedInteractionContinuationWithAtomicGate = async <T>(
         dispatch: (markDispatchStarted: () => void) => Promise<T>,
       ) => {
+        const relinquished = async () => runOptions.nativeLeaseOwner !== undefined && await nativeRecoveryClaimRelinquished({
+          db, companyId: run.companyId, runId: run.id, leaseOwner: runOptions.nativeLeaseOwner });
         // Admission can wait for accounting locks. Finish that wait before the
         // final ownership gate, whose callback must enter the adapter directly.
         const reservation = await measureRunPhase("execution.budget_reservation", () =>
           reserveRunBudget(db, run.companyId, run.id,
-            readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner));
-        let entered = false;
+            readNonEmptyString(runLedgerScope.projectId), runLedgerScope, runOptions.nativeLeaseOwner))
+          .catch(async (error: unknown) => { throw await relinquished() ? new NativeControllerDetachedForRestartError() : error; });
+        let entered = false, handedOff = false;
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
             entered = true;
             return dispatch(markDispatchStarted);
           }, reservation);
+        } catch (error) {
+          if (!entered && await relinquished()) {
+            handedOff = true;
+            throw new NativeControllerDetachedForRestartError();
+          }
+          throw error;
         } finally {
-          if (!entered && !reservation.reused) {
+          if (!entered && !reservation.reused && !handedOff) {
             await db.update(heartbeatRuns).set({ costAccountingPending: true,
               usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
             }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
@@ -2900,7 +3026,7 @@ export function heartbeatService(
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
-      if (!useHostGitHub) {
+      if (!useHostGitHub && !providerApiPlacement) {
         const githubLaunchers = await timePreparation("github_launchers", () => prepareHeartbeatGitHubLaunchers({
           native: agent.adapterType === "paperclip_runner",
           githubConfigured: githubSelection.configured,
@@ -2922,7 +3048,7 @@ export function heartbeatService(
         runtimeConfig = { ...runtimeConfig, env: githubLaunchers.env };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
-      context.paperclipEnvironment = {
+      context.paperclipEnvironment = selectedEnvironment && activeEnvironmentLease ? {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
         driver: selectedEnvironment.driver,
@@ -2949,7 +3075,7 @@ export function heartbeatService(
                   : undefined,
             }
           : {}),
-      };
+      } : { placement: providerApiPlacement };
       await db
         .update(heartbeatRuns)
         .set({
@@ -3011,7 +3137,7 @@ export function heartbeatService(
       // and the per-failure reason for a partial sync.
       const referencedProjectObservability =
         buildReferencedProjectRunObservability({
-          syncedProjectIds: resolvedWorkspace.additionalWorkspaces.map(
+          syncedProjectIds: resolvedWorkspace.runnerTaskProjectIds?.filter(id => id !== resolvedWorkspace.projectId) ?? resolvedWorkspace.additionalWorkspaces.map(
             (additional) => additional.projectId,
           ),
           failures: resolvedWorkspace.referencedProjectFailures,
@@ -3062,6 +3188,8 @@ export function heartbeatService(
       const runOutput = createHeartbeatRunOutput(db, {
         run, runId, issueId, runLogStore, identityRedactor, secretKeys,
         appendRunEvent, getCurrentUserRedactionOptions,
+        assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
+        runtimeLogSecretValues: observabilitySecretValues(observability),
       });
       const goalCheckpointSession: {
         current: {
@@ -3147,7 +3275,7 @@ export function heartbeatService(
           message: "run started",
         });
 
-        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent } =
+        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onPersistedNativeLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
@@ -3174,8 +3302,8 @@ export function heartbeatService(
           executionWorkspace,
           persistedExecutionWorkspace,
           executionTarget,
-          environmentDriver: selectedEnvironment.driver,
-          leaseMetadata: activeEnvironmentLease.lease.metadata,
+          environmentDriver: selectedEnvironment?.driver ?? "provider_api",
+          leaseMetadata: activeEnvironmentLease?.lease.metadata ?? {},
         }));
         const adapterEnv = Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
@@ -3191,6 +3319,10 @@ export function heartbeatService(
         const durableGoalControlRun =
           readNonEmptyString(context.goalControlRequestId) !== null ||
           context.resumeSessionGoalHeartbeat === true;
+        // Compaction resumes a runner session; a direct adapter would run it as a prompt.
+        if (isContextCompactionRun(context) && agent.adapterType !== "paperclip_runner") {
+          throw new Error("context_compaction_requires_paperclip_runner");
+        }
         // Goals must use the selected durable runner, never silently convert a
         // direct adapter or let an old goal-control wake become a normal prompt.
         if (durableGoalControlRun && agent.adapterType !== "paperclip_runner") {
@@ -3224,6 +3356,7 @@ export function heartbeatService(
           adapterConfig: agent.adapterConfig,
           agent: {
             id: agent.id,
+            companyId: agent.companyId,
             status: runningAgent.status,
             adapterType: agent.adapterType,
           },
@@ -3234,8 +3367,7 @@ export function heartbeatService(
         const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
           ? adapter.supportsInstructionsBundle === true
           : nativeRuntimeHasInstructionFilesystem(nativeRuntimeResolution.profile.backend);
-        runtimeConfig = await timePreparation("instructions", () => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem }));
-        const runtimeSelection = await timePreparation("runtime_selection", () => selectHeartbeatRuntime(db, {
+        const runtimeSelection = await prepareAndSelectHeartbeatRuntime(db, {
           run,
           agent,
           nativeRuntimeResolution,
@@ -3303,7 +3435,13 @@ export function heartbeatService(
             nativeOwnershipHeld = true;
           },
           stopControllerLease: () => controllerLease.stop(),
-        }));
+        }, {
+          measure: timePreparation,
+          prepareInstructions: async nativeLifecyclePolicy => {
+            runtimeConfig = await preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy });
+            return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
+          },
+        });
         if (!runtimeSelection.selected) return;
         const { nativeExecution, nativeRunnerInstanceId, getNativeFreshSessionHandoff } = runtimeSelection;
         nativeWorkspaceSync = runtimeSelection.nativeWorkspaceSync;
@@ -3380,6 +3518,7 @@ export function heartbeatService(
             identityRedactor,
             appendIdentityRedactedLog,
             onLog,
+            onPersistedNativeLog,
             onAdapterEvent,
             onAdapterMeta,
           },
@@ -3479,6 +3618,10 @@ export function heartbeatService(
         }));
       } catch (err) {
         await persistUsageCaptureFailure?.();
+        if (err instanceof NativeStartupCleanupPendingError) {
+          await requestStartupCleanup(err);
+          return;
+        }
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
           return;
@@ -3505,7 +3648,8 @@ export function heartbeatService(
             err.original instanceof Error
               ? err.original.message
               : String(err.original ?? "");
-          const retryReasonCode = /native_finalization_missing/i.test(
+          const waitingForRetainedOwner = retryMessage === NATIVE_RETAINED_OWNER_WAIT;
+          const retryReasonCode = waitingForRetainedOwner ? NATIVE_RETAINED_OWNER_WAIT : /native_finalization_missing/i.test(
             retryMessage,
           )
             ? "semantic_result_missing"
@@ -3525,7 +3669,8 @@ export function heartbeatService(
             stream: "system",
             level: "warn",
             message:
-              retryReasonCode === "semantic_result_missing"
+              waitingForRetainedOwner ? "native continuation waiting for the retained controller lease"
+                : retryReasonCode === "semantic_result_missing"
                 ? "provider turn completed without a semantic result; same-run disposition recovery persisted"
                 : "native session transport interrupted; same-run resume persisted",
             payload: {
@@ -3541,6 +3686,13 @@ export function heartbeatService(
               failureDetail: coordinator?.failureDetail ?? null,
             },
           }).catch(() => undefined);
+          const failedAttachment = describeFailedAttachment(
+            (coordinator?.failureDetail as { message?: unknown } | null)?.message,
+          );
+          if (failedAttachment) {
+            await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "warn", message: failedAttachment,
+              payload: { code: "native_run_attach_failed" } }).catch(() => undefined);
+          }
           if (coordinator?.nextAttemptAt) {
             scheduleNativeSessionResumeDispatch(
               run.id,
@@ -3609,7 +3761,12 @@ export function heartbeatService(
         });
       }
     } catch (outerErr) {
-      if (
+      if (nativeStartupCleanupScheduled || nativeStartupCleanupError || outerErr instanceof NativeStartupCleanupPendingError) {
+        const pending = outerErr instanceof NativeStartupCleanupPendingError ? outerErr : nativeStartupCleanupError;
+        if (!nativeStartupCleanupScheduled && pending) await requestStartupCleanup(pending).catch(error => {
+          logger.warn({ err: error, runId: run.id }, "Native startup cleanup intent will retry through owned recovery");
+        });
+      } else if (
         nativeOwnershipHeld ||
         outerErr instanceof NativeRunnerOwnershipUnverifiedError
       ) {
@@ -3646,14 +3803,23 @@ export function heartbeatService(
         );
       } else {
         await preserveNativeWorkspaceOnFailure();
-        if (!nativeOwnershipHeld) await runCompletion.failRunSetup({
-          run, runId, outerErr, signal: executionControl.controller.signal,
-          providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
-          identityRedactor, readFailureReportSecrets,
-        });
+        if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
+          await runCompletion.failRunSetup({
+            run, runId, outerErr, signal: executionControl.controller.signal,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+            identityRedactor, readFailureReportSecrets,
+          });
+          legacyPreparationFailedBeforeDispatch = !legacyAdapterEntered && !nativeDispatchStarted;
+        }
+        // A failed re-preparation must not keep its recovery claim open.
+        if (runOptions.nativeRestartRecovery && !legacyAdapterEntered && !nativeDispatchStarted)
+          await settleFailedNativeRecoveryPreparation(db, { companyId: run.companyId, runId: run.id,
+            claim: runOptions.nativeRestartRecovery }).catch(error =>
+            logger.warn({ err: error, runId: run.id }, "Failed native recovery preparation could not be settled"));
       }
     } finally {
       let caseHandoffCleanupSettled = false;
+      let failedProcessCancellationSeen = failedProcessRunCancellations.has(run.id);
       await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
@@ -3662,7 +3828,7 @@ export function heartbeatService(
           await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
-            .where(eq(heartbeatRuns.id, run.id)));
+            .where(eq(heartbeatRuns.id, run.id)), { companyId: run.companyId });
         }
         nativeOwnershipHeld =
           nativeOwnershipHeld ||
@@ -3696,7 +3862,7 @@ export function heartbeatService(
           latestRun &&
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError
         ) {
           latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
             (terminalizeErr) => {
@@ -3722,7 +3888,7 @@ export function heartbeatService(
         if (
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError
         ) {
           // Keep launchers during same-run recovery. At a terminal boundary all
           // operations have settled; clean before the remote lease can be stopped.
@@ -3826,12 +3992,36 @@ export function heartbeatService(
                 "failed to record heartbeat run scratch cleanup event",
               );
             });
+            // Earlier process attempts of this run (before a restart) left their
+            // own scratch directories; the run is terminal, so remove them too.
+            if (scratchCleanup.removed) {
+              await sweepOrphanedRunScratch({
+                runId: run.id,
+                resolveRunStates: async (ids) => new Map(ids.map((id) => [id, "terminal" as const])),
+              }).catch((sweepError) => {
+                logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
+              });
+            }
           }
         }
-        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+        if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
+            !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;
+        }
+        if (latestRun?.status === "cancelled" && latestRun.runtimeMode === "legacy") {
+          const settled = await settleCancelledLegacyPreparation(db, { run: latestRun,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
+          });
+          latestRun = settled ?? latestRun;
+          // A pause may already have been released while this Stop unwound.
+          const settledIssueId = settled?.issueId ?? settled?.contextSnapshot?.issueId;
+          if (typeof settledIssueId === "string") {
+            await resumePauseInterruptedWork(db, { companyId: settled!.companyId, issueIds: [settledIssueId],
+              actor: { actorType: "system", actorId: "system" }, wakeup: enqueueWakeup,
+            }).catch(error => logger.warn({ err: error, runId: run.id }, "Could not resume work after a released pause"));
+          }
         }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
@@ -3843,6 +4033,15 @@ export function heartbeatService(
             resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
               ${JSON.stringify({ startupPreparationSettledAt: new Date().toISOString() })}::jsonb`,
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
+        }
+        if (latestRun?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(latestRun.status) &&
+            !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
+          await settleNativeRunProcess(db, run.id).catch(error => {
+            logger.warn({ err: error, runId: run.id }, "failed to release settled native process identity");
+          });
+          await acknowledgeRemoteStop(run.id, run.companyId).catch(error => {
+            logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
+          });
         }
         await db.update(heartbeatRuns).set({
           executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
@@ -3863,6 +4062,7 @@ export function heartbeatService(
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.
+        failedProcessCancellationSeen ||= failedProcessRunCancellations.has(run.id);
         failedProcessRunCancellations.delete(run.id);
         executionControl.finish();
         if (adapterExecutionControls.get(run.id) === executionControl) {
@@ -3874,9 +4074,25 @@ export function heartbeatService(
       // that a local legacy adapter's closed-stdio descendants stopped.
       if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyLocalAdapterEntered) {
         caseHandoffCleanupSettled = hasStoppedLocalProcessTree(latestRun);
+        const canRecordSettlement = () => caseHandoffCleanupSettled &&
+          !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld &&
+          !nativeStartupCleanupScheduled && !nativeStartupCleanupError && !failedProcessCancellationSeen &&
+          !failedProcessRunCancellations.has(run.id) && !processRunCancellationSettlements.has(run.id) &&
+          !adapterExecutionControls.has(run.id) && !activeRunExecutions.has(run.id);
+        if (canRecordSettlement()) await recordLegacyProcessSettlement(db, latestRun, canRecordSettlement)
+          .catch(error => logger.warn({ runId: run.id, error }, "Could not record optional legacy process settlement"));
+      }
+      if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyPreparationFailedBeforeDispatch) {
+        const canRecordPreparation = () => caseHandoffCleanupSettled && legacyPreparationFailedBeforeDispatch &&
+          !legacyAdapterEntered && !nativeDispatchStarted && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError && !failedProcessCancellationSeen &&
+          !failedProcessRunCancellations.has(run.id) && !processRunCancellationSettlements.has(run.id) &&
+          !adapterExecutionControls.has(run.id) && !activeRunExecutions.has(run.id) && !runningProcesses.has(run.id);
+        if (canRecordPreparation()) await recordLegacyPreparationSettlement(db, latestRun, canRecordPreparation)
+          .catch(error => logger.warn({ runId: run.id, error }, "Could not record optional legacy preparation settlement"));
       }
       if (caseHandoffCleanupSettled && latestRun && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const handoff = await pendingCaseHandoffForRun(db, run.id);
         if (handoff) await recordCaseHandoffExecutionReleased(db, run.id, handoff.issueId);
       }
@@ -3970,9 +4186,10 @@ export function heartbeatService(
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
-    sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
 
+    getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
 
     getRuntimeState: getRuntimeStateWithSessions,
 
@@ -3992,8 +4209,11 @@ export function heartbeatService(
             companyId: string;
             logStore: string | null;
             logRef: string | null;
+            runtimeMode?: string | null;
+            status?: string;
+            logBytes?: number | null;
           },
-      opts?: { offset?: number; limitBytes?: number },
+      opts?: { offset?: number; limitBytes?: number; alignStartToRecord?: boolean; signal?: AbortSignal },
     ) => {
       const run =
         typeof runOrLookup === "string"
@@ -4004,12 +4224,14 @@ export function heartbeatService(
       if (!run) throw notFound("Heartbeat run not found");
       if (!run.logStore || !run.logRef) throw notFound("Run log not found");
 
-      const result = await runLogStore.read(
+      if (!isRunLogStoreType(run.logStore)) throw notFound("Run log backend not supported");
+      const result = await readRecoverableRunLog(db, runLogStore,
         {
-          store: run.logStore as "local_file",
+          store: run.logStore,
           logRef: run.logRef,
         },
         opts,
+        run,
       );
 
       return {
@@ -4046,6 +4268,111 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerExternalConversationSettlementWork: (
+      coordinator: Parameters<ReturnType<typeof externalConversationSettlementWork>["register"]>[0], canRun: () => boolean,
+    ) => externalConversationSettlementWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeRecoveryNoticeWork: (
+      coordinator: Parameters<ReturnType<typeof nativeRecoveryNoticeWork>["register"]>[0], canRun: () => boolean,
+    ) => nativeRecoveryNoticeWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeRunProjectionWork: (
+      coordinator: Parameters<ReturnType<typeof nativeRunProjectionWork>["register"]>[0], canRun: () => boolean,
+    ) => nativeRunProjectionWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeResultCommitWork: (
+      coordinator: Parameters<ReturnType<typeof nativeResultCommitWork>["register"]>[0], canRun: () => boolean,
+    ) => nativeResultCommitWork(db).register(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeEnvironmentSettlementWork: (
+      coordinator: Parameters<typeof registerNativeEnvironmentSettlementWork>[0], canRun: () => boolean,
+    ) => registerNativeEnvironmentSettlementWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerNativeWorkspaceFinalizationWork: (
+      coordinator: Parameters<typeof registerNativeWorkspaceFinalizationWork>[0], canRun: () => boolean,
+    ) => registerNativeWorkspaceFinalizationWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerRetainedNativeSessionCleanupWork: (
+      coordinator: Parameters<typeof registerRetainedNativeSessionCleanupWork>[0], canRun: () => boolean,
+    ) => registerRetainedNativeSessionCleanupWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerNativeStatusReassessmentWork: (coordinator: Parameters<ReturnType<typeof nativeStatusReassessmentWork>["register"]>[0], canRun: () => boolean) =>
+      nativeStatusReassessmentWork(db).register(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerNativeReviewResponseWork: (coordinator: Parameters<typeof registerNativeReviewResponseWork>[1], canRun: () => boolean) =>
+      registerNativeReviewResponseWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerNativeResponsePresentationWork: (coordinator: Parameters<typeof registerNativeResponsePresentationWork>[1], canRun: () => boolean) =>
+      registerNativeResponsePresentationWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerNativePendingEffectWork: (coordinator: Parameters<typeof registerNativePendingEffectWork>[1], canRun: () => boolean) =>
+      registerNativePendingEffectWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerUnsafeWorkspaceExportWork: (coordinator: Parameters<typeof registerUnsafeWorkspaceExportWork>[1], canRun: () => boolean) =>
+      registerUnsafeWorkspaceExportWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerAutomaticCompletionReviewWork: (coordinator: Parameters<typeof registerAutomaticCompletionReviewWork>[1], canRun: () => boolean) =>
+      registerAutomaticCompletionReviewWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerObsoletePolicyReviewWork: (coordinator: Parameters<typeof registerObsoletePolicyReviewWork>[1], canRun: () => boolean) =>
+      registerObsoletePolicyReviewWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    registerCancelledWorkspacePreservationWork: (
+      coordinator: Parameters<typeof registerCancelledWorkspacePreservationWork>[1], canRun: () => boolean,
+    ) => registerCancelledWorkspacePreservationWork(db, coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerStoppedInstructionCollectionWork: (
+      coordinator: Parameters<typeof instructionCopies.registerStoppedCollectionWork>[0], canRun: () => boolean,
+    ) => instructionCopies.registerStoppedCollectionWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerInstructionDirectoryCleanupWork: (
+      coordinator: Parameters<typeof instructionCopies.registerDirectoryCleanupWork>[0], canRun: () => boolean,
+    ) => instructionCopies.registerDirectoryCleanupWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerCapturedInstructionCommitWork: (
+      coordinator: Parameters<typeof instructionCopies.registerCapturedCommitWork>[0], canRun: () => boolean,
+    ) => instructionCopies.registerCapturedCommitWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
+    registerScheduledRetryCancellationWork: (
+      coordinator: Parameters<typeof registerScheduledRetryCancellationWork>[0], canRun: () => boolean,
+    ) => registerScheduledRetryCancellationWork(coordinator,
+      () => canRun() && readTaskDrain(new Date()) === null,
+      async () => {
+        const state = await getSchedulingSuppression(true);
+        return !state.suppressed || state.reason === "task_drain";
+      }),
 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
@@ -4062,13 +4389,51 @@ export function heartbeatService(
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
+    prepareIdleWarmNativeSessionsForSleep,
+    readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions, counters: getTaskDrainStatus }),
     computeTaskDrain,
     applyTaskDrain,
 
+    registerResidualRecoveryWork: (coordinator: Parameters<typeof registerResidualRecoveryOwner>[0], canRun: () => boolean) =>
+      registerResidualRecoveryOwner(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
+        async () => !(await getSchedulingSuppression(true)).suppressed),
+    registerActiveRunSilenceWork: (coordinator: Parameters<typeof recovery.registerActiveRunSilenceWork>[0], canRun: () => boolean) =>
+      recovery.registerActiveRunSilenceWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
+        async scope => recovery.scanSilentActiveRuns({ ...scope, issueCreatedAtGte: await getWorktreeExecutionCutoff() }),
+        async () => !(await getSchedulingSuppression(true)).suppressed),
+    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
+      registerDeferredReceiptWork(db, coordinator, {
+        resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
+        settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
+        createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
+    registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
+      registerIssueRecoveryWork(db, coordinator, {
+        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
+        orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
+        recoveryActions: recovery.reconcileActiveRecoveryActions,
+        dependencies: reconcileResolvedDependencyWakes,
+        locks: sweepStaleIssueLocks,
+        watchdogs: reconcileTaskWatchdogs,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerRunDispatchWork: (coordinator: Parameters<typeof registerRunDispatchWork>[0], canRun: () => boolean) =>
+      registerRunDispatchWork(coordinator, {
+        promoteDueScheduledRetries,
+        nextScheduledRetryAt,
+        resumeQueuedRunsAfterDrain,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     promoteDueScheduledRetries,
     retryScheduledRetryNow,
 
     resumeQueuedRuns,
+
+    resumeQueuedRunsAfterDrain,
+
+    resumeFreshQueuedRunsAtStartup,
 
     resumeQueuedRunsForAgent: async (companyId: string, agentId: string) => {
       const agent = await getAgent(agentId);
@@ -4102,6 +4467,10 @@ export function heartbeatService(
     buildRunOutputSilence,
 
     tickTimers,
+    tickAgentTimers,
+    nextAgentTimerAt,
+    tickIssueMonitors,
+    nextIssueMonitorAt,
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) =>
       cancelRunInternal(runId, reason, options),
@@ -4134,6 +4503,10 @@ export function heartbeatService(
     cancelBudgetScopeWork,
 
     getRunIssueSummary,
+
+    getRunIssueControl,
+
+    getActiveRunIssueControlForAgent,
 
     getActiveRunForAgent,
 

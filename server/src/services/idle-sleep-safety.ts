@@ -1,13 +1,41 @@
-import { idleWorkSnapshot } from "./task-admission.js";
+import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
+import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
+import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
+import { createIdleDeadlineInspectionBudget, readIdleDeadlineOwners, deadlineOwnerWorkReplacement, readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
+import type { IdleDeadlineOwners, DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
+import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
+import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
+import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
+import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
+import { beginIdleTrackedWork, idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
 import { combineIdleSchedules, readIdleIssueSchedule } from "./idle-issue-schedule.js";
 import { connectionDeliveryWaitingForResponse, finishedIdleRun as finishedRun, finishedIdleWake, finishedFailedIdleLease as finishedFailedLease, passiveBoardRecovery } from "./idle-work-proof.js";
 import type { Db } from "@paperclipai/db";
-import { sql } from "drizzle-orm";
+import { sql, type SQLWrapper } from "drizzle-orm";
+import { createIdleSleepDiagnostics, type IdleSleepDiagnosticSink, type IdleSleepDiagnostics } from "./idle-sleep-diagnostics.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
 import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
+import { passiveIdleConversation } from "./conversation-idle-proof.js";
+import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
+import { idleToolActionHistoryChecks } from "./tool-action-idle-proof.js";
+import { idleBrowserHistoryChecks } from "./browser-use-idle-proof.js";
+import { idleDecisionHistoryChecks } from "./decision-idle-proof.js";
+import { idleWorkspaceHistoryChecks } from "./workspace-history-idle-proof.js";
+import { idleMcpHistoryChecks } from "./public-mcp/idle-history-proof.js";
+import { idleExternalAgentHistoryChecks } from "../modules/external-agents/index.js";
+
+export const completedHistoryChecks = [
+  ...idleChatHistoryChecks, ...idleToolActionHistoryChecks, ...idleBrowserHistoryChecks,
+  ...idleDecisionHistoryChecks, ...idleWorkspaceHistoryChecks, ...idleMcpHistoryChecks,
+  ...idleExternalAgentHistoryChecks,
+] as const;
+
+const ordinaryIssues = `SELECT 1 FROM issues i WHERE i.status NOT IN ('done', 'cancelled')
+  AND (${passiveIdleConversation('i')}) IS NOT TRUE`;
 
 export interface IdleSleepDrainStatus {
   ownerId?: string;
@@ -19,14 +47,21 @@ export interface IdleSleepDrainStatus {
 }
 
 export interface IdleSleepSafety {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   backgroundWork: "none" | "present" | "unknown";
-  scheduledWake?: ScheduledWake;
+  scheduledWake?: ScheduledWake | DomainScheduledWake;
+  diagnostics?: IdleSleepDiagnostics;
+  incomingWake?: IdleIncomingWakeCapability;
+  deadlineProof?: IdleDeadlineReceipt;
+  apiWakeAdmission?: ApiWakeAdmission;
+  mcpWakeAdmission?: McpWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
   backgroundWork: "none" | "present" | "unknown";
   pluginIds: string[];
+  catalogGeneration?: string;
+  catalog?: IdlePluginCatalogEntry[];
 }>;
 
 // A failed turn may have successfully torn down its ephemeral allocation. A
@@ -39,49 +74,52 @@ export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) 
 // Other background features remain awake until their work and inbound events
 // have a durable wake path. In particular, an empty in-memory run set is not
 // evidence that a restarted process has no persisted work to recover.
+const workCheck = (reason: string, query: string | SQLWrapper) => ({ reason, query: typeof query === "string" ? sql.raw(query) : query });
+
 const WORK_CHECKS = [
-  `SELECT 1 FROM agents WHERE status = 'running' OR
+  workCheck("agents.execution_or_timer", `SELECT 1 FROM agents WHERE status = 'running' OR
     (status NOT IN ('terminated', 'paused', 'pending_approval') AND
      runtime_config->'heartbeat'->>'enabled' = 'true' AND
-     COALESCE((runtime_config->'heartbeat'->>'intervalSec')::numeric, 0) > 0)`,
-  `SELECT 1 FROM heartbeat_runs WHERE
+     COALESCE((runtime_config->'heartbeat'->>'intervalSec')::numeric, 0) > 0)`),
+  workCheck("heartbeat_runs", `SELECT 1 FROM heartbeat_runs WHERE
     status NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
     OR (scheduled_retry_at IS NOT NULL
       AND (finished_at IS NULL OR scheduled_retry_at > finished_at))
-    OR cost_accounting_pending`,
-  `SELECT 1 FROM agent_instruction_working_copies WHERE
+    OR cost_accounting_pending`),
+  workCheck("agent_instruction_working_copies", `SELECT 1 FROM agent_instruction_working_copies WHERE
     state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')
     OR process_stopped_at IS NULL OR next_attempt_at IS NOT NULL
-    OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`,
-  `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`,
-  `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`,
-  `SELECT 1 FROM agents WHERE lifecycle_state IN
-    ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`,
-  `SELECT 1 FROM decision_invocations WHERE status = 'running'`,
-  `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`,
+    OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`),
+  workCheck("sandbox_creation_operations", `SELECT 1 FROM sandbox_creation_operations WHERE state IN ('pending', 'needs_reconciliation')`),
+  workCheck("budget_reservations", `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`),
+  workCheck("budget_evaluation_work", pendingBudgetEvaluationWorkQuery()),
+  workCheck("budget_policies", `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`),
+  workCheck("agents.lifecycle", `SELECT 1 FROM agents WHERE lifecycle_state IN
+    ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
+  workCheck("decision_invocations", `SELECT 1 FROM decision_invocations WHERE status = 'running'`),
+  workCheck("prompt_injection_invocations", `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
-  `SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`,
-  `SELECT 1 FROM board_api_keys WHERE revoked_at IS NULL
-    AND (expires_at IS NULL OR expires_at > now())`,
+  workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),
+  workCheck("board_api_keys", incomingWakeWorkQuery("board_api_keys")!),
   // Coalescing consumes a request into another run. Retain it as work until
   // both the request and that exact company/agent's run have finished.
-  `SELECT 1 FROM agent_wakeup_requests w WHERE
+  workCheck("agent_wakeup_requests", `SELECT 1 FROM agent_wakeup_requests w WHERE
     w.status NOT IN ('completed', 'failed', 'cancelled', 'skipped', 'timed_out', 'coalesced')
     OR (w.status = 'coalesced' AND (w.finished_at IS NULL OR NOT EXISTS (
       SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
         AND r.company_id = w.company_id AND r.agent_id = w.agent_id
-        AND ${finishedRun("r")})))`,
-  `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`,
+        AND ${finishedRun("r")})))`),
+  workCheck("issues", ordinaryIssues),
   // A completed issue can still need its first watchdog review, including a
   // retry after immediate evaluation failed before creating a review/run.
-  `SELECT 1 FROM issue_watchdogs WHERE status <> 'disabled'`,
-  `SELECT 1 FROM workspace_operations WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`,
+  workCheck("issue_watchdogs", `SELECT 1 FROM issue_watchdogs WHERE status <> 'disabled'`),
+  workCheck("workspace_operations", `SELECT 1 FROM workspace_operations WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`),
   // A local directory has no independent worker. Keep unfamiliar providers,
   // runtime/command configuration, reopen fences and due cleanup awake. Runs,
   // operations, runtime services, retained leases and backup work are checked
   // separately; inspecting the row never deletes or shortens retained data.
-  `SELECT 1 FROM execution_workspaces w WHERE (
+  workCheck("execution_workspaces", `SELECT 1 FROM execution_workspaces w WHERE (
     w.provider_type IN ('local_fs', 'git_worktree')
     AND w.strategy_type IN ('project_primary', 'git_worktree')
     AND w.mode IN ('inherit', 'shared_workspace', 'isolated_workspace', 'operator_branch', 'reuse_existing', 'agent_default')
@@ -105,55 +143,36 @@ const WORK_CHECKS = [
         AND COALESCE(w.metadata->'config'->>'runtimeProvisionCommand', '') = ''
         AND COALESCE(w.metadata->'config'->>'teardownCommand', '') = ''
         AND COALESCE(w.metadata->'config'->>'cleanupCommand', '') = ''))
-    ) IS NOT TRUE`,
-  `SELECT 1 FROM environment_leases l WHERE status NOT IN ('released', 'expired')
-    AND (${finishedFailedLease("l")}) IS NOT TRUE`,
-  `SELECT 1 FROM environment_custom_image_setup_sessions s WHERE
+    ) IS NOT TRUE`),
+  workCheck("environment_leases", `SELECT 1 FROM environment_leases l WHERE status NOT IN ('released', 'expired')
+    AND (${finishedFailedLease("l")}) IS NOT TRUE`),
+  workCheck("environment_custom_image_setup_sessions", `SELECT 1 FROM environment_custom_image_setup_sessions s WHERE
     (s.status IN ('promoted', 'cancelled', 'timed_out', 'failed') AND s.finished_at IS NOT NULL
-      AND s.connection_secret_ref IS NULL AND (${verifiedResourceCleanup('s', 'image_setup')})) IS NOT TRUE`,
+      AND s.connection_secret_ref IS NULL AND (${verifiedResourceCleanup('s', 'image_setup')})) IS NOT TRUE`),
   // An unconfigured Slack draft has no provider identity or inbound runtime.
   // Setup still wakes through normal browser admission. Retain every enabled,
   // previously active, partially connected, foreign, or unsupported endpoint.
-  `SELECT 1 FROM chat_endpoints endpoint WHERE (endpoint.provider = 'slack'
-    AND endpoint.status = 'draft' AND endpoint.setup->>'step' = 'provider_setup'
-    AND (endpoint.setup - ARRAY['step', 'command']) = '{}'::jsonb
-    AND (endpoint.setup->'command' IS NULL OR endpoint.setup->'command' = 'null'::jsonb
-      OR jsonb_typeof(endpoint.setup->'command') = 'string')
-    AND endpoint.activated_at IS NULL AND endpoint.provider_account_id IS NULL
-    AND endpoint.bot_external_id IS NULL AND endpoint.bot_username IS NULL
-    AND endpoint.last_event_at IS NULL AND endpoint.last_publication_at IS NULL
-    AND endpoint.health_message IS NULL AND endpoint.last_error IS NULL
-    AND NOT EXISTS (SELECT 1 FROM chat_slack_registrations registration WHERE registration.endpoint_id = endpoint.id)
-    AND EXISTS (SELECT 1 FROM tool_connections draft_connection
-      WHERE draft_connection.id = endpoint.connection_id AND draft_connection.company_id = endpoint.company_id
-        AND draft_connection.connection_purpose = 'channel' AND draft_connection.transport = 'chat_sdk'
-        AND draft_connection.status = 'draft' AND draft_connection.enabled = false)) IS NOT TRUE`,
-  `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`,
-  `SELECT 1 FROM routine_runs WHERE status NOT IN ('completed', 'failed', 'skipped', 'cancelled')`,
-  `SELECT 1 FROM plugin_jobs WHERE status <> 'paused'`,
-  `SELECT 1 FROM plugin_job_runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`,
-  `SELECT 1 FROM plugin_webhook_deliveries WHERE status NOT IN ('succeeded', 'failed')`,
+  workCheck("chat_endpoints", incomingWakeWorkQuery("chat_endpoints")!),
+  workCheck("routines", `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`),
+  workCheck("routine_runs", `SELECT 1 FROM routine_runs WHERE status NOT IN ('completed', 'failed', 'skipped', 'cancelled')`),
+  workCheck("plugin_jobs", `SELECT 1 FROM plugin_jobs WHERE status <> 'paused'`),
+  workCheck("plugin_job_runs", `SELECT 1 FROM plugin_job_runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`),
+  workCheck("plugin_webhook_deliveries", `SELECT 1 FROM plugin_webhook_deliveries WHERE status NOT IN ('succeeded', 'failed')`),
   // Saved outbound MCP configuration and disabled drafts have no independent
   // listener. Keep local processes, channels and GitHub webhook bindings awake;
   // accepted calls, credential recovery and delivery work have separate fences.
-  `SELECT 1 FROM tool_connections c WHERE c.status <> 'archived' AND (
-    (c.status = 'draft' AND c.enabled = false)
-    OR (c.status = 'active' AND c.connection_purpose = 'ai' AND c.transport = 'runtime_auth')
-    OR (c.status = 'active' AND c.connection_purpose = 'tool' AND c.transport = 'mcp_remote'
-      AND NOT EXISTS (SELECT 1 FROM connection_grants g WHERE g.connection_id = c.id
-        AND (g.company_id <> c.company_id OR g.provider_tenant->'github' IS NOT NULL)))
-    ) IS NOT TRUE`,
+  workCheck("tool_connections", incomingWakeWorkQuery("tool_connections")!),
   // An explicit board escalation has no automatic retry. Retain the visible
   // action and all execution/cleanup checks while the board decides what to do.
-  `SELECT 1 FROM issue_recovery_actions a WHERE a.status NOT IN ('resolved', 'cancelled')
-    AND (${passiveBoardRecovery('a')}) IS NOT TRUE`,
-  `SELECT 1 FROM status_cards WHERE archived_at IS NULL`,
-  `SELECT 1 FROM external_objects WHERE NOT is_terminal OR next_refresh_at IS NOT NULL`,
+  workCheck("issue_recovery_actions", `SELECT 1 FROM issue_recovery_actions a WHERE a.status NOT IN ('resolved', 'cancelled')
+    AND (${passiveBoardRecovery('a')}) IS NOT TRUE`),
+  workCheck("status_cards", `SELECT 1 FROM status_cards WHERE archived_at IS NULL`),
+  workCheck("external_objects", `SELECT 1 FROM external_objects WHERE NOT is_terminal OR next_refresh_at IS NOT NULL`),
   // Login history keeps its provider reference after teardown. A terminal
   // label alone is insufficient: require a finished, unclaimed session and
   // positive cleanup evidence for its resource in the same company/environment.
   // Cast only UUID-shaped session references, leaving both lease indexes usable.
-  `SELECT 1 FROM adapter_auth_sessions s WHERE
+  workCheck("adapter_auth_sessions", `SELECT 1 FROM adapter_auth_sessions s WHERE
     s.status NOT IN ('authenticated', 'completed', 'failed', 'timed_out', 'cancelled')
     OR s.finished_at IS NULL OR s.promotion_expires_at IS NOT NULL
     OR (s.provider_lease_id IS NOT NULL AND NOT EXISTS (
@@ -172,11 +191,11 @@ const WORK_CHECKS = [
           WHEN s.provider_lease_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           THEN s.provider_lease_id::uuid END)
         AND ((l.status IN ('released', 'expired') OR (${finishedFailedLease("l")})) AND l.cleanup_status = 'success'
-          AND l.released_at IS NOT NULL) IS NOT TRUE))`,
+          AND l.released_at IS NOT NULL) IS NOT TRUE))`),
   // Answer delivery history is not work once its acknowledged handoff has
   // finished. Keep pending deliveries, unfinished target runs, and missing or
   // unfinished fallback wake receipts awake. Other work checks still apply.
-  `SELECT 1 FROM issue_question_response_deliveries d WHERE
+  workCheck("issue_question_response_deliveries", `SELECT 1 FROM issue_question_response_deliveries d WHERE
     d.status NOT IN ('delivered', 'fallback_queued', 'failed')
     OR (d.status IN ('delivered', 'fallback_queued') AND d.acknowledged_at IS NULL)
     OR (d.status = 'delivered' AND d.target_run_id IS NULL)
@@ -193,148 +212,332 @@ const WORK_CHECKS = [
           OR (w.status = 'coalesced' AND EXISTS (
             SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
               AND r.company_id = w.company_id AND r.agent_id = w.agent_id
-              AND ${finishedRun("r")})))))`,
+              AND ${finishedRun("r")})))))`),
   // Cloud owns inbound event durability. A processed receipt is idempotency
   // history; any downstream run, wake or delivery is still checked separately.
-  `SELECT 1 FROM connection_event_deliveries WHERE status <> 'processed' OR processed_at IS NULL`,
+  workCheck("connection_event_deliveries", `SELECT 1 FROM connection_event_deliveries WHERE status <> 'processed' OR processed_at IS NULL`),
   // A delivered outbox row is history after its exact accepted wake finishes.
   // A system-retired connection card may also be parked behind a still-pending
   // response. Keep the outbox intact: the normal reply path resumes delivery.
-  `SELECT 1 FROM connection_intent_deliveries d WHERE
+  workCheck("connection_intent_deliveries", `SELECT 1 FROM connection_intent_deliveries d WHERE
     (d.delivered_at IS NULL AND (${connectionDeliveryWaitingForResponse('d')}) IS NOT TRUE)
     OR EXISTS (SELECT 1 FROM agent_wakeup_requests connection_wake
       WHERE connection_wake.company_id = d.company_id AND connection_wake.idempotency_key IN (
         'connection-intent:' || d.interaction_id::text || ':accepted',
         'connection-intent:' || d.interaction_id::text || ':rejected',
         'connection-intent:' || d.interaction_id::text || ':expired')
-      AND (${finishedIdleWake('connection_wake')}) IS NOT TRUE)`,
+      AND (${finishedIdleWake('connection_wake')}) IS NOT TRUE)`),
   // Saved private feedback and acknowledged uploads have no delivery job.
   // Pending/failed exports and unfamiliar states retain the instance. A sent
   // label requires its completion stamp and a cleared failure reason.
-  `SELECT 1 FROM feedback_exports WHERE (status = 'local_only'
-    OR (status = 'sent' AND exported_at IS NOT NULL AND failure_reason IS NULL)) IS NOT TRUE`,
-  `SELECT 1 FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
-    WHERE c.status = 'active' AND b.active AND b.source_id IS NULL`,
-  `SELECT 1 FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
+  workCheck("feedback_exports", `SELECT 1 FROM feedback_exports WHERE (status = 'local_only'
+    OR (status = 'sent' AND exported_at IS NOT NULL AND failure_reason IS NULL)) IS NOT TRUE`),
+  // Skill package conversion and retention are optional maintenance. Legacy
+  // contents remain authoritative until verified conversion; retries may wait
+  // for ingress, including when external package storage is disabled.
+  workCheck("project_skill_sources", `SELECT 1 FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
+    WHERE c.status = 'active' AND b.active AND b.source_id IS NULL`),
+  workCheck("company_skill_sources", `SELECT 1 FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
     WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
       AND (s.access_scope = 'company' OR EXISTS (
-        SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`,
-  // These less common work sources fail closed on any retained state. Their
-  // terminal-state exceptions can be added with tests for the owning service.
-  ...[
-    "chat_deliveries", "chat_publications", "chat_actions",
-    "chat_completion_deliveries", "tool_action_requests", "tool_action_deliveries",
-    "workspace_runtime_services",
-    "execution_workspace_runtime_leases",
-    "native_run_finalizations", "company_transfer_runs", "decisions", "decision_effect_executions",
-    "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
-    "browser_use_browsers",
-    "company_secret_proposals",
-    "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
-    "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
-    "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",
-    "muse_agent_bindings", "muse_credentials", "muse_runner_assignments",
-    "muse_runner_operations", "muse_mailbox_items", "muse_input_deliveries", "external_agent_holds",
-  ].map((table) => `SELECT 1 FROM ${table}`),
+        SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`),
+  workCheck("native_run_finalizations", `SELECT 1 FROM native_run_finalizations f WHERE (
+    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
+    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
+    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
+    AND f.failure_code IS NULL AND f.failure_detail IS NULL
+    AND EXISTS (
+      SELECT 1 FROM heartbeat_runs r
+      JOIN native_run_results result_row ON result_row.id = f.result_id
+        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
+        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
+      JOIN work_assessments assessment ON assessment.id = f.assessment_id
+        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
+        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
+      JOIN status_decisions decision ON decision.id = f.decision_id
+        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
+        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
+      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
+        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
+        AND ${finishedRun("r")}
+        AND r.result_json->>'finalizationPhase' = 'committed'
+        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
+        AND r.result_json->>'originalFailureCode' IS NULL
+        AND result_row.schema_status = 'accepted'
+        AND result_row.result_json->'terminal'->>'runTerminalState' = r.status
+        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM workspace_operations operation
+      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
+        AND operation.heartbeat_run_id = f.run_id
+        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
+    AND NOT EXISTS (
+      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
+        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
+          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
+          OR effect.next_attempt_at IS NOT NULL))
+    ) IS NOT TRUE`),
+  ...completedHistoryChecks.map(check => workCheck(check.reason, check.query)),
 ] as const;
 
 function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus, now: number): boolean {
   return before.ownerId === after.ownerId && before.draining && after.draining && before.activeRuns === 0 && before.pendingWakes === 0
     && after.activeRuns === 0 && after.pendingWakes === 0
     && before.startedAt !== null && after.startedAt?.getTime() === before.startedAt.getTime()
-    && (after.expiresAt === null || after.expiresAt.getTime() > now);
+    && before.expiresAt !== null && before.expiresAt.getTime() > now
+    && after.expiresAt?.getTime() === before.expiresAt.getTime();
 }
 
 /** Inventory persisted work after the task-drain admission hold lands.
  * Only a caller holding the exact idle owner may receive an empty report.
  */
+export interface IdleSleepSafetyOptions {
+  incomingWake?: VerifiedIdleCapabilities;
+  deadlineCapability?: VerifiedIdleCapabilities;
+  collectDiagnostics?: true;
+  prepareLocalWork?: (input: { canPrepare: () => boolean }) => Promise<IdleLocalWork>;
+  deadlineOwners?: IdleDeadlineOwners;
+}
+
 export async function readIdleSleepSafety(
   db: Db,
   getDrainStatus: () => IdleSleepDrainStatus,
   now: () => number = Date.now,
   ownerId?: string,
-  inspectLocalWork: () => Promise<IdleLocalWork> = readIdleLocalWork,
+  inspectLocalWork: (diagnostic?: IdleSleepDiagnosticSink) => Promise<IdleLocalWork> =
+    diagnostic => readIdleLocalWork({ diagnostic, deadlineCapability: options.deadlineCapability }),
   inspectPlugins?: InspectIdlePlugins,
   prepareBackup?: () => Promise<boolean>,
   scheduledRoutines = false,
   scheduledIssueMonitors = false,
+  options: IdleSleepSafetyOptions = {},
 ): Promise<IdleSleepSafety> {
-  const unknown: IdleSleepSafety = { version: 1, backgroundWork: "unknown" };
+  let incomingProof: IdleIncomingWakeProof | undefined;
+  let deadlineProof: IdleDeadlineProof | undefined;
+  const deadlines = options.deadlineCapability?.deadlineCatalog === "domain_deadlines_v1";
+  const diagnostic = options.collectDiagnostics ? createIdleSleepDiagnostics() : undefined;
+  const report = (backgroundWork: IdleLocalWork, scheduledWake?: ScheduledWake): IdleSleepSafety => {
+    const diagnostics = diagnostic?.report();
+    if (backgroundWork === "none" && diagnostics?.checks.some(check =>
+      check.state === "unknown" || check.state === "not_checked")) backgroundWork = "unknown";
+    if (backgroundWork === "none" && deadlines && (!deadlineProof || deadlineProof.blocked || !deadlineProof.generation)) backgroundWork = "unknown";
+    const wake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
+    return { version: backgroundWork === "none" && (incomingProof || deadlineProof) ? 3 : backgroundWork === "none" && wake ? 2 : 1, backgroundWork,
+      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}),
+        ...(incomingProof.mcp ? { mcpWakeAdmission: incomingProof.mcp.ingress.admission } : {}) } : {}),
+      ...(backgroundWork === "none" && deadlineProof?.generation ? { deadlineProof: {
+        catalog: "domain_deadlines_v1" as const, generation: deadlineProof.generation } } : {}),
+      ...(backgroundWork === "none" && wake ? { scheduledWake: wake } : {}),
+      ...(diagnostics ? { diagnostics } : {}) };
+  };
   const before = getDrainStatus();
-  const localBefore = idleWorkSnapshot();
-  if (!sameQuietHold(before, before, now())) return unknown;
+  let localBefore = idleWorkSnapshot();
+  const owned = () => Boolean(ownerId && ownerId === before.ownerId && before.expiresAt !== null);
+  if (!sameQuietHold(before, before, now()) || (diagnostic && !owned())) {
+    diagnostic?.record("inspection.hold", "unknown");
+    diagnostic?.record("durable.snapshot", "not_checked");
+    return report("unknown");
+  }
+  diagnostic?.record("inspection.hold", "none");
+  let failureReason = "local.inspection";
   try {
-    // Reject known local blockers before querying (and potentially waking)
-    // the tenant database. Keep the final inspection below as a second fence.
-    const localFirst = await inspectLocalWork();
-    if (localFirst !== "none") return { version: 1, backgroundWork: localFirst };
-    let quietPlugins: string[] = [];
-    if (inspectPlugins) {
-      if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
-      const pluginWork = await inspectPlugins({ ownerId, expiresAt: before.expiresAt.getTime() });
-      if (pluginWork.backgroundWork !== "none") return { version: 1, backgroundWork: pluginWork.backgroundWork };
-      quietPlugins = pluginWork.pluginIds;
+    if (options.prepareLocalWork && !diagnostic) {
+      if (!owned() || localBefore.active !== 0) return report("unknown");
+      const finish = beginIdleTrackedWork();
+      const preparation = idleWorkSnapshot();
+      const canPrepare = () => {
+        const current = getDrainStatus();
+        const work = idleWorkSnapshot();
+        return sameQuietHold(before, current, now())
+          && work.active === 1 && work.generation === preparation.generation;
+      };
+      let prepared: IdleLocalWork;
+      let current: boolean;
+      try {
+        if (!canPrepare()) return report("unknown");
+        prepared = await options.prepareLocalWork({ canPrepare });
+        current = canPrepare();
+      } finally { finish(); }
+      if (!current) return report("unknown");
+      if (prepared !== "none") return report(prepared);
+      localBefore = idleWorkSnapshot();
     }
+    const localFirst = await inspectLocalWork(diagnostic?.record);
+    diagnostic?.record("local.inspection", localFirst);
+    if (localFirst !== "none" && !diagnostic) return report(localFirst);
+    let quietPlugins: string[] = [];
+    let quietPluginGeneration: string | undefined;
+    let quietPluginCatalog: IdlePluginCatalogEntry[] | undefined;
+    let pluginState: IdleLocalWork = "none";
+    if (inspectPlugins) {
+      const currentLocal = diagnostic ? idleWorkSnapshot() : localBefore;
+      if (!owned() || currentLocal.active !== 0 || (diagnostic &&
+        (!sameQuietHold(before, getDrainStatus(), now()) || currentLocal.generation !== localBefore.generation))) {
+        if (!diagnostic) return report("unknown");
+        diagnostic.record("plugins.runtime_drain", "not_checked");
+        pluginState = "unknown";
+      } else {
+        failureReason = "plugins.runtime_drain";
+        const pluginWork = await inspectPlugins({ ownerId: ownerId!, expiresAt: before.expiresAt!.getTime() });
+        pluginState = pluginWork.backgroundWork;
+        diagnostic?.record("plugins.runtime_drain", pluginState);
+        if (pluginState !== "none" && !diagnostic) return report(pluginState);
+        if (pluginState === "none") {
+          quietPlugins = pluginWork.pluginIds;
+          quietPluginGeneration = pluginWork.catalogGeneration;
+          quietPluginCatalog = pluginWork.catalog;
+        }
+      }
+    }
+    if (diagnostic && !sameQuietHold(before, getDrainStatus(), now())) {
+      diagnostic.record("inspection.hold", "unknown");
+      diagnostic.record("durable.snapshot", "not_checked");
+      return report("unknown");
+    }
+    failureReason = "durable.snapshot";
     let scheduledWake: ScheduledWake | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
-      const checks = WORK_CHECKS.filter(query =>
-        (!scheduledRoutines || query !== `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`)
-        && (!scheduledIssueMonitors || query !== `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`))
-        .map((query) => sql`EXISTS (${sql.raw(query)})`);
-      checks.push(sql`EXISTS (SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
-        WHERE ${companyHoldMismatch()})`);
-      checks.push(sql`EXISTS (SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()})`);
+      if (options.incomingWake?.incomingWake) {
+        if (!ownerId || ownerId !== before.ownerId) return undefined;
+        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
+      }
+      if (deadlines) {
+        if (!owned() || !scheduledRoutines || !scheduledIssueMonitors) return undefined;
+        const inspectionBudget = createIdleDeadlineInspectionBudget(now(), before.expiresAt!.getTime());
+        const reader = {
+          select: (...args: unknown[]) => { inspectionBudget.beforeQuery(); return Reflect.apply(tx.select, tx, args); },
+          execute: (...args: unknown[]) => { inspectionBudget.beforeQuery(); return Reflect.apply(tx.execute, tx, args); },
+        } as Pick<Db, "select" | "execute">;
+        const owners = await readIdleDeadlineOwners(reader, now(), options.deadlineOwners, inspectionBudget.check);
+        const issueWaits = Object.values(owners).flatMap(owner => owner.snapshot.blocked ? [] : [...(owner.issueWaits ?? [])]);
+        const routine = await readIdleRoutineSchedule(reader, ownerId!, now());
+        const issue = await readIdleIssueSchedule(reader, ownerId!, now(), issueWaits);
+        diagnostic?.record("routines.schedule", routine.inspectionComplete === false ? "unknown" : routine.blocked ? "present" : "none");
+        diagnostic?.record("issues.schedule", issue.inspectionComplete === false ? "unknown" : issue.blocked ? "present" : "none");
+        diagnostic?.expect(["deadlines.catalog"]);
+        failureReason = "deadlines.catalog";
+        if (routine.blocked || issue.blocked) deadlineProof = { blocked: true };
+        else {
+          scheduledWake = combineIdleSchedules(routine.scheduledWake, issue.scheduledWake, issue.generation);
+          deadlineProof = await readIdleDeadlineProof(tx, { ownerId: ownerId!, expiresAt: before.expiresAt!.getTime() }, {
+            now: now(), verifiedCapability: options.deadlineCapability,
+            quietPluginIds: quietPlugins, quietPluginGeneration, quietPluginCatalog,
+            scheduledWake, passiveGeneration: issue.generation, owners, inspectionBudget, mcp: incomingProof?.mcp?.schedule,
+          });
+        }
+        diagnostic?.record("deadlines.catalog", deadlineProof.blocked ? "present" : "none");
+        if (deadlineProof.blocked && !diagnostic) return true;
+      }
+      failureReason = "durable.snapshot";
+      const checks = WORK_CHECKS.filter(check =>
+        (!scheduledRoutines || check.reason !== "routines")
+        && (!scheduledIssueMonitors || check.reason !== "issues"))
+        .map(check => {
+          const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
+          const mcp = incomingProof?.mcp;
+          const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
+            ? idleMcpWorkQuery(check.reason, { ingress: mcp.ingress, subscriptions: mcp.subscriptions, retries: mcp.retries }) : undefined;
+          return { ...check, query: mcpRetryQuery ?? incomingWakeWorkQuery(check.reason, incomingProof,
+            deadlineProof?.githubContinuity?.connectionIds) ?? deadlineOwnerWorkReplacement(deadlineProof, check.reason) ?? (replacement ? sql.raw(replacement) : check.query) };
+        });
+      checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
+        WHERE ${companyHoldMismatch()}`));
+      checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
+      checks.push(workCheck("native_response_presentation", nativeResponsePresentationPendingQuery()));
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.
-      checks.push(quietPlugins.length === 0
-        ? sql`EXISTS (SELECT 1 FROM plugins WHERE status <> 'disabled')`
-        : sql`EXISTS (SELECT 1 FROM plugins WHERE status <> 'disabled' AND id NOT IN (${sql.join(quietPlugins.map((id) => sql`${id}::uuid`), sql`, `)}))`);
-      const rows = await tx.execute<{ blocked: boolean }>(sql`SELECT ${sql.join(checks, sql` OR `)} AS blocked`);
-      if (rows.length !== 1 || typeof rows[0]?.blocked !== "boolean") return undefined;
-      if (rows[0].blocked) return true;
-      if (scheduledRoutines) {
-        if (!ownerId || ownerId !== before.ownerId) return undefined;
-        const schedule = await readIdleRoutineSchedule(tx, ownerId, now());
-        if (schedule.blocked) return true;
+      checks.push(workCheck("plugins", quietPlugins.length === 0
+        ? sql`SELECT 1 FROM plugins WHERE status <> 'disabled'`
+        : sql`SELECT 1 FROM plugins WHERE status <> 'disabled' AND id NOT IN (${sql.join(quietPlugins.map((id) => sql`${id}::uuid`), sql`, `)})`));
+      let found: boolean;
+      if (diagnostic) {
+        diagnostic.expect(checks.map(check => check.reason));
+        const rows = await tx.execute<Record<string, boolean>>(sql`SELECT ${sql.join(checks.map(check =>
+          sql`EXISTS (${check.query}) AS ${sql.identifier(check.reason)}`), sql`, `)}`);
+        if (rows.length !== 1 || Object.keys(rows[0] ?? {}).length !== checks.length
+          || checks.some(check => !Object.hasOwn(rows[0]!, check.reason) || typeof rows[0]![check.reason] !== "boolean")) return undefined;
+        for (const check of checks) diagnostic.record(check.reason, rows[0]![check.reason] ? "present" : "none");
+        diagnostic.record("durable.snapshot", "none");
+        found = checks.some(check => rows[0]![check.reason]);
+      } else {
+        const rows = await tx.execute<{ blocked: boolean }>(sql`SELECT ${sql.join(checks.map(check => sql`EXISTS (${check.query})`), sql` OR `)} AS blocked`);
+        if (rows.length !== 1 || typeof rows[0]?.blocked !== "boolean") return undefined;
+        found = rows[0].blocked;
+      }
+      found ||= deadlineProof?.blocked ?? false;
+      if (found && !diagnostic) return true;
+      if (scheduledRoutines && !deadlines) {
+        if (!owned()) return undefined;
+        const schedule = await readIdleRoutineSchedule(tx, ownerId!, now());
+        diagnostic?.record("routines.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
+        if (schedule.blocked && !diagnostic) return true;
+        found ||= schedule.blocked && schedule.inspectionComplete !== false;
         scheduledWake = schedule.scheduledWake;
       }
-      if (scheduledIssueMonitors) {
-        if (!scheduledRoutines || !ownerId || ownerId !== before.ownerId) return undefined;
-        const schedule = await readIdleIssueSchedule(tx, ownerId, now());
-        if (schedule.blocked) return true;
+      if (scheduledIssueMonitors && !deadlines) {
+        if (!scheduledRoutines || !owned()) return undefined;
+        const schedule = await readIdleIssueSchedule(tx, ownerId!, now());
+        diagnostic?.record("issues.schedule", schedule.inspectionComplete === false ? "unknown" : schedule.blocked ? "present" : "none");
+        if (schedule.blocked && !diagnostic) return true;
+        found ||= schedule.blocked && schedule.inspectionComplete !== false;
         scheduledWake = combineIdleSchedules(scheduledWake, schedule.scheduledWake, schedule.generation);
       }
-      return false;
+      return found;
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
-    if (blocked === undefined || !sameQuietHold(before, getDrainStatus(), now())) return unknown;
-    if (blocked) return { version: 1, backgroundWork: "present" };
-    if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
+    if (blocked === undefined) {
+      diagnostic?.record("durable.snapshot", "unknown");
+      return report("unknown");
+    }
+    if (Object.values(deadlineProof?.owners ?? {}).some(owner => !owner.current())) return report("unknown");
+    if (!sameQuietHold(before, getDrainStatus(), now())) {
+      diagnostic?.record("inspection.hold", "unknown");
+      return report("unknown");
+    }
+    if (blocked && !diagnostic) return report("present");
+    if (!owned() || (!diagnostic && localBefore.active !== 0)) return report("unknown");
     let expectedGeneration = localBefore.generation;
     if (prepareBackup) {
-      if (!sameQuietHold(before, getDrainStatus(), now()) ||
-          idleWorkSnapshot().generation !== expectedGeneration || idleWorkSnapshot().active !== 0) return unknown;
-      // The runner owns exactly one tracked-work receipt through dump,
-      // archive verification and fsync. Its start/finish are the only work
-      // allowed during this scan. Any concurrent work invalidates the dump.
-      if (!(await prepareBackup())) return unknown;
-      expectedGeneration += 2;
+      if (diagnostic) {
+        diagnostic.record("backup.checkpoint", "not_checked");
+      } else {
+        if (!sameQuietHold(before, getDrainStatus(), now()) ||
+            idleWorkSnapshot().generation !== expectedGeneration || idleWorkSnapshot().active !== 0) return report("unknown");
+        // The runner owns exactly one tracked-work receipt through dump,
+        // archive verification and fsync. Its start/finish are the only work
+        // allowed during this scan. Any concurrent work invalidates the dump.
+        if (!(await prepareBackup())) return report("unknown");
+        expectedGeneration += 2;
+      }
     }
-    const local = await inspectLocalWork();
+    failureReason = "local.inspection";
+    const local = await inspectLocalWork(diagnostic?.record);
+    diagnostic?.record("local.inspection", local);
+    if (Object.values(deadlineProof?.owners ?? {}).some(owner => !owner.current())) return report("unknown");
     const after = getDrainStatus();
     const localAfter = idleWorkSnapshot();
     if (!sameQuietHold(before, after, now()) || localAfter.active !== 0 ||
-        expectedGeneration !== localAfter.generation) return unknown;
-    if (local === "none" && scheduledWake) {
-      if (Date.parse(scheduledWake.nextWakeAt) <= now()) return { version: 1, backgroundWork: "present" };
-      return { version: 2, backgroundWork: "none", scheduledWake };
+        expectedGeneration !== localAfter.generation) {
+      diagnostic?.record("inspection.generation", "unknown");
+      return report("unknown");
     }
-    return { version: 1, backgroundWork: local };
-
+    diagnostic?.record("inspection.generation", "none");
+    if (diagnostic && (localFirst === "unknown" || local === "unknown" || pluginState === "unknown")) return report("unknown");
+    if (diagnostic && (blocked || localFirst === "present" || pluginState === "present")) return report("present");
+    const finalWake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
+    if (local === "none" && finalWake && Date.parse(finalWake.nextWakeAt) <= now()) {
+      diagnostic?.record("inspection.hold", "unknown");
+      return report("present");
+    }
+    // Legacy alarm kinds cannot be silently combined with a new ingress proof.
+    // The negotiated deadline catalog supplies the composed v3 alarm separately.
+    if (incomingProof && scheduledWake && !deadlineProof) return report("unknown");
+    return report(local, scheduledWake);
   } catch {
     // Missing migrations, unknown state, malformed configuration, timeouts and
     // database failures never authorize stopping the application. Do not leak
     // SQL, configuration or tenant data through this control response.
-    return unknown;
+    diagnostic?.record(failureReason, "unknown");
+    return report("unknown");
   }
 }

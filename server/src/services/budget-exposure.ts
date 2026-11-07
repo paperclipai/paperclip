@@ -17,6 +17,9 @@ export type SpendPolicy = Pick<typeof budgetPolicies.$inferSelect, "companyId" |
 export type ObservedSpend = BudgetExposure & {
   windowStart: Date; windowEnd: Date; total: number; totalExact: string;
   pendingRunCount: number; recoveringRunCount: number;
+  /** Pending runs that hold admission: they ended without succeeding, so
+   * their provider may not have stopped, and no coordinator is recovering them. */
+  waitingRunCount: number;
 };
 
 export function budgetWindow(kind: string, now = new Date()) {
@@ -70,7 +73,7 @@ const liveCost = sql`case when ${heartbeatRuns.costAccountedAt} is null and ${he
 
 /** Batched ledger, held-operation and unfinished-run aggregates. Never scans
  * agents or receipt history; each policy retains its own scope and window. */
-async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): Promise<ObservedSpend[]> {
+async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, excludeRunId?: string | null): Promise<ObservedSpend[]> {
   const windows = policies.map(policy => budgetWindow(policy.windowKind, now));
   const billable = policies.map((policy, index) => ({ policy, index })).filter(({ policy }) => policy.metric === "billed_cents");
   const ledgerColumns: Record<string, SQL> = {}, heldColumns: Record<string, SQL> = {}, runColumns: Record<string, SQL> = {}, browserColumns: Record<string, SQL> = {};
@@ -113,22 +116,72 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const inWindow = policy.windowKind === "calendar_month_utc"
       ? sql`coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) >= ${start.toISOString()}::timestamptz
         and coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) < ${end.toISOString()}::timestamptz` : sql`true`;
-    const run = and(eq(heartbeatRuns.companyId, policy.companyId), eq(heartbeatRuns.costAccountingPending, true),
+    const lateReceiptDebt = sql`coalesce(${usage}->>'accountingLateReceiptPending', 'false') = 'true'`;
+    const run = and(eq(heartbeatRuns.companyId, policy.companyId), or(eq(heartbeatRuns.costAccountingPending, true), lateReceiptDebt),
       policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
       policy.scopeType === "project" ? sql`${usage}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined)!;
-    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), inWindow)!;
+    // A task never waits on its own unfinished accounting: the run being
+    // admitted and earlier runs of the same task (its recovery generation) are
+    // what its continuation and finalization settle. They still count as spend.
+    // coalesce keeps this a definite boolean when the admitted run has no task.
+    const ownTask = excludeRunId ? sql`coalesce(${heartbeatRuns.id} = ${excludeRunId}::uuid or (${heartbeatRuns.nativeIssueId} is not null
+      and ${heartbeatRuns.nativeIssueId} = (select admitted_run.native_issue_id from ${heartbeatRuns} admitted_run
+        where admitted_run.id = ${excludeRunId}::uuid and admitted_run.company_id = ${heartbeatRuns.companyId})), false)` : sql`false`;
+    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), or(inWindow, lateReceiptDebt),
+      sql`not ${ownTask}`)!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
     // qualifiers from a single-table selection's direct column chunks.
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
       where ${budgetReservations.companyId} = ${heartbeatRuns.companyId}
         and ${budgetReservations.runId} = ${heartbeatRuns.id} and ${budgetReservations.state} = 'held')`;
-    const recovering = sql`exists (select 1 from ${nativeRunFinalizations}
+    // A terminal failure whose final receipt never closed is still recovering
+    // accounting: once its provider stop is verified, accounting settles the
+    // known part as unpriced. That window holds new work; it is not a hard stop.
+    const closingReceipt = sql`${usage}->>'accountingReceiptReady' = 'false'
+      and ${usage}->>'accountingCaptureFailed' is distinct from 'true'`;
+    const recovering = sql`not (${lateReceiptDebt}) and exists (select 1 from ${nativeRunFinalizations}
       where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
         and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
-        and ${nativeRunFinalizations.resultId} is null and ${nativeRunFinalizations.phase} <> 'terminal_failure')`;
+        and ${nativeRunFinalizations.resultId} is null
+        and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt})))`;
     ledgerPredicates.push(ledger); heldPredicates.push(held); runPredicates.push(run);
     ledgerColumns[`total${index}`] = sql`coalesce(sum(${costEvents.costCents}) filter (where ${ledger}), 0)::text`;
-    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`;
+    // "Usage with no reliable price" means observed usage that could not be
+    // priced. These unpriced charges are not that, so they never trip the
+    // blocking policy (they stay visible in Costs):
+    // - a receipt lost with its stopped provider (restart-derived, any usage);
+    // - a charge that carries a known partial cost;
+    // - metered API or subscription billing with no observed tokens.
+    // Unknown billing with no tokens (for example Cursor Cloud) still counts.
+    // The lost-receipt exemption covers only that run's settled final charge;
+    // later growth from a complete receipt is ordinary usage.
+    // A final charge settled only because closure evidence never arrived is
+    // genuinely unknown spend (its provider may still have run), so none of
+    // these exemptions apply to it, unless a control-plane restart caused it.
+    // A restart-derived receipt never trips the blocking policy, whatever its
+    // token count: the run replaced its receipt source, recovered from the
+    // restart, or lost a provider turn on restore. Its activity entry and
+    // provenance remain the board's notice.
+    const finalCharge = sql`${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'`;
+    const restartDerived = (alias: string) => sql.raw(`(${alias}.usage_json ? 'accountingReceiptSourceFences'
+        or coalesce(${alias}.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%'
+        or exists (select 1 from heartbeat_run_events restart_event where restart_event.run_id = ${alias}.id
+          and restart_event.company_id = ${alias}.company_id and restart_event.event_type = 'native.recovery.transition'
+          and restart_event.payload->>'trigger' is distinct from 'same_run_retry'))`);
+    const closureTimedOutCharge = sql`(${finalCharge}
+      and exists (select 1 from ${heartbeatRuns} timed_out_run where timed_out_run.id = ${costEvents.heartbeatRunId}
+        and timed_out_run.company_id = ${costEvents.companyId}
+        and timed_out_run.usage_json->>'accountingClosureTimedOut' = 'true' and not ${restartDerived("timed_out_run")}))`;
+    const exemptFromUnpricedBlock = sql`(not ${closureTimedOutCharge} and ((${finalCharge}
+        and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
+          and lost_receipt_run.company_id = ${costEvents.companyId}
+          and (lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'
+            or coalesce(lost_receipt_run.usage_json->'pricingProvenance'->>'evidence', '') like '%lost on restore%')))
+      or ${costEvents.costCents} > 0
+      or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
+        and ${costEvents.outputTokens} = 0)))`;
+    ledgerColumns[`unpriced${index}`] = sql`count(*) filter (where ${ledger} and ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included'
+      and not ${exemptFromUnpricedBlock})::int`;
     runColumns[`live${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and ${inWindow}), 0)::text`;
     runColumns[`unreserved${index}`] = sql`coalesce(sum(${liveCost}) filter (where ${run} and not ${hasReservation}), 0)::text`;
     // Reservations carry over UTC windows. A reservation and its running
@@ -136,16 +189,38 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     heldColumns[`held${index}`] = sql`coalesce(sum(greatest(${budgetReservations.amountCents}, ${liveCost})) filter (where ${held}), 0)::text`;
     runColumns[`pending${index}`] = sql`count(*) filter (where ${terminal})::int`;
     runColumns[`recovering${index}`] = sql`count(*) filter (where ${terminal} and ${heartbeatRuns.runtimeMode} = 'native' and ${recovering})::int`;
+    // A succeeded run whose provider reported observed usage has only its
+    // final usage report outstanding. Like a running run, that observed cost
+    // counts toward spend and reservation capacity, and its settled charge can
+    // still reach the hard stop, but it does not hold the whole scope's new
+    // work. A succeeded run with no observed cost (for example an unproven
+    // Cursor Cloud terminal) still holds new work.
+    const boundedSucceeded = sql`${heartbeatRuns.status} = 'succeeded' and ${usage}->'budgetExposure'->>'costCents' is not null`;
+    runColumns[`waiting${index}`] = sql`count(*) filter (where ${terminal} and not (${boundedSucceeded})
+      and not (${heartbeatRuns.runtimeMode} = 'native' and ${recovering}))::int`;
   }
-  const [ledger = {}] = billable.length ? await db.select(ledgerColumns).from(costEvents).where(or(...ledgerPredicates)) : [];
-  const [held = {}] = billable.length ? await db.select(heldColumns).from(budgetReservations)
-    .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
-    .where(or(...heldPredicates)) : [];
-  const [runs = {}] = billable.length ? await db.select(runColumns).from(heartbeatRuns).where(or(...runPredicates)) : [];
-  const [browser = {}] = billable.length ? await db.select(browserColumns).from(browserUseRuns)
-    .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseRuns.companyId)))
-    .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
-    .where(or(...browserPredicates)) : [];
+  // A single statement preserves hold-to-ledger atomicity even when a caller
+  // owns an otherwise READ COMMITTED transaction. Alias dynamic columns before
+  // JSON projection so the driver does not collapse repeated aggregate names.
+  const columns = (values: Record<string, SQL>) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.as(key)]));
+  let ledger: Record<string, string> = {}, held: Record<string, string> = {}, runs: Record<string, string> = {}, browser: Record<string, string> = {};
+  if (billable.length) {
+    const ledgerQuery = db.select(columns(ledgerColumns)).from(costEvents).where(or(...ledgerPredicates));
+    const heldQuery = db.select(columns(heldColumns)).from(budgetReservations)
+      .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, budgetReservations.runId), eq(heartbeatRuns.companyId, budgetReservations.companyId)))
+      .where(or(...heldPredicates));
+    const runsQuery = db.select(columns(runColumns)).from(heartbeatRuns).where(or(...runPredicates));
+    const browserQuery = db.select(columns(browserColumns)).from(browserUseRuns)
+      .innerJoin(browserUseSessions, and(eq(browserUseSessions.id, browserUseRuns.sessionId), eq(browserUseSessions.companyId, browserUseSessions.companyId)))
+      .leftJoin(issues, and(eq(issues.id, browserUseSessions.issueId), eq(issues.companyId, browserUseSessions.companyId)))
+      .where(or(...browserPredicates));
+    const [row] = await db.execute<{ ledger: Record<string, string>; held: Record<string, string>; runs: Record<string, string>; browser: Record<string, string> }>(sql`
+      select row_to_json(ledger) as ledger, row_to_json(held) as held,
+        row_to_json(runs) as runs, row_to_json(browser) as browser
+      from (${ledgerQuery}) ledger cross join (${heldQuery}) held
+        cross join (${runsQuery}) runs cross join (${browserQuery}) browser`);
+    ({ ledger, held, runs, browser } = row);
+  }
   return policies.map((_, index) => {
     const ledgerCents = normalizeCents(String(ledger[`total${index}`] ?? 0));
     const liveObservedCents = normalizeCents(String(runs[`live${index}`] ?? 0));
@@ -154,14 +229,23 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     return { windowStart: windows[index].start, windowEnd: windows[index].end,
       ledgerCents, liveObservedCents, effectiveHeldCents: addCents(String(held[`held${index}`] ?? 0), String(runs[`unreserved${index}`] ?? 0), String(browser[`held${index}`] ?? 0)),
       total: Number(totalExact), totalExact, pendingRunCount, pendingTerminalRunCount: pendingRunCount,
-      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0) };
+      unpricedEventCount: Number(ledger[`unpriced${index}`] ?? 0), unknownBrowserRunCount: Number(browser[`unknown${index}`] ?? 0), recoveringRunCount: Number(runs[`recovering${index}`] ?? 0),
+      waitingRunCount: Number(runs[`waiting${index}`] ?? 0) };
   });
 }
 
-export async function computeObservedSpend(db: Db, policy: SpendPolicy) {
-  return (await computeObservedSpends(db, [policy]))[0];
+export async function computeObservedSpend(db: Db, policy: SpendPolicy, now = new Date()) {
+  return (await computeObservedSpends(db, [policy], now))[0];
 }
 
-export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date()): Promise<ObservedSpend[]> {
-  return withBudgetSpan("budget.exposure.evaluate", () => readObservedSpends(db, policies, now), { "budget.policy_count": policies.length });
+export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date(), excludeRunId?: string | null): Promise<ObservedSpend[]> {
+  return withBudgetSpan("budget.exposure.evaluate", async () => {
+    // Each policy contributes several aggregate columns. Bound statement width
+    // below PostgreSQL's target-list limit. Multi-scope evaluators/reports own
+    // a repeatable-read transaction; individual admission batches fit one SQL.
+    const result: ObservedSpend[] = [];
+    for (let offset = 0; offset < policies.length; offset += 128)
+      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now, excludeRunId));
+    return result;
+  }, { "budget.policy_count": policies.length });
 }

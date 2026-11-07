@@ -220,7 +220,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     // the HTTP evidence, but never describe that write as definitely not applied.
     const uncertain = mutation && (response.status >= 500 || response.status === 408 || (response.status >= 300 && response.status < 400));
     const uncertainty = { outcome: "unknown", guidance: "Inspect current state before retrying this mutation; it may already have succeeded." };
-    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(uncertain ? uncertainty : {}) };
+    const etag = input.responseText && response.ok ? response.headers.get("etag") : null;
+    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(uncertain ? uncertainty : {}) };
     if (response.status >= 300 && response.status < 400) return { ...base, ok: false, error: "api_redirect_not_followed" };
     let totalBytes = captured?.byteSize ?? bytes.length;
     let baseOffset = captured && response.ok ? textOffset : 0;

@@ -20,6 +20,22 @@ import {
   GITHUB_PRIVATE_KEY_PASTE_FIXTURE,
 } from "./chat-adapters-ui.shared";
 
+async function expectCompletedSlackSetupCloses(page: Page, seed: Seed) {
+  let finishRequests = 0;
+  await page.route("**/api/chat-endpoints/endpoint-slack/finish", async route => {
+    finishRequests++;
+    await route.fulfill({ status: 409, json: { error: "This connection is not waiting for a setup test" } });
+  });
+  await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&toolHref=%2Fapps%2Fconnect%3Fsource%3Dslack&resume=endpoint-slack`);
+  await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+  await page.reload();
+  await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toBeVisible();
+  expect(finishRequests).toBe(0);
+}
+
 async function findConnectorBySearch(page: Page, query: string, slug: string) {
   const search = page.getByRole("searchbox", { name: "Search connectors" });
   await expect(search).toBeVisible();
@@ -187,8 +203,10 @@ test.describe.serial("native chat adapter UI", () => {
     await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button")).toHaveCount(2);
     await page.getByRole("button", { name: "Done", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+    await expectCompletedSlackSetupCloses(page, seed);
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(1);
   });
-  test("Slack: a failed manager refresh reloads workspace authorization before retry", async ({ page }) => {
+  test("Slack: a failed manager refresh opens workspace authorization in a separate tab", async ({ page }) => {
     const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
     await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
     let refreshFailed = false;
@@ -205,12 +223,16 @@ test.describe.serial("native chat adapter UI", () => {
       authorizationRequests++;
       await route.fulfill({ json: { authorizationUrl: "https://slack.test/manager-consent", expiresAt: new Date(Date.now() + 600_000).toISOString() } });
     });
-    await page.route("https://slack.test/manager-consent", route => route.fulfill({ contentType: "text/html", body: "Slack authorization fixture" }));
+    await page.context().route("https://slack.test/manager-consent", route => route.fulfill({ contentType: "text/html", body: "Slack authorization fixture" }));
     await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
     await expect(page.getByRole("alert")).toBeVisible();
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    const authorizationOpened = page.context().waitForEvent("page");
+    await page.getByRole("button", { name: "Reconnect Slack workspace", exact: true }).click();
+    const authorizationPage = await authorizationOpened;
     await expect.poll(() => authorizationRequests).toBe(1);
-    await expect(page).toHaveURL("https://slack.test/manager-consent");
+    await expect(authorizationPage).toHaveURL("https://slack.test/manager-consent");
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/chat/connect\\?provider=slack`));
+    await authorizationPage.close();
   });
   test("Slack: every uncertain creation retry needs a fresh confirmation", async ({ page }) => {
     const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
@@ -303,7 +325,7 @@ test.describe.serial("native chat adapter UI", () => {
     const rootUrl = new URL(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`, test.info().project.use.baseURL).href;
     const callbackUrl = new URL("/api/chat-slack/oauth/callback?state=fixture-state&code=fixture-code", rootUrl).href;
     let callbackRequests = 0;
-    await page.route("**/api/chat-slack/oauth/callback?**", async route => {
+    await page.context().route("**/api/chat-slack/oauth/callback?**", async route => {
       callbackRequests += 1;
       if (callbackRequests === 1) {
         const body = oauthCallbackInterstitialHtml();
@@ -353,13 +375,20 @@ test.describe.serial("native chat adapter UI", () => {
     await page.goto(rootUrl);
     expect(mock.slackInstallations).toBe(1);
     const installation = await holdSetupRequest("install");
+    const retryWindowOpened = page.context().waitForEvent("page");
     try {
       await page.getByRole("button", { name: "Install in Slack", exact: true }).click();
       await installation.requested;
       await expectNavigationLocked();
     } finally { installation.release(); }
-    await expect(page.getByRole("heading", { name: "Fixture Slack consent" })).toBeVisible();
-    await page.getByRole("link", { name: "Approve installation" }).click();
+    const retryConsentWindow = await retryWindowOpened;
+    await expect(retryConsentWindow.getByRole("heading", { name: "Fixture Slack consent" })).toBeVisible();
+    await expect(page).toHaveURL(rootUrl);
+    await retryConsentWindow.getByRole("link", { name: "Approve installation" }).click();
+    await expect.poll(() => callbackRequests).toBe(2);
+    await expect(retryConsentWindow).toHaveURL(rootUrl);
+    await retryConsentWindow.close();
+    await page.bringToFront();
     await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open Slack app Settings" })).toBeHidden();
     await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toHaveAttribute("href", "https://app.slack.com/client/TE2E/DE2E");
@@ -379,6 +408,8 @@ test.describe.serial("native chat adapter UI", () => {
     await page.screenshot({ path: test.info().outputPath("automatic-slack-success.png"), fullPage: true });
     await page.getByRole("button", { name: "Done", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+    await expectCompletedSlackSetupCloses(page, seed);
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(2);
     const stored = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
     expect(stored).not.toContain("fixture-config-token");
   });
@@ -476,9 +507,9 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("link", { name: "Connect a channel" }),
       ).toBeVisible();
-      await expect(
-        page.getByRole("navigation", { name: "Maya navigation" }).getByRole("link", { name: "Channels", exact: true }),
-      ).toBeVisible();
+      const agentNavigation = page.getByRole("navigation", { name: "Maya navigation" });
+      await expect(agentNavigation.getByRole("link", { name: "Identity", exact: true })).toBeVisible();
+      await expect(agentNavigation.getByRole("link", { name: "Channels", exact: true })).toHaveCount(0);
       await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
       if (!enabled) {
         await expect(page.getByText("Connect AgentMail from Connectors.", { exact: true })).toBeVisible();
@@ -583,13 +614,6 @@ test.describe.serial("native chat adapter UI", () => {
       await expectSetupRail(page);
       await expectMinimumProviderSetup(page, provider);
       await fillProviderSetup(page, provider);
-
-      if (provider.provider === "github") {
-        // A completed click does not mean the async configure request reached the mock.
-        await expect.poll(() => mock.setupAttempts).toBe(2);
-        expect(mock.githubPrivateKeyMatchedFile).toBe(true);
-        expect(mock.githubPrivateKeyMatchedPaste).toBe(true);
-      }
 
       if (provider.provider === "telegram") {
         const submittedToken = "123456:e2e-redacted";
@@ -732,25 +756,19 @@ test.describe.serial("native chat adapter UI", () => {
         { id: `resource-${provider.provider}`, enabled: true },
       ]);
 
-      if (provider.provider === "github") {
+      const directMessages = page.getByRole("switch", {
+        name: "Allow direct messages",
+      });
+      await expect(directMessages).toBeVisible();
+      if (provider.provider === "discord") {
         await expect(
-          page.getByRole("heading", { name: "Private conversations" }),
-        ).toHaveCount(0);
-      } else {
-        const directMessages = page.getByRole("switch", {
-          name: "Allow direct messages",
-        });
-        await expect(directMessages).toBeVisible();
-        if (provider.provider === "discord") {
-          await expect(
-            page.getByText(
-              "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
-            ),
-          ).toBeVisible();
-        }
-        await directMessages.click();
-        await expect.poll(() => mock.allowDirectMessages).toBe(true);
+          page.getByText(
+            "People must also enable Direct Messages in their shared Discord server’s Privacy Settings.",
+          ),
+        ).toBeVisible();
       }
+      await directMessages.click();
+      await expect.poll(() => mock.allowDirectMessages).toBe(true);
       if (provider.provider === "microsoft-teams") {
         const groupChats = page.getByRole("switch", {
           name: "Allow group chats",
@@ -948,92 +966,12 @@ test.describe.serial("native chat adapter UI", () => {
       expect(new URL(page.url()).searchParams.get("reconnect")).toBe("1");
       await expect(
         page.getByRole("heading", {
-          name:
-            provider.provider === "github"
-              ? "Reconnect GitHub App"
-              : provider.provider === "slack" ? "Add Slack credentials" : provider.setupHeading,
+          name: provider.provider === "slack" ? "Add Slack credentials" : provider.setupHeading,
         }),
       ).toBeVisible();
       await expect(
         page.getByRole("button", { name: "Choose an active agent" }),
       ).toHaveCount(0);
-
-      if (provider.provider === "github") {
-        const connectButton = page.getByRole("button", {
-          name: provider.setupButton,
-        });
-        await expect(
-          page.getByText(
-            /Under the target user or organization, create a new GitHub App/,
-          ),
-        ).toHaveCount(0);
-        await expect(
-          page.getByText(
-            /Leave App ID and private key blank to reuse saved credentials/,
-          ),
-        ).toBeVisible();
-        await page.getByLabel("GitHub App ID").fill("123456");
-        await page
-          .getByLabel("Private key (PEM)")
-          .fill("reconnect-private-key");
-        await expect(connectButton).toBeEnabled();
-        await page.evaluate((buttonName) => {
-          const state = window as typeof window & {
-            __githubConnectEnabledAfterRotation?: boolean;
-          };
-          state.__githubConnectEnabledAfterRotation = false;
-          new MutationObserver(() => {
-            const button = [...document.querySelectorAll("button")].find(
-              (candidate) => candidate.textContent?.trim() === buttonName,
-            );
-            if (button instanceof HTMLButtonElement && !button.disabled) {
-              state.__githubConnectEnabledAfterRotation = true;
-            }
-          }).observe(document.body, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-          });
-        }, provider.setupButton);
-        await page
-          .getByRole("button", { name: "Regenerate webhook secret" })
-          .click();
-        await expect(connectButton).toBeDisabled();
-        await page.waitForTimeout(100);
-        expect(
-          await page.evaluate(
-            () =>
-              (
-                window as typeof window & {
-                  __githubConnectEnabledAfterRotation?: boolean;
-                }
-              ).__githubConnectEnabledAfterRotation,
-          ),
-        ).toBe(false);
-
-        await page.goBack();
-        await page.getByText("Connection health and controls", { exact: true }).click();
-        await expect(
-          page.getByRole("heading", { name: "Connection activity" }),
-        ).toBeVisible();
-        await page
-          .getByRole("button", { name: "Reconnect", exact: true })
-          .click();
-        await expect(
-          page.getByRole("heading", { name: "Reconnect GitHub App" }),
-        ).toBeVisible();
-        await page.getByLabel("GitHub App ID").fill("123456");
-        await page
-          .getByLabel("Private key (PEM)")
-          .fill("reconnect-private-key");
-        await expect(
-          page.getByRole("button", { name: provider.setupButton }),
-        ).toBeDisabled();
-        mock.setWebhookVerified();
-        await expect(
-          page.getByRole("button", { name: provider.setupButton }),
-        ).toBeEnabled();
-      }
 
       mock.setStatus("active");
       await page.goto(

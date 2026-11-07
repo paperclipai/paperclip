@@ -22,6 +22,7 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  normalizePaperclipRunnerAdapterConfig,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -46,6 +47,38 @@ import {
 } from "./server-utils.js";
 
 const execFile = promisify(execFileCallback);
+
+it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
+  const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
+});
+
+it("preserves Cursor Cloud settings without injecting Codex permission defaults", () => {
+  const config = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } } };
+  const saved = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(saved).toMatchObject({ ...config, lifecycleMode: "per_turn" });
+  expect(saved).not.toHaveProperty("codexPermissionMode");
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toEqual(saved);
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { ...config, codexPermissionMode: "never" }))
+    .toHaveProperty("codexPermissionMode", "never");
+});
+
+it.each([undefined, "", "kimi-for-coding"])("keeps Kimi draft model selection explicit: %s", model => {
+  const config = { provider: "acpx", acpxAgent: "kimi", ...(model === undefined ? {} : { model }),
+    acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
+  const normalized = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(normalized).toMatchObject(config);
+  expect(normalized.model).toBe(model);
+});
+
+it("keeps Claude draft defaults and explicit model selection", () => {
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude" }))
+    .toMatchObject({ model: "claude-opus-5-5" });
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }))
+    .toMatchObject({ model: "claude-sonnet-5" });
+});
 
 it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
   const keys = ["PAPERCLIP_AGENT_KEY_ID", "Paperclip_Agent_Public_Key", "paperclip_agent_private_key"];
@@ -684,6 +717,7 @@ describe("runChildProcess", () => {
           "if (result.exitCode !== 23) {",
           "  throw new Error(`unexpected exit code: ${result.exitCode}`);",
           "}",
+          "process.stdout.write(JSON.stringify({ exitCode: result.exitCode, timedOut: result.timedOut }));",
           "})().catch((error) => {",
           "  console.error(error);",
           "  process.exitCode = 1;",
@@ -692,12 +726,12 @@ describe("runChildProcess", () => {
         "utf8",
       );
 
-      await expect(
-        execFile(process.execPath, [tsxCli, harnessPath], {
-          cwd: process.cwd(),
-          timeout: 10_000,
-        }),
-      ).resolves.toMatchObject({ stderr: "" });
+      const completed = await execFile(process.execPath, [tsxCli, harnessPath], {
+        cwd: process.cwd(),
+        timeout: 10_000,
+      });
+      expect(JSON.parse(completed.stdout)).toEqual({ exitCode: 23, timedOut: false });
+      expect(completed.stderr).not.toMatch(/Unhandled 'error' event|write EPIPE/);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -4004,6 +4038,22 @@ describe("wake continuation comment ownership", () => {
     expect(prompt).toContain("comment-b");
     expect(prompt).toContain("comment-edited");
     expect(prompt).not.toContain("comment-a at");
+  });
+
+  it("tells a fresh retry attempt where the retained prior workspace and its edits are", () => {
+    const priorWorkspace = { sourceRunId: "run-old", path: "/work/.paperclip/worktrees/PAP-1", branchName: "PAP-1-task",
+      changedFilesKnown: true, changedFileCount: 1, changedFiles: ["NOTES.md"] };
+    const prompt = renderPaperclipWakePrompt({
+      reason: "task_retry",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), priorWorkspace },
+    });
+    expect(prompt).toContain("retained unmodified at priorWorkspace.path");
+    expect(prompt).toContain("/work/.paperclip/worktrees/PAP-1");
+    expect(prompt).toContain("NOTES.md");
   });
 
   it("does not suppress a current comment absent from the rendered resume delta", () => {

@@ -1,5 +1,5 @@
 import { agentWakeupRequests, heartbeatRuns, statusDecisions, statusDecisionEffects, type Db } from "@paperclipai/db";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
 
@@ -14,7 +14,7 @@ export async function readNativeContinuationSource(
   const sources = await db.select({ runId: source.id }).from(heartbeatRuns)
     .innerJoin(agentWakeupRequests, and(
       eq(agentWakeupRequests.companyId, binding.companyId),
-      eq(agentWakeupRequests.runId, heartbeatRuns.id),
+      or(isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.runId, heartbeatRuns.id)),
       eq(agentWakeupRequests.agentId, heartbeatRuns.agentId),
       eq(agentWakeupRequests.reason, "issue_status_changed"),
       eq(agentWakeupRequests.status, "coalesced"),

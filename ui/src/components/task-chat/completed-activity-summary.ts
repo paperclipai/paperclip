@@ -42,6 +42,7 @@ export function completedActivitySummary(items: Activity[]) {
     completed: boolean;
     order: number;
   }> = [];
+  const quietGovernance: Array<{ label: string; single: string; icon: ToolIcon; order: number }> = [];
   const notices: Array<{
     summary: string | undefined;
     severity: "info" | "warning" | "error";
@@ -80,6 +81,24 @@ export function completedActivitySummary(items: Activity[]) {
           notices.push({ summary, severity: providerNoticeSeverity(item), icon: p.icon, order });
           continue;
         }
+        if (item.surface === "provider_activity" && (item.family === "hook" || item.family === "safety")) {
+          // A hook or reviewer that stopped an action is the headline of the
+          // group; routine passes only describe a group with nothing else.
+          if (p.tone === "blocked" || p.tone === "failed") add(p.completedLabel, p.icon, -1);
+          else quietGovernance.push({ label: item.family === "hook" ? "Ran hooks" : "Auto-reviewed actions", single: p.completedLabel, icon: p.icon, order });
+          continue;
+        }
+        if (item.surface === "provider_activity" && item.family === "verification") {
+          // A failed check stays visible even when the compact label truncates.
+          if (item.status === "failed") add("Check failed", p.icon, -1);
+          else if (item.details.find((entry) => entry.label === "Status")?.value === "not_run") add("Skipped checks", p.icon, order);
+          else add("Ran checks", p.icon, order);
+          continue;
+        }
+        if (item.surface === "provider_activity" && item.eventType === "model.route.changed") {
+          add("Switched models", p.icon, order);
+          continue;
+        }
         const family =
           item.surface === "provider_activity" ? item.family : item.surface;
         const label =
@@ -97,6 +116,7 @@ export function completedActivitySummary(items: Activity[]) {
               safety: "Reviewed safety",
               terminal: "Ran commands",
               wait: "Waited",
+              verification: "Ran checks",
               workspace_change: "Worked on files",
               workspace_file: "Referenced files",
               resource: "Added resources",
@@ -134,6 +154,11 @@ export function completedActivitySummary(items: Activity[]) {
           ? "Worked on files"
           : labels[tool.family];
     add(label, tool.icon, tool.order);
+  }
+  if (!categories.size) {
+    // One quiet hook or review names itself; several share a category label.
+    if (quietGovernance.length === 1) add(quietGovernance[0]!.single, quietGovernance[0]!.icon, quietGovernance[0]!.order);
+    else for (const quiet of quietGovernance) add(quiet.label, quiet.icon, quiet.order);
   }
   if (!categories.size) {
     if (items.some((item) => item.kind === "thinking"))

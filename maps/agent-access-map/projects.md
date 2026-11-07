@@ -148,3 +148,9 @@ Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b832
 Verification: `not-run` — Verify allowed creation and reads as the actual operator/agent, then compare project and task access after adding/removing a person. Reject ordinary members’ audience changes, agent member/visibility mutations, foreign-company targets, and owner removal. After opening the project, inspect protected tasks and independent direct grants rather than inferring task publication from project discovery.
 
 Gaps: The dedicated create_project tool does not advertise a visibility field; explicit private selection uses REST or admitted call_api. Private-project creation through each client, inherited task audiences, and responsible-user combinations need separate live evidence. The map does not infer filesystem isolation from these app-record permissions.
+
+Project configuration responses also expose effective workspace storage through
+`workspaceProvider`, separate from the stored execution policy. Existing project
+read/update permissions apply. Omitted provider IDs inherit; null explicitly selects
+Core/local. [Offline API coverage](../../server/src/__tests__/project-workspace-provider.integration.test.ts)
+checks overrides and cross-company denial; live agent credential verification remains unqualified.

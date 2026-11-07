@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,7 +24,10 @@ import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -209,10 +212,12 @@ function AuditRow({
   record,
   agentMap,
   userProfileMap,
+  casesEnabled,
 }: {
   record: AuditActionRecord;
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
+  casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
@@ -225,6 +230,8 @@ function AuditRow({
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
+  const workflowTransition = casesEnabled && record.action.startsWith("case.handoff_")
+    ? record.details?.workflowTransition as CaseWorkflowTransition | null | undefined : null;
 
   return (
     <li className="px-4 py-3 text-sm">
@@ -240,6 +247,10 @@ function AuditRow({
               “{excerpt}”
             </p>
           ) : null}
+          {workflowTransition?.from && workflowTransition?.to ? <p className="text-xs text-muted-foreground">
+            {workflowTransition.from.name ?? "Case instructions"}{workflowTransition.from.phase ? ` · ${workflowTransition.from.phase}` : ""}
+            {" → "}{workflowTransition.to.name ?? "Case instructions"} · {workflowTransition.to.phase}
+          </p> : null}
           {documentKey ? (
             <p className="text-xs text-muted-foreground">
               Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
@@ -348,7 +359,6 @@ export function AuditFeed({
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId),
     queryFn: () => accessApi.listUserDirectory(companyId),
-    retry: false,
   });
 
   const agentMap = useMemo(
@@ -406,9 +416,11 @@ export function AuditFeed({
       auditApi.listAgentActions(companyId, { ...filters, limit: PAGE_SIZE, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
+    // The shared retry policy already covers this: a 403 never retries, a
+    // transient failure pauses across an outage and retries with backoff.
   });
 
+  const feedView = useQueryView(feed);
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
@@ -422,6 +434,11 @@ export function AuditFeed({
     const visible = hasBasicPage ? pages.filter((page) => page.accessTier !== "full") : pages;
     return visible.flatMap((page) => page.items);
   }, [feed.data, hasBasicPage]);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: items.some(item => Boolean(item.details?.workflowTransition)),
+  });
   // Access may be revoked between cursor requests. Treat the least-privileged
   // page as authoritative until every cached page has been fetched again.
   const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
@@ -529,7 +546,7 @@ export function AuditFeed({
     } catch (error) {
       pushToast({
         title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        body: describeError(error, { action: "export the audit log" }).body,
         tone: "error",
       });
     } finally {
@@ -557,8 +574,8 @@ export function AuditFeed({
       ) : null}
 
       {showModeToggle ? (
-        <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
+        <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
+          <TabsList className="design-view-toggle" aria-label="Activity scope">
             <TabsTrigger value="all">Activity</TabsTrigger>
             <TabsTrigger
               value="agents"
@@ -583,7 +600,7 @@ export function AuditFeed({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
+      <div data-canonical-toolbar="audit-activity" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {canUseAdvancedControls && !lockedAgentId && !lockedRunId ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
             <span>Agent</span>
@@ -723,21 +740,17 @@ export function AuditFeed({
             Refreshing audit access…
           </CardContent>
         </Card>
-      ) : feed.isLoading ? (
+      ) : feedView.kind === "loading" || feedView.kind === "reconnecting" ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
         </Card>
-      ) : feed.error ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-            <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
-            </p>
-            <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
+      ) : feedView.kind === "error" ? (
+        <QueryErrorState
+          error={feedView.error}
+          action="load the audit log"
+          onRetry={feedView.retry}
+          retrying={feedView.isFetching}
+        />
       ) : items.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
@@ -770,6 +783,7 @@ export function AuditFeed({
                 record={record}
                 agentMap={agentMap}
                 userProfileMap={userProfileMap}
+                casesEnabled={experimentalSettings?.enableCases === true}
               />
             ))}
           </ul>

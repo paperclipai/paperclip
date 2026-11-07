@@ -10,6 +10,8 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  NativeCursorCloudConfig,
+  AcpxCandidateAdmission,
   DotHarnessDriver,
   DotAssignment,
   PaperclipJsonValue,
@@ -38,6 +40,7 @@ export type {
   NativeExecutionInputV6,
   NativeExecutionInputV8,
   NativeExecutionInputV9,
+  NativeExecutionInputV10,
   MuseBindingSnapshot,
   DotBindingSnapshot,
   ExternalProviderPort,
@@ -68,6 +71,7 @@ export type {
   RunnerExecutionDriver,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
+  DurablePrpCheckpoint,
   RunnerProcessHandle,
   RunnerProcessLaunchSpec,
   StrictCompletionContractInput,
@@ -83,22 +87,39 @@ const sourceUrl = new URL(
   import.meta.url,
 );
 const runner = (await import(sourceUrl.href)) as RunnerModule;
+export const taskDocumentKeySchema = runner.taskDocumentKeySchema;
 
+export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEOUT_MS;
+export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const providerFailureFromError = runner.providerFailureFromError;
+export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
+export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
+export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
+export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
+export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;
 export const RUNNER_PRP_PROTOCOL_MAX = runner.RUNNER_PRP_PROTOCOL_MAX;
 export const runnerCodexDynamicToolsFit = runner.runnerCodexDynamicToolsFit;
 export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
+export const inspectStagedRunAttachment = runner.inspectStagedRunAttachment;
+export const inspectRetainedRunInstructions = runner.inspectRetainedRunInstructions;
+export const inspectStagedRunAttachmentHeader = runner.inspectStagedRunAttachmentHeader;
+export type StagedRunAttachment = import("@paperclipai/paperclip-runner").StagedRunAttachment;
 export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
 export const readLinuxProcessStartedAt = runner.readLinuxProcessStartedAt;
+export const NativeSessionCloseUnrecoverableError =
+  runner.NativeSessionCloseUnrecoverableError;
 export const NativeSessionCleanupQuarantinedError =
   runner.NativeSessionCleanupQuarantinedError;
 export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
+export const NativeEnvironmentProbeCleanupError = runner.NativeEnvironmentProbeCleanupError;
 export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const CAPABILITY_CANONICAL_OPERATIONS = runner.CAPABILITY_CANONICAL_OPERATIONS;
 export const HarnessRuntimeRequestResolutionError =
   runner.HarnessRuntimeRequestResolutionError;
 export const NATIVE_RUNTIME_ASSET_SCHEMA = runner.NATIVE_RUNTIME_ASSET_SCHEMA;
@@ -107,6 +128,11 @@ export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
   runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
 export const acpxRuntimeSessionDirectoryName =
   runner.acpxRuntimeSessionDirectoryName;
+export const resolveAcpxRuntimeRoot = runner.resolveAcpxRuntimeRoot;
+export const OPENCODE_ISOLATED_HOMES_DIRECTORY =
+  runner.OPENCODE_ISOLATED_HOMES_DIRECTORY;
+export const opencodeRuntimeSessionDirectoryName =
+  runner.opencodeRuntimeSessionDirectoryName;
 export const canonicalNativeRuntimeContextDigest =
   runner.canonicalNativeRuntimeContextDigest;
 export const createNativeSessionBackend = runner.createNativeSessionBackend;
@@ -120,6 +146,7 @@ export const createRunnerdCodexTransport: (
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
+export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
 export const executeNativeSession = runner.executeNativeSession;
 export const applyNativeSessionGoalControl =
   runner.applyNativeSessionGoalControl;
@@ -137,31 +164,50 @@ export const parseHarnessRuntimeRequestResolution =
 export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
 export const buildNativeModelEnvelope = runner.buildNativeModelEnvelope;
 export const isProviderMode = runner.isProviderMode;
+export const codexUsageBaselineForNextRun = runner.codexUsageBaselineForNextRun;
 export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const runnerProviderLaunchRequirements = runner.runnerProviderLaunchRequirements;
+export const createRunnerProviderLaunch = runner.createRunnerProviderLaunch;
+export const parseAcpxCandidateAdmission = runner.parseAcpxCandidateAdmission;
 export const resolveClaudeEffort = runner.resolveClaudeEffort;
+export const resolveGrokEffort = runner.resolveGrokEffort;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
+export const KIMI_DISTRIBUTION_CLOSURE_SHA256 = runner.KIMI_DISTRIBUTION_CLOSURE_SHA256;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const resolveCodexCommand = runner.resolveCodexCommand;
 export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
 export const validatePrpEvent = runner.validatePrpEvent;
+export const parseProviderPerformanceSpans = runner.parseProviderPerformanceSpans;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
 
 export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;
+export const NativeProviderStateIncompatibleError = runner.NativeProviderStateIncompatibleError;
+export const NativeProviderSideEffectPendingError = runner.NativeProviderSideEffectPendingError;
+export const NativeRunnerSourceReconciliationRequiredError = runner.NativeRunnerSourceReconciliationRequiredError;
 export const nativeRestartInterruptedTurnId = runner.nativeRestartInterruptedTurnId;
 
 export const completeTerminatedRemoteNativeSessionCleanup = runner.completeTerminatedRemoteNativeSessionCleanup;
 export const completeTerminatedLocalNativeSessionCleanup = runner.completeTerminatedLocalNativeSessionCleanup;
+export const nativeSessionCleanupBlock = runner.nativeSessionCleanupBlock;
+export const onNativeSessionCleanupSettled = runner.onNativeSessionCleanupSettled;
+export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQuarantined;
 
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
+export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
+export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;
+export const discoverAntigravityModels = runner.discoverAntigravityModels;
+export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
+export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;
 
@@ -173,3 +219,10 @@ export const configuredEnvironmentProjection = runner.configuredEnvironmentProje
 export const configuredEnvironment = runner.configuredEnvironment;
 
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
+
+export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;
+
+export const CursorCloudClient = runner.CursorCloudClient;
+export const parseNativeCursorCloudConfig = runner.parseNativeCursorCloudConfig;
+
+export const archiveCursorCloudSessionCheckpoint = runner.archiveCursorCloudSessionCheckpoint;

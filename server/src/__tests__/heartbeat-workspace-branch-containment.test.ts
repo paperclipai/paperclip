@@ -1,3 +1,5 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -888,7 +890,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   const tempRoots: string[] = [];
 
   beforeAll(async () => {
-    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+    if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl, { maxConnections: 6 });
     else {
       tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
       db = createDb(tempDb.connectionString);
@@ -1173,15 +1175,15 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       },
     });
 
+    const routineEvents: string[] = [];
+    const unsubscribeRoutine = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineExecutionStatus, event => routineEvents.push(event));
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: { issueId },
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
-    });
-
+    let run;
+    try {
+      run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+    } finally { unsubscribeRoutine(); }
+    expect(routineEvents).toContain("intent"); expect(routineEvents).toContain("settled");
     expect(run).toBeNull();
     expect(adapterExecute).not.toHaveBeenCalled();
 
@@ -1258,34 +1260,6 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     tempRoots.push(repoRoot);
     const seeded = await seedBranchContainmentRun(db, repoRoot, callSite);
 
-    if (callSite === "finalize") {
-      adapterExecute.mockImplementationOnce(async (adapterInput) => {
-        const workspace = readAdapterWorkspace(adapterInput);
-        const actualBranch = `${workspace.branchName.replace(/-recorded$/, "")}-actual`;
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: workspace.executionWorkspaceId,
-            executionWorkspacePreference: "reuse_existing",
-            executionWorkspaceSettings: { mode: "isolated_workspace" },
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, seeded.sameWorkspaceSiblingId));
-        await runGit(workspace.cwd, ["checkout", "-b", actualBranch]);
-        await writeFile(path.join(workspace.cwd, "actual-branch.txt"), "actual branch work\n", "utf8");
-        await runGit(workspace.cwd, ["add", "actual-branch.txt"]);
-        await runGit(workspace.cwd, ["commit", "-m", "Add actual branch work"]);
-        return {
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-          summary: "Adapter completed after switching to an unrecorded branch.",
-          provider: "test",
-          model: "test-model",
-        };
-      });
-    }
-
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
 
@@ -1306,7 +1280,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       expectedBranch: seeded.expectedBranch,
       actualBranch: seeded.actualBranch,
     });
-    expect(adapterExecute).toHaveBeenCalledTimes(callSite === "finalize" ? 1 : 0);
+    expect(adapterExecute).toHaveBeenCalledTimes(0);
   }, 30_000);
 
   it.each([

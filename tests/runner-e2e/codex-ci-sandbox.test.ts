@@ -34,7 +34,7 @@ describe("Codex CI sandbox trust boundary", () => {
       /- name: Provision Codex sandbox on the disposable trusted runner\n\s+if: ([^\n]+)/,
     )?.[1];
     expect(condition).toMatch(
-      /^matrix\.environmentId == 'local' && \(matrix\.profileId == '[^']+'(?: \|\| matrix\.profileId == '[^']+')*\)$/,
+      /^matrix\.environmentId == 'local' && \(needs\.catalog\.outputs\.operations_cadence == 'weekly' \|\| matrix\.profileId == '[^']+'(?: \|\| matrix\.profileId == '[^']+')*\)$/,
     );
     const provisionedProfiles = new Set(
       [...condition!.matchAll(/matrix\.profileId == '([^']+)'/g)].map((match) => match[1]),
@@ -77,7 +77,7 @@ describe("Codex CI sandbox trust boundary", () => {
     const setup = workflow.indexOf(
       "- name: Provision Codex sandbox on the disposable trusted runner",
     );
-    const paid = workflow.indexOf("- name: Run paid cell");
+    const paid = workflow.indexOf("- name: Run bounded campaign and retain feedback review");
     expect(setup).toBeGreaterThan(
       workflow.indexOf(
         "- name: Reauthorize paid execution before provider access",
@@ -99,11 +99,12 @@ describe("Codex CI sandbox trust boundary", () => {
 it("prepares the artifact oracle for exactly the stories that execute downloads", async () => {
   const workflow = await readFile(path.join(root, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
   const condition = workflow.match(/- name: Prepare pinned Python artifact oracle image\n\s+if: ([^\n]+)/)?.[1];
-  expect(condition).toContain("matrix.suiteId == 'everyday-workflows'");
+  expect(condition).not.toContain("matrix.suiteId");
   const cases = new Set([...condition!.matchAll(/matrix\.caseId == '([^']+)'/g)].map((match) => match[1]));
-  for (const cell of runnerMatrix.filter((cell) => cell.suite.id === "everyday-workflows")) {
+  for (const cell of runnerMatrix) {
     expect(cases.has(cell.task.id), cell.id).toBe(requiresEverydayArtifactOracle(cell.task.id));
   }
+  expect(runnerMatrix.some((cell) => cell.id === "daytona-restart-continuity.runner-codex.daytona.recover-controller")).toBe(true);
   expect(requiresEverydayArtifactOracle("agent-review-handoff")).toBe(true);
   expect(requiresEverydayArtifactOracle("create-skill-studio")).toBe(false);
 });

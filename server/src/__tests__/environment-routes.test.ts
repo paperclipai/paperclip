@@ -2,7 +2,7 @@ import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -33,6 +33,7 @@ const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
   vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
 );
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   listCompanyIds: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
@@ -123,12 +124,17 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
 
+const mockAssertAgentsReadyForEnvironmentChange = vi.hoisted(() => vi.fn(async () => {}));
+
 vi.mock("../services/plugin-environment-driver.js", () => ({
   // The runtime reads this published constant at import time. Mirror the real
   // value so the mocked module keeps the same reusable-lease method contract.
   REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
+  assertAgentsReadyForEnvironmentChange: mockAssertAgentsReadyForEnvironmentChange,
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema: async (input: { db: unknown; driverKey: string }) =>
+    (await mockResolvePluginSandboxProviderDriverByKey(input))?.driver?.configSchema ?? null,
   startPluginEnvironmentInteractiveSetup: mockStartPluginEnvironmentInteractiveSetup,
   getPluginEnvironmentInteractiveSetup: mockGetPluginEnvironmentInteractiveSetup,
   capturePluginEnvironmentTemplate: mockCapturePluginEnvironmentTemplate,
@@ -569,6 +575,23 @@ describe("environment routes", () => {
       });
       expect(res.body.metadata).toMatchObject({ managedByPaperclip: true });
       expect(JSON.stringify(res.body)).not.toContain("config-credential-must-never-echo");
+    });
+
+    it("redacts credential-shaped keys inside arrays nested in arrays", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        config: {
+          provider: "daytona",
+          groups: [[{ name: "a", apiToken: "nested-credential-must-never-echo" }], ["plain"]],
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.config).toEqual({ provider: "daytona", groups: [[{ name: "a" }], ["plain"]] });
+      expect(JSON.stringify(res.body)).not.toContain("nested-credential-must-never-echo");
     });
 
     it("keeps blanking env vars on legacy kubernetes-marker rows", async () => {
@@ -1012,6 +1035,115 @@ describe("environment routes", () => {
       expect(res.status).toBe(422);
       expect(res.body.details).toMatchObject({ code: "environment_platform_marker_reserved" });
       expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+    });
+
+    describe("managed plugin environment rows", () => {
+      const PLUGIN_KEY = "example.remote-host-plugin";
+      const MANAGED_CONFIG_WITH_PLUGIN_ENTRY = JSON.stringify({
+        v: 1,
+        mode: "cloud",
+        catalogVersion: "2026.1106.0",
+        features: {},
+        plugins: { autoInstall: ["remote-host"] },
+        environments: [{
+          name: "Remote Host",
+          driver: "plugin",
+          pluginKey: PLUGIN_KEY,
+          driverKey: "tasks",
+          driverConfig: {},
+        }],
+      });
+      const pluginRow = () => ({
+        ...createPlatformSandboxEnvironment(),
+        id: "env-plugin-1",
+        name: "Remote Host",
+        driver: "plugin",
+        config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
+        envVars: {},
+        metadata: { managedByPaperclip: true, managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+      });
+
+      it("refuses edits, env-var edits, and deletes, including for instance admins", async () => {
+        mockEnvironmentService.getById.mockResolvedValue(pluginRow());
+        const app = createApp(ownerAdminActor);
+
+        for (const body of [{ name: "Renamed" }, { envVars: { A: "1" } }, { status: "archived" }]) {
+          const res = await request(app).patch("/api/environments/env-plugin-1").send(body);
+          expect(res.status).toBe(403);
+          expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+        }
+        const deleted = await request(app).delete("/api/environments/env-plugin-1");
+        expect(deleted.status).toBe(403);
+        expect(deleted.body.details).toMatchObject({ code: "environment_platform_managed" });
+        expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+        expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+      });
+
+      it("keeps the row behind the floor on the plugin marker alone", async () => {
+        mockEnvironmentService.getById.mockResolvedValue({
+          ...pluginRow(),
+          metadata: { managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+        });
+        const res = await request(createApp(ownerAdminActor)).patch("/api/environments/env-plugin-1").send({ name: "Renamed" });
+        expect(res.status).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      });
+
+      it("refuses a marker clear while the document declares the entry", async () => {
+        process.env.PAPERCLIP_MANAGED_CONFIG = MANAGED_CONFIG_WITH_PLUGIN_ENTRY;
+        try {
+          mockEnvironmentService.getById.mockResolvedValue(pluginRow());
+          const app = createApp(ownerAdminActor);
+
+          for (const metadata of [
+            { managedByPaperclip: false },
+            { managedPluginEnvironment: null },
+            { managedByPaperclip: null, managedPluginEnvironment: null },
+          ]) {
+            const res = await request(app).patch("/api/environments/env-plugin-1").send({ metadata });
+            expect(res.status).toBe(403);
+            expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+          }
+          expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+        } finally {
+          delete process.env.PAPERCLIP_MANAGED_CONFIG;
+        }
+      });
+
+      it("allows the marker clear once the entry left the document", async () => {
+        process.env.PAPERCLIP_MANAGED_CONFIG = JSON.stringify({
+          ...JSON.parse(MANAGED_CONFIG_WITH_PLUGIN_ENTRY),
+          environments: [],
+        });
+        try {
+          const row = pluginRow();
+          mockEnvironmentService.getById.mockResolvedValue(row);
+          mockEnvironmentService.update.mockResolvedValue({ ...row, metadata: {} });
+
+          const res = await request(createApp(ownerAdminActor))
+            .patch("/api/environments/env-plugin-1")
+            .send({ metadata: { managedByPaperclip: null, managedPluginEnvironment: null } });
+
+          expect(res.status).toBe(200);
+          expect(mockEnvironmentService.update).toHaveBeenCalled();
+        } finally {
+          delete process.env.PAPERCLIP_MANAGED_CONFIG;
+        }
+      });
+
+      it("refuses a client that stamps the plugin marker on its own row", async () => {
+        const res = await request(createApp(ownerAdminActor))
+          .post("/api/companies/company-1/environments")
+          .send({
+            name: "Fake remote host",
+            driver: "plugin",
+            config: { pluginKey: PLUGIN_KEY, driverKey: "tasks", driverConfig: {} },
+            metadata: { managedPluginEnvironment: `${PLUGIN_KEY}:tasks` },
+          });
+        expect(res.status).toBe(422);
+        expect(res.body.details).toMatchObject({ code: "environment_platform_marker_reserved" });
+        expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+      });
     });
 
     it("rejects tenant patches that stamp platform markers so the row cannot become locked", async () => {
@@ -1695,6 +1827,54 @@ describe("environment routes", () => {
       deleteBlockedReasons: ["pending_sandbox_cleanup"],
       destroyedReusableSandboxLeaseCount: 1,
     });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("runs the environment's pending sandbox cleanup now and deletes with explicit consent", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius
+      .mockResolvedValueOnce(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }))
+      .mockResolvedValueOnce(createDeleteBlastRadius());
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 1, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(200);
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledExactlyOnceWith({ environmentId: "env-1", actorId: "admin-1" });
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
+  });
+
+  it("keeps rejecting when the consented pending cleanup attempt does not finish", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledOnce();
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("does not run pending sandbox cleanup without consent or past another blocker", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    expect((await request(app).delete("/api/environments/env-1")).status).toBe(409);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      pendingCleanupLeaseCount: 1, isInstanceDefault: true,
+    }));
+    expect((await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true")).status).toBe(409);
+    expect(retryPendingEnvironmentCleanup).not.toHaveBeenCalled();
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 
@@ -2448,6 +2628,19 @@ describe("environment routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
+  });
+
+  it("refuses a config change that gives active agents an unprepared plugin", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(conflict("need setup first"));
+    const res = await request(createApp(localBoardActor()))
+      .patch(`/api/environments/${environment.id}?companyId=company-1`)
+      .send({ driver: "local", config: {} });
+    expect(res.status).toBe(409);
+    expect(mockAssertAgentsReadyForEnvironmentChange).toHaveBeenCalledWith(expect.anything(), environment,
+      expect.objectContaining({ driver: "local" }), expect.objectContaining({ environmentId: environment.id }));
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
   });
 
   it("logs a redacted update summary instead of raw config or metadata", async () => {

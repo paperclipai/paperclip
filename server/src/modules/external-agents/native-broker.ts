@@ -1,3 +1,5 @@
+import { budgetServiceInTransaction } from "../../services/budgets.js";
+import { notifyExternalAgentSettlement } from "./muse-terminal-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -29,7 +31,7 @@ interface Receipt extends Record<string,unknown> {id:string;companyId:string;ass
 interface Authority {binding:{id:string;companyId:string;agentId:string;generation:number};assignment:Pick<Assignment,"id"|"companyId"|"agentId"|"bindingId"|"bindingGeneration"|"runId"|"normalizedSessionId"|"turnId"|"revision"|"controllerGeneration"|"status"> & {expiresAt:Date;createdAt:Date;claimedAt?:Date|null}}
 interface Identity<S> {
   authorize(subject:S,assignmentId:string,settled?:boolean):Promise<Authority>;
-  enabled(provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
+  enabled(database:Pick<Db,"select">,provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
   expectedResource?():string;
   assertSubjectCredential?(tx:ExternalAdmissionTransaction,subject:S):Promise<void>;
 }
@@ -58,7 +60,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
   async function assertCurrentAuthority(database:Database,b:Binding,allowFence=false) {
     if(allowFence)return;
     const actualProvider=provider==="muse"?"muse":b.providerKind;
-    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
+    if(!actualProvider||!["openai_dot","grok_bot","muse"].includes(actualProvider)||!await identity.enabled(database,actualProvider==="muse"?undefined:actualProvider)||b.status!=="ready"||b.revokedAt)throw forbidden("External binding is unavailable for new effects.");
     const [agent]=await database.select().from(agents).where(and(eq(agents.id,b.agentId),eq(agents.companyId,b.companyId)));
     const [company]=await database.select().from(companies).where(eq(companies.id,b.companyId));
     const [user]=await database.select({id:authUsers.id}).from(authUsers).where(eq(authUsers.id,b.operatorId));
@@ -75,7 +77,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
       if(!grant||grant.companyId!==b.companyId||grant.agentId!==b.agentId||grant.userId!==b.operatorId)throw forbidden("External agent grant authority is unavailable.");
       if(actualProvider==="grok_bot")await authorizeExternalBotOperator(database as Db,b.companyId,b.operatorId);
     }
-    if((company.budgetMonthlyCents>0&&company.spentMonthlyCents>=company.budgetMonthlyCents)||(agent.budgetMonthlyCents>0&&agent.spentMonthlyCents>=agent.budgetMonthlyCents))throw forbidden("External execution budget is exhausted.");
+    if(await budgetServiceInTransaction(database as Db).getInvocationBlock(b.companyId,b.agentId))throw forbidden("External execution budget is exhausted.");
   }
   async function authorizeController(database:Database,a:Assignment,generation:number) {
     const [owner]=await database.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId,a.runId),eq(nativeRunFinalizations.companyId,a.companyId),eq(nativeRunFinalizations.controllerGeneration,generation),gt(nativeRunFinalizations.leaseExpiresAt,new Date())));
@@ -108,11 +110,19 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
       await db.execute(sql`update ${operationTable} set status=${store.pending},updated_at=now() where id=${row.id}::uuid and status=${provider==="muse"?"dispatched":"reserved"}`);
     } catch(error) {
       const rejected=error&&typeof error==="object"&&("dotOperationRejected" in error||"externalOperationRejected" in error);
-      if(rejected)await db.execute(sql`update ${operationTable} set status='rejected',outcome=${JSON.stringify({status:"rejected",message:"Runner rejected this operation; inspect the assignment and arguments before proceeding."})}::jsonb,updated_at=now() where id=${row.id}::uuid and status=${provider==="muse"?"dispatched":"reserved"}`);
+      if(rejected) {
+        const reject = (writer: Database) => writer.execute(sql`update ${operationTable} set status='rejected',outcome=${JSON.stringify({status:"rejected",message:"Runner rejected this operation; inspect the assignment and arguments before proceeding."})}::jsonb,updated_at=now() where id=${row.id}::uuid and status=${provider==="muse"?"dispatched":"reserved"}`);
+        if (provider === "muse") await db.transaction(async tx => {
+          await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
+          await reject(tx);
+        });
+        else await reject(db);
+      }
       else if(provider==="muse")await db.transaction(tx=>withExternalAdmissionGuard(tx,a.companyId,a.agentId,async()=>{
         await tx.execute(sql`select id from ${bindingTable} where id=${a.bindingId}::uuid for update`);
         // A result can commit before the command acknowledgement is lost.
         // Only an actual unresolved-send transition adds an effect barrier.
+        await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
         const changed=await tx.execute(sql`update ${operationTable} set status='unknown',updated_at=now() where id=${row.id}::uuid and status in ('dispatched','pending') returning id`);
         if(changed.length)await tx.update(externalAgentHolds).set({nativeEffectsUnknown:true,releasedAt:null,updatedAt:new Date()}).where(and(eq(externalAgentHolds.provider,provider),eq(externalAgentHolds.assignmentId,a.id)));
       }));
@@ -269,7 +279,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           const [old]=await tx.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${runId}::uuid and turn_id=${b.turnId}`);
           const projection={...p,binding:b};
           if(old&&externalOperationDigest("tool",old.projection)!==externalOperationDigest("tool",projection))throw conflict("Assignment event changed its immutable projection.");
-          if (!old && provider === "muse") await notifyDeliveryWork(tx, DELIVERY_QUEUES.museMaintenance);
+          if (!old && provider === "muse") await notifyExternalAgentSettlement(tx, { companyId: b.companyId, bindingId: b.bindingId });
           const [a]=old?[old]:await tx.execute<Assignment>(sql`insert into ${assignmentTable} (company_id,binding_id,binding_generation,run_id,agent_id,normalized_session_id,turn_id,revision,controller_generation,catalog_digest,status,projection,accept_by,expires_at) values (${b.companyId}::uuid,${b.bindingId}::uuid,${b.bindingGeneration},${runId}::uuid,${b.agentId}::uuid,${b.normalizedSessionId},${b.turnId},${b.assignmentRevision},${owner.controllerGeneration},${externalOperationDigest("tool",{tools:p.tools})},'offered',${JSON.stringify(projection)}::jsonb,${new Date(Number(p.acceptByUnixMs)).toISOString()}::timestamptz,${new Date(Number(p.expiresAtUnixMs)).toISOString()}::timestamptz) returning ${assignmentColumns}`);
           if(!a)throw conflict("Assignment creation failed.");
           if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
@@ -298,13 +308,19 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
             // the same fact must preserve later work and its original evidence.
             return;
           }
+          if (provider === "muse") await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
           if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
           await tx.execute(sql`update ${operationTable} set status=${provider==="muse"&&outcome.status==="rejected"?"rejected":store.completed},outcome=${JSON.stringify(outcome)}::jsonb,source_event_id=${event.sourceEventId},updated_at=now() where id=${op.id}::uuid`);
           const action=op.command.action;
-          await tx.execute(sql`update ${assignmentTable} set last_activity_at=now() where id=${a.id}::uuid`);
-          if(action==="renew"&&outcome.status==="renewed")await tx.execute(sql`update ${assignmentTable} set expires_at=${new Date(Number(outcome.expiresAtUnixMs)).toISOString()}::timestamptz where id=${a.id}::uuid`);
-          if(a.status!=="fenced"&&outcome.status!=="rejected"&&action==="accept")await tx.execute(sql`update ${assignmentTable} set status='accepted',${sql.raw(store.acceptedAt)}=now() where id=${a.id}::uuid`);
-          if(a.status!=="fenced"&&action==="finish"&&(provider==="muse"?outcome.status!=="rejected":outcome.status==="completed"))await tx.execute(sql`update ${assignmentTable} set status='settled',${sql.raw(provider==="muse"?"accepted_result_at":"settled_at")}=now() where id=${a.id}::uuid`);
+          // Write the assignment once. PostgreSQL re-runs foreign-key checks
+          // when a transaction updates a row version it already wrote, so a
+          // second UPDATE takes KEY SHARE on the run while this guard is held.
+          // Admission locks that run before the guard, and the two deadlock.
+          const assignmentChanges=[sql`last_activity_at=now()`];
+          if(action==="renew"&&outcome.status==="renewed")assignmentChanges.push(sql`expires_at=${new Date(Number(outcome.expiresAtUnixMs)).toISOString()}::timestamptz`);
+          if(a.status!=="fenced"&&outcome.status!=="rejected"&&action==="accept")assignmentChanges.push(sql`status='accepted',${sql.raw(store.acceptedAt)}=now()`);
+          if(a.status!=="fenced"&&action==="finish"&&(provider==="muse"?outcome.status!=="rejected":outcome.status==="completed"))assignmentChanges.push(sql`status='settled',${sql.raw(provider==="muse"?"accepted_result_at":"settled_at")}=now()`);
+          await tx.execute(sql`update ${assignmentTable} set ${sql.join(assignmentChanges,sql`,`)} where id=${a.id}::uuid`);
           if(binding?.providerKind==="grok_bot"&&a.status!=="fenced"&&action==="finish"&&outcome.status==="completed")await grokRoutineService(tx as unknown as Db).settleWorkNotifications(a.companyId,a.bindingId,a.id);
           if(provider==="muse") {
             if(action==="consume_input"&&outcome.status==="consumed") {

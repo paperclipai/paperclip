@@ -53,6 +53,8 @@ export interface InstanceExperimentalSettings {
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /** Enroll eligible native sandbox workspaces in remote, snapshot-backed storage. */
+  remoteWorkspaceStorageEnabled: boolean;
   /**
    * Move the execution workspace default for a project that carries no policy
    * of its own from the shared project checkout to an isolated per-task
@@ -84,12 +86,19 @@ export interface InstanceExperimentalSettings {
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
+  enablePaperclipNotebook: boolean;
+  /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
+  enableGoogleWorkspaceConnector: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
   enableCombinedInboxTasks: boolean;
+  /** The artifact presentation from the artifact directions lab (MVP V1) on the Artifacts page, the panel's Artifacts tab and the task thread. */
+  enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
+  /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
+  enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableExternalObjects: boolean;

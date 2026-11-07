@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, createDb, executionWorkspaceRepositoryRoots, executionWorkspaceRepositoryAccess, executionWorkspaceRepositories, executionWorkspaces,
-  heartbeatRuns, issues, projects, projectWorkspaces, projectAccessMembers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+  heartbeatRuns, issues, projects, projectWorkspaces, projectAccessMembers, companyMemberships, authUsers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
@@ -33,7 +33,7 @@ const support = await getEmbeddedPostgresTestSupport();
   let db: ReturnType<typeof createDb>;
   let root: string;
   beforeAll(async () => { ({ db, root } = await context.setup()); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); });
+  afterEach(() => { acquisition.materialize.mockReset(); vi.clearAllMocks(); vi.restoreAllMocks(); });
   afterAll(context.cleanup);
   const { fixture, lowTrustPeer, standardPeer, privateTask, localPrivateClone } = context;
 
@@ -334,14 +334,38 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(acquisition.materialize).not.toHaveBeenCalled();
   });
 
-  it.each(["sponsored", "local_board", "routine"] as const)("prepares public Git from an idle workspace for a trusted %s task and reuses verified bytes after trust downgrade", async principal => {
+  it.each([
+    { name: "missing task owner", patch: { sourceIssueId: null } },
+    { name: "configured directory source", patch: { metadata: { source: "project_primary" } } },
+    { name: "agent directory source", patch: { metadata: { source: "agent_home" } } },
+    { name: "worktree strategy", patch: { strategyType: "git_worktree" } },
+    { name: "adapter-managed mode", patch: { mode: "adapter_managed" } },
+    { name: "configured root repository", patch: { repoUrl: "https://github.com/public/anchor" } },
+  ])("keeps strict Git validation for $name", async ({ patch }) => {
+    const f = await fixture();
+    await f.request({ kind: "url", url: "https://github.com/public/example" });
+    await db.update(executionWorkspaces).set({ strategyType: "project_primary", sourceIssueId: f.issueId,
+      metadata: { source: "task_session" }, ...patch }).where(eq(executionWorkspaces.id, f.workspace.id));
+    await mkdir(path.join(f.admission.cwd, ".git", "info"), { recursive: true });
+    await writeFile(path.join(f.admission.cwd, ".git", "info", "exclude"), "/.paperclip-repositories/\n");
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow("not a git repository");
+    expect(acquisition.materialize).not.toHaveBeenCalled();
+  });
+
+  it.each(["sponsored", "sponsored_git_residue", "sponsored_shared_git_residue", "local_board", "local_board_jwt", "routine"] as const)("prepares public Git from an idle workspace for a trusted %s task and reuses verified bytes after trust downgrade", async principal => {
     const f = await fixture();
     await db.update(executionWorkspaces).set({ status: "idle" }).where(eq(executionWorkspaces.id, f.workspace.id));
-    if (principal === "local_board") await db.update(heartbeatRuns).set({ responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, f.runId));
+    const localBoard = principal === "local_board" || principal === "local_board_jwt";
+    if (localBoard) await db.update(heartbeatRuns).set({ responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, f.runId));
+    if (principal === "local_board_jwt") {
+      await db.insert(authUsers).values({ id: "local-board", name: "Local Board", email: "local-board@example.invalid",
+        emailVerified: true, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "local-board", membershipRole: "owner", status: "active" });
+    }
     const receipt = await f.service.request({ companyId: f.companyId, issueId: f.issueId,
-      actor: principal === "local_board" ? { ...f.actor, onBehalfOfUserId: null } : f.actor,
+      actor: localBoard ? { ...f.actor, onBehalfOfUserId: principal === "local_board_jwt" ? "local-board" : null } : f.actor,
       request: { repository: { kind: "url", url: "https://github.com/public/example" }, requestKey: randomUUID() } });
-    const responsibleUserId = principal === "local_board" ? "local-board" : principal === "routine" ? null : f.userId;
+    const responsibleUserId = localBoard ? "local-board" : principal === "routine" ? null : f.userId;
     await db.update(heartbeatRuns).set({ responsibleUserId }).where(eq(heartbeatRuns.id, f.runId));
     const admission = { ...f.admission, responsibleUserId };
     const source = path.join(root, `${f.issueId}-public-source`);
@@ -360,6 +384,12 @@ const support = await getEmbeddedPostgresTestSupport();
       await exec("git", ["-C", cwd, "remote", "set-url", "origin", input.repoUrl]);
       return result;
     });
+    if (principal === "sponsored_git_residue" || principal === "sponsored_shared_git_residue") {
+      await db.update(executionWorkspaces).set({ strategyType: "project_primary", sourceIssueId: f.issueId,
+        mode: principal === "sponsored_shared_git_residue" ? "shared_workspace" : "isolated_workspace", metadata: { source: "task_session" } }).where(eq(executionWorkspaces.id, f.workspace.id));
+      await mkdir(path.join(f.admission.cwd, ".git", "info"), { recursive: true });
+      await writeFile(path.join(f.admission.cwd, ".git", "info", "exclude"), "/.paperclip-repositories/\n");
+    }
     const [prepared] = await f.service.prepareForAdmission(admission);
     expect(prepared.id).toBe(receipt.operationId);
     expect(await readFile(path.join(prepared.cwd, "public.txt"), "utf8")).toBe("Public fixture bytes\n");
@@ -381,6 +411,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await rm(prepared.cwd, { recursive: true });
     await expect(f.service.prepareForAdmission(admission)).rejects.toThrow(/trusted task|Selected workspace source trust/);
     expect(acquisition.materialize).not.toHaveBeenCalled();
+  });
+
+  it.each(["local-board", null, "changed-human"])("rejects the former sponsor after responsibility changes to %s", async responsibleUserId => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ responsibleUserId }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(f.request({ kind: "url", url: "https://github.com/public/example" })).rejects.toThrow(
+      responsibleUserId === null ? "Repository access requires a responsible user" : "Task workspace responsible user changed");
+    expect(await f.service.list(f.companyId, f.workspace.id)).toEqual([]);
   });
 
   it("reauthorizes a public clone before publication after trust changes during Git", async () => {

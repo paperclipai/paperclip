@@ -76,7 +76,7 @@ describe("deriveIssueUserContext", () => {
     }
   });
 
-  it("uses issue updated time as fallback touch point for assignee", () => {
+  it("uses stable creation time for assignees instead of treating task recency as a read", () => {
     const context = deriveIssueUserContext(
       makeIssue({ assigneeUserId: "user-1", updatedAt: new Date("2026-03-06T15:00:00.000Z") }),
       "user-1",
@@ -87,8 +87,8 @@ describe("deriveIssueUserContext", () => {
       },
     );
 
-    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T15:00:00.000Z");
-    expect(context.isUnreadForMe).toBe(false);
+    expect(context.myLastTouchAt?.toISOString()).toBe("2026-03-06T10:00:00.000Z");
+    expect(context.isUnreadForMe).toBe(true);
   });
 
   it("uses latest read timestamp to clear unread without requiring a comment", () => {

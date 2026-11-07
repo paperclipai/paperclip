@@ -2,6 +2,7 @@ import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared
 
 /** Direct grants for newly activated standard agents. Existing agents are not backfilled. */
 export const NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS = [
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",

@@ -23,6 +23,7 @@ import {
   type PluginInvocationContext,
 } from "../src/protocol.js";
 import { isWorkerEntrypoint, startWorkerRpcHost } from "../src/worker-rpc-host.js";
+import { PluginEnvironmentStopError, readEnvironmentStopFailure } from "../src/environment-stop-error.js";
 
 describe("isWorkerEntrypoint", () => {
   const tempRoots: string[] = [];
@@ -355,6 +356,7 @@ describe("worker configChanged cross-tenant guard", () => {
             reject(
               Object.assign(new Error(response.error.message), {
                 code: response.error.code,
+                data: response.error.data,
               }),
             );
             return;
@@ -415,6 +417,21 @@ describe("worker configChanged cross-tenant guard", () => {
       else await expect(stopped).rejects.toThrow();
       expect(stops).toBe(supported ? 1 : 0);
       expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
+
+  it.each([true, false])("forwards only a typed stop failure to the host: %s", async typed => {
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentStopLease() {
+        throw typed ? new PluginEnvironmentStopError("resource_unrecoverable") : new Error("private provider detail");
+      },
+    }));
+    try {
+      await worker.initialize();
+      const error = await worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company",
+        environmentId: "environment", providerLeaseId: "allocation", config: {} }).catch((caught: unknown) => caught);
+      expect(readEnvironmentStopFailure(error)).toEqual(typed ? { reason: "resource_unrecoverable", terminal: true } : null);
+      expect(JSON.stringify((error as { data?: unknown }).data ?? null)).not.toContain("private");
     } finally { worker.stop(); }
   });
 
@@ -569,7 +586,7 @@ describe("worker provider tracer", () => {
   // worker→host traffic. The host injects a `traceparent` on the invocation, so
   // the worker must emit one `span.record` request that echoes the invocation id
   // and carries the span name and attributes.
-  async function runSpanProbe(invocation: PluginInvocationContext) {
+  async function runSpanProbe(invocation: PluginInvocationContext, count=1, capabilities = ["environment.drivers.register"]) {
     const hostToWorker = new PassThrough();
     const workerToHost = new PassThrough();
     const hostReadline = createInterface({ input: workerToHost });
@@ -580,11 +597,13 @@ describe("worker provider tracer", () => {
     const plugin = definePlugin({
       async setup(ctx) {
         ctx.data.register("probe", async () => {
+          for(let index=0;index<count;index++) {
           const span = ctx.tracer.startSpan("pack", {
             attributes: { "paperclip.sandbox.startup.pack.wall_ms": 12 },
           });
           span.setAttribute("paperclip.sandbox.startup.provider", "daytona");
           span.end();
+          }
           return { ok: true };
         });
       },
@@ -638,7 +657,7 @@ describe("worker provider tracer", () => {
           description: "Tracer test",
           author: "Paperclip",
           categories: ["automation"],
-          capabilities: ["environment.drivers.register"],
+          capabilities,
           entrypoints: { worker: "dist/worker.js" },
         },
         config: {},
@@ -666,7 +685,8 @@ describe("worker provider tracer", () => {
     expect(spanRecords).toHaveLength(1);
     const record = spanRecords[0]!;
     expect(record.invocationId).toBe("invocation-a");
-    expect(record.params).toMatchObject({
+    expect(record.params).toMatchObject({name:"plugin.worker"});
+    expect((record.params as {children:unknown[]}).children[0]).toMatchObject({
       name: "pack",
       attributes: {
         "paperclip.sandbox.startup.pack.wall_ms": 12,
@@ -689,6 +709,25 @@ describe("worker provider tracer", () => {
     expect(Number.isFinite(params.startTimeMs)).toBe(true);
     expect(Number.isFinite(params.endTimeMs)).toBe(true);
     expect(params.endTimeMs!).toBeGreaterThanOrEqual(params.startTimeMs!);
+  });
+
+  it("never falls back to per-span IPC after the legacy span budget is exhausted",async()=>{
+    const records=await runSpanProbe({id:"bounded",scope:{companyId:"company-a"},traceparent:"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},300);
+    expect(records).toHaveLength(1);
+    expect((records[0].params as {children:unknown[]}).children).toHaveLength(255);
+  });
+
+  it.each([{ capabilities: [] }, { capabilities: ["companies.read"] }])("does not collect automatic or legacy receipts without a permitted capability: $capabilities", async ({ capabilities }) => {
+    const records = await runSpanProbe({ id: "not-permitted", scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }, 1, capabilities);
+    expect(records).toEqual([]);
+  });
+
+  it("collects receipts for workspace providers without environment-driver permission", async () => {
+    const records = await runSpanProbe({ id: "workspace", scope: { companyId: "company-a" },
+      traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }, 1, ["workspaces.manage"]);
+    expect(records).toHaveLength(1);
+    expect(records[0].params).toMatchObject({ name: "plugin.worker", children: [{ name: "pack" }] });
   });
 
   it("emits no span.record when the invocation carries no traceparent (tracing off)", async () => {
@@ -835,8 +874,8 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     let nextRequestId = 1;
 
     // The fake session the opener returns. The test drives its output and exit.
-    let emitOutput: ((chunk: string) => void) | null = null;
-    let resolveWait: ((value: { exitCode: number | null }) => void) | null = null;
+    let emitOutput = null as ((chunk: string) => void) | null;
+    let resolveWait = null as ((value: { exitCode: number | null }) => void) | null;
     const inputs: string[] = [];
     let killed = 0;
     let closed = 0;
@@ -990,16 +1029,16 @@ describe("worker duplex channel dispatch", () => {
     let stopped = 0;
     let closed = 0;
 
-    // The plugin declares the four duplex channel handlers. The open returns a
-    // worker session id. The close keys on the host route id and returns a bound
-    // acknowledgement.
+    // The plugin declares the four duplex channel handlers. The open echoes the
+    // host route id and returns a worker session id. The close keys on the host
+    // route id and returns a bound acknowledgement.
     const controllablePlugin = definePlugin({
       async setup() {},
       async onDuplexChannelOpen(params) {
         expect(params.hostRouteId).toBe("route-1");
         expect(params.command).toEqual(["paperclip-bridge"]);
         expect(params.providerLeaseId).toBe("lease-1");
-        return { workerSessionId: "ws-1" };
+        return { hostRouteId: params.hostRouteId, workerSessionId: "ws-1" };
       },
       async onDuplexChannelWrite(params) {
         writes.push(params.data);
@@ -1078,7 +1117,7 @@ describe("worker duplex channel dispatch", () => {
           providerLeaseId: "lease-1",
           command: ["paperclip-bridge"],
         }),
-      ).resolves.toEqual({ workerSessionId: "ws-1" });
+      ).resolves.toEqual({ hostRouteId: "route-1", workerSessionId: "ws-1" });
 
       await callWorker("duplexChannelWrite", { workerSessionId: "ws-1", data: "payload" });
       await callWorker("duplexChannelStop", { workerSessionId: "ws-1" });
@@ -1173,7 +1212,7 @@ describe("AI connection router RPC", () => {
     const reader = createInterface({ input: output });
     const request = { companyId: "company", taskKey: "task", candidates: [], memberOrder: [] };
     let received: unknown;
-    const plugin = definePlugin({ async setup() {}, onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
+    const plugin = definePlugin({ async setup() {}, async onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
     const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
     let sequence = 0;
     const pending = new Map<string, (value: unknown) => void>();
@@ -1196,8 +1235,10 @@ describe("Durable lifecycle inbox RPC", () => {
     const event = { id: "7", companyId: "company-a", resourceType: "agent", resourceId: "agent-a", action: "pause", createdAt: new Date(0).toISOString() };
     const plugin = definePlugin({ async setup(ctx) {
       ctx.data.register("drain", async ({ companyId }) => {
-        const events = await ctx.events.listLifecycle(companyId!, 10, "6");
-        await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        if (typeof companyId !== "string") throw new Error("companyId is required");
+        const events = await ctx.events.listLifecycle(companyId, 10, "6");
+        await ctx.events.acknowledgeLifecycle(companyId, events[0].id);
+        await ctx.agents.getRuntime("agent-a", companyId, "environment-a", true);
         return events;
       });
     } });
@@ -1220,11 +1261,12 @@ describe("Durable lifecycle inbox RPC", () => {
       input.write(serializeMessage(createRequest(method, params, id)));
     });
     try {
-      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe", "agents.lifecycle.manage"], entrypoints: {} }, config: {}, databaseNamespace: null });
       expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
       ]);
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });

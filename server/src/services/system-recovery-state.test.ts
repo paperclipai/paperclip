@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { exhaustedSystemRecoveryAction } from "./system-recovery.js";
 
 describe("durable system recovery budget", () => {
   it("makes six attempts with exponential delays that survive serialization and exhaustion", () => {
@@ -32,6 +33,24 @@ describe("durable system recovery budget", () => {
     expect(failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
       { now: 0, retryAfterAt: 31 * 60_000 }).state).toBe("exhausted");
   });
+  it("keeps a closed-label failure cause through serialization and drops anything else", () => {
+    const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
+    const failed = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "sandbox_not_running", code: "ECONNRESET", status: 503 } });
+    expect(readSystemRecovery(JSON.parse(JSON.stringify({ systemRecovery: failed })))?.failure)
+      .toMatchObject({ code: "provider_unavailable", cause: { label: "sandbox_not_running", code: "ECONNRESET", status: 503 } });
+    const unsafe = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "/home/daytona/secret", code: null, status: null } });
+    expect(unsafe.failure).not.toHaveProperty("cause");
+  });
+  it("names the last failure and its cause in the board handoff", () => {
+    const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
+    const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
+      { now: 0, cause: { label: "sandbox_not_running", code: null, status: null } });
+    expect(exhaustedSystemRecoveryAction(withCause)).toContain("(last failure: provider_unavailable, cause: sandbox_not_running)");
+    const withoutCause = failSystemRecovery(state, new SystemRecoveryFailure("archive_unsafe", "service_required"), { now: 0 });
+    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("(last failure: archive_unsafe)");
+  });
   it("reconciles a recorded attempt after restart without spending another retry", () => {
     const running = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const restarted = readSystemRecovery(JSON.parse(JSON.stringify({ systemRecovery: running })))!;
@@ -44,6 +63,19 @@ describe("durable system recovery budget", () => {
       new SystemRecoveryFailure("source_binding_invalid", "service_required"));
     expect(state).toMatchObject({ state: "exhausted", nextAttemptAt: null,
       failure: { code: "source_binding_invalid", retryClass: "service_required" } });
+  });
+  it("persists only allowlisted source-verification evidence without changing the failure budget", () => {
+    const state = createSystemRecovery(randomUUID());
+    const failure = new SystemRecoveryFailure("source_binding_invalid", "service_required", undefined,
+      { reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment", token: "secret" } as never);
+    const result = failSystemRecovery(state, failure, { now: 1_000 });
+    expect(readSystemRecovery({ systemRecovery: result })?.failure?.sourceVerification).toEqual({
+      reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment" });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(result).toMatchObject({ state: "exhausted", attempts: 0, nextAttemptAt: null, intentId: state.intentId });
+    const invalid = failSystemRecovery(state, new SystemRecoveryFailure("source_binding_invalid", "service_required", undefined,
+      { reason: "arbitrary secret", observedLeasePolicy: "private policy" } as never));
+    expect(invalid.failure?.sourceVerification).toBeUndefined();
   });
   it("reads prior incident metadata without losing the local recovery budget or failure", () => {
     const state = failSystemRecovery(createSystemRecovery(randomUUID()),

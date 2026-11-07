@@ -1,5 +1,13 @@
 # Paperclip — Product Definition
 
+Reusable workflows stay inside the Cases experiment. A workflow is a company-shared
+name and Markdown prompt; a case may adopt, leave and revisit workflows without
+changing its primary task. The task's workflow document is the effective copy,
+so shared edits affect future adoptions and explicit refreshes. Existing handoffs
+record workflow/phase movement and document revisions, including names as they
+were at the time. Authoring starts with agents/APIs; the case UI reads current
+workflow information and history.
+
 ## What It Is
 
 Paperclip is the control plane for autonomous AI companies. One instance of Paperclip can run multiple companies. A **company** is a first-order object.
@@ -41,6 +49,24 @@ start execution. This preference does not change the org chart or permissions.
 
 ### Agent Execution
 
+Agents have an **Advanced** tab for editing their settings across all configuration tabs
+as a versioned YAML document. Instructions, skills, tools, channels, trust,
+secret operations, API keys, and revision restore use their existing domain APIs.
+It edits the same configuration as the regular settings pages, validates before saving, preserves masked secrets, and rejects
+stale edits. See [Agent configuration YAML](agent-configuration-yaml.md).
+
+Existing Claude, Codex, and Grok Build agents can upgrade from the legacy runner on their
+Harness / Runtime page when Paperclip Runner is the qualified default for their
+environment. One action saves pending edits and translates compatible settings
+while keeping the harness, selected model, account bindings, instructions, and
+history. Unsupported settings produce an actionable error without changing the
+saved agent. Future runs start fresh sessions.
+
+Qualifying an existing agent's sandbox for that upgrade uses the same agent
+configuration permission as saving the upgrade. The server checks the saved
+computer and its company binding. Company owners do not need instance-admin
+access for this step; general instance environment management remains restricted.
+
 Paperclip supports several ways to run an agent's heartbeat:
 
 1. **Local CLI/session adapters** — Paperclip starts or resumes local coding-tool sessions such as Claude Code, Codex, Gemini, OpenCode, Pi, and Cursor, then tracks the run.
@@ -67,6 +93,27 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+When an agent creates a subtask or follow-up task, its source task's feed shows
+a linked card at creation time with the current title, task number, and status.
+The Tasks tab keeps the full relationship list.
+
+Agent-owned tasks show **In Progress** only while a task-linked run is queued
+or running. When execution ends, their visible status reflects recovery
+(**Blocked**), a pending response or review (**In Review**), monitoring, or
+remaining work (**Todo**). The stored lifecycle status still controls execution
+and recovery. Human-owned tasks retain their selected ownership status.
+
+Tasks waiting between automatic checks show **Monitoring** with a blue clock.
+Task lists, board columns, filters, search, recent navigation and task properties
+use the same read-only display state. The task retains its execution lifecycle
+status, and the monitor banner shows when the next check is due.
+
+Automatic monitor checks pause when a task is blocked. A person can use Check now
+to request one check of a retained monitor through normal execution admission.
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
+cannot start reports that result instead of claiming it was queued.
+
 The experimental Cases feature also supports persistent work records and
 prompt-driven agent handoffs. Native case creation requires kickoff and creates
 one primary task; later handoffs move that same task
@@ -78,7 +125,7 @@ An explicit handoff to `done` closes the case when primary-task completion is
 accepted through the existing gates; review and human waits keep it open.
 
 Native agents can create, read and update case facts through dedicated tools.
-Creation always includes a kickoff and explicit `workflow_document_text`.
+Creation always includes a kickoff and either `workflowId` or explicit `workflow_document_text`.
 The latter becomes the primary task's Markdown `workflow` document, describing
 phase owners, routing, evidence and completion rules. Agents read it before
 choosing their next step. Recommended authoring includes both a Mermaid
@@ -100,10 +147,44 @@ the latest agent that assigned it to them. If no assignment is available, it use
 the latest other commenter, or leaves the recipient empty. A manual recipient
 choice stays selected while task data refreshes.
 
+Task reply and new-task composers submit with Enter by default; Shift+Enter
+adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
+restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
+submits.
+
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
+
 ### Task collection creation filters
 
+Tasks opens All tasks for new users. A saved view or an explicit view in the URL
+takes precedence over this default.
+The task table orders rows by Last updated, newest first, without highlighting a
+column header. Selecting a column sort activates its header and direction arrow;
+explicit sort URLs retain that selection.
+
+The task Filters menu also offers **Routine tasks**. It selects tasks with
+`originKind=routine_execution`, including manually triggered routine runs, even
+when other automatic tasks are hidden. The routines list's **View all tasks**
+link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
+selected. The URL retains the selection across reloads and task navigation.
+Coordinator task labels use repeated `label` URL parameters so selected labels survive reloads and shared task-list links.
+Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
+saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links work across Coordinator, Streamlined UI, and Classic UI, including
+sort fields without a visible column in the selected interface. Search relevance
+and board-column membership keep their existing server order.
+Search and pagination apply the routine origin filter on the server. Creation-time
+sorting also runs before pagination, with task ID as a stable tie-breaker.
+
 Tasks and project lists hide agent-created and system-created tasks by default.
-The Filters menu's **show agent-created tasks** checkbox includes routine runs,
+The Filters menu's **Show agent-created tasks** checkbox includes routine runs,
 recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks
 remain bot-created for this filter even when a human starts the conversation. The choice is saved per company
 and collection; Clear filters restores the hidden default. Nested lists preserve
@@ -121,6 +202,16 @@ resolution. Ordinary human-created tasks keep their creator's participation.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
 
+An advisory PR review does not require human completion approval because its
+rating is low, CI is pending or failing, or the PR is unmerged. After publication,
+the bot may stay in review with an authorized provider-event wait or a saved
+monitor. Neither wait enrolls a person in Mine. Human requests are for concrete
+dependencies of the assigned review, such as missing repository access.
+A later published review with no human dependency withdraws the same bot's
+earlier completion request for a published review when its result commits and
+independent gates are clear. Finish-report validation is read-only. Independent approval gates
+and requests without that review evidence remain unchanged.
+
 New inbound comments retain their provider in `metadata.sourceChannel`. Historical
 imports use inbound message links or the stored provider-sender metadata. These
 checks preserve direct board comments on channel tasks. If both historical
@@ -134,6 +225,16 @@ Source feeds and project task lists retain their existing access rules.
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
+
+Paperclip-managed skills are immutable saved versions. Studio and API authoring
+publish complete content before acknowledging a save; stale edits return a version
+conflict and Studio retains the draft. Installed repository skills use the same
+version-based reads and execution selection. Web-server files are disposable caches
+and staging, so compatible replacement servers can read, edit and deliver protected
+versions from the same database and remote object storage. Explicit linked-local
+sources retain local behavior. Active or recovering run pins prevent deletion even
+after an agent detaches the skill. See [ephemeral-server skills](skill-ephemeral-web-servers.md)
+for conversion, compatibility and qualification boundaries.
 
 The governing rule is: **skill permissions are opt-in restrictions, not opt-in capabilities**. Missing skill grants never create a denial in an otherwise unconfigured company, and ordinary skill work does not require board confirmation, a draft-only workflow, or an activation approval.
 
@@ -156,6 +257,12 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+Authored and unproven legacy versions retain an independent recovery copy. Unused Git
+packages with an exact restore recipe may expire; later use requires access to that
+original repository and commit.
+External package storage keeps repository contents out of the control-plane database;
+per-turn checks reuse verified local files while rechecking current skill access.
+See [automatic storage and recovery](skill-package-storage.md).
 
 Project-derived skills inherit current project access. Access through any originating
 project is sufficient, including the responsible-user restrictions on agent execution.
@@ -291,9 +398,17 @@ allocation retains one selected number and individually enabled groups.
 
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
-### Experimental persistent agent conversations
+### Persistent agent conversations
 
-Agent Chat is an opt-in core task presentation (`enableAgentChat`, off by default). Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
+Agents can deliver proactive task and routine results into their own chat with
+the task's responsible human. A morning PR digest arrives as an agent message
+with a source-task link and unread indicators, even before the first human
+message. The person can reply using the digest as context. Publishing a message
+and completing work are separate actions; sending never starts or interrupts a
+chat turn. Delivery obeys membership, run authority and task privacy. This version delivers
+in-app only.
+
+Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
 ### Agent chat project handoff (2026-09-11)
 
@@ -329,13 +444,27 @@ with the task list's filters and a sort control. The agent's artifacts are a
 second card stack available from the panel's **+** menu. Both open in a new tab
 so the conversation stays open.
 
+### Coordinator Inbox and personal task views
+
+Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
+inbox icon and keeps the existing decision feed, its count, and decision history
+at `/decisions`. The previous Inbox destination under More is removed.
+
+Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
+the previous Inbox's personal participation rules, mixed attention items,
+read/unread title weights, keyboard shortcuts, archive and undo, mobile
+swipe-to-archive, grouping, and saved columns. Its existing preferences carry
+over. Unread, Recent, Blocked, and Everything are also task views. Organization
+views retain the task table and board. The table saves column selection and
+order per person and company. Old `/inbox/*` links redirect to their Tasks view.
+
 ### Combined Inbox + Task List
 
-An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by default)
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
-Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+Done). Bare `/issues` opens the last-used view, defaulting to All tasks; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
 
 ### CSV file previews
@@ -361,3 +490,24 @@ operation logs retain their app authorization. Workspace `_issuePrivacySources` 
 operation privacy metadata protect app-record disclosure; they do not grant or deny
 filesystem execution or task-bound file browsing. Current trust and sandbox policy,
 publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+## Agent connection administration (2026-10-13)
+
+Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.
+
+The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
+
+## Budget control behavior
+
+Paperclip records paid-operation charges durably and avoids company-wide
+serialization during receipt ingestion and settlement. Budget checks and
+threshold enforcement are best effort. Concurrent operations can start from
+the same observed balance; estimates and provider caps do not replace the
+actual bill. A background worker applies threshold holds and scoped Stop intent.
+Manual Stop and authorization remain independently enforced. Unknown charges
+remain visible, and stale unevaluated accounting blocks new limited-budget work
+until reconciliation catches up.

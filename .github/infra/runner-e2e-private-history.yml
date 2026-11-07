@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private bounded Paperclip eval evidence and reports; no CDN reader
+Parameters:
+  BucketName:
+    Type: String
+  GitHubRepository:
+    Type: String
+    Default: paperclipai/paperclip
+  GitHubOidcProviderArn:
+    Type: String
+Resources:
+  PrivateHistoryBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: BoundedEvalRetentionV1
+            Status: Enabled
+            Prefix: runner-e2e-private/bounded-v1/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: BoundedEvalDeleteMarkersV1
+            Status: Enabled
+            Prefix: runner-e2e-private/bounded-v1/
+            ExpiredObjectDeleteMarker: true
+  PrivateHistoryBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref PrivateHistoryBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt PrivateHistoryBucket.Arn
+              - !Sub '${PrivateHistoryBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnconditionalWrites
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub '${PrivateHistoryBucket.Arn}/runner-e2e-private/bounded-v1/*'
+            Condition:
+              'Null':
+                s3:if-none-match: 'true'
+  PrivateHistoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: paperclip-runner-e2e-private-history-github
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub:
+                  - !Sub 'repo:${GitHubRepository}:environment:runner-e2e-private-paid'
+                  - !Sub 'repo:${GitHubRepository}:environment:runner-e2e-private-history'
+      Policies:
+        - PolicyName: private-eval-artifacts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: VerifyPrivateRetention
+                Effect: Allow
+                Action:
+                  - s3:GetBucketVersioning
+                  - s3:GetLifecycleConfiguration
+                  - s3:GetBucketObjectLockConfiguration
+                  - s3:GetReplicationConfiguration
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketOwnershipControls
+                  - s3:GetBucketPolicy
+                Resource: !GetAtt PrivateHistoryBucket.Arn
+              - Sid: RetainAndReadPrivateArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${PrivateHistoryBucket.Arn}/runner-e2e-private/bounded-v1/*'
+Outputs:
+  Bucket:
+    Value: !Ref PrivateHistoryBucket
+  RoleArn:
+    Value: !GetAtt PrivateHistoryRole.Arn
+  Region:
+    Value: !Ref AWS::Region

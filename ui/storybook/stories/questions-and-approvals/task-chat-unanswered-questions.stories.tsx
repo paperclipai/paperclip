@@ -13,7 +13,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Production task thread with simulated request decisions and dismissal saves. Covers questions and completion reviews; browser draft persistence is real, while server authorization and agent continuation require separate tests."
     },
   },
   component: QuestionChat,
@@ -24,6 +24,7 @@ type Story = StoryObj<typeof meta>;
 
 // Keep the test-drive story's dismissal preference across actual page reloads.
 export const TestDrive: Story = {};
+export const CompletionReview: Story = { args: { review: true } };
 export const MovedOn: Story = { args: { movedOn: true } };
 export const MultipleUnanswered: Story = { args: { multiple: true } };
 export const AnsweredHistory: Story = { args: { answered: true } };

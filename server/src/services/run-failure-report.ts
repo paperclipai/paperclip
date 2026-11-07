@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
 import {
@@ -15,6 +15,9 @@ import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adap
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
+import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -158,6 +161,31 @@ function isRestrictedWorkspaceSourceBlocker(run: HeartbeatRun, options: RunFailu
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
+/** A plugin Runner-task run without a managed AI connection, refused before dispatch; the task notice names the owner action. */
+function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+function isProjectAccessDenialBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== PROJECT_ACCESS_DENIED ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const denial = asRecord(run.resultJson?.projectAccessDenied);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return typeof denial?.projectId === "string" &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** Only the managed-clone producer can attach this bounded pre-dispatch evidence. */
 function isGitConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const connection = readConnectionFailure(run.resultJson?.connectionFailure);
@@ -237,6 +265,42 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
 }
 
 /**
+ * A Codex `serverOverloaded` terminal chose the bounded capacity retry. Only
+ * that committed status decision creates a successor with this retry reason,
+ * so the successor row is the proof. The run's own `resultJson` is not: the
+ * live heartbeat's failed-status write replaces it with the adapter's copy,
+ * which lacks the finalizer's diagnostic and finalization fields.
+ * The retry owns recovery; a later failure reports itself. Held and exhausted
+ * capacity failures have no automatic retry and stay reportable. The retry
+ * carries the task in its context, so the company/context-issue index bounds
+ * the read to that task's runs created since this one.
+ */
+async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
+      run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return false;
+  const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId),
+    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),
+    eq(heartbeatRuns.agentId, run.agentId),
+    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, NATIVE_PROVIDER_OVERLOADED_CODE),
+  )).limit(1);
+  return retry !== undefined;
+}
+
+const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
+
+/**
+ * The ACP agent typed its terminal failure as `access` (provider auth_required),
+ * and the adapter kept it on the sign-in recovery path. The run blocks and the
+ * user gets a reconnect request, so Sentry adds no signal.
+ */
+function isAcpProviderAccessFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode != null && providerAuthErrorCodes.has(run.errorCode) &&
+    asRecord(asRecord(run.resultJson)?.terminalSessionFailure)?.category === "access" &&
+    options.phase !== "setup" && run.signal == null;
+}
+
+/**
  * The Grok endpoint refused every work wake with an HTTP 4xx, so the offer
  * expired unaccepted. Durable delivery receipts prove the external cause. A
  * local rejection (no HTTP status), any delivered wake, or accepted work stays
@@ -281,9 +345,12 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
+    isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
+    isAcpProviderAccessFailure(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
@@ -306,7 +373,7 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env, [], true),
+      ...collectRunFailureSecretValues(process.env),
       ...(options.secretValues ?? []),
     ])].sort((a, b) => b.length - a.length));
     const agent = await db
@@ -322,6 +389,11 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (rejectedExternally) return;
+      const capacityRetry = await isScheduledNativeCapacityRetry(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native capacity retry for run failure report");
+        return false;
+      });
+      if (capacityRetry) return;
     }
 
     const taskId = readTaskId(run);
