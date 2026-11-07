@@ -177,7 +177,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "issue_write_run_context_unavailable" },
     });
     expect(fake.inserted).toEqual([]);
   });
