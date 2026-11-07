@@ -73,6 +73,7 @@ export function createPluginRunnerTaskOwner(input: {
   let confirmStopped: (code: number) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
   let completed = false;
+  let retiredBeforeClaim = false;
   let rejectFailure!: (error: unknown) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
   void failure.catch(() => undefined);
@@ -413,12 +414,17 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+    if (result.outcome === "unavailable") {
+      const state = await call({ kind: "status" }).catch(() => undefined);
+      retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
+    }
     return result.outcome;
   };
   return { launcher, registration, driver, readWorkspaceFile, release, resume,
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
+    retiredBeforeClaim: () => retiredBeforeClaim,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
