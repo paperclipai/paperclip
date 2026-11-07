@@ -134,6 +134,21 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
   return true;
 }
 
+/** A native run that an admission fence refused before it requested any
+ * runner launch (a quarantined prior-session cleanup is checked before the
+ * provider starts) never had a process: there is nothing to stop. Any launch
+ * request or identity record keeps the normal stop proofs. */
+export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid || run.processGroupId ||
+      run.errorCode !== "native_session_cleanup_quarantined") return false;
+  const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED]),
+  )).limit(1);
+  return !launch;
+}
+
 /** Pre-receipt native runs can retain an exact suspended session after their
  * mutable process fields were cleared. This is admission evidence for a new
  * user turn only, never permission to replay the old run or infer its outcomes.

@@ -1,4 +1,5 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
+import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -499,6 +500,14 @@ async function spawnOrphanedProcessGroup() {
   };
 }
 
+
+/** Failure retry accounting with every automatic failure retry already used. */
+const spentFailureRetryAccounting = {
+  version: 1,
+  failureRetries: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+  maxTurnContinuations: 0,
+};
+
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<
@@ -852,6 +861,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
+    failureRetryBudgetSpent?: boolean;
     runtimeMode?: "legacy" | "native";
     includeIssue?: boolean;
     runErrorCode?: string | null;
@@ -915,10 +925,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       status: input?.runStatus ?? "running",
       wakeupRequestId,
-      contextSnapshot:
-        input?.includeIssue === false
+      contextSnapshot: {
+        ...(input?.includeIssue === false
           ? (input?.contextSnapshot ?? {})
-          : { ...(input?.contextSnapshot ?? {}), issueId },
+          : { ...(input?.contextSnapshot ?? {}), issueId }),
+        ...(input?.failureRetryBudgetSpent ? { executionRetryAccounting: spentFailureRetryAccounting } : {}),
+      },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
@@ -3543,6 +3555,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
+  it("retries within the failure budget even when a legacy process-loss counter is set", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    // Earlier releases wrote this counter; nothing writes it now.
+    await db.update(heartbeatRuns).set({ processLossRetryCount: 1 }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const retries = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId),
+    ));
+    expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+  });
+
+  it("does not promise a process-loss retry once the failure budget is spent", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { ...(seeded!.contextSnapshot ?? {}), executionRetryAccounting: spentFailureRetryAccounting },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
+      error: "Process lost -- server may have restarted" });
+    expect(reaped?.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId),
+    ))).toEqual([]);
+  });
+
   it("keeps an orphaned legacy run that reached adapter dispatch held for reconciliation", async () => {
     const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");
 
@@ -5111,7 +5156,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterType: "process",
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
     });
     const heartbeat = heartbeatService(db);
     await heartbeat.reapOrphanedRuns();
@@ -5136,7 +5181,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       adapterType: "process",
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
       runErrorCode: "process_lost",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
@@ -5213,7 +5258,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      failureRetryBudgetSpent: true,
     });
     await db.insert(issueTreeHolds).values({
       companyId,

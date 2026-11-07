@@ -96,6 +96,9 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    // PID space of processPid (controller-process-identity hostHash), or
+    // "remote" for a sandbox PID. Null on rows saved before it existed.
+    processHostHash: text("process_host_hash"),
     legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
@@ -104,6 +107,9 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    // Legacy: no writer since process loss moved onto the durable failure
+    // retry budget (contextSnapshot.executionRetryAccounting). Kept so rows and
+    // readers from earlier releases stay valid; never gate retries on it.
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),

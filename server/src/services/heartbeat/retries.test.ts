@@ -198,6 +198,36 @@ describe("heartbeat retry module callbacks", () => {
     expect(deps.finalizeAgentStatus).toHaveBeenCalledAfter(deps.releaseIssueExecutionAndPromote);
     expect(database.access).not.toHaveBeenCalled();
   });
+
+  it("decides an interaction continuation retry from a refused exact resume's refusal, not its earlier spawn failure", async () => {
+    const refusal = "Plugin Runner retained session is not authorized";
+    const interaction = { issueId: "issue", interactionId: "interaction-1", interactionStatus: "answered", mutation: "interaction",
+      wakeReason: "issue_commented", timerClaimWasFirstHeartbeat: true };
+    // The retry budget is spent, so an eligible run reports exhaustion
+    // without scheduling, and an ineligible one escalates directly.
+    const failed = { ...unitRun(), status: "failed", errorCode: "adapter_failed", scheduledRetryAttempt: 2,
+      scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, contextSnapshot: interaction } as Run;
+    const refused = { ...failed,
+      error: `native_session_interrupted: failed to start command: spawn agent ENOENT; exact checkpoint resume refused: ${refusal}`,
+      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
+        originalMessage: "failed to start command: spawn agent ENOENT", interruptedAttempt: 1, refusal } } } as Run;
+    const spawnFailure = { ...failed, error: "failed to start command: spawn agent ENOENT", resultJson: {} } as Run;
+    const exhaustion = expect.objectContaining({ retryExhaustion: expect.objectContaining({
+      retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON }) });
+
+    const database = guardedDatabase();
+    const refusedDeps = callbacks();
+    await expect(extracted.createHeartbeatRetries(database.db, refusedDeps)
+      .scheduleInteractionContinuationInfrastructureRetryIfEligible(refused, { adapterType: "codex_local" } as Agent)).resolves.toBeNull();
+    expect(refusedDeps.appendRunEvent).not.toHaveBeenCalledWith(refused, exhaustion);
+    expect(refusedDeps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
+
+    const spawnDeps = callbacks();
+    await extracted.createHeartbeatRetries(database.db, spawnDeps)
+      .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
+    expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
+    expect(database.access).not.toHaveBeenCalled();
+  });
 });
 
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";

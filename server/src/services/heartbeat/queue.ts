@@ -2729,6 +2729,31 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     );
     if (budgetBlock) {
+      // A user's message refused by a temporary hold (accounting still settling)
+      // is saved as a deferred receipt, not skipped. It is promoted through
+      // normal admission once the run it waits behind ends or the hold clears.
+      if (!executionWaitRequestId && !caseRequest && !durableRequest && issueId && isUuidLike(issueId) &&
+          opts.requestedByActorType === "user" && wakeCommentId &&
+          !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock))) {
+        const savedIssueId = issueId;
+        const condition = { reason: "budget.blocked", message: `${budgetBlock.reason} Your message is saved.`,
+          scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId };
+        await db.transaction(async tx => {
+          await tx.execute(sql`select id from issues where id = ${savedIssueId} and company_id = ${agent.companyId} for update`);
+          await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId, agentId, source, triggerDetail, reason,
+            payload: withQueuedCommentIdsInWakePayload({
+              ...payload, issueId: savedIssueId, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot, executionWait: condition,
+            }, [...new Set([...queuedCommentIdsFromRunContext(enrichedContextSnapshot), wakeCommentId])]),
+            status: "deferred_issue_execution",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+          });
+        });
+        throw new PersistedExecutionWaitRefusal(budgetBlock.reason, { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
+      }
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
