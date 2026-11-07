@@ -916,6 +916,17 @@ folder. The existing source, provider-stop and archive checks still apply.
 Completed copyback recovery receipts remain valid. Unknown or unverified recovery
 sources continue to block import.
 
+Online import can preserve an established provider session's prepared source
+after a terminal provider-artifact failure. It requires the exact board-owned
+native failure block and the task's current blocked status version, released
+controller and coordinator ownership, and all declared allocation bindings.
+Source locks and the finalizer lock protect the full action, task and source
+fingerprints through publication. Import saves only the current local files. It
+retains the prepared reference, provider checkpoint, remote allocations and
+recovery hold. The existing migration recipe routes later file recovery away
+from the retired local destination. This neither declares preexecution nor
+proves remote export, provider termination or permission to resume execution.
+
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
 order too. The lifecycle advisory lock alone does not fence runtime operations.
