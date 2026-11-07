@@ -336,11 +336,11 @@ async function controllerBinding(db: Db, facts: Awaited<ReturnType<typeof databa
       }
       if (paths.size !== history.entries.length || history.entries.some(entry => !paths.has(entry.path)
         || entry.type !== (entry.path.endsWith(".json") ? "file" : "directory"))) fail();
-      const descriptor = nativeControllerEvidenceDescriptor({ companyId: facts.anchor.companyId, issueId: facts.anchor.nativeIssueId!,
-        runId: facts.source.id, controllerDigest: archive.controllerDigest, supervisorDigest: archive.supervisorDigest,
-        purpose: "filesystem_independence", history: history.entries, historyBindingDigest: digest(history) });
-      if (row.scopeDigest !== descriptor.scopeDigest || row.manifestSha256 !== descriptor.manifestSha256) fail();
     }
+    const descriptor = nativeControllerEvidenceDescriptor({ companyId: facts.anchor.companyId, issueId: facts.anchor.nativeIssueId!,
+      runId: facts.source.id, controllerDigest: archive.controllerDigest, supervisorDigest: archive.supervisorDigest,
+      purpose: "filesystem_independence", history: history?.entries, historyBindingDigest: history ? digest(history) : undefined });
+    if (row.scopeDigest !== descriptor.scopeDigest || row.manifestSha256 !== descriptor.manifestSha256) fail();
   } else if (history) {
     fail();
   }

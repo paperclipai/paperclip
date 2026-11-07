@@ -304,16 +304,19 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(await readFile(join(f.sourceRoot, f.entries[0]!.path), "utf8")).toBe(f.entries[0]!.contents);
   });
 
-  it.each(["new-header", "receipt-identity"])("invalidates published authority history after %s changes", async control => {
+  it.each(["new-header", "receipt-identity", "missing-history"])("invalidates published authority history after %s changes", async control => {
     const f = await historyFixture();
     await preserveNativeHarnessFilesystemIndependence(db, f.input);
     if (control === "new-header") await db.insert(nativeRunnerCheckpoints).values(f.entries[0]!.header);
     else {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       const profile = structuredClone(run!.runnerProfileJson!);
-      const receipt = profile.nativeHarnessFilesystemIndependence as { controller: { history: { epochs: Array<{ identity: { turnId: string }; identityDigest: string }> } } };
-      receipt.controller.history.epochs[0]!.identity.turnId = randomUUID();
-      receipt.controller.history.epochs[0]!.identityDigest = nativeSha256(receipt.controller.history.epochs[0]!.identity);
+      const receipt = profile.nativeHarnessFilesystemIndependence as { controller: { history?: { epochs: Array<{ identity: { turnId: string }; identityDigest: string }> } } };
+      if (control === "missing-history") delete receipt.controller.history;
+      else {
+        receipt.controller.history!.epochs[0]!.identity.turnId = randomUUID();
+        receipt.controller.history!.epochs[0]!.identityDigest = nativeSha256(receipt.controller.history!.epochs[0]!.identity);
+      }
       await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, f.runId));
     }
     vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-replacement")); vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-replacement/state"));
