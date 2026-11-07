@@ -4406,8 +4406,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const knownBusy = () => {
         const events = core.store.state.committedEvents;
         const goalEvent = events.findLast(event => event.eventType === "session.goal.updated" || event.eventType === "session.goal.cleared"
-          || (event.eventType === "session.goal.snapshot" && (record(record(event.envelope.payload).payload).goal != null
-            || record(record(event.envelope.payload).payload).workingNow === true)));
+          || event.eventType === "session.goal.snapshot");
         const goalPayload = record(record(goalEvent?.envelope.payload).payload), goal = record(goalPayload.goal);
         return this.#turnStartResponsePending || this.#bridgedRuntimeInputs.size > 0
           || !core.semanticToolResultsSettled() || providerTurnIsActiveFromCommittedEvents(events)
@@ -4428,6 +4427,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!episode.confirmed) {
       await pair.release(episode.source);
       this.#assertStartupOpen();
+      core.disconnectActiveRunner();
       episode.confirmed = true;
     }
     return structuredClone(episode.source);

@@ -19,7 +19,7 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const read = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const parkId = (source: Record<string, unknown>) => `park_${digest(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
-async function nativeWire(port: number, path: string): Promise<PrpWireConnection> {
+async function nativeWire(port: number, path: string, closeGate?: Promise<void>): Promise<PrpWireConnection> {
   return new Promise((resolve, reject) => {
     const request = httpRequest({ hostname: "127.0.0.1", port, path, headers: {
       Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
@@ -64,7 +64,10 @@ async function nativeWire(port: number, path: string): Promise<PrpWireConnection
         }
       };
       socket.on("data", consume);
-      socket.on("close", () => { for (const close of closed) close({ message: "fixture route closed" }); });
+      socket.on("close", () => {
+        const notify = () => { for (const close of closed) close({ message: "fixture route closed" }); };
+        if (closeGate) void closeGate.then(notify); else notify();
+      });
       socket.on("error", () => {});
       resolve({ sendJson: value => send(1, Buffer.from(JSON.stringify(value))), close: () => socket.destroy(),
         onJson: receive => { handler = receive; for (const value of pending.splice(0)) receive(value); },
@@ -75,7 +78,7 @@ async function nativeWire(port: number, path: string): Promise<PrpWireConnection
   });
 }
 
-it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close"] as const)(
+it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot"] as const)(
   "releases and resumes the native Codex source before attachment (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "runner-release-resume-"));
     const acpx = mode === "acpx cache adoption";
@@ -98,6 +101,9 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
     const binary = defaultCapabilityRunnerdBinary();
     const runnerFile = join(root, "runner/runner-state.json");
     const claimTicketDigests: string[] = [], routeRuns: string[] = [];
+    let deliverOldClose!: () => void;
+    const oldCloseGate = new Promise<void>(resolve => { deliverOldClose = resolve; });
+    const goalGate = join(root, "goal-tail-gate");
     let authority: DurablePrpControlPlane | undefined;
     let claimantRunId = identity.runId;
     let handle: RunnerProcessHandle | undefined;
@@ -122,7 +128,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
           const deadline = Date.now() + 5_000;
           while (Date.now() < deadline) {
             let candidate: PrpWireConnection;
-            try { candidate = await nativeWire(port, `/api/runner/v1/connect/${source.runId}`); }
+            try { candidate = await nativeWire(port, `/api/runner/v1/connect/${source.runId}`, mode === "late wire close" && routeRuns.length === 0 ? oldCloseGate : undefined); }
             catch { await new Promise(resolve => setTimeout(resolve, 10)); continue; }
             sockets.add(candidate);
             socket = candidate;
@@ -147,6 +153,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         const result = await fixture.request({ op: "park", id: parkId(source), identity: source,
           lastControllerCommandSeq: state.lastControllerCommandSeq, ackedSourceSeq: state.ackedSourceSeq });
         if (result.status !== "parked") throw new Error("Fixture park receipt unavailable");
+        if (mode === "late wire close" && source.runId === identity.runId) expect(authority!.activeRunnerConnectionCount()).toBe(1);
       }),
       resume: vi.fn(async (source: typeof identity, ticket: string): Promise<"resumed" | "unavailable"> => {
         claimTicketDigests.push(digest(ticket));
@@ -172,7 +179,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       "--acpx-sidecar-script", sidecarScript, "--acpx-sidecar-script-sha256", `sha256:${digest("qualified fixture entry")}`] : [];
     const launch = vi.fn((spec: Parameters<typeof fixture.launch>[0]) => { handle = fixture.launch({ ...spec, args: [...spec.args, ...acpxArguments] }); return handle; });
     const options = { runnerBinary: binary, runnerArtifact: readRunnerdArtifactBinding(binary), stateDirectory: root,
-      codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root), prpIdentity: identity,
+      codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, ...(mode === "empty goal snapshot" ? ["--durable-turn-ids", "--late-accounting-tail-gate", goalGate, "--late-active-goal"] : [])), prpIdentity: identity,
       get authorityRunId() { return claimantRunId; }, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
       runnerProcessLauncher: launch, controlPlaneRegistration: registration, releaseResume: pair,
       ...((mode === "release admission" || mode === "deferred turn after close") ? { measureOperation: async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
@@ -207,6 +214,18 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       const opened = await bundle.transport.request("thread/start", { cwd: root, dynamicTools: [], ...(acpx ? { model: "explicit-source-model" } : {}) });
       const threadId = String((opened.thread as { id: string }).id);
       await complete();
+      if (mode === "empty goal snapshot") {
+        await writeFile(goalGate, "release late goal");
+        await vi.waitFor(() => expect(authority!.store.state.committedEvents.some(event => event.eventType === "session.goal.updated"
+          && ((event.envelope.payload as { payload?: { goal?: { status?: string } } }).payload?.goal?.status === "active"))).toBe(true));
+        await complete();
+        await vi.waitFor(() => expect(authority!.store.state.committedEvents.filter(event => ["session.goal.updated", "session.goal.snapshot"].includes(event.eventType)).at(-1)?.envelope.payload).toMatchObject({ payload: { goal: null, workingNow: false } }));
+        const goalEvents = authority!.store.state.committedEvents.filter(event => ["session.goal.updated", "session.goal.snapshot"].includes(event.eventType));
+        const latest = goalEvents.at(-1)!;
+        expect(latest.eventType).toBe("session.goal.snapshot");
+        expect(latest.envelope.payload).toMatchObject({ payload: { goal: null, workingNow: false } });
+        expect(goalEvents.slice(0, -1).some(event => (event.envelope.payload as { payload?: { goal?: { status?: string } } }).payload?.goal?.status === "active")).toBe(true);
+      }
       if (mode === "deferred turn after close") {
         holdMeasuredTurn = true;
         const starting = bundle.transport.request("turn/start", { input: [{ type: "text", text: "Must not start after close" }] });
@@ -284,6 +303,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         expect(await bundle.transport.release!()).toEqual(identity);
         expect(pair.release).toHaveBeenCalledOnce();
       }
+      if (mode === "late wire close") expect(authority!.activeRunnerConnectionCount()).toBe(0);
       await vi.waitFor(() => expect(authority?.activeRunnerConnectionCount()).toBe(0));
       expect(intervals.size).toBe(0);
       expect(launch).toHaveBeenCalledOnce();
@@ -368,6 +388,14 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         return;
       }
       expect(pair.resume).toHaveBeenCalledTimes(mode === "lost claim reply" ? 2 : 1);
+      if (mode === "cache adoption" || mode === "acpx cache adoption" || mode === "late wire close") {
+        expect(routeRuns.filter(runId => runId === identity.runId)).toHaveLength(2);
+      }
+      if (mode === "late wire close") {
+        deliverOldClose();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(authority!.activeRunnerConnectionCount()).toBe(1);
+      }
       expect(routeRuns).toContain(identity.runId);
       expect((await read(runnerFile)).runId).toBe(claimantRunId);
       expect(launch).toHaveBeenCalledOnce();
@@ -380,7 +408,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       expect(handle!.isExitConfirmed?.()).toBe(true);
     } finally {
       if (mode === "held past deadline") vi.useRealTimers();
-      expireClock?.mockRestore(); releaseClaim(); finishMeasuredTurn();
+      expireClock?.mockRestore(); releaseClaim(); finishMeasuredTurn(); deliverOldClose();
       try {
         for (const socket of sockets) socket.close();
         await fixture.close();
