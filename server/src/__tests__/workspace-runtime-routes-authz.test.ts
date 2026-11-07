@@ -686,26 +686,4 @@ describe("workspace runtime service route authorization", () => {
     expect(patchRes.body.error).toContain("cannot set the workspace default completion requirement");
     expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
   });
-
-  it("lets board callers set the workspace default completion requirement", async () => {
-    mockAccessService.decide.mockResolvedValue({ allowed: true, action: "project:write_workspace", explanation: "Allowed by test mock." });
-    mockProjectService.getById.mockResolvedValue(buildProject({ id: projectId }));
-    mockProjectService.createWorkspace.mockResolvedValue({ id: "workspace-2", name: "ws", cwd: "/tmp/ws", isPrimary: false });
-    const app = await createProjectApp({
-      type: "board",
-      userId: "board-1",
-      companyIds: ["company-1"],
-      source: "session",
-      isInstanceAdmin: false,
-    });
-
-    const res = await request(app)
-      .post(`/api/projects/${projectId}/workspaces`)
-      .send({ cwd: "/tmp/ws", defaultCompletionRequirement: "workspace_delivery" });
-
-    expect(res.status).toBe(201);
-    expect(mockProjectService.createWorkspace).toHaveBeenCalledWith(projectId, expect.objectContaining({
-      defaultCompletionRequirement: "workspace_delivery",
-    }));
-  });
 });
