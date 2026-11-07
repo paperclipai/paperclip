@@ -1,0 +1,33 @@
+name: Codex quota router
+
+on:
+  pull_request:
+    paths:
+      - packages/plugins/plugin-codex-quota-router/**
+      - packages/plugins/sdk/**
+      - packages/shared/**
+      - pnpm-lock.yaml
+      - .github/workflows/codex-quota-router.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile --filter @paperclipai/plugin-codex-quota-router...
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter @paperclipai/plugin-codex-quota-router...
+      - run: pnpm --filter @paperclipai/plugin-codex-quota-router typecheck
+      - run: pnpm --filter @paperclipai/plugin-codex-quota-router test
+      - run: pnpm --filter @paperclipai/plugin-codex-quota-router build
