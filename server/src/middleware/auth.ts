@@ -313,28 +313,30 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
-          type: "board",
-          userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
-          isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
-          runId: runIdHeader || undefined,
-          source: "board_key",
-        };
-        if (isCloudManagedInstance() && (access.isInstanceAdmin || access.companyIds.length)) {
-          _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+    if (!runIdHeader) {
+      const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+      if (boardKey) {
+        const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+        if (access.user) {
+          await boardAuth.touchBoardApiKey(boardKey.id);
+          req.actor = {
+            type: "board",
+            userId: boardKey.userId,
+            userName: access.user?.name ?? null,
+            userEmail: access.user?.email ?? null,
+            companyIds: access.companyIds,
+            memberships: access.memberships,
+            isInstanceAdmin: access.isInstanceAdmin,
+            keyId: boardKey.id,
+            runId: runIdHeader || undefined,
+            source: "board_key",
+          };
+          if (isCloudManagedInstance() && (access.isInstanceAdmin || access.companyIds.length)) {
+            _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+          }
+          next();
+          return;
         }
-        next();
-        return;
       }
     }
 
