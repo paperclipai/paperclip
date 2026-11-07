@@ -3074,6 +3074,13 @@
       "when": 1794035686391,
       "tag": "0440_flippant_the_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 441,
+      "version": "7",
+      "when": 1794048410934,
+      "tag": "0441_careless_kate_bishop",
+      "breakpoints": true
     }
   ]
 }

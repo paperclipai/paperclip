@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../controller-process-identity.js";
 import { and, eq, gt, inArray, isNotNull, isNull, ne, notInArray, notLike, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
@@ -18,7 +19,10 @@ type TakeoverProbe = Pick<Parameters<typeof evaluateNativeControllerTakeover>[0]
  * executor lease belongs to a different boot and its recorded controller
  * process has exited (or its PID now names a different process). A live or
  * unidentifiable owner, and any lease not written with that identity, keeps
- * its lease. Remote workspaces keep their fenced lease semantics.
+ * its lease. The process must be in this controller's known kernel/PID
+ * namespace before a local PID probe can prove anything about it. Legacy,
+ * foreign and unknown namespaces keep their original expiry. Remote
+ * workspaces keep their fenced lease semantics.
  */
 export async function releaseDeadControllerResultLeases(db: Db, input: {
   now: Date;
@@ -26,6 +30,8 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
   liveRunExecutions?: { has(runId: string): boolean };
 } & TakeoverProbe): Promise<Array<{ runId: string; reason: string }>> {
   const controller = await currentNativeControllerIdentity();
+  const { hostHash } = await currentControllerProcess();
+  if (hostHash === "unknown") return [];
   const candidates = await db.select({
     runId: nativeRunFinalizations.runId,
     companyId: nativeRunFinalizations.companyId,
@@ -34,6 +40,7 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
     leaseOwner: nativeRunFinalizations.leaseOwner,
     leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
     controllerBootId: nativeRunFinalizations.controllerBootId,
+    controllerHostHash: nativeRunFinalizations.controllerHostHash,
     controllerPid: nativeRunFinalizations.controllerPid,
     controllerProcessStartedAt: nativeRunFinalizations.controllerProcessStartedAt,
   }).from(nativeRunFinalizations)
@@ -56,6 +63,7 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
       gt(nativeRunFinalizations.leaseExpiresAt, input.now),
       isNotNull(nativeRunFinalizations.controllerBootId),
       ne(nativeRunFinalizations.controllerBootId, controller.bootId),
+      eq(nativeRunFinalizations.controllerHostHash, hostHash),
       // Remote copyback is fenced by its own controller lease.
       sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync' is null`,
       sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace' is null`,
@@ -85,6 +93,7 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
           eq(nativeRunFinalizations.leaseOwner, row.leaseOwner!),
           gt(nativeRunFinalizations.leaseExpiresAt, input.now),
           eq(nativeRunFinalizations.controllerBootId, row.controllerBootId!),
+          eq(nativeRunFinalizations.controllerHostHash, hostHash),
           row.controllerPid === null ? isNull(nativeRunFinalizations.controllerPid)
             : eq(nativeRunFinalizations.controllerPid, row.controllerPid),
         ))

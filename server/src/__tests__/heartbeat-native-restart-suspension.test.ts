@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as controllerProcess from "../services/controller-process-identity.js";
 import { and, eq, sql } from "drizzle-orm";
 import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
@@ -249,6 +250,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       leaseOwner: leaseOwner(f.native.runnerInstanceId),
       leaseExpiresAt,
       controllerBootId: controller.bootId,
+      // Local-positive accepted-result fixtures model the actual executor claim.
+      controllerHostHash: (await controllerProcess.currentControllerProcess()).hostHash,
       controllerPid: controller.pid,
       controllerProcessStartedAt: controller.processStartedAt,
       controllerGeneration: 1,
@@ -380,7 +383,12 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const f = await seedAcceptedResult("ACCEPTED-UNPROVEN-PROCESS-SPACE", runner => `${runner}:${randomUUID()}`);
     await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001,
       processStartedAt: new Date(Date.now() - 60_000) });
+    // Migration leaves legacy rows NULL; do not silently turn495's original
+    // missing-proof negative into a local-positive fixture after adding stamps.
+    await f.db.update(nativeRunFinalizations).set({ controllerHostHash: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
     const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(before.controllerHostHash).toBeNull();
     const now = new Date();
     expect(before.leaseExpiresAt?.getTime()).toBeGreaterThan(now.getTime());
     expect(before).toMatchObject({ phase: "workspace_finalizing", resultId: expect.any(String) });
@@ -401,6 +409,114 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(await f.db.select({ id: nativeRunResults.id }).from(nativeRunResults)
       .where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
   }, 60_000);
+
+  it.each(["foreign", "unknown-current"] as const)("retains an accepted-result lease without probing an owner in %s process space", async mode => {
+    const f = await seedAcceptedResult(`ACCEPTED-SPACE-${mode}`, runner => `${runner}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    const actual = await controllerProcess.currentControllerProcess();
+    if (mode === "foreign") await f.db.update(nativeRunFinalizations).set({ controllerHostHash: `foreign:${actual.hostHash}` })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const unknown = mode === "unknown-current" ? vi.spyOn(controllerProcess, "currentControllerProcess")
+      .mockResolvedValue({ ...actual, hostHash: "unknown" }) : null;
+    const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const isProcessAlive = vi.fn(() => false), readProcessStartedAt = vi.fn(async () => null);
+    try {
+      expect(await releaseDeadControllerResultLeases(f.db, { now: new Date(), runIds: [f.runId], isProcessAlive, readProcessStartedAt })).toEqual([]);
+      expect(isProcessAlive).not.toHaveBeenCalled();
+      expect(readProcessStartedAt).not.toHaveBeenCalled();
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt, controllerHostHash: before.controllerHostHash });
+    } finally { unknown?.mockRestore(); }
+  }, 60_000);
+
+  it.each(["dead", "recycled"] as const)("releases only the exact same-space %s owner and finalizes its accepted result once", async mode => {
+    const f = await seedAcceptedResult(`ACCEPTED-LOCAL-${mode}`, runner => `${runner}:${randomUUID()}`);
+    const birth = new Date(Date.now() - 60_000);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: birth });
+    const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(before.controllerHostHash).toBe((await controllerProcess.currentControllerProcess()).hostHash);
+    const now = new Date();
+    const isProcessAlive = vi.fn(() => mode === "recycled");
+    const readProcessStartedAt = vi.fn(async () => new Date(birth.getTime() + 2_000));
+    expect(await releaseDeadControllerResultLeases(f.db, { now, runIds: [f.runId], isProcessAlive, readProcessStartedAt }))
+      .toEqual([{ runId: f.runId, reason: mode === "dead" ? "controller_process_dead" : "controller_pid_recycled" }]);
+    expect(isProcessAlive).toHaveBeenCalledExactlyOnceWith(2_000_000_001);
+    const [released] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(released).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: now, resultId: before.resultId });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { run, owner } = await restart(f);
+      expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+    }
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+    expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
+    expect(await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+  }, 90_000);
+
+  it.each(["same-birth", "unreadable-birth", "missing-recorded-birth", "ambiguous-birth"] as const)(
+    "retains a same-space live owner with %s evidence", async mode => {
+    const f = await seedAcceptedResult(`ACCEPTED-HOLD-${mode}`, runner => `${runner}:${randomUUID()}`);
+    const birth = new Date(Date.now() - 60_000);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001,
+      processStartedAt: mode === "missing-recorded-birth" ? null : birth });
+    const isProcessAlive = vi.fn(() => true);
+    const readProcessStartedAt = vi.fn(async () => mode === "unreadable-birth" ? null
+      : new Date(birth.getTime() + (mode === "ambiguous-birth" ? 500 : 0)));
+    expect(await releaseDeadControllerResultLeases(f.db, { now: new Date(), runIds: [f.runId], isProcessAlive, readProcessStartedAt })).toEqual([]);
+    expect(isProcessAlive).toHaveBeenCalledExactlyOnceWith(2_000_000_001);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseExpiresAt)
+      .toEqual(f.leaseExpiresAt);
+  }, 60_000);
+
+  it.each(["lease-token", "boot", "namespace"] as const)("loses dead-owner compare-and-set when %s changes after observation", async changed => {
+    const f = await seedAcceptedResult(`ACCEPTED-CAS-${changed}`, runner => `${runner}:${randomUUID()}`);
+    const birth = new Date(Date.now() - 60_000);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: birth });
+    const replacement = randomUUID();
+    const readProcessStartedAt = vi.fn(async () => {
+      await f.db.update(nativeRunFinalizations).set(changed === "lease-token" ? { leaseOwner: `new-owner:${replacement}` }
+        : changed === "boot" ? { controllerBootId: replacement } : { controllerHostHash: `new-space:${replacement}` })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      return new Date(birth.getTime() + 2_000);
+    });
+    expect(await releaseDeadControllerResultLeases(f.db, { now: new Date(), runIds: [f.runId],
+      isProcessAlive: () => true, readProcessStartedAt })).toEqual([]);
+    expect(readProcessStartedAt).toHaveBeenCalledExactlyOnceWith(2_000_000_001);
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(owner.leaseExpiresAt).toEqual(f.leaseExpiresAt);
+    expect(changed === "lease-token" ? owner.leaseOwner : changed === "boot" ? owner.controllerBootId : owner.controllerHostHash)
+      .toBe(changed === "lease-token" ? `new-owner:${replacement}` : changed === "boot" ? replacement : `new-space:${replacement}`);
+  }, 60_000);
+
+  it.each(["current-boot", "live-owner", "finalizer", "cleanup", "remote-sync", "remote-workspace"] as const)(
+    "never probes or releases excluded accepted-result authority: %s", async exclusion => {
+    const prefix = exclusion === "finalizer" ? "native-finalizer" : exclusion === "cleanup" ? "native-cleanup" : "executor";
+    const f = await seedAcceptedResult(`ACCEPTED-EXCLUDE-${exclusion}`, () => `${prefix}:${randomUUID()}`);
+    const self = await currentNativeControllerIdentity();
+    await killedController(f, { bootId: exclusion === "current-boot" ? self.bootId : randomUUID(),
+      pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    if (exclusion.startsWith("remote-")) await f.db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...f.preparedProfile, [exclusion === "remote-sync" ? "nativeWorkspaceSync" : "remoteWorkspace"]: {},
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const isProcessAlive = vi.fn(() => false), readProcessStartedAt = vi.fn(async () => null);
+    expect(await releaseDeadControllerResultLeases(f.db, { now: new Date(), runIds: [f.runId], isProcessAlive, readProcessStartedAt,
+      liveRunExecutions: { has: runId => exclusion === "live-owner" && runId === f.runId } })).toEqual([]);
+    expect(isProcessAlive).not.toHaveBeenCalled(); expect(readProcessStartedAt).not.toHaveBeenCalled();
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseExpiresAt)
+      .toEqual(f.leaseExpiresAt);
+  }, 60_000);
+
+  it("finalizes a legacy NULL-proof accepted result by ordinary expiry without provider replay", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-LEGACY-EXPIRED", runner => `${runner}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: null });
+    await f.db.update(nativeRunFinalizations).set({ controllerHostHash: null, leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const isProcessAlive = vi.fn(() => false), readProcessStartedAt = vi.fn(async () => null);
+    expect(await releaseDeadControllerResultLeases(f.db, { now: new Date(), runIds: [f.runId], isProcessAlive, readProcessStartedAt })).toEqual([]);
+    expect(isProcessAlive).not.toHaveBeenCalled(); expect(readProcessStartedAt).not.toHaveBeenCalled();
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
+    expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
+  }, 90_000);
 
   it("keeps the accepted result leased while its earlier-boot controller process is still alive", async () => {
     // Another live server (or an orphaned controller of an earlier boot) can

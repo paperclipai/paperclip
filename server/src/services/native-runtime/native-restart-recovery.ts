@@ -1522,6 +1522,7 @@ export async function claimNativeRestartRecoveries(input: {
           // The owner row is locked: grant the full lease at this write.
           leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
+          controllerHostHash: null,
           controllerPid: controller.pid,
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
