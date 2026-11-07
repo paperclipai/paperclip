@@ -274,6 +274,14 @@ export async function resolveEnvironmentExecutionTarget(input: {
         concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
       sandboxLeaseAcquisition:acquisition,
       ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
+      reconcileTaskReplacement: async (context) => {
+        if (!runtime) throw new Error("Plugin environment runtime unavailable");
+        const replacementTaskId = await runtime.replaceTask({ companyId: input.companyId, leaseId: lease.id,
+          ...(context?.executionContext ? { context: context.executionContext } : {}) });
+        acquisition.outcome = "replacement";
+        acquisition.providerLeaseId = replacementTaskId;
+        return replacementTaskId;
+      },
       runnerTask: async (operation, context) => {
         const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
           operation: environmentTaskOperationSchema.parse(operation),

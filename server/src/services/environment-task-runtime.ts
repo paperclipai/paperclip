@@ -276,81 +276,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
             runnerTaskSessionRetained:state.sessionStateAvailable === true})}::jsonb`,
         }).where(and(eq(environmentLeases.id, metadata.runnerTaskPreviousLeaseId), eq(environmentLeases.companyId, input.companyId)));
         const replacementDriverKey = metadata.driverKey;
-        const creationWorker = context && driver.creationOperationVersion === 1
-          ? workers.getWorker(plugin.id) : undefined;
-        const recoverableCreation = creationWorker?.supportedMethods.includes("environmentInspectLease") === true &&
-          metadata.providerMetadata && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
-        let abandoned = false;
-        const fresh = await createOwnedSandbox(db, {
-          companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId,
-          issueId: lease.issueId, executionWorkspaceId: lease.executionWorkspaceId, provider: lease.provider!,
-          pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
-          metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey,
-            runnerTaskLease: true, agentId: run!.agentId,
-            ...(context ? { runnerTaskCreationContextId: context.id } : {}),
-            ...(recoverableCreation ? { creationOperationVersion: 1, providerMetadata: metadata.providerMetadata } : {}) },
-        }, async identity => {
-          const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
-            issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
-            agentId: run!.agentId, adapterType: "paperclip_runner",
-            ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? { requestedExpiresAt: metadata.runnerTaskRequestedExpiresAt } : {}) };
-          if (!context) return workers.call(plugin.id, "environmentAcquireLease", params, 30_000);
-          const settled = context.trackWorker();
-          let observedResource: Parameters<typeof queueSandboxCreationCleanup>[1] | undefined;
-          let dispatched = false;
-          try {
-            return await context.wait(() => {
-              dispatched = true;
-              const observe = async (result: HostToWorkerMethods["environmentAcquireLease"][1]) => {
-                if (!result.providerLeaseId || result.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
-                const resource = { id: identity.id, companyId: input.companyId, environmentId: environment!.id,
-                  providerLeaseId: result.providerLeaseId, providerMetadata: result.metadata };
-                await recordSandboxCreationResource(db, resource);
-                observedResource = resource;
-                if (abandoned || !context.active || context.signal.aborted || Date.now() >= context.deadlineAtMs) {
-                  await queueSandboxCreationCleanup(db, resource);
-                }
-              };
-              return recoverableCreation ? creationWorker!.call("environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe)
-                : workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe);
-            });
-          } catch (error) {
-            if (!dispatched) settled();
-            abandoned = true;
-            if (observedResource) await queueSandboxCreationCleanup(db, observedResource);
-            throw error;
-          }
-        });
-        if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
-        const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
-          runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
-        const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,
-          runnerTaskExecutionStopped:false,runnerTaskSessionRetained:false};
-        try {
-          context?.assertOpen();
-          if (!context) await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
-            environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId });
-          const expiresAt=fresh.expiresAt ? new Date(fresh.expiresAt) : null;
-          const deadline=typeof metadata.runnerTaskRequestedExpiresAt === "string" ? Date.parse(metadata.runnerTaskRequestedExpiresAt) : null;
-          if ((expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) ||
-              (deadline !== null && (!Number.isFinite(deadline) || !expiresAt || expiresAt.getTime() > deadline)))
-            throw new Error("Plugin replacement task expiry is not bounded");
-          await attachSandboxCreation(db, String(fresh.metadata!.creationOperationId), { companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId }, async tx => {
-            context?.assertOpen();
-            const [updated] = await tx.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,expiresAt,
-            metadata:{...replacementMetadata,creationOperationId:fresh.metadata!.creationOperationId},
-          }).where(and(eq(environmentLeases.id,lease.id),eq(environmentLeases.providerLeaseId,taskId),
-            eq(environmentLeases.status,"active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({id:environmentLeases.id});
-            if (!updated) throw new Error("Plugin task replacement ownership changed");
-            const attached = (await environmentService(tx).getLeaseById(updated.id))!;
-            context?.assertOpen();
-            return attached;
-          });
-        } catch (error) {
-          if (context) await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
-            environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId, providerMetadata: fresh.metadata });
-          throw error;
-        }
+        await replaceReusedEnvironmentTask(db, workers, { companyId: input.companyId, leaseId: lease.id, context });
         return executeEnvironmentTask(db, workers, input);
       }
     }
@@ -498,4 +424,107 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId))), { companyId: lease.companyId, runId: current.heartbeatRunId ?? undefined });
     throw new Error("Plugin Runner termination is unconfirmed; the saved lease requires cleanup");
   }
+}
+
+export async function replaceReusedEnvironmentTask(db: Db, workers: PluginWorkerManager, input: {
+  companyId: string;
+  leaseId: string;
+  context?: unknown;
+}): Promise<string> {
+  const [row] = await db.select({ lease: environmentLeases, environment: environments, run: heartbeatRuns })
+    .from(environmentLeases)
+    .leftJoin(environments, eq(environments.id, environmentLeases.environmentId))
+    .leftJoin(heartbeatRuns, and(eq(heartbeatRuns.id, environmentLeases.heartbeatRunId), eq(heartbeatRuns.companyId, environmentLeases.companyId)))
+    .where(and(eq(environmentLeases.id, input.leaseId), eq(environmentLeases.companyId, input.companyId))).limit(1);
+  if (!row || !row.lease.providerLeaseId) {
+    throw new Error("Plugin environment lease unavailable");
+  }
+  const { lease, environment, run } = row;
+  const metadata = (lease.metadata ?? {}) as Record<string, unknown>;
+  const taskId = row.lease.providerLeaseId!;
+  const context = input.context instanceof NativeExecutionContext ? input.context : undefined;
+  const plugin = await pluginRegistryService(db).getById(String(metadata.pluginId));
+  const driver = plugin?.manifestJson.environmentDrivers?.find(value => value.driverKey === metadata.driverKey);
+  if (!plugin || plugin.status !== "ready" || !driver?.supportsTasks) {
+    throw new Error("Plugin-provided Runner execution provider unavailable");
+  }
+  const config = (environment?.config ?? {}) as Record<string, unknown>;
+  const driverConfig = config.pluginKey === plugin.pluginKey && config.driverKey === metadata.driverKey
+    ? (config.driverConfig as Record<string, unknown> | undefined) ?? {} : {};
+  const replacementDriverKey = String(metadata.driverKey);
+  const creationWorker = context && driver.creationOperationVersion === 1 ? workers.getWorker(plugin.id) : undefined;
+  const recoverableCreation = creationWorker?.supportedMethods.includes("environmentInspectLease") === true &&
+    metadata.providerMetadata && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
+  let abandoned = false;
+  const fresh = await createOwnedSandbox(db, {
+    companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId,
+    issueId: lease.issueId, executionWorkspaceId: lease.executionWorkspaceId, provider: lease.provider!,
+    pluginId: plugin.id, driverKey: String(metadata.driverKey), config: {}, requestKey: taskId,
+    metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: String(metadata.driverKey),
+      runnerTaskLease: true, agentId: run!.agentId,
+      ...(context ? { runnerTaskCreationContextId: context.id } : {}),
+      ...(recoverableCreation ? { creationOperationVersion: 1, providerMetadata: metadata.providerMetadata } : {}) },
+  }, async identity => {
+    const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
+      issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
+      agentId: run!.agentId, adapterType: "paperclip_runner",
+      ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? { requestedExpiresAt: metadata.runnerTaskRequestedExpiresAt } : {}) };
+    if (!context) return workers.call(plugin.id, "environmentAcquireLease", params, 30_000);
+    const settled = context.trackWorker();
+    let observedResource: Parameters<typeof queueSandboxCreationCleanup>[1] | undefined;
+    let dispatched = false;
+    try {
+      return await context.wait(() => {
+        dispatched = true;
+        const observe = async (result: HostToWorkerMethods["environmentAcquireLease"][1]) => {
+          if (!result.providerLeaseId || result.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
+          const resource = { id: identity.id, companyId: input.companyId, environmentId: environment!.id,
+            providerLeaseId: result.providerLeaseId, providerMetadata: result.metadata };
+          await recordSandboxCreationResource(db, resource);
+          observedResource = resource;
+          if (abandoned || !context.active || context.signal.aborted || Date.now() >= context.deadlineAtMs) {
+            await queueSandboxCreationCleanup(db, resource);
+          }
+        };
+        return recoverableCreation ? creationWorker!.call("environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe)
+          : workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe);
+      });
+    } catch (error) {
+      if (!dispatched) settled();
+      abandoned = true;
+      if (observedResource) await queueSandboxCreationCleanup(db, observedResource);
+      throw error;
+    }
+  });
+  if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
+  const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
+    runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
+  const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,
+    runnerTaskExecutionStopped:false,runnerTaskSessionRetained:false};
+  try {
+    context?.assertOpen();
+    if (!context) await recordSandboxCreationResource(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
+      environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId });
+    const expiresAt=fresh.expiresAt ? new Date(fresh.expiresAt) : null;
+    const deadline=typeof metadata.runnerTaskRequestedExpiresAt === "string" ? Date.parse(metadata.runnerTaskRequestedExpiresAt) : null;
+    if ((expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) ||
+        (deadline !== null && (!Number.isFinite(deadline) || !expiresAt || expiresAt.getTime() > deadline)))
+      throw new Error("Plugin replacement task expiry is not bounded");
+    await attachSandboxCreation(db, String(fresh.metadata!.creationOperationId), { companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId }, async tx => {
+      context?.assertOpen();
+      const [updated] = await tx.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,expiresAt,
+        metadata:{...replacementMetadata,creationOperationId:fresh.metadata!.creationOperationId},
+      }).where(and(eq(environmentLeases.id,lease.id),eq(environmentLeases.providerLeaseId,taskId),
+        eq(environmentLeases.status,"active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`)).returning({id:environmentLeases.id});
+      if (!updated) throw new Error("Plugin task replacement ownership changed");
+      const attached = (await environmentService(tx).getLeaseById(updated.id))!;
+      context?.assertOpen();
+      return attached;
+    });
+  } catch (error) {
+    if (context) await queueSandboxCreationCleanup(db, { id: String(fresh.metadata!.creationOperationId), companyId: input.companyId,
+      environmentId: environment!.id, providerLeaseId: fresh.providerLeaseId, providerMetadata: fresh.metadata });
+    throw error;
+  }
+  return fresh.providerLeaseId;
 }

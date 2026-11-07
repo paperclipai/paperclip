@@ -187,6 +187,7 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   providerKey?: string | null;
   /** Host-bound plugin task RPC. expectedTaskId pins an owner to its physical task after startup. */
   runnerTask?: (operation: unknown, context?: { executionContext?: unknown; expectedTaskId?: string }) => Promise<unknown>;
+  reconcileTaskReplacement?: (context?: { executionContext?: unknown }) => Promise<string>;
   runnerTaskProjectIds?: readonly string[];
   /** Private Core-issued identity for a bounded, tool-free setup probe. */
   runnerTaskProbe?: { runId: string; sessionId: string };

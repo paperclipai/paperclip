@@ -45,7 +45,7 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execution entry", () => {
   const environment = nativeRestartFixture();
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).map(mode => [harness, mode] as const))])("continues %s after graceful eviction with a %s Core owner", { timeout: 60_000 }, async ([harness, mode], context) => {
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).map(mode => [harness, mode] as const))])("continues %s after graceful eviction with a %s Core owner", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
@@ -132,6 +132,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
+    const inspectedClaimants = new Set<string>();
+    let evictBeforeClaim: (() => Promise<void>) | undefined, resumeAttempts = 0, claimRequests = 0;
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
     const state = async (taskId: string = taskA) => JSON.parse(await readFile(join(runnerRoot(taskId), "runner-state.json"), "utf8"));
@@ -139,8 +141,14 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const task = async (raw: unknown, authorityRunId: string, taskId: string): Promise<unknown> => {
       const host = hosts.get(taskId)!;
       const operation = environmentTaskOperationSchema.parse(raw);
-      if (operation.kind === "describe") return { kind: "description", taskId, launchPreparationVersion: 1,
-        projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact };
+      if (operation.kind === "describe") {
+        if (mode === "after inspection" && authorityRunId !== runId && taskId === taskA) {
+          expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(false);
+          inspectedClaimants.add(authorityRunId);
+        }
+        return { kind: "description", taskId, launchPreparationVersion: 1,
+          projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact };
+      }
       if (operation.kind === "prepare") {
         expect(operation.requirements.identity.runId).toBe(authorityRunId);
         expect(operation.accountIdentity).toBe("fixture-account");
@@ -206,6 +214,14 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         releases.push(operation.identity); return { kind: "released", taskId };
       }
       if (operation.kind === "resume") {
+        resumeAttempts++;
+        if (mode === "after inspection") {
+          expect(inspectedClaimants.has(authorityRunId)).toBe(true);
+          if (evictBeforeClaim) { const evict = evictBeforeClaim; evictBeforeClaim = undefined; await evict(); }
+          expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(true);
+          return { kind: "resume", taskId, outcome: "unavailable" };
+        }
+        claimRequests++;
         const retainedProviderCount = await providerStarts();
         const reply = await host.request({ op: "claim", id: `claim_${sha(operation.bootstrapTicket)}`, parkId: parkId(operation.identity), bootstrapTicket: operation.bootstrapTicket });
         if (reply.status !== "claimed") throw new Error("Fixture native claim refused");
@@ -237,7 +253,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const execute = async (current: typeof execution, leaseId: string) => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: current }, runnerInstanceId: native.runnerInstanceId, completionContractId: contract!.id, completionContractSha256: contract!.canonicalSha256, nativeSessionId: current.session.normalizedSessionId })
         .where(eq(heartbeatRuns.id, current.binding.runId));
-      const target = mode === "reused lease" ? await resolveEnvironmentExecutionTarget({ db, companyId, adapterType: "paperclip_runner",
+      const target = (mode === "reused lease" || mode === "after inspection") ? await resolveEnvironmentExecutionTarget({ db, companyId, adapterType: "paperclip_runner",
         environment: { id: environmentId, driver: "plugin", config: { pluginKey: pluginId, driverKey: "tasks" } }, leaseId,
         lease: await environmentService(db).getLeaseById(leaseId), leaseMetadata: metadata,
         environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workers }) }) : {
@@ -274,7 +290,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
           await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, leaseA));
         }
       };
-      if (mode !== "reused lease") await evict();
+      evictBeforeClaim = evict;
+      if (mode !== "reused lease" && mode !== "after inspection") await evict();
       const admitNext = async () => {
         const runB = randomUUID(), leaseB = randomUUID();
         await db.insert(heartbeatRuns).values({ id: runB, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native" });
@@ -282,8 +299,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         await db.update(issues).set({ executionRunId: runB, status: "in_progress" }).where(eq(issues.id, issueId));
         const [oldLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseA));
         await db.insert(environmentLeases).values({ id: leaseB, companyId, environmentId, heartbeatRunId: runB, issueId, executionWorkspaceId: workspaceId,
-          provider: providerKey, providerLeaseId: mode === "reused lease" ? taskA : taskB, status: "active", leasePolicy: "reuse_by_environment",
-          metadata: mode === "reused lease" ? { ...oldLease!.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: leaseA,
+          provider: providerKey, providerLeaseId: mode === "reused lease" || mode === "after inspection" ? taskA : taskB, status: "active", leasePolicy: "reuse_by_environment",
+          metadata: mode === "reused lease" || mode === "after inspection" ? { ...oldLease!.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: leaseA,
             runnerTaskExecutionStopped: false } : { ...metadata, remoteCwd: workspace } });
         if (mode === "reused lease") {
           expect(handles.get(taskA)!.isExitConfirmed?.()).toBe(false);
@@ -333,6 +350,16 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       }
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))).toHaveLength(1);
     } catch (error) {
+      if (mode === "after inspection") {
+        const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
+        const turns = methods.filter(line => harness === "codex" ? line === "turn/start" : JSON.parse(line).command === "turn.start").length;
+        const starts = await providerStarts();
+        console.info("claim-window-evidence", { harness, passedInspection: inspectedClaimants.size, resumeAttempts,
+          nativeClaimRequests: claimRequests, runnerExitConfirmed: handles.get(taskA)?.isExitConfirmed?.(),
+          nativeSubmissions: submissions, providerStarts: starts, providerTurns: turns });
+        expect(submissions).toBe(1); expect(claimRequests).toBe(0); expect(claims).toHaveLength(0);
+        expect(starts).toBe(1); expect(turns).toBe(1);
+      }
       const live = await state().catch(() => ({}));
       console.info("entry-fixture", { releases: releases.length, claims: claims.length, lifecycle: live.lifecycle,
         lastCommand: live.lastControllerCommandSeq, ackedSource: live.ackedSourceSeq, outbox: live.outbox?.map((e: { envelope?: { payload?: { eventType?: string } } }) => e.envelope?.payload?.eventType), wire: wireEvents.slice(-70) });
