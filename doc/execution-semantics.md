@@ -651,7 +651,13 @@ company, project, goal, privacy, and workspace strategy (mode, environment,
 runtime, network egress, shared-workspace concurrency, branch template, base
 ref). It does not keep a pinned existing branch, a `reuse_existing` preference,
 or the workspace id. A child in another project takes that project's defaults
-instead of the parent's strategy. No route can bind a task to
+instead of the parent's strategy, and so does a child of a parent that has no
+project workspace (its strategy described its own task files). In a project
+without a project workspace, where tasks acquire repositories into their own
+task files, the child's new workspace repeats the parent's repository requests
+as its own: admission clones a fresh copy at the requested ref through the
+normal acquisition path and the child's own access checks, never the parent's
+checkout, branch, or pinned commit. No route can bind a task to
 a workspace that an ancestor created or is bound to: an explicit
 `executionWorkspaceId` naming one is dropped at create, and
 `inheritExecutionWorkspaceFromIssueId` copies only the source issue's project and

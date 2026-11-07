@@ -208,6 +208,50 @@ export function executionWorkspaceRepositoryService(db: Db) {
     });
     return { kind: "requires_next_admission" as const, applies: "next_normal_admission" as const, operationId: receipt.id, repository: receipt, reason: "immutable_admitted_workspace" };
   }
+  /**
+   * A task in a project without a project workspace gets its repositories by
+   * acquisition into its own task files. A subtask's new workspace repeats its
+   * parent's (or requester's) repository requests as its own pending requests,
+   * so admission clones a fresh copy at the requested ref through the normal
+   * acquisition path, with the subtask's own access checks. Nothing is copied
+   * from the parent's checkout: no pinned commit, branch, or files.
+   */
+  async function inheritSelections(input: { companyId: string; issueId: string; workspaceId: string }) {
+    return db.transaction(async tx => {
+      const [workspace] = await tx.select({ id: executionWorkspaces.id, sourceIssueId: executionWorkspaces.sourceIssueId })
+        .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.workspaceId),
+          eq(executionWorkspaces.companyId, input.companyId))).for("update");
+      if (!workspace || workspace.sourceIssueId !== input.issueId) return 0;
+      const [existing] = await tx.select({ id: executionWorkspaceRepositories.id }).from(executionWorkspaceRepositories)
+        .where(and(eq(executionWorkspaceRepositories.companyId, input.companyId),
+          eq(executionWorkspaceRepositories.executionWorkspaceId, input.workspaceId))).limit(1);
+      if (existing) return 0;
+      const [task] = await tx.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId })
+        .from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+      const sourceIssueId = task?.privacyParentIssueId ?? task?.parentId;
+      if (!sourceIssueId) return 0;
+      const [source] = await tx.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues)
+        .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId)));
+      if (!source?.executionWorkspaceId || source.executionWorkspaceId === input.workspaceId) return 0;
+      const requested = await tx.select().from(executionWorkspaceRepositories).where(and(
+        eq(executionWorkspaceRepositories.companyId, input.companyId),
+        eq(executionWorkspaceRepositories.executionWorkspaceId, source.executionWorkspaceId)));
+      if (!requested.length) return 0;
+      const rows = await tx.insert(executionWorkspaceRepositories).values(requested.map(row => {
+        const requestKey = `inherited:${row.id}`;
+        return { companyId: input.companyId, executionWorkspaceId: input.workspaceId, requestedByIssueId: input.issueId,
+          repositoryIdentity: row.repositoryIdentity, catalogRepositoryId: row.catalogRepositoryId, repoUrl: row.repoUrl,
+          relativePath: row.relativePath, requestedRef: row.requestedRef, requestKey, requestKeys: [requestKey] };
+      })).onConflictDoNothing().returning({ id: executionWorkspaceRepositories.id });
+      if (rows.length) {
+        await tx.insert(activityLog).values({ companyId: input.companyId, actorType: "system", actorId: "workspace-preparation",
+          action: "workspace.repository.requested", entityType: "execution_workspace", entityId: input.workspaceId,
+          details: { issueId: input.issueId, inheritedFromIssueId: sourceIssueId, repositoryIds: rows.map(row => row.id),
+            applies: "current_admission" } });
+      }
+      return rows.length;
+    });
+  }
   async function list(companyId: string, workspaceId: string) {
     return measureRunPhase("workspace.repository.receipts", () => db.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, companyId), eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId))));
   }
@@ -352,8 +396,10 @@ export function executionWorkspaceRepositoryService(db: Db) {
     return candidatePin;
   }
   async function prepareForAdmission(input: { companyId: string; issueId: string; workspaceId: string; cwd: string; agentId: string; runId: string; responsibleUserId: string | null;
-    remoteTarget?: AdapterExecutionTarget | null; remoteLease?: EnvironmentLease; assertOwned?: () => Promise<void> }) {
+    remoteTarget?: AdapterExecutionTarget | null; remoteLease?: EnvironmentLease; assertOwned?: () => Promise<void>;
+    inheritRepositorySelections?: boolean }) {
     const { acquisitionRestricted, workspace } = await publicationBinding(db, input, false);
+    if (input.inheritRepositorySelections) await inheritSelections(input);
     const rows = await list(input.companyId, input.workspaceId);
     if (!rows.length) return [];
     await publicationBinding(db, input);

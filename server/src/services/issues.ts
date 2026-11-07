@@ -9734,7 +9734,9 @@ export function issueService(db: Db) {
       // The child keeps the parent's workspace strategy, never its files. The
       // strategy belongs to the parent's project, so it stays behind when the
       // child targets another project.
-      const parentStrategy = childInheritsParentProject
+      // Only a parent realized from a project workspace has a strategy that
+      // applies to the project base; a parent in its own task files does not.
+      const parentStrategy = childInheritsParentProject && parent.projectWorkspaceId
         ? buildIndependentTaskWorkspaceSettings(parent.executionWorkspaceSettings)
         : null;
       const inheritedPreRealizationWorkspaceSettings =
@@ -10442,7 +10444,11 @@ export function issueService(db: Db) {
           // time, and two writers in one folder lose each other's files. The
           // new task keeps only the source's workspace strategy and realizes
           // its own workspace from the project base on its first run.
-          if (inheritsSourceProject) {
+          // The source's strategy describes how to realize work from its
+          // project workspace. A source without one worked in its own task
+          // files, so the new task takes the project's defaults, exactly as a
+          // top-level task in that project would.
+          if (inheritsSourceProject && workspaceSource.projectWorkspaceId) {
             inheritedIndependentSettings = buildIndependentTaskWorkspaceSettings(
               workspaceSource.executionWorkspaceSettings,
             );

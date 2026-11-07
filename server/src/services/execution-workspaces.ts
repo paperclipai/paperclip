@@ -1758,7 +1758,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await tx.update(issues).set({
         executionWorkspaceId: null,
         executionWorkspacePreference: null,
-        executionWorkspaceSettings: buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings),
+        // Without a project workspace the old settings described the relative's
+        // task files; the project's defaults apply instead, as for a top-level task.
+        executionWorkspaceSettings: task.projectWorkspaceId
+          ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+          : null,
         ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
         workspaceBindingRevision: task.workspaceBindingRevision + 1,
         updatedAt: new Date(),
