@@ -39,6 +39,17 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
       openCodeServe: /^opencode/.test(path.basename(canonical)) && args.includes("serve"), proxyScript: proxy, proxyDigest };
   } catch { throw new Error("Provider cleanup fixture could not qualify the exact owned process; private diagnostics withheld"); }
 }
+/** The single direct child of the verified runner that is a provider of this kind, or undefined. */
+async function soleProviderChild(runnerPid: number, kind: "codex" | "opencode"): Promise<number | undefined> {
+  const rows = (await promisify(execFile)("/bin/ps", ["-A", "-o", "pid=,ppid="], { timeout: 5_000, maxBuffer: 1_048_576 })).stdout
+    .split("\n").map(line => line.trim().split(/\s+/).map(Number)).filter(([pid, parent]) => Number.isSafeInteger(pid) && parent === runnerPid);
+  const providers: number[] = [];
+  for (const [pid] of rows) {
+    const identity = await providerIdentity(pid!).catch(() => undefined);
+    if (identity && (kind === "opencode" ? !!identity.proxyScript || identity.openCodeServe : identity.appServer)) providers.push(pid!);
+  }
+  return providers.length === 1 ? providers[0] : undefined;
+}
 /** This does not signal any group or control ACK timing. Actual public Stop must immediately follow. */
 export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, binding: { runId: string; issueId: string; agentId: string }) {
   if (ctx.scenario.id !== "recovery.post-stop-message" || suspended.has(ctx)) throw new Error("Bounded provider cleanup suspension is exclusive to the selected post-stop scenario");
@@ -49,20 +60,20 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   const events = await collectRunEvents<{ seq?: number; payload?: { prpEvent?: { runId?: string; normalizedSessionId?: string; sourceKind?: string; sourceInstanceId?: string; eventType?: string; payload?: { processId?: number; processStartedAt?: string | null; providerSessionId?: string; driverSessionId?: string } } } }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
   const sessionReceipts = events.map(row => row.payload?.prpEvent).filter(e => e?.runId === run.id && e.sourceKind === "runner" && e.sourceInstanceId === run.runnerInstanceId && e.normalizedSessionId === run.nativeSessionId
     && ["session.started", "session.resumed"].includes(e.eventType ?? "") && !!(e.payload?.providerSessionId ?? e.payload?.driverSessionId));
-  // The runnerd transport writes the provider into the checkpoint; other local paths name it only
-  // in the durable session receipt.
-  const latest = sessionReceipts.at(-1)?.payload;
-  const pid = checkpoint?.process?.providerPid ?? latest?.processId;
-  const started = checkpoint?.process?.providerPid ? checkpoint.process.providerProcessStartedAt : latest?.processStartedAt ?? undefined;
-  if ((kind !== "codex" && kind !== "opencode") || !Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native session lacks a qualified local provider PID/start identity");
-  // OpenCode runs either behind the app-server proxy (`node opencode-app-server-proxy.cjs`) or as
-  // a directly spawned `opencode serve`; qualify whichever the recorded process actually is.
+  if (kind !== "codex" && kind !== "opencode") throw new Error("Actual public native session lacks a supported local provider kind");
+  if (!sessionReceipts.length) throw new Error("Provider suspension lacks the exact durable native session receipt");
+  // The runnerd transport records the provider in the checkpoint. When the session runs inside the
+  // verified runnerd itself, the provider is its direct child: the one qualifying child is chosen,
+  // and every ownership check below still applies to it.
+  const pid = checkpoint?.process?.providerPid ?? await soleProviderChild(runner.pid, kind);
+  const started = checkpoint?.process?.providerPid ? checkpoint.process.providerProcessStartedAt : pid ? await readProcessStartedAt(pid) : undefined;
+  if (!Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native session lacks a qualified local provider PID/start identity");
   const viaProxy = kind === "opencode" && !!(await providerIdentity(pid)).proxyScript;
   const executable = viaProxy ? await realpath(process.execPath) : undefined;
   const proxyScript = viaProxy ? await realpath(fileURLToPath(new URL("../../../packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs", import.meta.url))) : undefined;
   const digest = executable ? createHash("sha256").update(await readFile(executable)).digest("hex") : undefined;
   const proxyDigest = proxyScript ? createHash("sha256").update(await readFile(proxyScript)).digest("hex") : undefined;
-  if (!sessionReceipts.some(e => e?.payload?.processId === pid)) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
+  if (checkpoint?.process?.providerPid && !sessionReceipts.some(e => e?.payload?.processId === pid)) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
   const expected: Parameters<typeof matchesOwnedProvider>[0]["expected"] = { providerPid: pid, providerStartedAt: started, runnerPid: runner.pid, uid: runner.uid, runStartedAt: String(run.startedAt), kind, executable, digest, proxyScript, proxyDigest };
   const first = await providerIdentity(pid), second = await providerIdentity(pid);
   if (!matchesOwnedProvider({ identity: first, expected }) || !matchesOwnedProvider({ identity: second, expected }) || JSON.stringify(first) !== JSON.stringify(second)) throw new Error("Provider cleanup suspension rejected changed or unowned process identity");
