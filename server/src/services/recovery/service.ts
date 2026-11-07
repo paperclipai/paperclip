@@ -4324,7 +4324,7 @@ export function recoveryService(
     const publications: ActivityPublication[] = [];
     const postCommitActions: IssuePostCommitAction[] = [];
     const updated = await db.transaction(async (tx) => {
-      // Lock the routine before company, project, and issue rows. Dispatch holds
+      // Lock the routine before project, company, and issue rows. Dispatch holds
       // the routine while issue creation increments the company counter.
       // `dispatchRoutineRun` holds the routine row while `create` waits for the
       // company `issue-privacy-tree` lock, and `createChild` holds that company
@@ -4339,6 +4339,15 @@ export function recoveryService(
           eq(routines.companyId, input.issue.companyId),
           eq(routines.id, originRoutineId),
         )).for("share").then((rows) => rows[0] ?? null);
+        // Project visibility edits lock the project before the privacy-tree
+        // advisory lock. Take the project first too, before the company and
+        // issue rows, so recovery never holds a lock the editor needs.
+        if (lockedRoutine?.projectId) {
+          await tx.select({ id: projects.id }).from(projects).where(and(
+            eq(projects.companyId, input.issue.companyId),
+            eq(projects.id, lockedRoutine.projectId),
+          )).for("share");
+        }
         // Child creation takes this advisory lock before the parent row and
         // the company counter update. Join that order before locking the
         // company, or recovery and child creation can wait on each other.
@@ -4352,16 +4361,7 @@ export function recoveryService(
           eq(companies.id, input.issue.companyId),
         ).for("share", { skipLocked: true }).then((rows) => rows[0] ?? null);
         if (!lockedCompany) throw new Error("Routine recovery deferred: company row is locked");
-        // The project row comes next, still before the issue row: a project
-        // edit locks the project and then rewrites its issues, so reading the
-        // project after the issue (inside `routineExecutionWillFireAgain`)
-        // would wait in the opposite order.
-        if (lockedRoutine?.projectId) {
-          await tx.select({ id: projects.id }).from(projects).where(and(
-            eq(projects.companyId, input.issue.companyId),
-            eq(projects.id, lockedRoutine.projectId),
-          )).for("share");
-        }
+
       }
 
       // Recovery observes candidates before asynchronous policy checks. Serialize

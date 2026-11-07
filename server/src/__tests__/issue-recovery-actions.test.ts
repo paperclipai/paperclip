@@ -48,6 +48,7 @@ import { deliverReconciledExecutions, markExecutionReconciliation } from "../ser
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { projectService } from "../services/projects.js";
 import { issueService } from "../services/issues.js";
 import { caseHandoffService } from "../services/case-handoffs.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -1221,6 +1222,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     let release!: () => void;
     let ready!: () => void;
     let holderPid = 0;
+    let editVisibility = false;
     const locked = new Promise<void>((resolve) => { ready = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const [routineRow] = await db.select({ projectId: routines.projectId }).from(routines)
@@ -1234,6 +1236,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
       ready();
       await gate;
+      if (editVisibility) {
+        await projectService(tx as unknown as ReturnType<typeof createDb>).update(routineRow!.projectId!, {
+          visibility: "private",
+        });
+      }
     });
     await locked;
     const escalation = recovery.escalateStrandedAssignedIssue({
@@ -1277,12 +1284,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         }
       }).catch(() => false);
       expect(issueRowFree).toBe(true);
+      const privacyTreeFree = await probeDb.transaction(async (tx) => {
+        const [state] = await tx.execute<{ free: boolean }>(sql`
+          select pg_try_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0)) as free
+        `);
+        return state!.free;
+      });
+      expect(privacyTreeFree).toBe(true);
+      editVisibility = true;
     } finally {
       release();
       await dispatch;
     }
     const result = await escalation;
     expect(result?.status).toBe("cancelled");
+    const [project] = await db.select().from(projects).where(eq(projects.id, routineRow!.projectId!));
+    expect(project?.visibility).toBe("private");
   });
 
   it("cancels a dead routine_execution firing that left a pending native question (GH #9201)", async () => {
