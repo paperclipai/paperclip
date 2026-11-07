@@ -25,6 +25,19 @@ async function repository(name = "repository") {
   return cwd;
 }
 describe("Git physical source roots", () => {
+  it("distinguishes an ignore-only fragment from Git source metadata", async () => {
+    const cwd = path.join(root, "plain-task"), marker = path.join(cwd, ".git");
+    await fs.mkdir(path.join(marker, "info"), { recursive: true });
+    await fs.writeFile(path.join(marker, "info", "exclude"), "/.paperclip-repositories/\n");
+    expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    for (const name of ["HEAD", "config", "commondir"]) {
+      await fs.writeFile(path.join(marker, name), name === "commondir" ? ".\n" : "partial Git state\n");
+      await expect(readWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+      await fs.rm(path.join(marker, name));
+    }
+    await fs.mkdir(path.join(marker, "objects"));
+    expect(await readWorkspaceGitSourceRoots(cwd)).toMatchObject({ objectDirectories: [{ path: path.join(marker, "objects") }] });
+  });
   it.each([
     { cwd: "/source/a", providerRef: null, paths: ["/source/a"] },
     { cwd: null, providerRef: "/source/a", paths: ["/source/a"] },

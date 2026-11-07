@@ -560,8 +560,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       providerType: "local_fs", strategyType: "project_primary", mode: "shared_workspace", status: "active" }).returning();
     await db.update(issues).set({ executionWorkspaceId: original.id }).where(eq(issues.id, issue.id));
     const storage = createStorageService(createLocalDiskStorageProvider(join(home, `import-objects-${randomUUID()}`)));
-    await expect(migrateRemoteWorkspace({ db, storage, companyId: issue.companyId, workspaceId: original.id, apply: true }))
-      .resolves.toMatchObject({ applied: true });
+    const migrationBefore = process.env.PAPERCLIP_EPHEMERAL_MIGRATION;
+    process.env.PAPERCLIP_EPHEMERAL_MIGRATION = "true";
+    try {
+      await expect(migrateRemoteWorkspace({ db, storage, companyId: issue.companyId, workspaceId: original.id,
+        apply: true, writersStopped: true })).resolves.toMatchObject({ applied: true });
+    } finally {
+      if (migrationBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_MIGRATION;
+      else process.env.PAPERCLIP_EPHEMERAL_MIGRATION = migrationBefore;
+    }
     const [imported] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, original.id));
     const saved = readRemoteWorkspaceAuthority(imported.metadata)!;
     expect(saved).toMatchObject({ source: { kind: "git", repoUrl, ref: "main", branchName: "main" },

@@ -72,9 +72,19 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const ordinary = await inspectOnlineOrdinarySource(db, workspace);
   let selected: Identities;
   try { selected = await workspaceSourceIdentities(workspace.companyId, cwd); } catch { return null; }
-  if (ordinary && !selected.git) return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
+  if (ordinary && !selected.git) {
+    const marker = await fs.lstat(path.join(ordinary.root, ".git")).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error; return null;
+    });
+    if (marker) return null;
+    return { ...ordinary, kind: "ordinary", projectIds: ordinary.projectId ? [ordinary.projectId] : [], companions: [] };
+  }
   if (!selected.git || selected.git.root !== await physicalPath(cwd) || selected.unownedPaths.length || !workspace.sourceIssueId
     || workspace.cwd && workspace.providerRef && workspace.cwd !== workspace.providerRef) return null;
+  const head = await fs.lstat(path.join(selected.git.gitDirectory.path, "HEAD")).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error; return null;
+  });
+  if (!head || !head.isFile() && !head.isSymbolicLink()) return null;
   const entry = await fs.lstat(cwd);
   const rows = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, workspace.companyId),
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]))).orderBy(executionWorkspaces.id).limit(1001);

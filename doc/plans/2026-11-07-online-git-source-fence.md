@@ -20,6 +20,14 @@ before Git inspection. Git pointer files and administration/object-store links
 retain their strict checks. A configured symlink does not make a direct symlink
 migration source admissible.
 
+The runtime retains the existing plain-task-directory treatment of an exact
+regular `.git/info/exclude` fragment. It is not an operational Git repository.
+Git pointers and object stores retain their topology checks, and migration
+rejects the fragment instead of treating it as an ordinary snapshot. A blocked
+reopen returns its existing structured failure without attempting reconstruction.
+Arbitrary self-hosted Git paths and file URLs retain the genuine offline
+maintenance path; online migration requires a proven physical source owner.
+
 Physical exclusion enumerates both `cwd` and `providerRef` through one source
 path owner. Company/foreign alias checks, early admission, layout checks and
 filesystem mutation owners use that set. A managed or Git source in either

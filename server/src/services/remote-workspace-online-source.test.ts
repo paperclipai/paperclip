@@ -101,6 +101,41 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   async function stored(workspaceId: string) {
     return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0];
   }
+  it.each([false, true])("does not admit a Git fragment as an ordinary migration source (objects: %s)", async objects => {
+    const f = await fixture(), info = path.join(f.cwd, ".git", "info");
+    await fs.mkdir(info, { recursive: true });
+    await fs.writeFile(path.join(info, "exclude"), "/.paperclip-repositories/\n");
+    if (objects) await fs.mkdir(path.join(f.cwd, ".git", "objects"));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
+    expect(await fs.readFile(path.join(info, "exclude"), "utf8")).toBe("/.paperclip-repositories/\n");
+  });
+  it("preserves unmanaged Git import in genuine offline mode while retaining online and drain guards", async () => {
+    const f = await fixture(), cwd = path.join(home, "self-hosted-repository"), repoUrl = "https://example.invalid/self-hosted.git";
+    await fs.mkdir(cwd); await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "saved.txt"), "self-hosted original work\n");
+    await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "Self-hosted source");
+    await git(cwd, "remote", "add", "origin", repoUrl);
+    for (const alias of f.aliases.slice(1)) await db.update(executionWorkspaces).set({ providerType: "plugin" })
+      .where(eq(executionWorkspaces.id, alias.workspace.id));
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd, repoUrl, branchName: "main" })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false,
+      reasons: expect.arrayContaining(["online_workspace_source_scope_unproven"]) });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Offline writer guard" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id,
+      issueId: f.aliases[0].issue.id, status: "running", runtimeMode: "legacy" }).returning();
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true }))
+      .rejects.toThrow("active_execution_requires_drain");
+    expect(await db.select().from(workspaceOperations)).toEqual([]);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true })).resolves.toMatchObject({ applied: true });
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("self-hosted original work\n");
+  });
   it.each(["ordinary", "Git"].flatMap(kind => ["cwd", "providerRef", "different", "alias"].map(locator => ({ kind, locator }))))(
     "rejects foreign $kind ownership through $locator source locators", async ({ kind, locator }) => {
       const base = await fixture(), f = kind === "Git" ? await gitFixture(base) : null;

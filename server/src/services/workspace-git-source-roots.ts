@@ -48,6 +48,15 @@ function metadataPath(text: string): string {
   return value;
 }
 
+async function onlyEntry(directory: string, name: string): Promise<boolean> {
+  let found = false;
+  for await (const child of await fs.opendir(directory)) {
+    if (found || child.name !== name) return false;
+    found = true;
+  }
+  return found;
+}
+
 export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancestors?: boolean } = {}): Promise<WorkspaceGitSourceRoots | null> {
   let root = path.resolve(cwd), marker = "", markerEntry: Awaited<ReturnType<typeof entry>>;
   for (let depth = 0; ; depth++) {
@@ -64,7 +73,16 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
   }
   const metadata: Metadata[] = [];
   let gitDirectory: Identity;
-  if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) gitDirectory = await directoryIdentity(marker);
+  if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) {
+    if (!await entry(path.join(marker, "objects")) && await onlyEntry(marker, "info")) {
+      const info = path.join(marker, "info"), infoEntry = await entry(info);
+      if (infoEntry?.isDirectory() && !infoEntry.isSymbolicLink() && await onlyEntry(info, "exclude")) {
+        const exclude = await entry(path.join(info, "exclude"));
+        if (exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n) return null;
+      }
+    }
+    gitDirectory = await directoryIdentity(marker);
+  }
   else {
     const pointer = await readMetadata(marker, 4096);
     if (!pointer || !pointer.text.startsWith("gitdir: ")) throw invalid();

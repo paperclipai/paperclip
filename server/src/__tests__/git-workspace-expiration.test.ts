@@ -921,10 +921,22 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
 
   it("describes an unexpected inspection failure without the command or credentials", async () => {
     const f = await fixture();
-    await fs.writeFile(path.join(f.cwd, ".git"), `gitdir: ${path.join(f.cwd, "missing-admin")}\n`);
+    const failure = Object.assign(new Error("inspection command token=sk-secret-fixture"), { code: "EACCES" });
+    vi.spyOn(fs, "open").mockRejectedValueOnce(failure);
     const result = await f.expire();
     expect(result).toMatchObject({ expired: false, skipReason: "inspection_failed",
-      failure: { name: "Error", code: expect.any(String), at: expect.stringMatching(/^at /), stderr: expect.stringMatching(/not a git repository|gitfile does not point to a valid repository/) } });
+      failure: { name: "Error", code: "EACCES", at: expect.stringMatching(/^at /), stderr: null } });
+    expect(JSON.stringify(result)).not.toContain("sk-secret-fixture");
+    expect(JSON.stringify(result)).not.toContain("inspection command");
+    expect(await exists(f.cwd)).toBe(true);
+  });
+
+  it("retains an invalid Git pointer rejected by source admission without exposing its command", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.cwd, ".git"), `gitdir: ${path.join(f.cwd, "missing-admin")}\n`);
+    const result = await f.expire();
+    expect(result).toMatchObject({ expired: false, skipReason: "workspace_git_source_unproven" });
+    expect(result.failure).toBeUndefined();
     expect(await exists(f.cwd)).toBe(true);
   });
 

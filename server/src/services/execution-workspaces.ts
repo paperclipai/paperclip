@@ -4777,10 +4777,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (freshSnapshot.providerType === "plugin") return reopenSource();
       const projectIds = new Set<string>(), issueIds = new Set<string>();
       if (freshSnapshot.projectId) projectIds.add(freshSnapshot.projectId);
-      for (const cwd of localWorkspaceSourcePaths(freshSnapshot)) {
-        const identities = await workspaceSourceIdentities(freshSnapshot.companyId, cwd);
-        for (const id of identities.projectIds) projectIds.add(id);
-        for (const id of identities.issueIds) issueIds.add(id);
+      try {
+        for (const cwd of localWorkspaceSourcePaths(freshSnapshot)) {
+          const identities = await workspaceSourceIdentities(freshSnapshot.companyId, cwd);
+          for (const id of identities.projectIds) projectIds.add(id);
+          for (const id of identities.issueIds) issueIds.add(id);
+        }
+      } catch {
+        return { ok: false, code: "rebuild_failed", message: freshSnapshot.metadata?.gitCacheRestoration
+          ? new GitCacheRestorationFailure().message : "Failed to rebuild the execution workspace" };
       }
       return withWorkspaceSourceLocks(db, { companyId: freshSnapshot.companyId, projectIds: [...projectIds], issueIds: [...issueIds] }, reopenSource);
       };
