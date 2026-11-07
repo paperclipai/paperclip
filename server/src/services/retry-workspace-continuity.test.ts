@@ -178,7 +178,9 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
       if (unsafe === "live_lease") await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
         provider: "local", status: "active", leasePolicy: "ephemeral", executionWorkspaceId: f.workspace.id });
       if (unsafe === "running_operation") await db.insert(workspaceOperations).values({ companyId: f.companyId,
-        executionWorkspaceId: f.workspace.id, issueId: f.issueId, phase: "worktree_prepare", status: "running" });
+        // A workspace-control job has no run and can predate the source settling.
+        executionWorkspaceId: f.workspace.id, issueId: f.issueId, phase: "worktree_prepare", status: "running",
+        startedAt: new Date(Date.now() - 24 * 60 * 60_000) });
       if (unsafe === "corrupt_git") await writeFile(join(f.worktree, ".git"), "gitdir: /nonexistent/worktree\n");
       if (unsafe === "missing_directory") await rm(f.worktree, { recursive: true, force: true });
       if (unsafe === "remote_authority") await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: {

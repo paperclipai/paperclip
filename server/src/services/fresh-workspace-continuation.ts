@@ -58,8 +58,9 @@ export async function workspaceHasOtherWriter(db: Db, input: {
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId),
     eq(workspaceOperations.status, "running"),
     or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.successorRunId)),
-    source ? sql`not (${workspaceOperations.heartbeatRunId} = ${source.id}
-      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz)` : undefined,
+    // coalesce keeps an operation with no run: NULL = id must not hide it.
+    source ? sql`not coalesce(${workspaceOperations.heartbeatRunId} = ${source.id}
+      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz, false)` : undefined,
   )).limit(1);
   return lease ? "lease_held" as const : operation ? "operation_running" as const : null;
 }
