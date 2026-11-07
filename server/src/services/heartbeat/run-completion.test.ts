@@ -1091,6 +1091,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } });
   });
 
+  it("logs the driver cause code of a wrapped setup query failure without its text", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("write CONNECTION_CLOSED 127.0.0.1:5432"), { code: "CONNECTION_CLOSED" });
+    await f.completion.failRunSetup(f.setup(new Error("Failed query: select 1", { cause: driverError })));
+    const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
+    expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed", causeCode: "CONNECTION_CLOSED" });
+    expect(JSON.stringify(setupLog?.[0])).not.toContain("127.0.0.1:5432");
+  });
+
   it("retries a workspace operation the stopped provider worker never received", async () => {
     const f = await fixture();
     const refusal = new PluginWorkerUnavailableError({ pluginId: "plugin-1", workerStatus: "stopped",
