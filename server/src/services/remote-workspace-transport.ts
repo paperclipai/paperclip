@@ -208,7 +208,7 @@ const WORKSPACE_COMMAND_TIMEOUT_MS = 300_000;
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
   args: string[], env?: Record<string, string>, timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
-    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
+    env: { NODE_OPTIONS: "", NODE_PATH: "", ...env, NODE_NO_WARNINGS: "1" }, timeoutMs, bypassSession: true });
   // Copy-back and restore record why the provider refused the command.
   const result = operation === "capture" || operation === "archive_helper" || operation === "restore"
     ? await execute().catch((error: unknown) => { noteProviderRefusal(operation, error); throw error; })

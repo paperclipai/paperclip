@@ -2193,6 +2193,18 @@ or `cleanup`) and its timeout in milliseconds. Command output is excluded from
 that diagnostic. A timeout does not prove the remote process stopped or that a
 save failed before publication. Reconcile the existing workspace and operation
 receipts before recovery; the transport does not automatically repeat the command.
+The internal helper commands suppress Node runtime warnings so their fixed
+failure labels stay separate from warning text. Actual command errors still
+fail the operation. This does not change an agent process's environment.
+
+Loading an encrypted saved snapshot cancels its storage request after five
+minutes without incoming bytes, including a wait for response headers. Incoming
+bytes renew that idle deadline, so a large download can take longer while it
+makes progress. The failure is `remote_workspace_snapshot_download_stalled`;
+private download scratch is removed before returning and the saved snapshot is
+unchanged. Preparation offers its existing bounded retry only after rechecking
+the same clean saved version and workspace owner. Caller cancellation still
+cancels the request and does not become a download timeout.
 Export cleanup keeps this typed timeout diagnostic in the operation's
 `metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
 The saved snapshot stays acknowledged and the cleanup obligation stays pending
