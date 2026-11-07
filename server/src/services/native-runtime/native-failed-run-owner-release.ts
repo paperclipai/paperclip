@@ -1,4 +1,4 @@
-import { currentControllerProcess } from "../controller-process-identity.js";
+import { currentControllerProcess, processExists, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import { nativeControllerAuthorityDigest, isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
@@ -117,8 +117,7 @@ export async function nextAbandonedNativeOwnerReleaseAt(db: Db): Promise<Date | 
 }
 
 function processAbsent(pid: number): boolean {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+  return !processExists(pid);
 }
 
 /** True unless the recorded process is gone or provably a different process. */
@@ -126,7 +125,7 @@ async function recordedProcessMayBeLive(pid: number | null, startedAt: Date | nu
   if (!pid || processAbsent(pid)) return false;
   if (!startedAt) return true;
   const observed = await readProcessStartedAt(pid).catch(() => null);
-  return !observed || new Date(observed).getTime() === startedAt.getTime();
+  return !processStartsDefinitelyDiffer(startedAt, observed);
 }
 
 /**
@@ -142,7 +141,7 @@ async function runProcessMayBeLive(run: Run, now: Date): Promise<boolean> {
   let groupAlive = Boolean(run.processGroupId && !processAbsent(-run.processGroupId));
   if (processAlive && run.processStartedAt) {
     const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-    if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
+    if (processStartsDefinitelyDiffer(run.processStartedAt, observed)) {
       processAlive = false;
       if (run.processGroupId === run.processPid) groupAlive = false;
     }
