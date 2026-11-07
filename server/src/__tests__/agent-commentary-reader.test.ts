@@ -134,6 +134,15 @@ describe("agent commentary browsing", () => {
     expect((await request(app).get(`${url}/${firstId}`)).status).toBe(200);
     actor = { type: "agent", companyId, agentId: secondAgentId };
     expect((await request(app).get(`${url}/${firstId}`)).status).toBe(403);
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: secondAgentId, status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: secondAgentId, permissionKey: "commentary:view" });
+    try {
+      expect((await request(app).get(`${url}/${firstId}`)).status).toBe(200);
+      expect((await request(app).get(url)).status).toBe(200);
+    } finally {
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, secondAgentId));
+      await db.delete(companyMemberships).where(eq(companyMemberships.principalId, secondAgentId));
+    }
     actor = { type: "board", source: "session", userId: "viewer", companyIds: [companyId] };
     const denied = await request(app).get(url).expect(403);
     expect(denied.body.error).toContain("commentary:view");
