@@ -13,6 +13,12 @@ seed_manifest_path="$paperclip_dir/seed-manifest.json"
 seed_pending_marker_path="$paperclip_dir/seed-pending"
 seed_complete_marker_path="$paperclip_dir/seed-complete"
 worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
+# This repository's managed dev runtime is exposed on the stable private URL
+# below. Persist it in every isolated Paperclip instance so auth callbacks,
+# trusted origins, and generated links use the same URL shown by the workspace
+# runtime service. The override keeps the setup script usable if that project
+# runtime URL changes without requiring another script edit.
+worktree_public_url="${PAPERCLIP_WORKSPACE_PUBLIC_URL:-http://paperclip-dev:45439}"
 created_worktree_config=0
 worktree_instance_id="$(WORKTREE_CWD="$worktree_cwd" node <<'EOF'
 const crypto = require("node:crypto");
@@ -387,6 +393,43 @@ fs.writeFileSync(
 EOF
 }
 
+persist_worktree_public_url() {
+  WORKTREE_ENV_PATH="$worktree_env_path" \
+  WORKTREE_PUBLIC_URL="$worktree_public_url" \
+  node <<'EOF'
+const fs = require("node:fs");
+
+const envPath = process.env.WORKTREE_ENV_PATH;
+const rawPublicUrl = process.env.WORKTREE_PUBLIC_URL;
+if (!envPath || !rawPublicUrl) {
+  throw new Error("WORKTREE_ENV_PATH and WORKTREE_PUBLIC_URL are required");
+}
+
+const parsedPublicUrl = new URL(rawPublicUrl);
+if (parsedPublicUrl.protocol !== "http:" && parsedPublicUrl.protocol !== "https:") {
+  throw new Error(`Unsupported Paperclip worktree public URL protocol: ${parsedPublicUrl.protocol}`);
+}
+const publicUrl = parsedPublicUrl.toString().replace(/\/$/, "");
+const assignment = `PAPERCLIP_PUBLIC_URL=${JSON.stringify(publicUrl)}`;
+const existingLines = fs.existsSync(envPath)
+  ? fs.readFileSync(envPath, "utf8").split(/\r?\n/)
+  : [];
+const nextLines = [];
+let replaced = false;
+for (const line of existingLines) {
+  if (/^\s*(?:export\s+)?PAPERCLIP_PUBLIC_URL\s*=/.test(line)) {
+    if (!replaced) nextLines.push(assignment);
+    replaced = true;
+    continue;
+  }
+  nextLines.push(line);
+}
+while (nextLines.at(-1) === "") nextLines.pop();
+if (!replaced) nextLines.push(assignment);
+fs.writeFileSync(envPath, `${nextLines.join("\n")}\n`, { mode: 0o600 });
+EOF
+}
+
 write_fallback_worktree_config() {
   WORKTREE_NAME="$worktree_name" \
   BASE_CWD="$base_cwd" \
@@ -676,6 +719,10 @@ if [[ -n "$source_config_path" ]]; then
     fi
     created_worktree_config=1
   fi
+
+  # Run this for both freshly-created and reused workspaces. Older isolated
+  # instances are repaired the next time their normal provision command runs.
+  persist_worktree_public_url
 
   # The target config can predate a deployment-mode change on the registered
   # source, and older/fallback CLI writers may default this field independently.
