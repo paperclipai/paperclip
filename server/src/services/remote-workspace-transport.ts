@@ -11,6 +11,7 @@ import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
 
@@ -580,7 +581,7 @@ async function captureSandboxWorkspaceArchive(input: {
     timing.transferMs = elapsedSince(transferStarted);
     const verifyStarted = performance.now();
     const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath)) { hash.update(chunk); bytes += chunk.length; }
+    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
     timing.verifyMs = elapsedSince(verifyStarted);
     if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };

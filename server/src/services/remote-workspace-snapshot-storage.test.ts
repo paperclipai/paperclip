@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,10 +40,10 @@ suite("remote workspace snapshot storage", () => {
     storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
   });
   afterEach(async () => { vi.unstubAllEnvs(); await db.delete(executionWorkspaceSnapshots); await fs.rm(root, { recursive: true, force: true }); });
-  async function fixture() {
+  async function fixture(content: string | Buffer = "acknowledged workspace content\n") {
     const companyId = randomUUID(), workspaceId = randomUUID(), operationId = randomUUID();
     const cwd = path.join(root, "source"), archivePath = path.join(root, "archive.pcws"); await fs.mkdir(cwd);
-    await fs.writeFile(path.join(cwd, "saved.txt"), "acknowledged workspace content\n");
+    await fs.writeFile(path.join(cwd, "saved.txt"), content);
     const captured = await captureRemoteWorkspaceDirectory({ cwd, archivePath });
     const row = await beginWorkspaceSnapshot(db, { companyId, workspaceId, operationId, generation: 1, epoch: 3 });
     const upload = { db, storage, snapshotId: row.id, companyId, workspaceId, archivePath, manifestDigest: captured.manifestDigest };
@@ -62,6 +62,18 @@ suite("remote workspace snapshot storage", () => {
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("acknowledged workspace content\n");
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
+  });
+  it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
+    const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
+    const verifiedArchivePath = path.join(root, "verified-large.pcws");
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath });
+    expect((await fs.readFile(verifiedArchivePath)).equals(await fs.readFile(f.archivePath))).toBe(true);
+    await fs.rm(f.cwd, { recursive: true }); await fs.rm(f.archivePath);
+    const restoredArchive = path.join(root, "cold-large.pcws"), targetDir = path.join(root, "cold-large");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: restoredArchive });
+    expect((await fs.readFile(restoredArchive)).equals(await fs.readFile(verifiedArchivePath))).toBe(true);
+    await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir, expectedManifestDigest: ref.manifestDigest });
+    expect((await fs.readFile(path.join(targetDir, "saved.txt"))).equals(content)).toBe(true);
   });
   it.each(["fresh", "uploaded", "lost-reply"])("reuses one authenticated %s readback for a complete cold restore", async state => {
     const f = await fixture(), put = storage.putFile.bind(storage);
@@ -332,15 +344,16 @@ suite("remote workspace snapshot storage", () => {
     await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("cancels an active object body and removes private decryption scratch before rejecting", async () => {
-    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const f = await fixture(randomBytes(3 * 1024 * 1024 + 137)), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));
     const controller = new AbortController();
-    let produced = 0, closed = false;
+    let produced = 0, reads = 0, closed = false;
     const body = new Readable({
       highWaterMark: 1,
       read() {
-        if (produced === 2) { controller.abort(new Error("client disconnected")); return; }
-        this.push(ciphertext.subarray(produced, ++produced));
+        if (reads++ === 2) { controller.abort(new Error("client disconnected")); return; }
+        const start = produced; produced += 1024 * 1024 + 17;
+        this.push(ciphertext.subarray(start, produced));
       },
       destroy(error, callback) { closed = true; callback(error); },
     });
