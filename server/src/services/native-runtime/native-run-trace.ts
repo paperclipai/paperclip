@@ -106,6 +106,54 @@ export function buildNativeHeartbeatPreparationSpans(input: {
   ];
 }
 
+/** Which accepted input `task.time_to_first_token` is measured from. */
+export type NativeTimeToFirstTokenAnchor =
+  | "question_response"
+  | "comment"
+  | "wake_request"
+  | "run_created";
+
+/**
+ * Resolve the start of `task.time_to_first_token`: the earliest accepted input
+ * that caused this run. A question answer or a wake comment is already a root
+ * historical span. Otherwise the run row's creation time is the fallback. A
+ * durable wake request accepted earlier (deferred, coalesced or retried wakes)
+ * moves the start back to that request, so queueing before the run row exists
+ * is part of the measured latency.
+ *
+ * Run-log only. The wake request time is read after the first deliverable
+ * text, never before `turn.start`.
+ */
+export function resolveNativeTimeToFirstTokenStart(input: {
+  traceStartedAtMs: number;
+  preparationSpans: readonly NativeRunHistoricalSpan[];
+  wakeRequestedAtMs: number | null;
+}): { startedAtMs: number; anchor: NativeTimeToFirstTokenAnchor } {
+  const ingress = input.preparationSpans.find(
+    (span) =>
+      span.name === "question_response.to_run_created" ||
+      span.name === "comment.to_run_created",
+  );
+  let anchor: NativeTimeToFirstTokenAnchor =
+    ingress?.name === "question_response.to_run_created"
+      ? "question_response"
+      : ingress
+        ? "comment"
+        : "run_created";
+  let startedAtMs = input.traceStartedAtMs;
+  const wakeAt = input.wakeRequestedAtMs;
+  if (
+    wakeAt !== null &&
+    Number.isFinite(wakeAt) &&
+    wakeAt >= 0 &&
+    wakeAt < startedAtMs
+  ) {
+    startedAtMs = wakeAt;
+    anchor = "wake_request";
+  }
+  return { startedAtMs, anchor };
+}
+
 export function nativeRunPreparationStarts(
   spans: NativeRunHistoricalSpan[],
   nowMs: number,
@@ -149,6 +197,7 @@ const NOOP_SPAN: SpanHandle = {
 
 const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
+  "anchor",
   "bytesTransferred",
   "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",

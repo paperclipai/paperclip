@@ -68,10 +68,14 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an
 accepted run-result summary. Its
-`durationMs` starts at the native run trace's historical start (accepted ingress,
-otherwise queued run creation, or dispatch when history is absent) and ends at Core
-commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
-`reasoning`. It includes preparation and startup, but excludes browser
+`durationMs` starts at the earliest accepted input: the accepted comment or
+answered question, or the durable wake request's `requested_at` when it is earlier
+(deferred, coalesced and retried wakes); otherwise queued run creation, or dispatch
+when history is absent. It ends at Core commit callback. `anchor` names the start:
+`comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
+zero, or negative when a wake request precedes the run trace. `eventKind` is
+`agentMessage` or `reasoning`. The wake request time is read after the first text,
+so the measurement adds no wait before `turn.start`. It includes preparation and startup, but excludes browser
 delivery/rendering. This measures text availability, not an exact model token.
 Empty text, item starts, tools, usage, result proposals, and duplicate replay do
 not qualify. No deliverable text means no timing sample. A recovered dispatch can

@@ -10,6 +10,7 @@ import {
   nativeRunPreparationStarts,
   recordFailedSkillPreparation,
   recordNativeProviderPerformanceSpans,
+  resolveNativeTimeToFirstTokenStart,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
 } from "./native-run-trace.js";
@@ -503,4 +504,57 @@ it.each(["start", "context", "attribute", "status", "end"])("keeps execution and
   expect(work).toHaveBeenCalledOnce();
   expect(failedWork).toHaveBeenCalledOnce();
   for (const span of spans) expect(span.end).toHaveBeenCalledOnce();
+});
+
+describe("time to first token anchor", () => {
+  const prep = (name: string, startedAtMs: number) => ({
+    name, parentName: "task.provider_session", startedAtMs, endedAtMs: startedAtMs + 5,
+  });
+
+  it("falls back to run creation when no earlier accepted input is known", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 1_000, preparationSpans: [prep("heartbeat.queue", 1_000)], wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 1_000, anchor: "run_created" });
+  });
+
+  it("names the comment or answered question that already anchors the trace", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 900, preparationSpans: [prep("comment.to_run_created", 900)], wakeRequestedAtMs: 950,
+    })).toEqual({ startedAtMs: 900, anchor: "comment" });
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 800, preparationSpans: [prep("question_response.to_run_created", 800)], wakeRequestedAtMs: null,
+    })).toEqual({ startedAtMs: 800, anchor: "question_response" });
+  });
+
+  it("moves back to an earlier accepted wake request (deferred or coalesced wakes)", () => {
+    expect(resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: 5_000, preparationSpans: [prep("heartbeat.queue", 5_000)], wakeRequestedAtMs: 2_000,
+    })).toEqual({ startedAtMs: 2_000, anchor: "wake_request" });
+  });
+
+  it("ignores invalid wake request times", () => {
+    for (const wakeRequestedAtMs of [Number.NaN, -1, 6_000]) {
+      expect(resolveNativeTimeToFirstTokenStart({
+        traceStartedAtMs: 5_000, preparationSpans: [], wakeRequestedAtMs,
+      })).toEqual({ startedAtMs: 5_000, anchor: "run_created" });
+    }
+  });
+
+  it("persists the anchor on the run-log span", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({
+      runId: "ttft-run", startedAtMs: 5_000,
+      traceContext: createRecordingTraceContext().traceContext,
+      onEvent: async (event) => { events.push(event); },
+    });
+    const start = resolveNativeTimeToFirstTokenStart({
+      traceStartedAtMs: trace.traceStartedAtMs, preparationSpans: [], wakeRequestedAtMs: 4_000,
+    });
+    await trace.record({
+      name: "task.time_to_first_token", parentName: "task.provider_session",
+      startedAtMs: start.startedAtMs, endedAtMs: 7_000, attributes: { eventKind: "agentMessage", anchor: start.anchor },
+    });
+    const span = events.find((event) => (event.payload as Record<string, unknown>)?.span === "task.time_to_first_token");
+    expect(span?.payload).toMatchObject({ durationMs: 3_000, startOffsetMs: -1_000, anchor: "wake_request", eventKind: "agentMessage" });
+  });
 });

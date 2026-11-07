@@ -746,9 +746,12 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
+The span starts at the earliest accepted input: the accepted comment or attested
+question response when present, or the durable wake request's acceptance time when
+it is earlier (deferred, coalesced and retried wakes); otherwise run creation from
+the queue span. The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text, so it never adds a wait before `turn.start`. Callers without preparation history start at native
 dispatch. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
