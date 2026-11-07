@@ -153,6 +153,14 @@ export class CodexSessionState {
   dispositionOnlyRecoveryAvailable = false;
   dispositionOnlyRecoveryConsumed = false;
   dispositionOnlyRecoveryTurnId: string | null = null;
+  /**
+   * A restart continuation borrows the one-shot disposition marker so a
+   * crash during it can adopt the accepted turn. It is not the disposition
+   * request: if it completes without a result, the allowance is returned.
+   * In memory only; a checkpoint taken during the continuation keeps the
+   * stricter consumed marker.
+   */
+  restartContinuationTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
   /**
@@ -197,6 +205,8 @@ export class CodexSessionState {
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    /** A recovered turn whose turn.accepted the previous controller never emitted. */
+    adoptedAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     goal?: HarnessThreadGoal | null;
@@ -625,6 +635,12 @@ export function initializeCodexSessionEvents(
     state.emitGoalEvent("session.goal.snapshot", state.currentGoal, {
       workingNow: state.activeTurnId !== null,
     });
+    // Recovery adopted a turn the runner accepted for the previous controller,
+    // which died before emitting turn.accepted. Emit it before any of that
+    // turn's notifications so its later terminal keeps the normal order.
+    if (input.adoptedAcceptedTurnId && input.adoptedAcceptedTurnId === state.activeTurnId) {
+      state.emit("turn.accepted", { turnId: input.adoptedAcceptedTurnId }, { turnId: input.adoptedAcceptedTurnId });
+    }
     for (const stale of input.stalePendingRuntimeRequests ?? []) {
       state.emit(
         "runtime_request.cancelled",

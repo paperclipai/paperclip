@@ -1,3 +1,4 @@
+import { prepareMcpClientMirrorPolicy } from "./public-mcp/client-mirror-mutations.js";
 import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -583,6 +584,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toGeneralView(row.general);
     },
 
+    getExperimentalReadOnly: async (runner: Pick<Db, "select"> = db): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const [row] = await runner.select({ experimental: instanceSettings.experimental }).from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY));
+      return toExperimentalView(row?.experimental);
+    },
+
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
       const row = await getOrCreateRow();
       return toExperimentalView(row.experimental);
@@ -644,6 +651,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       const [updated] = await db.transaction(async tx => {
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
+        if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);

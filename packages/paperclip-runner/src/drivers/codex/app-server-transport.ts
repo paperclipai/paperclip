@@ -52,6 +52,13 @@ export interface CodexAppServerTransport {
   /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
   takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
   /**
+   * The provider turn that this run's latest durable `turn.start` command
+   * result accepted, or null when no such authenticated result exists. A
+   * controller can die after the runner accepts its turn/start but before the
+   * controller checkpoints the turn; recovery uses this to adopt that turn.
+   */
+  controllerAcceptedTurnId?(): string | null;
+  /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
    */

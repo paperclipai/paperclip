@@ -61,6 +61,8 @@ export type NativeRestartKind = "hot" | "hard" | "graceful";
 /** A recovery claim for one run failed unexpectedly and was deferred. */
 export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
 
+export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
+
 export type NativeRestartRecoveryClaim =
   | {
       kind: "reattach_existing_runner";
@@ -168,7 +170,8 @@ export function suspendedByCleanDrain(coordinator: {
  * completed work in it (a tool execution or a non-usage item). A resume that
  * dies before it completes any work in a new turn still charges, so a crash
  * loop without progress, a resume that fails each time, and provider failures
- * stay bounded. Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
+ * stay bounded. A resume the controller died before starting is not charged
+ * either (restartResumeKeepsAttempt). Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
  * controller generations, so a run that makes progress and then crashes the
  * controller every time is still bounded.
  */
@@ -178,22 +181,47 @@ const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed
 type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
 
 /**
- * The watermark of the most recent claim, only while the run is still on the
- * provider attempt that claim resumed. A normal retry in between starts a new
- * attempt, so the earlier resume's work no longer counts for it.
+ * The most recent recovery claim's event-log position and the provider attempt
+ * its resume runs as. Entries from releases that did not record them give none.
  */
-export function lastRecoveryClaimProgressWatermark(
+export function lastRecoveryClaimResume(
   recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
-  currentAttempt: number,
-): number | null {
+): { watermark: number; attempt: number; launchesRunner: boolean } | null {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
-    if (entry?.progressAttempt !== currentAttempt) return null;
     const watermark = entry?.progressWatermarkSeq;
-    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : null;
+    const attempt = entry?.progressAttempt;
+    // A reattachment adopts a runner that had already started its provider.
+    const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
+    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
+      && typeof attempt === "number" && Number.isSafeInteger(attempt)
+      ? { watermark, attempt, launchesRunner } : null;
   }
   return null;
+}
+
+/**
+ * Whether the resume claimed at `watermark` reached execution. The executor
+ * records native.process_start_requested before any backend may spawn a
+ * runner, and every runner event carries a source event ID.
+ */
+async function nativeExecutionStartedSince(tx: Pick<Db, "select">, runId: string, watermark: number): Promise<boolean> {
+  const [started] = await tx
+    .select({ seq: heartbeatRunEvents.seq })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.runId, runId),
+      gt(heartbeatRunEvents.seq, watermark),
+      or(
+        isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [
+          "adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "tool.execution.started",
+        ]),
+      ),
+    ))
+    .limit(1);
+  return started !== undefined;
 }
 
 async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): Promise<number> {
@@ -204,7 +232,19 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
   return Number(row?.seq ?? 0);
 }
 
-export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: {
+/**
+ * Whether this restart claim keeps the provider attempt instead of charging
+ * one. Both cases are judged from the previous claim's recorded position:
+ * - That resume launched a new runner (not a reattachment) and never started:
+ *   no runner was requested and no runner event was
+ *   recorded before the controller died (for example in a K6 crash loop). It
+ *   used no provider work, so this claim replaces it and carries its charge:
+ *   the attempt ends at the attempt that resume was to run as, never above it.
+ * - That resume made progress on the current attempt (see above). A normal
+ *   retry in between starts a new attempt, and earlier work does not count.
+ * Neither applies at or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT.
+ */
+export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   runId: string;
   coordinator: {
     attempt: number;
@@ -214,8 +254,14 @@ export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: 
 }): Promise<boolean> {
   if (input.coordinator.attempt <= 0) return false;
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
-  const watermark = lastRecoveryClaimProgressWatermark(input.coordinator.recoveryHistory, input.coordinator.attempt);
-  if (watermark === null) return false;
+  const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
+  if (previous === null) return false;
+  // Only a claim that launches a new runner can be unstarted. A reattachment
+  // adopted provider work that had already started, so only progress counts.
+  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+    return input.coordinator.attempt >= previous.attempt;
+  if (previous.attempt !== input.coordinator.attempt) return false;
+  const watermark = previous.watermark;
   const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
   const [work] = await tx
     .select({ seq: heartbeatRunEvents.seq })
@@ -644,7 +690,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     };
   }
   // Continuing an attempt already counted needs no budget; a new one does.
-  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
@@ -1261,7 +1307,7 @@ export async function claimNativeRestartRecoveries(input: {
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
-      const resumeKeepsAttempt = cleanDrainSuspension || await previousResumeMadeProgress(tx, {
+      const resumeKeepsAttempt = cleanDrainSuspension || await restartResumeKeepsAttempt(tx, {
         runId: row.run.id, coordinator: row.coordinator,
       });
       const classification = classifyNativeRunnerRecoveryEvidence({

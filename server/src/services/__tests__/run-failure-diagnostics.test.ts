@@ -239,6 +239,18 @@ describe("run failure diagnostics", () => {
       resultJson: { reviewedChatBinding: { denialReason: "owner_mismatch" } } }), {}).execution).toEqual({});
   });
 
+  it("exports how an exited remote runner last left its durable state", () => {
+    const thrown = new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "suspended", runnerSettled: true });
+    expect(sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown })).execution).toEqual({
+      remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running",
+      remoteRunnerLifecycle: "suspended", remoteRunnerSettled: true,
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable", resultJson: {
+      remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running", runnerLifecycle: "private-state", runnerSettled: "yes" },
+    } }), {}).execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
+  });
+
   it("exports the remote recovery stage and reason from an error thrown before the result was saved", () => {
     const thrown = Object.assign(new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" }),
       { path: "private-path", pid: 123 });
