@@ -254,8 +254,7 @@ Document-only work may use the existing child-document API inline. Acceptance
 of an execution proposal authorizes its selected tasks and proposed team within
 existing hiring, budget, and connection controls. An explicitly plan-only
 approval does not authorize implementation; requested separate approvals remain
-in force. Interview execution and plan-only grader controls cover both outcomes
-without establishing live model compliance. The existing asset tests check
+in force. The existing asset tests check
 wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 

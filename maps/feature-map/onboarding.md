@@ -144,8 +144,6 @@ the original conversation must receive the actual child and downloadable file
 links. Document-only child work may finish inline. Interview execution proposals
 must start their selected work after acceptance; a saved plan alone is not the
 requested result. Only an explicitly plan-only request stops at planning.
-The `interview-plan-accept` and `plan-only-accept` evals check these different
-outcomes; their grader controls do not establish live model compliance.
 Existing first-task asset controls check the instructions,
 not model compliance. Inspect the child's execution, document, downloaded file
 and source-correlated completion reply in the real journey.
