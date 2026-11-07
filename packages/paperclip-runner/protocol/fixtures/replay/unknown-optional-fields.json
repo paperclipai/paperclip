@@ -1,0 +1,19 @@
+{
+  "schema": "paperclip.prp.fixture.v1", "fixtureVersion": 1, "protocolVersion": 1,
+  "name": "Unknown optional fields", "description": "A future producer adds optional fields that a PRP v1 consumer preserves and ignores safely.",
+  "futureFixtureHint": { "producerVersion": "1.1-preview" },
+  "identity": { "schema": "paperclip.prp.identity.v1", "companyId": "company_replay", "issueId": "issue_replay_future", "runId": "run_replay_future", "environmentLeaseId": "lease_replay_future", "runnerInstanceId": "runner_replay", "normalizedSessionId": "session_replay_future", "driverSessionId": "driver_replay_future", "futureIdentityLabel": "preserved" },
+  "capabilities": { "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "fake", "version": "1.1.0", "futureDriverField": true }, "steer": true, "interrupt": true, "resume": true, "runtimeRequests": true, "structuredResult": true, "typedEvents": true, "futureCapability": { "mode": "optional" } },
+  "commands": [{ "schema": "paperclip.prp.command.v1", "commandId": "command_future_prepare", "controllerSeq": 1, "type": "run.prepare", "issuedAt": "2026-08-07T12:50:00.000Z", "payload": {}, "futureDeadlineMode": "soft" }],
+  "events": [
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_future_01", "sourceSeq": 1, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_future", "normalizedSessionId": "session_replay_future", "eventType": "session.started", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:50:00.010Z", "payload": { "futureSessionDetail": "ignored" }, "futureEnvelopeField": 42 },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_future_02", "sourceSeq": 2, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_future", "normalizedSessionId": "session_replay_future", "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:50:00.020Z",
+      "payload": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "Unknown optional fields did not change the v1 projection.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [], "futureResultAnnotation": { "safe": true } }
+    },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_future_03", "sourceSeq": 3, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_future", "normalizedSessionId": "session_replay_future", "turnId": "turn_replay_future", "eventType": "turn.completed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:50:00.030Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_future_04", "sourceSeq": 4, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_future", "normalizedSessionId": "session_replay_future", "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:50:00.040Z", "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "futureTerminalReason": "optional" } }
+  ],
+  "requests": [],
+  "result": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "done", "summary": "Unknown optional fields did not change the v1 projection.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": true, "criteria": [], "remainingWork": [] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [], "futureResultAnnotation": { "safe": true } }
+}

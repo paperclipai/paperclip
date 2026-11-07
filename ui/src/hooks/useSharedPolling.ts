@@ -93,18 +93,31 @@ export function useSharedPollingQuery<TData>({
   const queryKeyRef = useRef(queryKey);
   const [snapshot, setSnapshot] = useState<SharedPollingSnapshot>({ isLeader: true });
 
+  // Coordinator notifications arrive as fresh snapshot objects, and
+  // `subscribe` invokes its listener synchronously from inside the mount
+  // effect. Passing `setSnapshot` straight through would schedule a nested
+  // re-render for every notification — including value-equal ones — and those
+  // wasted commits count toward React's nested-update limit. Under a hostile
+  // mount cascade (many shared-polling hooks mounting while the backend is
+  // cold) that budget is shared with every other effect-driven update, so
+  // keep the previous state object whenever leadership did not change and
+  // let React bail out instead.
+  const applySnapshot = useCallback((next: SharedPollingSnapshot) => {
+    setSnapshot((prev) => (prev.isLeader === next.isLeader ? prev : next));
+  }, []);
+
   useEffect(() => {
     queryKeyRef.current = queryKey;
   }, [queryKey, queryKeyHash]);
 
   useEffect(() => {
     if (!activeCompanyId || !fullResourceKey) {
-      setSnapshot({ isLeader: true });
+      applySnapshot({ isLeader: true });
       return;
     }
 
     const coordinator = acquireCoordinator(activeCompanyId);
-    const unsubscribeState = coordinator.subscribe(setSnapshot);
+    const unsubscribeState = coordinator.subscribe(applySnapshot);
     const unsubscribeResource = coordinator.subscribeResource(fullResourceKey, (message) => {
       applySharedPollingResult(queryClient, queryKeyRef.current, message);
     });
@@ -115,7 +128,7 @@ export function useSharedPollingQuery<TData>({
       unsubscribeState();
       releaseCoordinator(activeCompanyId);
     };
-  }, [activeCompanyId, fullResourceKey, leaderOnly, queryClient, queryKeyHash]);
+  }, [activeCompanyId, applySnapshot, fullResourceKey, leaderOnly, queryClient, queryKeyHash]);
 
   const isLeader = !leaderOnly || snapshot.isLeader;
   const queryEnabled = enabled && (!leaderOnly || snapshot.isLeader);

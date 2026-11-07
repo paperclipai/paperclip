@@ -4,7 +4,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 ## Image Lineup
 
-- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
+- **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 24 + git + tini + non-root user (uid 1000) + the agent shim.
 - **`agent-runtime-opencode`**: Extends base with `opencode-ai` globally installed.
 - **`agent-runtime-pi`**: Extends base with `@mariozechner/pi-coding-agent`.
 - **`agent-runtime-codex`**: Extends base with `@openai/codex`.
@@ -16,7 +16,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 
 **OS & Runtime:**
 - Ubuntu 22.04
-- Node.js 22 (via NodeSource APT repo)
+- Node.js 24 (via NodeSource APT repo)
 - git
 - tini (PID-1 init, ensures signal propagation)
 - Non-root user `paperclip` (uid/gid 1000)

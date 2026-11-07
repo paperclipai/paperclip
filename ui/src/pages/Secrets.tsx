@@ -51,7 +51,9 @@ import type {
   UserSecretCoverageSummary,
   UserSecretDefinition,
 } from "@paperclipai/shared";
+import { hidesCompanySection } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
+import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -74,6 +76,7 @@ import {
 } from "../lib/secret-delivery";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -106,6 +109,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useCopyAction } from "../lib/use-copy-action";
 import { PageTabBar } from "../components/PageTabBar";
 import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
@@ -126,6 +130,7 @@ import {
   UserSecretChip,
 } from "./secrets/user-secret-presentation";
 import type { MyUserSecretEntry } from "../api/secrets";
+import { describeError } from "@/api/errors";
 
 type CreateMode = "managed" | "external";
 // "value" writes a new secret value (for external references: through to the
@@ -259,9 +264,7 @@ function isAwsDiscoveryAccessDenied(error: unknown): boolean {
 }
 
 function readableErrorMessage(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
-  if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return describeError(error).body;
 }
 
 function providerVaultFormFromConfig(config: CompanySecretProviderConfig): ProviderVaultForm {
@@ -652,6 +655,15 @@ export function Secrets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
+  // Operator-hidden sub-tabs (UI-only; the secrets APIs stay live for agents).
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideVaultsTab = hidesCompanySection(hiddenSettings, "company.secrets.vaults");
+  const hideProposalsTab = hidesCompanySection(hiddenSettings, "company.secrets.proposals");
+  useEffect(() => {
+    if ((activeTab === "vaults" && hideVaultsTab) || (activeTab === "proposals" && hideProposalsTab)) {
+      setActiveTab("secrets");
+    }
+  }, [activeTab, hideVaultsTab, hideProposalsTab]);
   const [secretDetailTab, setSecretDetailTab] = useState("details");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
@@ -762,7 +774,6 @@ export function Secrets() {
     queryFn: () => secretsApi.providerHealth(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
     refetchInterval: 60_000,
-    retry: false,
   });
 
   const providerConfigsQuery = useQuery({
@@ -771,7 +782,6 @@ export function Secrets() {
       : ["secret-provider-configs", "__disabled__"],
     queryFn: () => secretsApi.providerConfigs(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
-    retry: false,
   });
 
   const proposalsQuery = useQuery({
@@ -779,8 +789,17 @@ export function Secrets() {
       ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
       : ["secret-proposals", "__disabled__"],
     queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && !hideProposalsTab,
   });
+
+  const secretsView = useQueryView(secretsQuery);
+  const userDefinitionsView = useQueryView(userDefinitionsQuery);
+  const providerConfigsView = useQueryView(providerConfigsQuery);
+  const secretsListLoading =
+    secretsQuery.isPending ||
+    userDefinitionsQuery.isPending ||
+    secretsView.kind === "reconnecting" ||
+    userDefinitionsView.kind === "reconnecting";
 
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
   const userDefinitions = userDefinitionsQuery.data ?? EMPTY_USER_SECRET_DEFINITIONS;
@@ -1163,7 +1182,7 @@ export function Secrets() {
       invalidateAll([updated.id]);
     },
     onError: (error) => {
-      setRotateError(error instanceof Error ? error.message : "Rotate failed");
+      setRotateError(describeError(error).body);
     },
   });
 
@@ -1187,7 +1206,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Status update failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1203,7 +1222,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Status update failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1220,7 +1239,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Delete failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1238,7 +1257,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Delete failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1269,7 +1288,7 @@ export function Secrets() {
       invalidateAll();
     },
     onError: (error) => {
-      setVaultError(error instanceof ApiError ? error.message : (error as Error).message);
+      setVaultError(describeError(error).body);
     },
   });
 
@@ -1300,7 +1319,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Disable failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1320,7 +1339,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Remove failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1335,7 +1354,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Default update failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1350,7 +1369,7 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Health check failed",
-        body: error instanceof Error ? error.message : "Try again",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -1484,7 +1503,7 @@ export function Secrets() {
       .catch((error) =>
         pushToast({
           title: "Copy failed",
-          body: error instanceof Error ? error.message : "Unable to copy link",
+          body: describeError(error).body,
           tone: "error",
         }),
       );
@@ -1496,7 +1515,7 @@ export function Secrets() {
       .catch((error) =>
         pushToast({
           title: "Copy failed",
-          body: error instanceof Error ? error.message : "Unable to copy secret key",
+          body: describeError(error).body,
           tone: "error",
         }),
       );
@@ -1787,13 +1806,13 @@ export function Secrets() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
+      <div className="p-6 text-sm text-muted-foreground">Select an organization to manage secrets.</div>
     );
   }
 
   return (
     <TooltipProvider>
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex max-w-6xl flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Secrets</h1>
@@ -1802,38 +1821,42 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex min-h-0 flex-1 flex-col gap-4"
+        className="flex flex-col gap-4"
       >
         <PageTabBar
           items={[
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
-            { value: "vaults", label: "Provider vaults" },
-            {
-              value: "proposals",
-              label: (
-                <span className="inline-flex items-center gap-1.5">
-                  Proposals
-                  {pendingProposalCount > 0 ? (
-                    <Badge
-                      variant="outline"
-                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
-                    >
-                      {pendingProposalCount}
-                    </Badge>
-                  ) : null}
-                </span>
-              ),
-            },
+            ...(hideVaultsTab ? [] : [{ value: "vaults", label: "Provider vaults" }]),
+            ...(hideProposalsTab
+              ? []
+              : [
+                  {
+                    value: "proposals",
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        Proposals
+                        {pendingProposalCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                          >
+                            {pendingProposalCount}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    ),
+                  },
+                ]),
           ]}
           align="start"
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
 
-        <TabsContent value="secrets" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+        <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
-          <div className="flex flex-wrap items-center gap-2">
+          <div data-canonical-toolbar="secrets" role="toolbar" aria-label="Secrets controls" className="flex flex-wrap items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-80">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -1859,7 +1882,7 @@ export function Secrets() {
               role="group"
               aria-label="View mode"
               className={cn(
-                "inline-flex items-center rounded-md border border-border p-0.5",
+                "design-view-toggle inline-flex items-center rounded-md border border-border",
                 searching && "opacity-50",
               )}
             >
@@ -1884,7 +1907,7 @@ export function Secrets() {
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
-              onManageVaults={() => setActiveTab("vaults")}
+              onManageVaults={hideVaultsTab ? undefined : () => setActiveTab("vaults")}
               className="ml-auto"
             />
             {showFolderView ? (
@@ -1900,7 +1923,7 @@ export function Secrets() {
                 <Folder className="mr-1 h-3.5 w-3.5" /> New folder
               </Button>
             ) : null}
-            <Button onClick={openCreateSecret} size="sm">
+            <Button data-toolbar-primary onClick={openCreateSecret} size="sm">
               <Plus className="h-3.5 w-3.5 mr-1" /> New secret
             </Button>
           </div>
@@ -1936,29 +1959,25 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {secretsQuery.isError || userDefinitionsQuery.isError ? (
-              <div className="text-sm text-destructive flex items-center gap-2 py-4">
-                <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
-                {((secretsQuery.error ?? userDefinitionsQuery.error) as Error).message}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    void secretsQuery.refetch();
-                    void userDefinitionsQuery.refetch();
+          <div>
+            {secretsView.kind === "error" || userDefinitionsView.kind === "error" ? (
+              <div className="py-4">
+                <QueryErrorState
+                  error={secretsView.kind === "error" ? secretsQuery.error : userDefinitionsQuery.error}
+                  action="load secrets"
+                  onRetry={() => {
+                    secretsView.retry();
+                    userDefinitionsView.retry();
                   }}
-                >
-                  Retry
-                </Button>
+                  retrying={secretsView.isFetching || userDefinitionsView.isFetching}
+                />
               </div>
             ) : unifiedRows.length === 0 &&
-              !secretsQuery.isPending &&
-              !userDefinitionsQuery.isPending &&
+              !secretsListLoading &&
               !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
-                message="No secrets yet. Create a shared company secret or one that each user supplies."
+                message="No secrets yet. Create a shared organization secret or one that each user supplies."
                 action="New secret"
                 onAction={openCreateSecret}
               />
@@ -1982,7 +2001,7 @@ export function Secrets() {
                 ) : null}
 
                 {folderRows.length === 0 && secretRows.length === 0 ? (
-                  secretsQuery.isPending || userDefinitionsQuery.isPending ? (
+                  secretsListLoading ? (
                     <div className="space-y-2 py-2" aria-hidden="true" data-testid="secrets-loading-skeleton">
                       {[0, 1, 2, 3].map((index) => (
                         <div key={index} className="h-14 animate-pulse rounded-md bg-muted/40" />
@@ -2076,7 +2095,7 @@ export function Secrets() {
                             <div className="mt-1">
                               {row.kind === "company" ? (
                                 <MetaChip>
-                                  <ShieldCheck className="h-3 w-3" /> Company
+                                  <ShieldCheck className="h-3 w-3" /> Organization
                                 </MetaChip>
                               ) : (
                                 <UserSecretChip label="Each user" />
@@ -2141,7 +2160,7 @@ export function Secrets() {
                           {row.kind === "company" ? (
                             <>
                               <MetaChip>
-                                <ShieldCheck className="h-3 w-3" /> Company
+                                <ShieldCheck className="h-3 w-3" /> Organization
                               </MetaChip>
                               <SecretProviderIndicator
                                 secret={row.secret}
@@ -2183,17 +2202,19 @@ export function Secrets() {
         </TabsContent>
         <TabsContent
           value="my-secrets"
-          className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          className="flex flex-col gap-3"
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
-        <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
+        {!hideVaultsTab && (
+        <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
             providerConfigs={providerConfigs}
-            loading={providerConfigsQuery.isPending}
-            error={providerConfigsQuery.error}
-            onRetry={() => providerConfigsQuery.refetch()}
+            loading={providerConfigsQuery.isPending || providerConfigsView.kind === "reconnecting"}
+            error={providerConfigsView.kind === "error" ? providerConfigsQuery.error : null}
+            onRetry={providerConfigsView.retry}
+            retrying={providerConfigsView.isFetching}
             onCreate={openCreateVault}
             onEdit={openEditVault}
             onDisable={(config) => disableVaultMutation.mutate(config.id)}
@@ -2210,11 +2231,14 @@ export function Secrets() {
             }
           />
         </TabsContent>
-        <TabsContent value="proposals" className="min-h-0 flex-1 overflow-y-auto">
+        )}
+        {!hideProposalsTab && (
+        <TabsContent value="proposals">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}
         </TabsContent>
+        )}
       </Tabs>
 
       <Sheet
@@ -2253,7 +2277,7 @@ export function Secrets() {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <MetaChip>
-                    <ShieldCheck className="h-3 w-3" /> Company
+                    <ShieldCheck className="h-3 w-3" /> Organization
                   </MetaChip>
                   <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
@@ -2535,11 +2559,15 @@ export function Secrets() {
           providerConfigs={providerConfigs}
           existingSecrets={secrets}
           initialProviderConfigId={importInitialVaultId}
-          onManageVaults={() => {
-            setImportOpen(false);
-            setImportInitialVaultId(null);
-            setActiveTab("vaults");
-          }}
+          onManageVaults={
+            hideVaultsTab
+              ? undefined
+              : () => {
+                  setImportOpen(false);
+                  setImportInitialVaultId(null);
+                  setActiveTab("vaults");
+                }
+          }
           onImportComplete={() => {
             void secretsQuery.refetch();
           }}
@@ -2581,12 +2609,12 @@ export function Secrets() {
                   }}
                 >
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="company">Company</TabsTrigger>
+                    <TabsTrigger value="company">Organization</TabsTrigger>
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
                 </Tabs>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Company stores one shared value. Each user lets every member supply their own value under My secrets.
+                  Organization stores one shared value. Each user lets every member supply their own value under My secrets.
                 </p>
               </div>
             ) : null}
@@ -3182,7 +3210,7 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Delete user-provided secret</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole company.
+              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole organization.
               Existing member values become unreferenced and active bindings must be remapped.
             </DialogDescription>
           </DialogHeader>
@@ -3351,7 +3379,7 @@ function SecretsFiltersPopover({
               <div className="space-y-0.5">
                 {[
                   { value: "all" as const, label: "All sources" },
-                  { value: "company" as const, label: "Company" },
+                  { value: "company" as const, label: "Organization" },
                   { value: "user" as const, label: "Each user" },
                 ].map((option) => (
                   <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -3445,7 +3473,8 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
 interface ImportFromVaultButtonProps {
   providerConfigs: CompanySecretProviderConfig[];
   onClick: () => void;
-  onManageVaults: () => void;
+  /** Absent when the operator hides the Provider vaults tab. */
+  onManageVaults?: () => void;
   className?: string;
 }
 
@@ -3465,6 +3494,7 @@ function ImportFromVaultButton({
   if (awsConfigs.length === 0) return null;
 
   if (eligible.length === 0) {
+    if (!onManageVaults) return null;
     return (
       <Button
         variant="ghost"
@@ -3505,12 +3535,15 @@ export function ProviderVaultsTab({
   onHealthCheck,
   onImportSecrets,
   pendingActionId,
+  retrying = false,
 }: {
   providers: SecretProviderDescriptor[];
   providerConfigs: CompanySecretProviderConfig[];
   loading: boolean;
+  /** The query error when the vault list could not load; null while data (even stale) is available. */
   error: unknown;
   onRetry: () => void;
+  retrying?: boolean;
   onCreate: (provider: SecretProvider) => void;
   onEdit: (config: CompanySecretProviderConfig) => void;
   onDisable: (config: CompanySecretProviderConfig) => void;
@@ -3531,11 +3564,8 @@ export function ProviderVaultsTab({
 
   if (error) {
     return (
-      <div className="py-4 text-sm text-destructive flex items-center gap-2">
-        <AlertCircle className="h-4 w-4" /> Failed to load provider vaults: {(error as Error).message}
-        <Button variant="ghost" size="sm" onClick={onRetry}>
-          Retry
-        </Button>
+      <div className="py-4">
+        <QueryErrorState error={error} action="load provider vaults" onRetry={onRetry} retrying={retrying} />
       </div>
     );
   }
@@ -3585,7 +3615,7 @@ export function ProviderVaultsTab({
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
                   ? "Not yet supported."
-                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+                  : "No organization-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (
               <div className="space-y-3">
@@ -3891,6 +3921,19 @@ function AwsProviderVaultDiscoveryPanel({
   );
 }
 
+/**
+ * Copy the safe error payload out of a failure panel. People copy this to paste
+ * into a bug report, so the button has to confirm the clipboard took it.
+ */
+function CopyDetailsButton({ text }: { text: string }) {
+  const { copied, failed, copy } = useCopyAction();
+  return (
+    <Button type="button" variant="ghost" size="sm" onClick={() => void copy(text)}>
+      {copied ? "Copied" : failed ? "Copy failed" : "Copy"}
+    </Button>
+  );
+}
+
 function AwsProviderVaultDiscoveryError({
   form,
   error,
@@ -3915,10 +3958,6 @@ function AwsProviderVaultDiscoveryError({
     safeAlternative: details?.safeAlternative,
   };
   const detailsText = JSON.stringify(safeDetails, null, 2);
-
-  const copyDetails = () => {
-    void copyTextToClipboard(detailsText).catch(() => {});
-  };
 
   return (
     <div
@@ -3967,9 +4006,7 @@ function AwsProviderVaultDiscoveryError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button type="button" variant="ghost" size="sm" onClick={copyDetails}>
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
@@ -4062,14 +4099,7 @@ function SecretCreateError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void copyTextToClipboard(detailsText).catch(() => {})}
-              >
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
@@ -4170,9 +4200,12 @@ function CoverageInline({
     queryFn: () => secretsApi.userSecretDefinitionCoverage(companyId, definitionId),
     staleTime: 30_000,
   });
+  const coverageView = useQueryView(coverageQuery);
   const summary = coverageQuery.data;
-  if (coverageQuery.isPending) return <span className="text-muted-foreground">Loading…</span>;
-  if (coverageQuery.isError) return <span className="text-destructive">Coverage unavailable</span>;
+  if (coverageQuery.isPending || coverageView.kind === "reconnecting") {
+    return <span className="text-muted-foreground">Loading…</span>;
+  }
+  if (coverageView.kind === "error") return <span className="text-destructive">Coverage unavailable</span>;
   return (
     <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
       <Users className="h-3 w-3" />
@@ -4243,10 +4276,11 @@ function UserSecretCoverageTab({
     queryFn: () => secretsApi.userSecretDefinitionCoverage(companyId, definitionId),
     staleTime: 30_000,
   });
-  if (coverageQuery.isPending) {
+  const coverageView = useQueryView(coverageQuery);
+  if (coverageQuery.isPending || coverageView.kind === "reconnecting") {
     return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
   }
-  if (coverageQuery.isError) {
+  if (coverageView.kind === "error" || !coverageQuery.data) {
     return <div className="py-6 text-center text-xs text-destructive">Coverage unavailable.</div>;
   }
   const summary: UserSecretCoverageSummary = coverageQuery.data;
@@ -4372,6 +4406,7 @@ function AgentAccessSection({
     queryFn: () => agentsApi.list(companyId),
     staleTime: 30_000,
   });
+  const agentsView = useQueryView(agentsQuery);
   const agents = useMemo(
     () => (agentsQuery.data ?? []).filter((agent) => agent.status !== "terminated"),
     [agentsQuery.data],
@@ -4484,9 +4519,9 @@ function AgentAccessSection({
           ? "Add here to inject this secret as an environment variable at run start. API-access grants (fetched on demand, no env var) are managed from each agent's Secret access settings and shown below."
           : "These agents resolve the responsible user's value as an environment variable at run start."}
       </p>
-      {agentsQuery.isPending ? (
+      {agentsQuery.isPending || agentsView.kind === "reconnecting" ? (
         <p className="mt-2 text-(length:--text-micro) text-muted-foreground">Loading agents…</p>
-      ) : agentsQuery.isError ? (
+      ) : agentsView.kind === "error" ? (
         <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
           Agent list unavailable. Manage access from each agent&apos;s configuration instead.
         </p>
@@ -4619,7 +4654,7 @@ function SecretDetailsTab({
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Provided by">Company</DetailRow>
+      <DetailRow label="Provided by">Organization</DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{providerLabel(providers, secret.provider)}</DetailRow>
       <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>

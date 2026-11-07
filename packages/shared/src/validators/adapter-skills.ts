@@ -29,7 +29,7 @@ export const agentSkillAssignmentModeSchema = z.enum([
 
 export const agentDesiredSkillEntrySchema = z.object({
   key: z.string().min(1),
-  versionId: z.string().uuid().nullable(),
+  versionId: z.string().guid().nullable(),
 });
 
 export const agentDesiredSkillSelectionSchema = z.union([
@@ -40,8 +40,8 @@ export const agentDesiredSkillSelectionSchema = z.union([
 export const agentSkillEntrySchema = z.object({
   key: z.string().min(1),
   runtimeName: z.string().min(1).nullable(),
-  versionId: z.string().uuid().nullable().optional(),
-  currentVersionId: z.string().uuid().nullable().optional(),
+  versionId: z.string().guid().nullable().optional(),
+  currentVersionId: z.string().guid().nullable().optional(),
   desired: z.boolean(),
   managed: z.boolean(),
   state: agentSkillStateSchema,

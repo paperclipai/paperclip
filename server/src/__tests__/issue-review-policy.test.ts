@@ -112,7 +112,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",
@@ -156,7 +156,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     await expect(assertIssueReviewVerdictActorAllowed(db, {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
-    })).rejects.toMatchObject<HttpError>({
+    })).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({ code: "review_policy_denied" }),
     });
@@ -197,6 +197,29 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     })).resolves.toBe(false);
   });
 
+  it("classifies an unbound legacy confirmation only when the review requester created it", async () => {
+    const seeded = await seedReview("not_creator");
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.requesterAgentId,
+      agentId: seeded.requesterAgentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issue.id,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+
+    await expect(isIssueReviewVerdictInteraction(db, {
+      issue: seeded.issue,
+      interaction: { id: "legacy-review", createdByAgentId: seeded.requesterAgentId },
+    })).resolves.toBe(true);
+    await expect(isIssueReviewVerdictInteraction(db, {
+      issue: seeded.issue,
+      interaction: { id: "unrelated-confirmation", createdByAgentId: seeded.peerAgentId },
+    })).resolves.toBe(false);
+  });
+
   it("uses authenticated principal type for human_only", async () => {
     const seeded = await seedReview("human_only");
     expect(seeded.issue.reviewPolicy).toBe("human_only");
@@ -204,7 +227,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",

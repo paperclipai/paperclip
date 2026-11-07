@@ -6,6 +6,7 @@ import {
   buildHostServices,
   clampProviderSpanAttributes,
   parseTraceparent,
+  recordWorkerProviderSpan,
 } from "../services/plugin-host-services.js";
 
 // Capture every span the host trust boundary hands to the real tracer.
@@ -311,4 +312,112 @@ describe("clampProviderSpanAttributes", () => {
       // A non-finite number yields no attribute; `exec.command` is not allowed.
     });
   });
+
+  it("keeps the transfer direction for each closed-set value", () => {
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "inbound" })).toEqual({
+      [A.transferDirection]: "inbound",
+    });
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "outbound" })).toEqual({
+      [A.transferDirection]: "outbound",
+    });
+  });
+
+  it("drops a transfer direction outside the closed set or of the wrong type", () => {
+    // A free-form string, an empty string, and a non-string all yield no
+    // attribute, so the direction stays bounded and low-cardinality.
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "sideways" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: 1 })).toEqual({});
+  });
+});
+
+describe("nested worker timing receipts",()=>{
+ it("keeps lease verification beneath its worker and clamps provider state", () => {
+  mockRecordSpan.mockReset();
+  const rootParent = { traceId: "0af7651916cd43dd8448eb211c80319c", spanId: "1111111111111111", traceFlags: 1 };
+  const verifyParent = { ...rootParent, spanId: "2222222222222222" };
+  mockRecordSpan.mockReturnValueOnce(rootParent).mockReturnValueOnce(verifyParent);
+  const now = Date.now();
+  recordWorkerProviderSpan({ name: "plugin.worker", startTimeMs: now - 100, endTimeMs: now, children: [
+    { name: "lease.verify", startTimeMs: now - 90, endTimeMs: now - 10, children: [
+      { name: "lease.sentinel", startTimeMs: now - 80, endTimeMs: now - 20,
+        attributes: { "paperclip.sandbox.startup.state": "archived", token: "private-token" } },
+    ] },
+  ] }, { traceparent: VALID_TRACEPARENT });
+  expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({ name: "sandbox.daytona.lease.verify", parent: rootParent });
+  expect(mockRecordSpan.mock.calls[2][0]).toMatchObject({ name: "sandbox.daytona.lease.sentinel", parent: verifyParent,
+    startTimeMs: now - 80, endTimeMs: now - 20, attributes: { "paperclip.sandbox.startup.state": "archived" } });
+  expect(JSON.stringify(mockRecordSpan.mock.calls)).not.toContain("private-token");
+  expect(clampProviderSpanAttributes({ "paperclip.sandbox.startup.state": "private-state" })).toEqual({});
+ });
+
+ it("admits a workspace failure span with only a closed failure reason", () => {
+  mockRecordSpan.mockReset();
+  const now = Date.now();
+  recordWorkerProviderSpan({ name: "plugin.workspace.failure", startTimeMs: now - 1, endTimeMs: now, status: { code: 2 },
+    attributes: { "plugin.failure_reason": "storage_grant_unavailable", message: "Project mount grants unavailable" } }, { traceparent: VALID_TRACEPARENT });
+  expect(mockRecordSpan.mock.calls[0][0]).toMatchObject({ name: "plugin.workspace.failure", attributes: { "plugin.failure_reason": "storage_grant_unavailable" } });
+  expect(JSON.stringify(mockRecordSpan.mock.calls)).not.toContain("mount grants");
+  expect(clampProviderSpanAttributes({ "plugin.failure_reason": "unknown" })).toEqual({ "plugin.failure_reason": "unknown" });
+  expect(clampProviderSpanAttributes({ "plugin.failure_reason": "token=private" })).toEqual({});
+  expect(clampProviderSpanAttributes({ "plugin.failure_reason": 1 })).toEqual({});
+ });
+
+ it("admits every closed lease phase and rejects dynamic phase names", () => {
+  mockRecordSpan.mockReset();
+  const names = ["lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
+    "lease.start", "lease.recover", "lease.verify", "lease.workspace", "lease.sentinel", "lease.shell",
+    "lease.create", "lease.expiry", "lease.cleanup", "lease.private-resource-id"];
+  for (const name of names) recordWorkerProviderSpan({ name }, { traceparent: VALID_TRACEPARENT });
+  expect(mockRecordSpan.mock.calls.map(call => call[0].name)).toEqual([
+    ...names.slice(0, -1).map(name => `sandbox.daytona.${name}`), "sandbox.daytona.other",
+  ]);
+ });
+
+ it("uses host-generated parents, clamps content and bounds child clocks",()=>{
+  mockRecordSpan.mockReset();
+  const childParent={traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1};
+  mockRecordSpan.mockReturnValue(childParent);
+  const now=Date.now();
+  recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-100,endTimeMs:now,children:[
+   {name:"plugin.remote.operation",startTimeMs:now-90,endTimeMs:now-10,attributes:{"plugin.operation":"script.settings",secret:"private"}},
+   {name:"plugin.runtime.verify",startTimeMs:now-200,endTimeMs:now},
+  ]},{traceparent:VALID_TRACEPARENT} as WorkerHostCallContext);
+  expect(mockRecordSpan).toHaveBeenCalledTimes(2);
+  expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({parent:childParent,attributes:{"plugin.operation":"script.settings"}});
+  expect(JSON.stringify(mockRecordSpan.mock.calls)).not.toContain("private");
+ });
+});
+
+it("allows a workspace provider timing receipt without environment-driver authority",async()=>{
+ mockRecordSpan.mockReset();
+ await handlersFor(["workspaces.manage"])["span.record"]({name:"plugin.worker"},{traceparent:VALID_TRACEPARENT} as WorkerHostCallContext);
+ expect(mockRecordSpan).toHaveBeenCalledTimes(1);
+});
+
+it("retains short children of a multi-hour worker invocation and shares its aggregate budget",()=>{
+ mockRecordSpan.mockReset();mockRecordSpan.mockReturnValue({traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1});
+ const now=Date.now(),context={traceparent:VALID_TRACEPARENT,providerSpanBudget:{remaining:3}};
+ recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-7200000,endTimeMs:now,children:[
+  {name:"pack",startTimeMs:now-7199990,endTimeMs:now-7199980}
+ ]},context);
+ recordWorkerProviderSpan({name:"pack"},context);recordWorkerProviderSpan({name:"pack"},context);
+ expect(mockRecordSpan).toHaveBeenCalledTimes(3);
+ expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"sandbox.daytona.pack",startTimeMs:now-7199990});
+});
+
+
+it("links bounded earlier remote lifecycles to their host-owned observer",()=>{
+ mockRecordSpan.mockReset();mockRecordSpan.mockReturnValue({traceId:"0af7651916cd43dd8448eb211c80319c",spanId:"1111111111111111",traceFlags:1});
+ const now=Date.now();
+ recordWorkerProviderSpan({name:"plugin.worker",startTimeMs:now-10,endTimeMs:now,children:[
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100,children:[
+   {name:"plugin.remote.operation",startTimeMs:now-900,endTimeMs:now-200}
+  ]},
+  {name:"plugin.remote.operation",relationship:"linked",startTimeMs:now-1000,endTimeMs:now-100},
+  {name:"plugin.remote.lifecycle",relationship:"linked",startTimeMs:now-700000,endTimeMs:now-100},
+ ]},{traceparent:VALID_TRACEPARENT});
+ expect(mockRecordSpan).toHaveBeenCalledTimes(3);
+ expect(mockRecordSpan.mock.calls[1][0]).toMatchObject({name:"plugin.remote.lifecycle",linked:true,startTimeMs:now-1000});
+ expect(mockRecordSpan.mock.calls[2][0].linked).toBeUndefined();
 });

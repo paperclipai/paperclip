@@ -112,6 +112,7 @@ export function trackAgentTaskCompleted(
     agentId: string;
     adapterType: RawDimension<EventDimensionsMap["agent.task_completed"]["adapter_type"]>;
     model?: string;
+    taskId?: string;
   },
 ): void {
   client.track("agent.task_completed", {
@@ -119,7 +120,105 @@ export function trackAgentTaskCompleted(
     agent_id: dims.agentId,
     adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
   });
+}
+
+export function trackAgentTaskRun(
+  client: TelemetryClient,
+  dims: {
+    agentId: string;
+    state: RawDimension<EventDimensionsMap["agent.task_run"]["state"]>;
+    adapterType?: RawDimension<EventDimensionsMap["agent.task_run"]["adapter_type"]>;
+    agentRole?: RawDimension<EventDimensionsMap["agent.task_run"]["agent_role"]>;
+    model?: string;
+    durationSeconds?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    taskId?: string;
+  },
+): void {
+  client.track("agent.task_run", {
+    agent_id: dims.agentId,
+    state: asEventDimension(dims.state),
+    ...(dims.adapterType ? { adapter_type: asEventDimension(dims.adapterType) } : {}),
+    ...(dims.agentRole ? { agent_role: asEventDimension(dims.agentRole) } : {}),
+    ...(dims.model ? { model: dims.model } : {}),
+    ...(dims.durationSeconds === undefined ? {} : { duration_seconds: dims.durationSeconds }),
+    ...(dims.inputTokens === undefined ? {} : { input_tokens: dims.inputTokens }),
+    ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
+    ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+  });
+}
+
+export function trackConnectionCreated(
+  client: TelemetryClient,
+  dims: {
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connection.created"]["transport"]>;
+    auth_kind: RawDimension<EventDimensionsMap["connection.created"]["auth_kind"]>;
+    setup_flow: RawDimension<EventDimensionsMap["connection.created"]["setup_flow"]>;
+    status: RawDimension<EventDimensionsMap["connection.created"]["status"]>;
+    enabled: boolean;
+  },
+): void {
+  client.track("connection.created", {
+    ...dims,
+    transport: asEventDimension(dims.transport),
+    auth_kind: asEventDimension(dims.auth_kind),
+    setup_flow: asEventDimension(dims.setup_flow),
+    status: asEventDimension(dims.status),
+  });
+}
+
+export function trackConnectionUpdated(
+  client: TelemetryClient,
+  dims: {
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connection.updated"]["transport"]>;
+    auth_kind: RawDimension<EventDimensionsMap["connection.updated"]["auth_kind"]>;
+    change_source: RawDimension<EventDimensionsMap["connection.updated"]["change_source"]>;
+    previous_status: RawDimension<EventDimensionsMap["connection.updated"]["previous_status"]>;
+    status: RawDimension<EventDimensionsMap["connection.updated"]["status"]>;
+    previous_enabled: boolean;
+    enabled: boolean;
+  },
+): void {
+  client.track("connection.updated", {
+    ...dims,
+    transport: asEventDimension(dims.transport),
+    auth_kind: asEventDimension(dims.auth_kind),
+    change_source: asEventDimension(dims.change_source),
+    previous_status: asEventDimension(dims.previous_status),
+    status: asEventDimension(dims.status),
+  });
+}
+
+export function trackConnectionInvoked(
+  client: TelemetryClient,
+  dims: {
+    connector_key: string;
+    transport: RawDimension<EventDimensionsMap["connection.invoked"]["transport"]>;
+    status: RawDimension<EventDimensionsMap["connection.invoked"]["status"]>;
+    origin: RawDimension<EventDimensionsMap["connection.invoked"]["origin"]>;
+    duration_seconds?: number;
+  },
+): void {
+  client.track("connection.invoked", {
+    ...dims,
+    transport: asEventDimension(dims.transport),
+    status: asEventDimension(dims.status),
+    origin: asEventDimension(dims.origin),
+  });
+}
+
+export function trackServerStarted(
+  client: TelemetryClient,
+  dims: { os_platform: RawDimension<EventDimensionsMap["server.started"]["os_platform"]> },
+): void {
+  client.track("server.started", { os_platform: asEventDimension(dims.os_platform) });
 }
 
 export function trackErrorHandlerCrash(
@@ -127,6 +226,19 @@ export function trackErrorHandlerCrash(
   dims: { errorCode: string },
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
+}
+
+export function trackInteractionCreated(
+  client: TelemetryClient,
+  dims: {
+    interactionKind: RawDimension<EventDimensionsMap["interaction.created"]["interaction_kind"]>;
+    usedDeprecatedResolverPolicyAlias: boolean;
+  },
+): void {
+  client.track("interaction.created", {
+    interaction_kind: asEventDimension(dims.interactionKind),
+    used_deprecated_resolver_policy_alias: dims.usedDeprecatedResolverPolicyAlias,
+  });
 }
 
 export function trackInteractionResolved(
@@ -146,6 +258,7 @@ export function trackInteractionResolved(
     answeredQuestionCount?: number;
     createdTaskCount?: number;
     skippedTaskCount?: number;
+    legacyInheritedRestriction: boolean;
   },
 ): void {
   client.track("interaction.resolved", {
@@ -163,5 +276,6 @@ export function trackInteractionResolved(
     ...(dims.answeredQuestionCount === undefined ? {} : { answered_question_count: dims.answeredQuestionCount }),
     ...(dims.createdTaskCount === undefined ? {} : { created_task_count: dims.createdTaskCount }),
     ...(dims.skippedTaskCount === undefined ? {} : { skipped_task_count: dims.skippedTaskCount }),
+    legacy_inherited_restriction: dims.legacyInheritedRestriction,
   });
 }

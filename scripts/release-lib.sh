@@ -197,13 +197,24 @@ process.stdout.write(`${stableSlot}.${max + 1}`);
 NODE
 }
 
-next_canary_version() {
-  local stable_version="$1"
-  shift
+require_prerelease_channel() {
+  case "$1" in
+    canary|nightly|beta) ;;
+    *) release_fail "unknown prerelease channel: $1" ;;
+  esac
+}
 
-  node - "$stable_version" "$@" <<'NODE'
-const stable = process.argv[2];
-const packageNames = process.argv.slice(3);
+next_prerelease_version() {
+  local channel="$1"
+  local stable_version="$2"
+  shift 2
+
+  require_prerelease_channel "$channel"
+
+  node - "$channel" "$stable_version" "$@" <<'NODE'
+const channel = process.argv[2];
+const stable = process.argv[3];
+const packageNames = process.argv.slice(4);
 const { execSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 
@@ -218,7 +229,7 @@ if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
   }
 }
 
-const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
+const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-${channel}\\.(\\d+)$`);
 let max = -1;
 
 for (const packageName of packageNames) {
@@ -249,8 +260,14 @@ for (const packageName of packageNames) {
   }
 }
 
-process.stdout.write(`${stable}-canary.${max + 1}`);
+process.stdout.write(`${stable}-${channel}.${max + 1}`);
 NODE
+}
+
+next_canary_version() {
+  local stable_version="$1"
+  shift
+  next_prerelease_version canary "$stable_version" "$@"
 }
 
 release_notes_file() {
@@ -261,8 +278,13 @@ stable_tag_name() {
   printf 'v%s\n' "$1"
 }
 
+prerelease_tag_name() {
+  require_prerelease_channel "$1"
+  printf '%s/v%s\n' "$1" "$2"
+}
+
 canary_tag_name() {
-  printf 'canary/v%s\n' "$1"
+  prerelease_tag_name canary "$1"
 }
 
 npm_package_version_exists() {
@@ -314,11 +336,11 @@ BUNDLED_NPM_PACK_VERSION="10.9.7"
 BUNDLED_NPM_PUBLISH_VERSION="11.18.0"
 
 run_bundled_npm_pack() {
-  npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@"
+  npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@" --ignore-scripts
 }
 
 run_bundled_npm_publish() {
-  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --loglevel verbose
+  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --ignore-scripts --loglevel verbose
 }
 
 run_package_publish() {
@@ -369,11 +391,14 @@ publish_package_to_npm() {
     return 0
   fi
 
-  if [ "$dist_tag" != "canary" ]; then
-    release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
-    rm -f "$publish_log"
-    return 1
-  fi
+  case "$dist_tag" in
+    canary|nightly) ;;
+    *)
+      release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
+      rm -f "$publish_log"
+      return 1
+      ;;
+  esac
 
   release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
   if run_package_publish "$publish_tool" "$dist_tag" true; then
@@ -385,22 +410,80 @@ publish_package_to_npm() {
   return 1
 }
 
-publish_package_to_npm_and_wait() {
-  local dist_tag="$1"
-  local package_name="$2"
-  local package_version="$3"
-  local publish_tool="${4:-pnpm}"
-  local attempts="${5:-12}"
-  local delay_seconds="${6:-5}"
+# Wait for every already-published package to become registry-visible,
+# polling all of them concurrently. npm accepts a publish in seconds, but
+# packument propagation through the registry CDN can lag minutes per package;
+# waiting on each package before publishing the next made the total wait the
+# SUM of every package's lag (~2 hours on a bad day for the full set). Every
+# publish has already been accepted by the time this runs, so the polls can
+# race: the wall-clock cost becomes the single slowest package's lag. Each
+# package keeps its own attempts x delay budget, and a package that never
+# becomes visible still fails the release, naming every straggler.
+#
+# $3 is the list_public_package_info tuple list (pkg_dir<TAB>name<TAB>version
+# lines); the directory field is ignored.
+wait_for_npm_package_versions() {
+  local attempts="${1:-12}"
+  local delay_seconds="${2:-5}"
+  local package_info="$3"
 
-  publish_package_to_npm "$dist_tag" "$package_name" "$package_version" "$publish_tool" || return 1
+  # The polling phase runs in a subshell that owns its own EXIT trap: a
+  # cancelled or signalled release reaps every in-flight poller and the
+  # scratch directory instead of leaking one npm poll per package for the
+  # rest of its budget. The subshell also keeps this trap from clobbering
+  # the caller's cleanup trap.
+  (
+    local status_dir
+    local pids=()
+    local specs=()
+    local failures=()
+    local index=0
+    local pkg_name
+    local pkg_version
+    local i
 
-  if wait_for_npm_package_version "$package_name" "$package_version" "$attempts" "$delay_seconds"; then
-    return 0
-  fi
+    status_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-visibility.XXXXXX")"
 
-  release_warn "npm accepted ${package_name}@${package_version}, but the version did not become registry-visible."
-  return 1
+    # shellcheck disable=SC2329 # invoked via the trap below
+    reap_visibility_pollers() {
+      local pid
+      for pid in ${pids[@]+"${pids[@]}"}; do
+        kill "$pid" 2>/dev/null || true
+      done
+      rm -rf "$status_dir"
+    }
+    trap reap_visibility_pollers EXIT INT TERM
+
+    while IFS=$'\t' read -r _pkg_dir pkg_name pkg_version; do
+      [ -z "$pkg_name" ] && continue
+      (
+        if wait_for_npm_package_version "$pkg_name" "$pkg_version" "$attempts" "$delay_seconds"; then
+          : > "$status_dir/$index.ok"
+        fi
+      ) &
+      pids+=("$!")
+      specs+=("${pkg_name}@${pkg_version}")
+      index=$((index + 1))
+    done <<< "$package_info"
+
+    if [ "${#pids[@]}" -gt 0 ]; then
+      for i in "${!pids[@]}"; do
+        wait "${pids[$i]}" || true
+        if [ -e "$status_dir/$i.ok" ]; then
+          release_info "    ✓ ${specs[$i]} is registry-visible"
+        else
+          failures+=("${specs[$i]}")
+        fi
+      done
+    fi
+
+    if [ "${#failures[@]}" -gt 0 ]; then
+      release_warn "npm accepted every publish, but these versions did not become registry-visible: ${failures[*]}"
+      exit 1
+    fi
+
+    exit 0
+  )
 }
 
 verify_npm_installable() {
@@ -465,6 +548,33 @@ require_on_master_branch() {
   current_branch="$(git_current_branch)"
   if [ "$current_branch" != "master" ]; then
     release_fail "this release step must run from branch master, but current branch is ${current_branch:-<detached>}."
+  fi
+}
+
+# Promotion channels only republish commits that already shipped on the
+# previous lane, so the source commit must carry that lane's release tag.
+require_channel_tag_at_head() {
+  local channel="$1"
+
+  require_prerelease_channel "$channel"
+
+  if ! git -C "$REPO_ROOT" tag --points-at HEAD | grep -q "^${channel}/v"; then
+    release_fail "HEAD has no ${channel}/v* tag; this channel only publishes commits that already shipped a ${channel} release."
+  fi
+}
+
+# The inverse guard: a commit ships on a promotion channel at most once, so
+# concurrent or repeated runs cannot double-publish it. Delete the lane tag
+# first if a republish is genuinely intended.
+require_channel_tag_absent_at_head() {
+  local channel="$1"
+  local existing
+
+  require_prerelease_channel "$channel"
+
+  existing="$(git -C "$REPO_ROOT" tag --points-at HEAD | grep "^${channel}/v" | head -1 || true)"
+  if [ -n "$existing" ]; then
+    release_fail "HEAD already shipped as ${existing}; delete that tag first if you really want to republish this commit on the ${channel} channel."
   fi
 }
 

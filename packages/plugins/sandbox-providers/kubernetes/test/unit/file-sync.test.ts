@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -5,8 +6,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import {
   assertConfinedSandboxPath,
+  parseTarVerboseListingLine,
   performSyncIn,
   performSyncOut,
+  splitLinkEntryOnce,
   type PodStreamExec,
 } from "../../src/file-sync.js";
 
@@ -377,6 +380,77 @@ describe("kubernetes onEnvironmentSyncIn (native single-exec transfer)", () => {
 });
 
 describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => {
+  // The pod's pinned descriptor protocol depends on Linux /proc/self/fd.
+  it.skipIf(process.platform !== "linux")("preserves source entry names when requested while retaining explicit exclusions", async () => {
+    const remoteDir = await makeTmp("k8s-source-entry-"), hostOut = await makeTmp("k8s-source-output-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const names = ["._result.txt", ".paperclip-upload-result", "nested/._result.txt", "nested/.paperclip-upload-result"];
+    await fs.chmod(path.join(remoteDir, "nested"), 0o775);
+    for (const name of names) {
+      await fs.writeFile(path.join(remoteDir, name), `user work: ${name}`);
+      await fs.chmod(path.join(remoteDir, name), 0o664);
+    }
+    await fs.writeFile(path.join(remoteDir, "excluded.txt"), "excluded by caller");
+    const { exec } = makeRealExec();
+    await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
+      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["excluded.txt"],
+    }] }] });
+    for (const name of names) {
+      expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`user work: ${name}`);
+      expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`user work: ${name}`);
+      expect((await fs.stat(path.join(hostOut, name))).mode & 0o777).toBe(0o664);
+    }
+    expect((await fs.stat(path.join(hostOut, "nested"))).mode & 0o777).toBe(0o775);
+    await expect(fs.stat(path.join(hostOut, "excluded.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform !== "linux")("preserves literal excluded paths without excluding same basenames or glob matches", async () => {
+    const remoteDir = await makeTmp("k8s-literal-"), hostOut = await makeTmp("k8s-literal-out-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    const socket = createServer();
+    await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path.join(remoteDir, "ipc"), resolve); });
+    try {
+      const names = ["nested/ipc", "nested/omit[ab]*?", "omitaZZx", "nested/skip[ab]*?/saved.txt"];
+      for (const name of names) {
+        await fs.mkdir(path.dirname(path.join(remoteDir, name)), { recursive: true });
+        await fs.writeFile(path.join(remoteDir, name), `literal work: ${name}`);
+      }
+      await fs.writeFile(path.join(remoteDir, "omit[ab]*?"), "excluded literal file");
+      await fs.mkdir(path.join(remoteDir, "skip[ab]*?"));
+      await fs.writeFile(path.join(remoteDir, "skip[ab]*?/excluded.txt"), "excluded subtree");
+      const { exec } = makeRealExec();
+      const result = await performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "literal", files: [{
+        kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true, exclude: ["ipc", "omit[ab]*?", "skip[ab]*?"],
+      }] }] });
+      expect(result.operations[0].filesTransferred).toBe(4);
+      for (const name of names) {
+        expect(await fs.readFile(path.join(hostOut, name), "utf8")).toBe(`literal work: ${name}`);
+        expect(await fs.readFile(path.join(remoteDir, name), "utf8")).toBe(`literal work: ${name}`);
+      }
+      for (const name of ["ipc", "omit[ab]*?", "skip[ab]*?"]) await expect(fs.lstat(path.join(hostOut, name))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.lstat(path.join(remoteDir, "ipc"))).isSocket()).toBe(true);
+    } finally { await new Promise<void>(resolve => socket.close(() => resolve())); }
+  });
+
+  it.skipIf(process.platform !== "linux").each(["file", "directory"])("refuses preserved %s special modes before host writes", async kind => {
+    const remoteDir = await makeTmp("k8s-special-source-"), hostOut = await makeTmp("k8s-special-output-");
+    await fs.mkdir(path.join(remoteDir, "nested"));
+    await fs.writeFile(path.join(remoteDir, "result.txt"), "source work");
+    await fs.writeFile(path.join(hostOut, "retained.txt"), "existing host work");
+    const source = path.join(remoteDir, kind === "directory" ? "nested" : "result.txt");
+    const mode = kind === "directory" ? 0o1775 : 0o1664;
+    await fs.chmod(source, mode);
+    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
+    const { exec } = makeRealExec();
+    await expect(performSyncOut({ exec, remoteDir, timeoutMs: 30_000, operations: [{ operationId: "preserve", files: [{
+      kind: "directory", sourcePath: remoteDir, targetPath: hostOut, preserveSourceEntries: true,
+    }] }] })).rejects.toThrow("special mode bits");
+    expect(await fs.readdir(hostOut)).toEqual(["retained.txt"]);
+    expect(await fs.readFile(path.join(hostOut, "retained.txt"), "utf8")).toBe("existing host work");
+    expect((await fs.stat(source)).mode & 0o7777).toBe(mode);
+    expect(await fs.readFile(path.join(remoteDir, "result.txt"), "utf8")).toBe("source work");
+  });
+
   it("streams all file mappings back over a SINGLE exec and reassembles them at host targets, preserving mode and per-operation counts", async () => {
     const remoteDir = await makeTmp("k8s-sandbox-");
     const hostOut = await makeTmp("k8s-hostout-");
@@ -754,5 +828,89 @@ describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
     // An absent/empty command list adds zero execs — byte-identical to today.
     expect(emptyCalls).toHaveLength(baseCalls.length);
     expect(emptyCalls).toHaveLength(1);
+  });
+});
+
+
+describe("parseTarVerboseListingLine", () => {
+  it("parses GNU tar listing lines (file, dir, symlink, hardlink, numeric owner)", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r-- daytona/daytona 7560 2026-08-11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x daytona/daytona 0 2026-08-11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxrwxrwx daytona/daytona 0 2026-08-11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r-- daytona/daytona 0 2026-08-11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r-- 0/0 12 2026-08-11 21:43 root-owned.txt")).toEqual({
+      typeFlag: "-",
+      rest: "root-owned.txt",
+    });
+  });
+
+  it("parses bsdtar (macOS) listing lines, including year-form dates", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r--  0 daytona daytona     0 Aug 11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11  2025 old.txt")).toEqual({
+      typeFlag: "-",
+      rest: "old.txt",
+    });
+  });
+
+  it("keeps the true member name for bsdtar lines with numeric uid/gid, so traversal stays visible", () => {
+    // With unresolvable ids bsdtar prints bare numbers; a looser GNU-first parse
+    // would read this shape shifted by one field and report the member name as
+    // "21:43 ../escape.txt", hiding the leading "../" from the traversal check.
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 1001 1001  7560 Aug 11 21:43 ../escape.txt")).toEqual({
+      typeFlag: "-",
+      rest: "../escape.txt",
+    });
+  });
+
+  it("returns null (fail closed) for lines matching neither dialect", () => {
+    expect(parseTarVerboseListingLine("not a tar listing line")).toBeNull();
+    expect(parseTarVerboseListingLine("tar: Error is not recoverable: exiting now")).toBeNull();
+    // Device nodes carry "major,minor" instead of a byte count in both dialects.
+    expect(parseTarVerboseListingLine("crw-rw-rw- root/root 1,3 2026-08-11 21:43 dev/null")).toBeNull();
+    expect(parseTarVerboseListingLine("crw-rw-rw-  0 root wheel  1,3 Aug 11 21:43 dev/null")).toBeNull();
+  });
+});
+
+describe("splitLinkEntryOnce", () => {
+  it("splits a clean single-delimiter link field", () => {
+    expect(splitLinkEntryOnce("shortcut -> nested/data.txt", " -> ")).toEqual({
+      name: "shortcut",
+      target: "nested/data.txt",
+    });
+    expect(splitLinkEntryOnce("copy.txt link to data.txt", " link to ")).toEqual({
+      name: "copy.txt",
+      target: "data.txt",
+    });
+  });
+
+  it("returns null (fail closed) when the delimiter is absent or appears more than once", () => {
+    expect(splitLinkEntryOnce("no delimiter here", " -> ")).toBeNull();
+    // A link name or target embedding the delimiter makes the split point
+    // unresolvable; either split choice can hide an escaping target.
+    expect(splitLinkEntryOnce("evil -> decoy -> ../../outside.txt", " -> ")).toBeNull();
+    expect(splitLinkEntryOnce("a link to b link to ../../outside.txt", " link to ")).toBeNull();
   });
 });

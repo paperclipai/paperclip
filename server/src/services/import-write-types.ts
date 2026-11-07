@@ -35,6 +35,18 @@ export interface ImportIssueRow {
   /** Imported monitors land un-armed; only notes/provenance are restored. */
   monitorNotes: string | null;
   monitorScheduledBy: string | null;
+  /** Parent issue id resolved within the same import batch (pre-generated), or absent for roots. */
+  parentId?: string | null;
+  /**
+   * Preserved source timestamps carried by schemaVersion >= 7 bundles.
+   * Absent/null createdAt and updatedAt fall back to the insert time;
+   * absent startedAt stays null — the writer never fabricates it.
+   */
+  createdAt?: Date | null;
+  updatedAt?: Date | null;
+  startedAt?: Date | null;
+  completedAt?: Date | null;
+  cancelledAt?: Date | null;
 }
 
 /** A resolved comment row with a pre-generated id, ready for batch insert. */

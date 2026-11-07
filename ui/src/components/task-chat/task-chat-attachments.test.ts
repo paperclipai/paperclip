@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   extractAttachmentRefs,
+  extractImageRefs,
+  fileKindForAttachment,
   fileKindForName,
   formatFileSize,
+  hydrateAttachmentRefs,
+  isImageAttachment,
   isImageFilename,
+  stripStandaloneImageEmbeds,
 } from "./task-chat-attachments";
 
 describe("fileKindForName", () => {
@@ -25,6 +30,60 @@ describe("isImageFilename", () => {
     expect(isImageFilename("shot.PNG")).toBe(true);
     expect(isImageFilename("photo.jpeg")).toBe(true);
     expect(isImageFilename("notes.txt")).toBe(false);
+  });
+});
+
+describe("attachment record metadata", () => {
+  it("detects an extensionless image from its content type", () => {
+    expect(
+      isImageAttachment({
+        name: "desktop Default",
+        url: "/api/attachments/screenshot/content",
+        contentType: "image/png",
+      }),
+    ).toBe(true);
+  });
+
+  it("falls back to the extension for generic attachment content", () => {
+    expect(
+      isImageAttachment({
+        name: "shot.png",
+        url: "/api/attachments/screenshot/content",
+        contentType: "application/octet-stream",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses content type for an extensionless file kind", () => {
+    expect(
+      fileKindForAttachment({
+        name: "report",
+        url: "/api/attachments/report/content",
+        contentType: "application/pdf",
+      }).label,
+    ).toBe("PDF");
+  });
+
+  it("hydrates refs with the stored type, size, and paths", () => {
+    const [ref] = hydrateAttachmentRefs(
+      [{ name: "desktop Default", url: "/api/attachments/a1/content" }],
+      [
+        {
+          id: "a1",
+          contentPath: "/api/attachments/a1/content",
+          openPath: "/api/attachments/a1/content",
+          downloadPath: "/api/attachments/a1/content?download=1",
+          contentType: "image/png",
+          byteSize: 2048,
+          originalFilename: "desktop Default",
+        },
+      ],
+    );
+    expect(ref).toMatchObject({
+      id: "a1",
+      contentType: "image/png",
+      byteSize: 2048,
+    });
   });
 });
 
@@ -56,11 +115,14 @@ describe("extractAttachmentRefs", () => {
     expect(text).toBe(body);
   });
 
-  it("ignores image embeds and image-named links", () => {
+  it("ignores image embeds but returns image-named attachment links for classification", () => {
     const body =
       "![shot.png](/api/attachments/img/content)\n[photo.jpg](/api/attachments/p/content)\n[notes.txt](/api/attachments/n/content)";
     const { refs } = extractAttachmentRefs(body);
-    expect(refs).toEqual([{ name: "notes.txt", url: "/api/attachments/n/content" }]);
+    expect(refs).toEqual([
+      { name: "photo.jpg", url: "/api/attachments/p/content" },
+      { name: "notes.txt", url: "/api/attachments/n/content" },
+    ]);
   });
 
   it("ignores non-attachment links entirely", () => {
@@ -84,5 +146,61 @@ describe("extractAttachmentRefs", () => {
     expect(refs).toEqual([
       { name: "weird [name].txt", url: "/api/assets/a1/content?download=1" },
     ]);
+  });
+});
+
+describe("extractImageRefs", () => {
+  it("collects image embeds in order, skipping plain links", () => {
+    const body =
+      "![a.png](/api/attachments/a/content)\nSee [notes.txt](/api/attachments/n/content)\n![b.jpg](https://example.com/b.jpg)";
+    expect(extractImageRefs(body)).toEqual([
+      { name: "a.png", url: "/api/attachments/a/content" },
+      { name: "b.jpg", url: "https://example.com/b.jpg" },
+    ]);
+  });
+
+  it("dedupes repeated embeds and tolerates empty alt text", () => {
+    const body = "![](/api/attachments/a/content)\n![again](/api/attachments/a/content)";
+    expect(extractImageRefs(body)).toEqual([{ name: "", url: "/api/attachments/a/content" }]);
+  });
+
+  it("unescapes bracket-escaped alt text", () => {
+    const body = String.raw`![shot \[1\].png](/api/attachments/s/content)`;
+    expect(extractImageRefs(body)).toEqual([
+      { name: "shot [1].png", url: "/api/attachments/s/content" },
+    ]);
+  });
+
+  it("returns nothing for bodies without images", () => {
+    expect(extractImageRefs("just text and a [link](/api/attachments/x/content)")).toEqual([]);
+  });
+
+  it("promotes standalone embeds but leaves prose-woven embeds inline", () => {
+    const body = [
+      "Standalone embed on its own line:",
+      "",
+      "![shot one](/api/attachments/a/content)",
+      "",
+      "And here is an image ![inline two](/api/attachments/b/content) woven into this sentence.",
+    ].join("\n");
+
+    expect(extractImageRefs(body)).toEqual([
+      { name: "shot one", url: "/api/attachments/a/content" },
+    ]);
+    expect(stripStandaloneImageEmbeds(body)).toBe(
+      [
+        "Standalone embed on its own line:",
+        "",
+        "And here is an image ![inline two](/api/attachments/b/content) woven into this sentence.",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("stripStandaloneImageEmbeds", () => {
+  it("removes tail embeds promoted to thumbnails but keeps prose", () => {
+    expect(
+      stripStandaloneImageEmbeds("Done.\n\n![desktop Default](/api/attachments/a/content)"),
+    ).toBe("Done.");
   });
 });

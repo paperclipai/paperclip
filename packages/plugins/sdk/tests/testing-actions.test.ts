@@ -12,7 +12,7 @@ const manifest = {
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
-  entrypoints: {},
+  entrypoints: { worker: "./worker.js" },
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
@@ -98,6 +98,18 @@ describe("createTestHarness managed routines", () => {
 });
 
 describe("createTestHarness issue interactions", () => {
+  it("normalizes a canonical question form through the typed host helper", async () => {
+    const harness = createTestHarness({ manifest, capabilities: ["issues.create", "issue.interactions.create"] });
+    const issue = await harness.ctx.issues.create({ companyId: "company-1", title: "Ask for a repository" });
+    const input = {
+      idempotencyKey: "canonical:repo",
+      payload: { version: 1 as const, questionSet: { schema: "paperclip.question_set.v1" as const, questions: [{ id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" as const }] } },
+    };
+    const created = await harness.ctx.issues.askUserQuestions(issue.id, input, "company-1");
+    expect(created.payload.questionSet).toEqual(input.payload.questionSet);
+    expect(created.payload.questions).toMatchObject([{ id: "repo", options: [{ id: "paperclip_text_answer", freeText: true }] }]);
+    expect(await harness.ctx.issues.askUserQuestions(issue.id, input, "company-1")).toEqual(created);
+  });
   it("creates request_checkbox_confirmation interactions through the typed host helper", async () => {
     const harness = createTestHarness({
       manifest,
@@ -124,6 +136,7 @@ describe("createTestHarness issue interactions", () => {
           minSelected: 1,
           maxSelected: 2,
         },
+        // Omits the fields the schema defaults. The input type allows that.
       },
       "company-1",
       { authorAgentId: "agent-1" },

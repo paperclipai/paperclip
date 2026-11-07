@@ -1,9 +1,41 @@
+import { prepareMcpClientMirrorPolicy } from "./public-mcp/client-mirror-mutations.js";
+import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
+import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
+import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
+
+/**
+ * A `Db` or an open transaction handle — the subset of query builders the
+ * settings writes use. Lets `update` run inside a caller's transaction so
+ * it commits atomically with a sibling write.
+ */
+type InstanceSettingsTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type InstanceSettingsWriteDb = Pick<
+  Db | InstanceSettingsTransaction,
+  "select" | "insert" | "update"
+>;
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
-  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -17,8 +49,16 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
+import {
+  INSTANCE_FEATURE_CATALOG,
+  applyOperatorGeneralDefaults,
+  stripOperatorGeneralEchoes,
+} from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
+import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
+import { forbidden } from "../errors.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -187,7 +227,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
-      keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -197,7 +236,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   }
   return {
     censorUsernameInLogs: false,
-    keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
   };
@@ -208,16 +246,36 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
+      enableNativeRunner: parsed.data.enableNativeRunner ?? true,
+      enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
+      enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? true,
+      enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
-      enableApps: parsed.data.enableApps ?? false,
-      enablePipelines: parsed.data.enablePipelines ?? false,
+      enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
+      // Apps graduated from Experimental. Ignore historical off values while
+      // continuing to accept the compatibility key in stored settings.
+      enableApps: true,
+      enableMcpAggregators: true,
+      enablePublicMcp: parsed.data.enablePublicMcp ?? false,
+      enableOpenAiDot: parsed.data.enableOpenAiDot ?? false,
+      enableMuse: parsed.data.enableMuse ?? false,
+      enableGrokBot: parsed.data.enableGrokBot ?? false,
+      enableChatConnectors: parsed.data.enableChatConnectors ?? false,
+      enableGitHubReviewBots: parsed.data.enableGitHubReviewBots ?? false,
+      enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
+      enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
+      enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
+      enableAgentChat: true,
+      enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
+      enableArtifactsV1: parsed.data.enableArtifactsV1 ?? true,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
-      enableTaskChatRedesign: parsed.data.enableTaskChatRedesign ?? false,
+      enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
+      enableLegacyComposerSubmit: parsed.data.enableLegacyComposerSubmit ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
-      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       enableSmokeLab: parsed.data.enableSmokeLab ?? false,
       enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
@@ -225,33 +283,56 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableSummaries: parsed.data.enableSummaries ?? false,
       enableStatusCards: parsed.data.enableStatusCards ?? false,
       enableDecisions: parsed.data.enableDecisions ?? false,
+      enableFastResponses: parsed.data.enableFastResponses ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
+      enablePaperclipDeveloperMode: parsed.data.enablePaperclipDeveloperMode ?? false,
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
+      enableFirstTaskPlanProposal: parsed.data.enableFirstTaskPlanProposal ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+      enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
         parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
-      issueGraphLivenessAutoRecoveryLookbackHours:
-        parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
-        DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
     };
   }
   return {
     enableEnvironments: false,
+    enableNativeRunner: true,
+    enableAiConnectionRouters: false,
+    enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    // An unrelated malformed field must not erase an explicit enrollment opt-out.
+    remoteWorkspaceStorageEnabled: !(
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && "remoteWorkspaceStorageEnabled" in raw && raw.remoteWorkspaceStorageEnabled === false
+    ),
+    enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
-    enableApps: false,
-    enablePipelines: false,
+    enableStreamlinedUi: true,
+    enableApps: true,
+    enableMcpAggregators: true,
+    enablePublicMcp: false,
+    enableOpenAiDot: false,
+    enableMuse: false,
+    enableGrokBot: false,
+    enableChatConnectors: false,
+    enableGitHubReviewBots: false,
+    enableMemoryConnectors: false,
+    enablePaperclipNotebook: false,
+    enableGoogleWorkspaceConnector: false,
     enableCases: false,
+    enableAgentChat: true,
+    enableCombinedInboxTasks: false,
+    enableArtifactsV1: true,
     enableConferenceRoomChat: false,
-    enableTaskChatRedesign: false,
-    enableTaskWatchdogs: false,
+    enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -261,19 +342,21 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
+    enableFastResponses: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
+    enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
+    enableFirstTaskPlanProposal: false,
     autoRestartDevServerWhenIdle: false,
-    enableIssueGraphLivenessAutoRecovery: false,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
+    enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
-    issueGraphLivenessAutoRecoveryLookbackHours:
-      DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
 }
 
@@ -301,21 +384,119 @@ export function applyManagedExperimentalOverlay(
   for (const [key, value] of Object.entries(managedConfig.features) as Array<
     [ManagedExperimentalFeatureKey, boolean]
   >) {
+    // Existing Cloud stack configs may still carry retired flags. Accept the
+    // document during rollout, but never let retired flags disable Apps, Agent Chat or MCP aggregators.
+    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
   return { experimental: next, managedKeys };
 }
 
+/**
+ * Keep self-hosted-only defaults out of Cloud.
+ *
+ * The experimental schema carries one default per flag, and the feature
+ * catalog pins it to `selfHostedDefault`. A flag that is on by default for
+ * self-hosted but off by default for Cloud (`selfHostedDefault: true`,
+ * `cloudDefault: false`) would therefore normalize to "on" for a managed
+ * instance whose tenant row and managed overlay both leave it unset. Re-assert
+ * the declared Cloud default for exactly those flags. An explicit tenant value
+ * or a managed feature value still wins (the overlay is applied afterwards).
+ */
+export function applyCloudCatalogDefaults(
+  experimental: InstanceExperimentalSettings,
+  rawStored: unknown,
+  managedConfig: ManagedInstanceConfig | null,
+): InstanceExperimentalSettings {
+  if (!managedConfig) return experimental;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const next: InstanceExperimentalSettings = { ...experimental };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (typeof managedConfig.features[key as ManagedExperimentalFeatureKey] === "boolean") continue;
+    (next as unknown as Record<string, unknown>)[key] = false;
+  }
+  return next;
+}
+
+/**
+ * Keep the write path from freezing a self-hosted default into a Cloud row.
+ *
+ * `updateExperimental` persists the whole normalized object, and the schema
+ * normalizes an omitted flag to its self-hosted default. Without this step an
+ * unrelated experimental write (say, turning on Cases) would store
+ * `enableNativeRunner: true` on a managed instance whose tenant row had never
+ * mentioned the flag; every later read would then treat the stored boolean as
+ * an explicit tenant choice and stop re-asserting the Cloud default.
+ *
+ * For each guarded flag (see `applyCloudCatalogDefaults`), the stored key is
+ * left absent unless the tenant already stored a boolean or this patch sets
+ * the flag to something other than the Cloud default. A patch value equal to
+ * the Cloud default is a full-GET echo of the read-time overlay, not a
+ * choice, and is stripped the same way `stripOperatorGeneralEchoes` treats
+ * operator defaults. Self-hosted rows are returned untouched.
+ */
+export function stripCloudCatalogDefaultEchoes(
+  rawStored: unknown,
+  patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
+  next: InstanceExperimentalSettings,
+  managedConfig: ManagedInstanceConfig | null,
+): Partial<InstanceExperimentalSettings> {
+  if (!managedConfig) return next;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const patchRecord = patch as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...next };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (
+      Object.prototype.hasOwnProperty.call(patchRecord, key) &&
+      typeof patchRecord[key] === "boolean" &&
+      patchRecord[key] !== entry.cloudDefault
+    ) {
+      continue;
+    }
+    delete result[key];
+  }
+  return result as Partial<InstanceExperimentalSettings>;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+  const staging = isCloudStagingInstance(options.runtimeEnv ?? process.env);
+  const enforcedManagedConfig = staging && managedConfig
+    ? {
+      ...managedConfig,
+      features: Object.fromEntries(Object.entries(managedConfig.features)
+        .filter(([key, enabled]) => enabled || !isCloudStagingExperimentalSetting(key))),
+    }
+    : managedConfig;
+  // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
+  // read, never persisted (see applyOperatorGeneralDefaults) — including on
+  // the write path, where a full-GET echo of the overlaid value is stripped
+  // back to the schema default (see stripOperatorGeneralEchoes).
+  const operatorDefaults = getOperatorSettingDefaults(options.runtimeEnv ?? process.env);
+
+  function toGeneralView(raw: unknown): InstanceGeneralSettings {
+    return applyOperatorGeneralDefaults(normalizeGeneralSettings(raw), operatorDefaults);
+  }
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
+    const stored = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const defaults = staging ? { ...managedConfig?.features, ...stored } : raw;
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
-      normalizeExperimentalSettings(raw),
-      managedConfig,
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(defaults), defaults, managedConfig),
+      enforcedManagedConfig,
     );
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
     return managedConfig ? { ...experimental, managedKeys } : experimental;
@@ -325,14 +506,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return {
       id: row.id,
       defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-      general: normalizeGeneralSettings(row.general),
+      general: toGeneralView(row.general),
       experimental: toExperimentalView(row.experimental),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     } as InstanceSettings;
   }
-  async function getOrCreateRow() {
-    const existing = await db
+  async function getOrCreateRow(runner: InstanceSettingsWriteDb = db) {
+    const existing = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -340,7 +521,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     if (existing) return existing;
 
     const now = new Date();
-    const [created] = await db
+    const [created] = await runner
       .insert(instanceSettings)
       .values({
         singletonKey: DEFAULT_SINGLETON_KEY,
@@ -359,7 +540,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     if (created) return created;
 
-    const raced = await db
+    const raced = await runner
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
@@ -372,10 +553,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   return {
     get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
 
-    update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
-      const current = await getOrCreateRow();
+    update: async (
+      patch: PatchInstanceSettings,
+      writeOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceSettings> => {
+      // The write may run inside a caller-supplied transaction so it commits
+      // atomically with a sibling write (e.g. clearing the managed-default
+      // stamp on the environment row alongside a defaultEnvironmentId
+      // change). Reads use the same runner so the row is visible to the tx.
+      const runner = writeOptions?.db ?? db;
+      const current = await getOrCreateRow(runner);
       const now = new Date();
-      const [updated] = await db
+      const [updated] = await runner
         .update(instanceSettings)
         .set({
           ...(Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
@@ -388,9 +577,17 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toInstanceSettings(updated ?? current);
     },
 
-    getGeneral: async (): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+    getGeneral: async (
+      readOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceGeneralSettings> => {
+      const row = await getOrCreateRow(readOptions?.db);
+      return toGeneralView(row.general);
+    },
+
+    getExperimentalReadOnly: async (runner: Pick<Db, "select"> = db): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const [row] = await runner.select({ experimental: instanceSettings.experimental }).from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY));
+      return toExperimentalView(row?.experimental);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
@@ -400,10 +597,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
-        ...patch,
-      });
+      const storedGeneral = normalizeGeneralSettings(current.general);
+      // A full-GET echo carries the overlaid operator value for a field the
+      // user never chose; stripping it keeps the overlay strictly read-time,
+      // so changing or unsetting the variable later still takes effect.
+      const nextGeneral = stripOperatorGeneralEchoes(
+        storedGeneral,
+        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        operatorDefaults,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -417,17 +619,78 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
+      for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
+          throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
+            code: "settings_operator_managed",
+          });
+        }
+      }
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      // Guarded Cloud flags stay absent from the row unless chosen, so the
+      // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
+      const nextExperimental = staging
+        ? applyExperimentalSettingsPatch(toExperimentalView(current.experimental), patch, options)
+        : stripCloudCatalogDefaultEchoes(
+          current.experimental,
+          patch,
+          applyExperimentalSettingsPatch(current.experimental, patch, options),
+          managedConfig,
+        );
+      if (staging) {
+        const stored = current.experimental as Record<string, unknown> | null;
+        for (const key of Object.keys(INSTANCE_FEATURE_CATALOG) as ManagedExperimentalFeatureKey[]) {
+          if (typeof stored?.[key] !== "boolean" && !Object.prototype.hasOwnProperty.call(patch, key)) {
+            delete nextExperimental[key];
+          }
+        }
+      }
+      const chatBecameEnabled = !toExperimentalView(current.experimental).enableAgentChat
+        && toExperimentalView(nextExperimental).enableAgentChat;
       const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          experimental: { ...nextExperimental },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
+      const [updated] = await db.transaction(async tx => {
+        if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
+        if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
+        if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
+        if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
+        if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
+        if (patch.enableWorktreeRunExecution !== undefined) {
+          await notifyRunDispatch(tx);
+          await notifyDeferredExecutionEligibility(tx);
+          await notifyLiveRunRecovery(tx);
+          await notifyLiveResourceRecovery(tx);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyExternalAgentSettlement(tx);
+          await notifyInstructionCommit(tx);
+          await notifyDirectoryCleanup(tx);
+          await notifySkillVersionRetentionReconstruction(tx);
+          await notifyInstructionCollection(tx);
+          await notifyCancelledWorkspacePreservation(tx);
+          await notifyExternalConversationSettlement(tx);
+          await notifyNativeRecoveryNotices(tx);
+          await notifyNativeRunProjection(tx);
+          await notifyNativeEnvironmentSettlement(tx);
+          await notifyNativeResultCommit(tx);
+          await notifyNativeWorkspaceFinalization(tx);
+        }
+        if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
+        await notifyToolConnectionHealth(tx, "*");
+        return tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...nextExperimental },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+      });
       return toInstanceSettings(updated ?? current);
     },
 

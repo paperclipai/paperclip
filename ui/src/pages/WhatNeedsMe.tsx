@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorNeedsYou } from "../components/coordinator/CoordinatorNeedsYou";
 import { CheckCircle2, Inbox } from "lucide-react";
 import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
@@ -38,16 +40,15 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
-import { decisionTrainingHref } from "../lib/decisionTraining";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
 import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
-import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 
 /** Curtain rows never expand; module-level so memoized rows see one identity. */
@@ -87,6 +88,11 @@ function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
 }
 
 export function WhatNeedsMe() {
+  const { enabled } = useCoordinatorWorkspaceEnabled();
+  return enabled ? <CoordinatorNeedsYou /> : <ClassicWhatNeedsMe />;
+}
+
+function ClassicWhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -100,8 +106,7 @@ export function WhatNeedsMe() {
   // still follows a click, so keyboard actions target the row you just used.
   const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
-  // Decision-training drawer target. `null` when closed.
-  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -149,11 +154,7 @@ export function WhatNeedsMe() {
     setCollapsedGroupKeys(loadCollapsedAttentionGroupKeys(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const {
-    data: feed,
-    isLoading,
-    error,
-  } = useQuery({
+  const feedQuery = useQuery({
     // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
     // (needed for the curtains) never inflate the badge count. Invalidating the
     // `["attention", companyId]` prefix still cascades to this query.
@@ -171,6 +172,8 @@ export function WhatNeedsMe() {
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
   });
+  const { data: feed, isLoading } = feedQuery;
+  const feedView = useQueryView(feedQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -258,13 +261,13 @@ export function WhatNeedsMe() {
   // carries an explicit, due decide-by. Any explicit
   // group-by keeps the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
-    const filtered = filterAttentionItems(deskItems, filters);
+    const filtered = filterAttentionItems(deskItems, filters, searchQuery);
     if (groupBy === "none") {
       return buildDeskShelves(filtered, now);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [deskItems, filters, sortOrder, groupBy, now]);
+  }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -466,10 +469,6 @@ export function WhatNeedsMe() {
     setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
-  const handleTrain = useCallback((item: AttentionItem) => {
-    setTrainingItem(item);
-  }, []);
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveAttentionQueueKeyAction({
@@ -516,20 +515,35 @@ export function WhatNeedsMe() {
   }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
 
-  if (isLoading) {
+  // Keep a loaded feed on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || feedView.kind === "reconnecting") {
     return <PageSkeleton variant="approvals" />;
+  }
+  if (feedView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={feedView.error}
+        action="load your decisions"
+        onRetry={feedView.retry}
+        retrying={feedView.isFetching}
+      />
+    );
   }
 
   const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-4">
         <h1 className="text-xl font-bold">Decisions</h1>
         <DecisionsToolbar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           visibleCount={visibleCount}
           filterOptions={filterOptions}
           filters={filters}
@@ -538,7 +552,6 @@ export function WhatNeedsMe() {
           onGroupByChange={updateGroupBy}
           sortOrder={sortOrder}
           onSortOrderChange={updateSortOrder}
-          onOpenTraining={() => navigate(decisionTrainingHref())}
         />
       </div>
 
@@ -555,8 +568,6 @@ export function WhatNeedsMe() {
           }}
         />
       </div>
-
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {!hasAnything ? (
         <ZeroState />
@@ -621,7 +632,6 @@ export function WhatNeedsMe() {
                                   onToggleExpand={handleToggleExpand}
                                   onDismiss={handleDismiss}
                                   onSnooze={handleSnooze}
-                                  onTrain={handleTrain}
                                   agentMap={agentMap}
                                   agents={agents}
                                   showTriage
@@ -712,7 +722,6 @@ export function WhatNeedsMe() {
                   onToggleExpand={handleToggleExpand}
                   onDismiss={handleDismiss}
                   onSnooze={handleSnooze}
-                  onTrain={handleTrain}
                 />
               ))}
             </Curtain>
@@ -768,16 +777,6 @@ export function WhatNeedsMe() {
           )}
         </Curtain>
       </div>
-
-      <DecisionTrainingDrawer
-        open={trainingItem !== null}
-        onOpenChange={(next) => {
-          if (!next) setTrainingItem(null);
-        }}
-        companyId={selectedCompanyId}
-        item={trainingItem}
-        currentUserId={currentUserId}
-      />
     </div>
   );
 }
@@ -826,10 +825,10 @@ function CaughtUpNote({ filtered }: { filtered: boolean }) {
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your filters." : "You're all caught up."}
+        {filtered ? "No decisions match your search or filters." : "You're all caught up."}
       </p>
       {filtered && (
-        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
       )}
     </div>
   );

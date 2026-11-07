@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/runner-workflow-observation.v1.schema.json",
+  "title": "RunnerWorkflowObservation v1",
+  "type": "object",
+  "required": ["schema", "caseId", "candidateId", "provider", "classification", "base", "lifecycle", "continuation", "presentation", "traceLineage", "metrics", "observedPrpEventTypes", "artifactDigests"],
+  "properties": {
+    "schema": { "const": "paperclip.runner.workflow-observation.v1" },
+    "caseId": { "enum": ["final-response", "rich-activity", "verification-policy", "governed-interaction", "steering-causality", "planning-lifecycle", "review-lifecycle", "delegation-return", "completion-robustness", "restart-recovery", "cancellation-permissions", "trace-lineage"] },
+    "candidateId": { "type": "string", "minLength": 1 },
+    "provider": { "enum": ["codex", "opencode", "acpx"] },
+    "classification": { "enum": ["completed", "candidate_failure", "infrastructure_failure", "skipped"] },
+    "base": { "type": "object" },
+    "lifecycle": { "$ref": "#/$defs/evidence" },
+    "continuation": { "$ref": "#/$defs/evidence" },
+    "presentation": { "$ref": "#/$defs/evidence" },
+    "traceLineage": {
+      "type": "object",
+      "required": ["capture", "frameCount", "byteCount", "digestVerified", "ordered", "dispositions", "lineage"],
+      "properties": {
+        "capture": { "enum": ["on", "off"] },
+        "frameCount": { "type": "integer", "minimum": 0 },
+        "byteCount": { "type": "integer", "minimum": 0 },
+        "digestVerified": { "type": "boolean" },
+        "ordered": { "type": "boolean" },
+        "dispositions": { "type": "array", "items": { "type": "string" } },
+        "lineage": { "type": "array", "items": { "type": "string" } },
+        "traceRef": { "type": "string" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["attempts", "toolCount"],
+      "properties": {
+        "timeToFirstVisibleProgressMs": { "type": "number", "minimum": 0 },
+        "settlementMs": { "type": "number", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "toolCount": { "type": "integer", "minimum": 0 },
+        "totalTokens": { "type": "number", "minimum": 0 },
+        "costUsd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "observedPrpEventTypes": { "type": "array", "items": { "type": "string" } },
+    "artifactDigests": { "type": "array", "items": { "type": "string" } },
+    "failure": {
+      "type": "object",
+      "required": ["code", "category", "retryable", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "category": { "enum": ["candidate", "provider", "qualification", "orchestration"] },
+        "retryable": { "type": "boolean" },
+        "message": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "classification": { "enum": ["infrastructure_failure", "skipped"] } }, "required": ["classification"] },
+      "then": { "required": ["failure"] }
+    }
+  ],
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": ["id", "passed"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "evidenceIds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["checks"],
+      "properties": { "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } } }
+    }
+  }
+}

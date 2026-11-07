@@ -23,12 +23,12 @@ import {
   type ToolProfileEntryInput,
   type UpdateToolProfileInput,
 } from "@/api/tools";
-import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { AgentSelect } from "@/components/AgentMultiSelect";
 import {
   Dialog,
   DialogContent,
@@ -49,14 +49,15 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
 import { EmptyState } from "@/components/EmptyState";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import {
   CapabilityBadges,
-  ErrorState,
   LoadingState,
   RelativeTime,
   RiskBadge,
   ToolsPageHeader,
 } from "./shared";
+import { describeError } from "@/api/errors";
 
 const SELECTOR_TYPES: Array<{ value: ToolProfileEntrySelectorType; label: string }> = [
   { value: "tool_name", label: "Tool name" },
@@ -479,32 +480,27 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
     queryFn: () => toolsApi.getEffectiveProfilesForAgent(companyId, agentId),
     enabled: Boolean(agentId),
   });
+  const effectiveView = useQueryView(effective);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="space-y-1.5">
         <Label>Agent</Label>
-        <Select value={agentId} onValueChange={setAgentId}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select an agent" />
-          </SelectTrigger>
-          <SelectContent>
-            {agentOptions.map((agent) => (
-              <SelectItem key={agent.id} value={agent.id}>
-                {agent.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <AgentSelect agents={agentOptions} value={agentId} onChange={setAgentId} />
       </div>
       {!agentId ? (
         <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
           Pick an agent to see what it can use right now.
         </div>
-      ) : effective.isLoading ? (
+      ) : effective.isLoading || effectiveView.kind === "reconnecting" ? (
         <LoadingState label="Checking access..." />
-      ) : effective.error ? (
-        <ErrorState error={effective.error} onRetry={() => effective.refetch()} />
+      ) : effectiveView.kind === "error" ? (
+        <QueryErrorState
+          error={effective.error}
+          action="check this agent's access"
+          onRetry={effectiveView.retry}
+          retrying={effectiveView.isFetching}
+        />
       ) : (
         <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
           <div className="space-y-2">
@@ -538,7 +534,7 @@ export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: st
                   <div key={profile.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
                     <span className="min-w-0 truncate text-sm font-medium text-foreground">{profile.name}</span>
                     {profile.summary.isCompanyDefault ? (
-                      <Badge variant="secondary">Company default</Badge>
+                      <Badge variant="secondary">Organization default</Badge>
                     ) : null}
                   </div>
                 ))}
@@ -681,6 +677,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     queryKey: queryKeys.tools.profiles(companyId),
     queryFn: () => toolsApi.listProfiles(companyId),
   });
+  const profilesView = useQueryView(profiles);
 
   const connectionList = lookups.connections.data?.connections ?? [];
   // Company-wide catalog, assembled per connection (there is no aggregate
@@ -708,6 +705,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
   const invalidateProfiles = () => {
     qc.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
     qc.invalidateQueries({ queryKey: ["tools", companyId, "profiles", "effective"] });
+    qc.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
   };
 
   const resetProfileForm = () => {
@@ -740,7 +738,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not create profile",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -756,7 +754,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not update profile",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -772,7 +770,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not add entry",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -785,7 +783,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not remove entry",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -802,7 +800,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not bind profile",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -819,13 +817,22 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
     },
     onError: (error) => pushToast({
       title: "Could not remove binding",
-      body: error instanceof ApiError ? error.message : String(error),
+      body: describeError(error).body,
       tone: "error",
     }),
   });
 
-  if (profiles.isLoading) return <LoadingState />;
-  if (profiles.error) return <ErrorState error={profiles.error} onRetry={() => profiles.refetch()} />;
+  if (profiles.isLoading || profilesView.kind === "reconnecting") return <LoadingState />;
+  if (profilesView.kind === "error") {
+    return (
+      <QueryErrorState
+        error={profiles.error}
+        action="load profiles"
+        onRetry={profilesView.retry}
+        retrying={profilesView.isFetching}
+      />
+    );
+  }
 
   const list = profiles.data?.profiles ?? [];
   const selected = list.find((p) => p.id === selectedId) ?? list[0] ?? null;
@@ -935,7 +942,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
         <EmptyState
           icon={Layers}
           message="No access profiles yet"
-          description="Create a profile to group tool selectors, then bind it to the company or a specific agent."
+          description="Create a profile to group tool selectors, then bind it to the organization or a specific agent."
           action="New profile"
           onAction={() => setCreateOpen(true)}
         />
@@ -1181,12 +1188,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
             {targetType === "agent" ? (
               <div className="space-y-1.5">
                 <Label>Agent</Label>
-                <Select value={targetAgentId} onValueChange={setTargetAgentId}>
-                  <SelectTrigger><SelectValue placeholder="Select an agent" /></SelectTrigger>
-                  <SelectContent>
-                    {agentOptions.map((agent) => <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <AgentSelect agents={agentOptions} value={targetAgentId} onChange={setTargetAgentId} />
               </div>
             ) : null}
             {targetType === "project" ? (

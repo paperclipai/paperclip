@@ -1,17 +1,36 @@
+import { AgentLifecycleConflict } from "../modules/agent-lifecycle/index.js";
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { captureException } from "../sentry.js";
 import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 import { logger } from "./logger.js";
 import {
-  recordResponsibleUserDenialOnActiveRun,
-} from "../services/responsible-user-denial-run-outcomes.js";
+  isSecretSensitiveHttpRequest,
+  secretSensitiveRouteFamily,
+} from "./http-log-policy.js";
+import { SecretSensitiveRequestError } from "./secret-sensitive-request-error.js";
+import {
+  collectSensitiveStringValues,
+  redactSensitiveValueOccurrences,
+} from "./redact-sensitive.js";
+import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
+import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
+import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { isEndedDbPoolError } from "../database-retry.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 export interface ErrorContext {
-  error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
+  error: {
+    message: string;
+    stack?: string;
+    name?: string;
+    details?: unknown;
+    raw?: unknown;
+  };
   method: string;
   url: string;
   reqBody?: unknown;
@@ -21,6 +40,18 @@ export interface ErrorContext {
 
 function isRedactedSkillPolicyDenial(details: Record<string, unknown> | null) {
   return details?.code === "skill_policy_denied";
+}
+
+function readZodIssues(err: unknown): unknown[] | null {
+  if (err instanceof ZodError) return err.issues;
+  if (
+    !err ||
+    typeof err !== "object" ||
+    (err as { name?: unknown }).name !== "ZodError"
+  )
+    return null;
+  const issues = (err as { issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
 }
 
 function attachErrorContext(
@@ -40,6 +71,44 @@ function attachErrorContext(
   if (rawError) {
     (res as any).err = rawError;
   }
+}
+
+function sanitizeSecretSensitiveError(req: Request, error: Error): Error {
+  const routeFamily = secretSensitiveRouteFamily(req.method, req.originalUrl);
+  if (!routeFamily) return error;
+  return new SecretSensitiveRequestError(error, {
+    routeFamily,
+    method: req.method,
+    routePath: (req.route as { path?: unknown } | undefined)?.path,
+  });
+}
+
+function sanitizeSecretSensitiveResponse(
+  req: Request,
+  value: unknown,
+): unknown {
+  if (!isSecretSensitiveHttpRequest(req.method, req.originalUrl)) return value;
+  return redactSensitiveValueOccurrences(
+    value,
+    collectSensitiveStringValues(req.body),
+  );
+}
+
+/** Report a server-side crash to every error sink. */
+function reportCrash(error: Error, req: Request, reportToSentry = true): void {
+  const tc = getTelemetryClient();
+  if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
+  if (reportToSentry) {
+    if (req.actor?.type === "agent" && req.actor.runId && req.actor.companyId && req.actor.agentId) {
+      captureException(error, { runId: req.actor.runId, companyId: req.actor.companyId, agentId: req.actor.agentId });
+    } else captureException(error);
+  }
+}
+
+/** Set by the orderly shutdown just before it ends the database pools. */
+function isDatabaseClosing(req: Request): boolean {
+  const locals = req.app?.locals as { paperclipDatabaseClosing?: boolean } | undefined;
+  return locals?.paperclipDatabaseClosing === true;
 }
 
 function getPaperclipDb(req: Request): Db | null {
@@ -65,84 +134,237 @@ function recordResponsibleUserDenialFromHttpError(
       {
         err: recordErr,
         runId: req.actor?.runId ?? null,
-        agentId: req.actor?.type === "agent" ? req.actor.agentId ?? null : null,
+        agentId:
+          req.actor?.type === "agent" ? (req.actor.agentId ?? null) : null,
       },
       "failed to record responsible-user denial on heartbeat run",
     );
   });
 }
 
+/**
+ * The tool gateway rejects requests with its own error type. A route that lets
+ * one reach this handler (such as approving a tool review from a task card)
+ * would otherwise turn an expected rejection, for example a 409 asking for a
+ * new review, into a 500 crash report. Gateway server failures stay on the
+ * crash path so their provider text is not exposed.
+ */
+function clientToolGatewayErrorAsHttpError(err: unknown): unknown {
+  if (!(err instanceof ToolGatewayHttpError) || err.status < 400 || err.status >= 500) return err;
+  const mapped = new HttpError(err.status, err.message, { ...err.details, code: err.reasonCode });
+  mapped.stack = err.stack;
+  return mapped;
+}
+
 export function errorHandler(
-  err: unknown,
+  thrown: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  const err = clientToolGatewayErrorAsHttpError(thrown);
+  if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
-    const details = err.details && typeof err.details === "object" && !Array.isArray(err.details)
-      ? err.details as Record<string, unknown>
-      : null;
+    const details =
+      err.details &&
+      typeof err.details === "object" &&
+      !Array.isArray(err.details)
+        ? (err.details as Record<string, unknown>)
+        : null;
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
+    const workspaceRepairPreconditionFailure =
+      details?.code === "workspace_repair_precondition_failed";
     const structuredConnectionError = new Set([
       "user_authorization_required",
+      "organization_authorization_required",
+      "grant_audience_denied",
       "grant_revoked",
       "needs_reauthorization",
       "installation_required",
       "connection_not_installed",
       "subject_not_permitted",
+      "standing_delegation_required",
+      "grant_owner_membership_inactive",
     ]).has(typeof details?.code === "string" ? details.code : "");
+    const responseDetailsValue = sanitizeSecretSensitiveResponse(
+      req,
+      err.details,
+    );
+    const responseDetails =
+      responseDetailsValue &&
+      typeof responseDetailsValue === "object" &&
+      !Array.isArray(responseDetailsValue)
+        ? (responseDetailsValue as Record<string, unknown>)
+        : null;
     recordResponsibleUserDenialFromHttpError(req, details);
     if (err.status >= 500) {
+      const reportableError = sanitizeSecretSensitiveError(req, err);
       attachErrorContext(
         req,
         res,
-        { message: err.message, stack: err.stack, name: err.name, details: err.details },
-        err,
+        isSecretSensitiveHttpRequest(req.method, req.originalUrl)
+          ? { message: reportableError.message, name: reportableError.name }
+          : {
+              message: err.message,
+              stack: err.stack,
+              name: err.name,
+              details: err.details,
+            },
+        reportableError,
       );
-      const tc = getTelemetryClient();
-      if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
     }
-    res.status(err.status).json({
-      error: err.message,
-      ...(typeof details?.code === "string" ? { code: details.code } : {}),
-      ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
-      ...(typeof details?.remediation === "string" || (structuredConnectionError && details?.remediation && typeof details.remediation === "object")
-        ? { remediation: details.remediation }
-        : {}),
-      ...(structuredConnectionError && details?.connection ? { connection: details.connection } : {}),
-      ...(structuredConnectionError && details?.subject ? { subject: details.subject } : {}),
-      ...(structuredConnectionError && typeof details?.grantId === "string" ? { grantId: details.grantId } : {}),
-      ...(!redactedSkillPolicyDenial && err.details ? { details: err.details } : {}),
+    const secretSensitiveServerError =
+      err.status >= 500 &&
+      isSecretSensitiveHttpRequest(req.method, req.originalUrl);
+    res.status(err.status).json(
+      secretSensitiveServerError
+        ? { error: "Internal server error" }
+        : {
+            error: sanitizeSecretSensitiveResponse(req, err.message),
+            ...(typeof responseDetails?.code === "string"
+              ? { code: responseDetails.code }
+              : {}),
+            ...(redactedSkillPolicyDenial &&
+            typeof responseDetails?.reason === "string"
+              ? { reason: responseDetails.reason }
+              : {}),
+            ...(workspaceRepairPreconditionFailure &&
+            typeof responseDetails?.reason === "string"
+              ? { reason: responseDetails.reason }
+              : {}),
+            ...(workspaceRepairPreconditionFailure &&
+            typeof responseDetails?.repairPhase === "string"
+              ? { repairPhase: responseDetails.repairPhase }
+              : {}),
+            ...(typeof responseDetails?.remediation === "string" ||
+            (structuredConnectionError &&
+              responseDetails?.remediation &&
+              typeof responseDetails.remediation === "object")
+              ? { remediation: responseDetails.remediation }
+              : {}),
+            ...(structuredConnectionError && responseDetails?.connection
+              ? { connection: responseDetails.connection }
+              : {}),
+            ...(structuredConnectionError && responseDetails?.subject
+              ? { subject: responseDetails.subject }
+              : {}),
+            ...(structuredConnectionError &&
+            typeof responseDetails?.grantId === "string"
+              ? { grantId: responseDetails.grantId }
+              : {}),
+            ...(!redactedSkillPolicyDenial &&
+            !workspaceRepairPreconditionFailure &&
+            responseDetailsValue
+              ? { details: responseDetailsValue }
+              : {}),
+          },
+    );
+    return;
+  }
+
+  const zodIssues = readZodIssues(err);
+  if (zodIssues) {
+    res.status(400).json({
+      error: "Validation error",
+      details: sanitizeSecretSensitiveResponse(req, zodIssues),
     });
     return;
   }
 
-  if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+  // Only body-parser's malformed-JSON errors are client input failures.
+  // Parser messages can quote request bytes; return a constant response and
+  // keep the raw error out of crash reporting and HTTP error context.
+  if (
+    err instanceof SyntaxError &&
+    "status" in err && err.status === 400 &&
+    "type" in err && err.type === "entity.parse.failed"
+  ) {
+    res.status(400).json({ error: "Invalid JSON body" });
     return;
   }
 
   const rootError = err instanceof Error ? err : new Error(String(err));
+
+  // The client tore down the connection mid-request (closed tab, dropped
+  // mobile network, cancelled upload): Node surfaces it as `Error: aborted`
+  // with ECONNRESET. There is no server fault to report and nobody left to
+  // answer, so skip the error sinks and just close out the response.
+  if (
+    rootError.message === "aborted" &&
+    (rootError as NodeJS.ErrnoException).code === "ECONNRESET"
+  ) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
+  // A route that cancels its work when the response closes (for example a
+  // storage read) rejects with AbortError after the client has gone. That
+  // rejection is the cancellation, not a server fault. An AbortError while
+  // the client is still connected is still reported.
+  if (rootError.name === "AbortError" && res.destroyed && !res.writableFinished) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
+  // Shutdown drains the HTTP listener before it ends the pool, but a handler
+  // whose client already disconnected (or whose socket the drain timeout
+  // closed) keeps running. Its next query then fails with CONNECTION_ENDED
+  // against the pool this process deliberately ended. That is shutdown, not a
+  // server fault, so skip the error sinks. Any other error during shutdown is
+  // still reported.
+  if (isDatabaseClosing(req) && isEndedDbPoolError(rootError)) {
+    if (!res.headersSent) {
+      res.status(503).json({ error: "Server is shutting down" });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isObjectJournalBusyError(rootError)) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "2");
+      res.status(503).json({ error: rootError.message, code: rootError.code });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  const reportableError = sanitizeSecretSensitiveError(req, rootError);
   attachErrorContext(
     req,
     res,
-    err instanceof Error
-      ? { message: err.message, stack: err.stack, name: err.name }
-      : { message: String(err), raw: err, stack: rootError.stack, name: rootError.name },
-    rootError,
+    isSecretSensitiveHttpRequest(req.method, req.originalUrl)
+      ? { message: reportableError.message, name: reportableError.name }
+      : err instanceof Error
+        ? { message: err.message, stack: err.stack, name: err.name }
+        : {
+            message: String(err),
+            raw: err,
+            stack: rootError.stack,
+            name: rootError.name,
+          },
+    reportableError,
   );
 
-  const tc = getTelemetryClient();
-  if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
+  reportCrash(reportableError, req);
 
   res.status(500).json({
     error: "Internal server error",
-    ...(shouldExposeTrustedCloudTenantImportError(req) ? { message: rootError.message } : {}),
+    ...(shouldExposeTrustedCloudTenantImportError(req)
+      ? { message: rootError.message }
+      : {}),
   });
 }
 
 function shouldExposeTrustedCloudTenantImportError(req: Request) {
-  return req.actor?.source === "cloud_tenant"
-    && req.method === "POST"
-    && req.originalUrl.split("?")[0] === COMPANY_IMPORT_API_PATH;
+  return (
+    req.actor?.source === "cloud_tenant" &&
+    req.method === "POST" &&
+    req.originalUrl.split("?")[0] === COMPANY_IMPORT_API_PATH
+  );
 }

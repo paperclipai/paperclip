@@ -9,13 +9,13 @@ import {
   Clock,
   CloudOff,
   GitMerge,
-  Github,
   GitPullRequest,
   KeyRound,
   Loader2,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { GithubIcon } from "@/components/icons/github-icon";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
@@ -39,6 +39,7 @@ export const externalObjectCategoryIcon: Record<string, LucideIcon> = {
   closed: Circle,
   archived: Archive,
   auth_required: KeyRound,
+  rate_limited: AlertCircle,
   unreachable: CloudOff,
 };
 
@@ -55,7 +56,7 @@ const EXTERNAL_OBJECT_ICON_KEYS: Record<string, LucideIcon> = {
   circle: Circle,
   "circle-dot": CircleDot,
   clock: Clock,
-  github: Github,
+  github: GithubIcon,
   "git-merge": GitMerge,
   "git-pull-request": GitPullRequest,
   key: KeyRound,
@@ -70,6 +71,7 @@ export function externalObjectIconForKey(iconKey: string | null | undefined): Lu
 
 export function externalObjectIconForLiveness(liveness: string): LucideIcon | null {
   if (liveness === "auth_required") return KeyRound;
+  if (liveness === "rate_limited") return AlertCircle;
   if (liveness === "unreachable") return CloudOff;
   return null;
 }
@@ -85,6 +87,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   closed: "Closed",
   archived: "Archived",
   auth_required: "Authorization required",
+  rate_limited: "Rate limited",
   unreachable: "Unreachable",
 };
 
@@ -97,6 +100,7 @@ const LIVENESS_LABELS: Record<string, string> = {
   fresh: "Fresh",
   stale: "Stale",
   auth_required: "Requires auth",
+  rate_limited: "Rate limited",
   unreachable: "Unreachable",
 };
 
@@ -151,6 +155,7 @@ const CATEGORY_TONE_FALLBACK: Record<string, ExternalObjectStatusTone> = {
   closed: "muted",
   archived: "muted",
   auth_required: "warning",
+  rate_limited: "warning",
   unreachable: "danger",
 };
 

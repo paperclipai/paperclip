@@ -11,6 +11,7 @@ const EMPTY_ARCHIVED_ISSUE_IDS: ReadonlySet<string> = new Set();
 
 type InboxArchiveGuardState = {
   issueIds: ReadonlySet<string>;
+  tokens: Map<string, symbol>;
   listeners: Set<() => void>;
   confirmationTimers: Map<string, ReturnType<typeof setTimeout>>;
   maximumTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -36,6 +37,7 @@ function getInboxArchiveGuard(companyId: string): InboxArchiveGuardState {
 
   const created: InboxArchiveGuardState = {
     issueIds: EMPTY_ARCHIVED_ISSUE_IDS,
+    tokens: new Map(),
     listeners: new Set(),
     confirmationTimers: new Map(),
     maximumTimers: new Map(),
@@ -60,12 +62,17 @@ function clearArchiveGuardTimer(
 
 export function beginLocalInboxArchive(companyId: string, issueId: string) {
   const state = getInboxArchiveGuard(companyId);
+  const token = Symbol();
+  state.tokens.set(issueId, token);
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   clearArchiveGuardTimer(state.maximumTimers, issueId);
 
   const issueIds = new Set(state.issueIds);
   issueIds.add(issueId);
   publishInboxArchiveGuard(state, issueIds);
+  return () => {
+    if (state.tokens.get(issueId) === token) clearLocalInboxArchive(companyId, issueId);
+  };
 }
 
 export function boundLocalInboxArchive(companyId: string, issueId: string) {
@@ -91,6 +98,7 @@ export function confirmLocalInboxArchive(companyId: string, issueId: string) {
 export function clearLocalInboxArchive(companyId: string, issueId: string) {
   const state = inboxArchiveGuards.get(companyId);
   if (!state) return;
+  state.tokens.delete(issueId);
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   clearArchiveGuardTimer(state.maximumTimers, issueId);
   if (!state.issueIds.has(issueId)) {
@@ -154,6 +162,7 @@ export function filterLocalInboxArchivedQueryData<TData>(queryKey: QueryKey, dat
 
 function inboxIssueQueryPrefixes(companyId: string) {
   return [
+    [...queryKeys.issues.list(companyId), "compact"],
     queryKeys.issues.listMineByMe(companyId),
     queryKeys.issues.listTouchedByMe(companyId),
     queryKeys.issues.listUnreadTouchedByMe(companyId),

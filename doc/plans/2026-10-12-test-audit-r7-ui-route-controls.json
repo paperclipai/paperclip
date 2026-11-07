@@ -1,0 +1,303 @@
+{
+  "audit": {
+    "file": "ui/src/components/RouteErrorBoundary.test.tsx",
+    "base": "c39262305b6b48a5decd564af8369083cd972b33",
+    "originalSha256": "aeca8c1302ed36fa9885d60b684b48fa67adc3f1a062e7b962be6a076bd93f57",
+    "candidateSha256": "d4af25551dd6e7b20ffbd34500bf41603f6797187836ca7f554b898594266760",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "additionalDeclaredCleanup": "Remove duplicate original title assertion; identical migrated title guard remains before route change",
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 2,
+    "rootRendersRemoved": 2,
+    "netTestLinesRemoved": 31,
+    "migrations": [
+      {
+        "retired": "reports one captured error and keeps the recovery button",
+        "keeper": "recovers and renders children again after the route changes",
+        "setupAstEqual": true,
+        "setupBindingNormalization": null,
+        "guards": [
+          "expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);",
+          "expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error), {\n      boundary: \"route\", componentStack: expect.stringContaining(\"Boom\"),\n    });",
+          "expect(\n      Array.from(container.querySelectorAll(\"button\")).some(\n        (button) => button.textContent === \"Go back\",\n      ),\n    ).toBe(true);"
+        ],
+        "registeredInvocationsRemoved": 1
+      },
+      {
+        "retired": "renders a recoverable error card instead of a blank page when a child throws",
+        "keeper": "recovers and renders children again after the route changes",
+        "setupAstEqual": true,
+        "setupBindingNormalization": null,
+        "guards": [
+          "expect(container.textContent).toContain(\"This page hit an error\");",
+          "expect(container.textContent).toContain(\"Maximum update depth exceeded\");",
+          "expect(container.querySelector(\"pre\")).not.toBeNull();"
+        ],
+        "registeredInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "0f1b173c8a399bb8c3e831edac6805634304a749faffcfff7b8b1900da3d34a3",
+  "mutationVerifierSha256": "a05f5ba9071c0ce7ce8eac1bc0f6c7dd83401c4e720816389d779f8919312064",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "3782d05a0257e11e6618261f4f64121e86f253077e44c3191a3cf26b0f79cf24",
+      "logSha256": "dd5e7a343956d6f41c5b87a19073a0377a0a1e45ada33495ccf0eb25b1e926bb",
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "d6f68de33e64d9b11586f8fd885bacffe13659d1bd03d85e4b9e8fcd3e41e07e",
+      "logSha256": "c39520330407b89424c964598c0580454bbb24d5fb1568570547b027be8ba082",
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "capture-count",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "    captureBrowserException(error, { boundary: \"route\", componentStack: info.componentStack });",
+        "after": "    captureBrowserException(error, { boundary: \"route\", componentStack: info.componentStack });\n    captureBrowserException(error, { boundary: \"route\", componentStack: info.componentStack });",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1)",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "8498654db6ea2733f761cef25c488c06ae35a9fdb32341915e5614beb9ee7077",
+        "logSha256": "4040e9d53955f1d919fd7932dc8a411cde138a58cb27b07a02a9cd286cbaf504",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "23a988b53557b6aa392f8f110fa672f9c34faf8480776c49a66dc4a642fc1143",
+        "logSha256": "abc91cb18b2edd6a6524b4fb006a50b36b76c40d6d5960480b18d283e958648c",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 2 times\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:80:41\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "capture-boundary",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "boundary: \"route\", componentStack: info.componentStack",
+        "after": "boundary: \"app\", componentStack: info.componentStack",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(captureBrowserExceptionMock).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "aca0b48e03ef4f1562c8f41ab3bd1a036ae095e80b5abe9e10d4cb4b31cc5ce4",
+        "logSha256": "1983371a3c61ad944417f51bcd350a31e9e931be5a2796a0deea63cb222998f8",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "af6c302e83aad78e4fde8ea2968ac74d31a9604002046a3fef82505c0515a8c4",
+        "logSha256": "8621424418d7a4f7ba3cb039a554be9e914e73fac1989bf28aa7dbc959ace28a",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ Any<Error>, \u2026(1) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   Any<Error>,\n+   Error {\n+     \"message\": \"Maximum update depth exceeded\",\n+   },\n    {\n-     \"boundary\": \"route\",\n-     \"componentStack\": StringContaining \"Boom\",\n+     \"boundary\": \"app\",\n+     \"componentStack\": \"\n+     at Boom (/Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:25:8)\n+     at RouteErrorBoundaryInner (/Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.tsx:14:1)\n+     at RouteErrorBoundary (/Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.tsx:103:31)\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:81:41\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20"
+        ]
+      }
+    },
+    {
+      "slug": "capture-stack",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "boundary: \"route\", componentStack: info.componentStack",
+        "after": "boundary: \"route\", componentStack: \"wrong-stack\"",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(captureBrowserExceptionMock).toHaveBeenCalledWith(",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "a3300f805575e44bf1080d21d4a5e340e8da1e6bee8e1b9f99b4afb2f2c5da23",
+        "logSha256": "6142d202f3913c5768e0d391bf0f15cd1e3ead938d8ca6e003406110594b8365",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "3c03030c7ee7515ed74b20612ba4b1438cc211dda8d2d8ea8809213eee29f596",
+        "logSha256": "1ab3c58e2732f4a56023fcaae9f286d6de2bb60ea52973c975e53a7f60bd9e92",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"vi.fn()\" to be called with arguments: [ Any<Error>, \u2026(1) ]\n\nReceived:\n\n  1st vi.fn() call:\n\n  [\n-   Any<Error>,\n+   Error {\n+     \"message\": \"Maximum update depth exceeded\",\n+   },\n    {\n      \"boundary\": \"route\",\n-     \"componentStack\": StringContaining \"Boom\",\n+     \"componentStack\": \"wrong-stack\",\n    },\n  ]\n\n\nNumber of calls: 1\n\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2233:10)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:81:41\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20"
+        ]
+      }
+    },
+    {
+      "slug": "go-back",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "            Go back",
+        "after": "            Return",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": ").toBe(true);",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "cc46916e4056b5eda7134325b3167d1a9ad9826ba6e465ad3d3f431c0db810c6",
+        "logSha256": "117b4d3c72c850183d3ab9628940f7a729dce79f55e0a777ef5927d9da441b1b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "4b561764a1a9d962fda0610d0794f71320c0a3523642ae8ff0e49f2a3524f2b0",
+        "logSha256": "116d2d94a692a6a86a8acc74dd3b2aaa3d72443b6e87274164e0cf2ad6d200b5",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected false to be true // Object.is equality\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:88:7\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "title",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "This page hit an error",
+        "after": "Unexpected title",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(container.textContent).toContain(\"This page hit an error\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "f4f6f6cd80fd8ea6a668520c5e678cca1af4f2af117beed5c27aaedccd6a3888",
+        "logSha256": "5f4ba767c3a107c3dbba86fc9959045a2d7d989c1a03a6f566eff3fc3130faa4",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "ee00df253bff2477b681d9c817ad323faf1d2e4b7f10fde13a1fe49f90530b65",
+        "logSha256": "7ec386fd0c0fd4f37a8ac6bf5f7ad37f217f9be4a4647618750e92a937dac05e",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Unexpected titleSomething went wrong \u2026' to contain 'This page hit an error'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:90:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "detail",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "{error.message}",
+        "after": "{\"hidden detail\"}",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": false
+      },
+      "intendedGuard": "expect(container.textContent).toContain(\"Maximum update depth exceeded\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "cb7f79721a1f5f3a32b1d9ca0749875d97ad9b644e2663d84226ce12edd9124a",
+        "logSha256": "b0ed753166122eafbd441172e5a2b47460fb08a2987cbacd53edb81861d33fd3",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "123f7949c426028edc343688cc50548d03399d5d56d5bb4a5dfcc7e5f7ed0ea9",
+        "logSha256": "0f9c80ef5e76823ced425f4f7e11cd9adce0c776eebd99170564b2bd4bb035c7",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'This page hit an errorSomething went \u2026' to contain 'Maximum update depth exceeded'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:91:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    },
+    {
+      "slug": "pre",
+      "owner": "ui/src/components/RouteErrorBoundary.tsx",
+      "sourceSha256": "cc0e78de2ea683aca27e1497c1aee355bb4ab9e22918f1282730be1ba78c3394",
+      "title": "recovers and renders children again after the route changes",
+      "mutation": {
+        "before": "<pre className=",
+        "after": "<div className=",
+        "replacementCount": 1,
+        "additionalPreClosingTagReplacement": true
+      },
+      "intendedGuard": "expect(container.querySelector(\"pre\")).not.toBeNull()",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "21c50a1cc9340c311c63b5c2a030cc6345004e0a5a610be679b7ed3a7d1506d8",
+        "logSha256": "d5be38cd7bd1f352f64d188d53c777f5eb7d18e9c3e11d9a43ee90a1809b72cb",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "44a7f4f7e9783b4e653d0db1512e2c40cc1d22502987517c18a36fd60152873e",
+        "logSha256": "8d8849edac3006c90066a8e877ef863570e42f9cfe862f2a99e3d9b79ac829a1",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected null not to be null\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/RouteErrorBoundary.test.tsx:92:48\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:1628:35\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:26\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3321:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3316:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3301:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3259:10)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:3882:64"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0,
+  "postControlPolish": {
+    "controlCandidateSha256": "7d0c20e033b7f3daeccb0731ae544f213fccbfb297386786af014fdf385d5b93",
+    "polishedCandidateSha256": "d4af25551dd6e7b20ffbd34500bf41603f6797187836ca7f554b898594266760",
+    "difference": "Remove duplicate original title assertion; identical migrated title guard remains before route change",
+    "allIntendedGuardStatementsAndLocationsUnchanged": true,
+    "completePolishedFileReplayPassed": true
+  }
+}

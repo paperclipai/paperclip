@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { LinkExtension, LinkNode, $isLinkNode, registerLink, TOGGLE_LINK_COMMAND } from "@lexical/link";
+import { createEditor, $createParagraphNode, $createTextNode, $createLineBreakNode, $getRoot, $getSelection,
+  $isRangeSelection, $isElementNode, $createNodeSelection, $setSelection, DecoratorNode,
+  PASTE_COMMAND, COMMAND_PRIORITY_HIGH, type LexicalEditor } from "lexical";
+import { registerRichText } from "@lexical/rich-text";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -11,22 +16,45 @@ import {
   isSameAutocompleteSession,
   issueMentionTitle,
   MarkdownEditor,
+  type MarkdownEditorRef,
   type MentionOption,
   placeCaretAfterMentionAnchor,
+  placeCaretAtEditableEnd,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
+  linkValidator: null as ((url: string) => boolean) | null,
+  pluginDefinitions: [] as unknown[],
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
   throwOnRender: false,
+  /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
+  emitMountChange: null as string | null,
+  /** Markdown the mock emits once mounted with MDXEditor's `initialMarkdownNormalize` flag set. */
+  emitMountNormalizedMarkdown: null as string | null,
+  /** Milliseconds the mock waits before painting its content, to model a slow import. */
+  populateDelayMs: 0,
   markdownValues: [] as string[],
+  /** Every string handed to the editor's imperative `insertMarkdown`. */
+  insertedMarkdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
 }));
 
-function containsHtmlLikeTag(markdown: string) {
-  return /<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^>]*)?\/?>/.test(markdown);
+/**
+ * Stand-in for the real importer's HTML tokenizer. MDXEditor runs with
+ * `suppressHtmlProcessing`, which *removes* the HTML visitor — so a bare `<`
+ * that opens an HTML construct is what throws
+ * `UnrecognizedMarkdownConstructError`, regardless of the flag. Only a
+ * backslash escape (`\<`) hides the bracket from the parser, which is exactly
+ * what `escapeUnsupportedAngleBrackets` produces.
+ */
+function containsUnescapedHtmlLikeTag(markdown: string) {
+  // Consume escape pairs first so `\<` counts as literal text, then look for a
+  // surviving `<` that would open an HTML construct.
+  return /(?:^|[^\\])(?:\\\\)*<[A-Za-z!/?]/.test(markdown);
 }
 
 vi.mock("@mdxeditor/editor", async () => {
@@ -50,39 +78,68 @@ vi.mock("@mdxeditor/editor", async () => {
       onError,
       className,
       suppressHtmlProcessing,
+      plugins,
     }: {
       markdown: string;
       placeholder?: string;
-      onChange?: (value: string) => void;
+      onChange?: (value: string, initialMarkdownNormalize?: boolean) => void;
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
+      plugins?: unknown[];
       className?: string;
     },
-    forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
+    forwardedRef: React.ForwardedRef<{
+      setMarkdown: (value: string) => void;
+      insertMarkdown: (value: string) => void;
+      focus: (callback?: () => void) => void;
+    } | null>,
   ) {
     if (mdxEditorMockState.throwOnRender) {
       throw new Error("Rich editor render crashed");
     }
+    mdxEditorMockState.pluginDefinitions = plugins ?? [];
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
     const editableRef = React.useRef<HTMLDivElement>(null);
+    const onErrorRef = React.useRef(onError);
+    onErrorRef.current = onError;
     const handle = React.useMemo(() => ({
       setMarkdown: (value: string) => setContent(value),
-      focus: () => editableRef.current?.focus(),
+      insertMarkdown: (value: string) => {
+        mdxEditorMockState.insertedMarkdownValues.push(value);
+        // Inserted markdown goes through the same importer as the mounted
+        // document, so an unescaped tag fails here in exactly the same way.
+        if (containsUnescapedHtmlLikeTag(value)) {
+          onErrorRef.current?.({ error: "Unrecognized markdown construct: html", source: value });
+          return;
+        }
+        setContent((previous) => `${previous}${value}`);
+      },
+      // The real `focus` runs its callback once a selection exists.
+      focus: (callback?: () => void) => {
+        editableRef.current?.focus();
+        callback?.();
+      },
     }), []);
 
     React.useEffect(() => {
-      if (!suppressHtmlProcessing && containsHtmlLikeTag(markdown)) {
+      if (containsUnescapedHtmlLikeTag(markdown)) {
         setContent("");
         onError?.({
-          error: "Error parsing markdown: HTML-like formatting requires suppressHtmlProcessing",
+          error: "Unrecognized markdown construct: html",
           source: markdown,
         });
         return;
       }
+      if (mdxEditorMockState.populateDelayMs > 0) {
+        // Model an import that paints its content some time after mount.
+        setContent("");
+        const timer = window.setTimeout(() => setContent(markdown), mdxEditorMockState.populateDelayMs);
+        return () => window.clearTimeout(timer);
+      }
       setContent(markdown);
-    }, [markdown, onError, suppressHtmlProcessing]);
+    }, [markdown, onError]);
 
     React.useEffect(() => {
       setForwardedRef(forwardedRef, null);
@@ -102,6 +159,13 @@ vi.mock("@mdxeditor/editor", async () => {
             source: markdown,
           });
         }
+        if (mdxEditorMockState.emitMountChange !== null) {
+          onChange?.(mdxEditorMockState.emitMountChange);
+        }
+        if (mdxEditorMockState.emitMountNormalizedMarkdown !== null) {
+          setContent(mdxEditorMockState.emitMountNormalizedMarkdown);
+          onChange?.(mdxEditorMockState.emitMountNormalizedMarkdown, true);
+        }
       }, 0);
       return () => {
         window.clearTimeout(timer);
@@ -116,8 +180,20 @@ vi.mock("@mdxeditor/editor", async () => {
         className={className}
         contentEditable
         suppressContentEditableWarning
+        onKeyDown={(event) => {
+          if (event.key === "Delete" || event.key === "Backspace") {
+            setContent("");
+            onChange?.("");
+          }
+        }}
+        onInput={(event) => {
+          const next = event.currentTarget.textContent ?? "";
+          setContent(next);
+          onChange?.(next);
+        }}
       >
-        {content || placeholder || ""}
+        {/* The real editor paints resolved text, never the escapes that carried it in. */}
+        {content.replace(/\\</g, "<") || placeholder || ""}
       </div>
     );
   });
@@ -131,11 +207,14 @@ vi.mock("@mdxeditor/editor", async () => {
     headingsPlugin: () => ({}),
     imagePlugin: () => ({}),
     linkDialogPlugin: () => ({}),
-    linkPlugin: () => ({}),
+    linkPlugin: (options: { validateUrl: (url: string) => boolean }) => {
+      mdxEditorMockState.linkValidator = options.validateUrl;
+      return {};
+    },
     listsPlugin: () => ({}),
     markdownShortcutPlugin: () => ({}),
     quotePlugin: () => ({}),
-    realmPlugin: (plugin: unknown) => plugin,
+    realmPlugin: (plugin: unknown) => () => plugin,
     tablePlugin: () => ({}),
     thematicBreakPlugin: () => ({}),
   };
@@ -143,10 +222,6 @@ vi.mock("@mdxeditor/editor", async () => {
 
 vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
-}));
-
-vi.mock("../lib/paste-normalization", () => ({
-  pasteNormalizationPlugin: () => ({}),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,6 +238,28 @@ async function act(callback: () => void | Promise<void>) {
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+function clickRetryRichEditor(scope: HTMLElement) {
+  const button = Array.from(scope.querySelectorAll("button")).find((candidate) =>
+    candidate.textContent?.includes("Retry rich editor"),
+  );
+  if (!button) throw new Error('"Retry rich editor" button not found');
+  button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+}
+
+function fallbackCode(scope: HTMLElement) {
+  return scope.querySelector('[data-testid="markdown-editor-fallback-code"]')?.textContent;
+}
+
+/**
+ * The DOM-empty heuristic checks at 100ms and confirms 200ms later, so a test
+ * that wants to prove no fallback happened has to outlast both phases.
+ */
+async function waitPastEmptyHeuristic() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
   });
 }
 
@@ -239,12 +336,57 @@ describe("MarkdownEditor", () => {
     container.remove();
     Range.prototype.getBoundingClientRect = originalRangeRect;
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    mdxEditorMockState.linkValidator = null;
+    mdxEditorMockState.pluginDefinitions = [];
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
+    mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountNormalizedMarkdown = null;
+    mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
+    mdxEditorMockState.insertedMarkdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
+  });
+
+  it.each([false, true])("handles submission, newlines, and IME confirmation (raw fallback=%s)", async (fallback) => {
+    mdxEditorMockState.emitMountParseError = fallback;
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey="enter" />);
+    });
+    await flush();
+    if (fallback) {
+      await vi.waitFor(() => expect(container.querySelector("textarea")).not.toBeNull());
+    }
+    const input = container.querySelector(fallback ? "textarea" : '[contenteditable="true"]')!;
+    for (const modifiers of [{ shiftKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers });
+      await act(() => { input.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(onSubmit).not.toHaveBeenCalled();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(() => { input.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
+  });
+
+  it("keeps ordinary document editors on Command/Ctrl+Enter", async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => { root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} />); });
+    await flush();
+    const input = container.querySelector('[contenteditable="true"]')!;
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(() => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true })); });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(() => root.unmount());
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -300,6 +442,220 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  async function createSelectedTextPasteHarness() {
+    class ClipboardData {
+      private data = new Map<string, string>();
+      get types() { return [...this.data.keys()]; }
+      setData(type: string, value: string) { this.data.set(type === "text" ? "text/plain" : type, value); }
+      getData(type: string) { return this.data.get(type === "text" ? "text/plain" : type) ?? ""; }
+    }
+    class ClipboardEvent extends Event {
+      readonly clipboardData: DataTransfer | null;
+      constructor(type: string, options: ClipboardEventInit = {}) {
+        super(type, options);
+        this.clipboardData = options.clipboardData ?? null;
+      }
+    }
+    vi.stubGlobal("ClipboardEvent", ClipboardEvent);
+    vi.stubGlobal("DataTransfer", ClipboardData);
+    const root = createRoot(container);
+    await act(async () => root.render(<MarkdownEditor value={'{"status":"pending"}'} onChange={vi.fn()} />));
+    await flush();
+    const validator = mdxEditorMockState.linkValidator;
+    if (!validator || !LinkExtension.build) throw new Error("Production link policy was not registered");
+    class InlineMediaNode extends DecoratorNode<null> {
+      static getType() { return "test-inline-media"; }
+      static clone(node: InlineMediaNode) { return new InlineMediaNode(node.getKey()); }
+      createDOM() { return document.createElement("img"); }
+      updateDOM() { return false; }
+      decorate() { return null; }
+      isInline() { return true; }
+    }
+    const editor = createEditor({ namespace: "selected-text-paste", nodes: [LinkNode, InlineMediaNode], onError(error) { throw error; } });
+    const stores = LinkExtension.build(editor, { validateUrl: validator, attributes: undefined }, undefined as never);
+    const unregister = [registerLink(editor, stores)];
+    for (const definition of mdxEditorMockState.pluginDefinitions) {
+      const plugin = definition as { init?: (realm: { pub: (signal: unknown, subscriptions: Array<(editor: LexicalEditor) => () => void>) => void }) => void };
+      plugin.init?.({ pub: (_signal, subscriptions) => {
+        for (const subscription of subscriptions) unregister.push(subscription(editor));
+      } });
+    }
+    unregister.push(registerRichText(editor));
+    return {
+      editor,
+      paste(text: string, softBreak = false, html?: string) {
+        const data = new DataTransfer(); data.setData("text/plain", text);
+        if (html) data.setData("text/html", html);
+        const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
+        editor.update(() => {
+          const node = $createTextNode('{"status":"pending"}');
+          $getRoot().clear().append($createParagraphNode().append(node));
+          node.select(0, node.getTextContentSize());
+          if (softBreak) {
+            const ending = $createTextNode("second line");
+            node.getParentOrThrow().append($createLineBreakNode(), ending);
+            const selection = $getSelection();
+            if (!$isRangeSelection(selection)) throw new Error("Expected range");
+            selection.focus.set(ending.getKey(), ending.getTextContentSize(), "text");
+          }
+          editor.dispatchCommand(PASTE_COMMAND, event);
+        }, { discrete: true });
+        return editor.getEditorState().read(() => ({ text: $getRoot().getTextContent(),
+          links: $getRoot().getAllTextNodes().map(node => node.getParent()).filter($isLinkNode).map(node => node.getURL()) }));
+      },
+      formats() { return editor.getEditorState().read(() => $getRoot().getAllTextNodes().map(node => ({ text: node.getTextContent(), bold: node.hasFormat("bold") }))); },
+      yieldsPaste(kind: "files" | "collapsed" | "token" | "decorator") {
+        const data = new DataTransfer(); data.setData("text/plain", "replacement words");
+        if (kind === "files") data.setData("Files", "image.png");
+        const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
+        let forwarded = false;
+        const remove = editor.registerCommand(PASTE_COMMAND, received => {
+          forwarded = received === event;
+          return true;
+        }, COMMAND_PRIORITY_HIGH);
+        try {
+          editor.update(() => {
+            const node = kind === "decorator" ? new InlineMediaNode() : $createTextNode("keep this");
+            $getRoot().clear().append($createParagraphNode().append(node));
+            if (node instanceof InlineMediaNode) {
+              const selection = $createNodeSelection(); selection.add(node.getKey()); $setSelection(selection);
+            } else {
+              if (kind === "token") node.setMode("token");
+              node.select(0, kind === "collapsed" ? 0 : node.getTextContentSize());
+            }
+            editor.dispatchCommand(PASTE_COMMAND, event);
+          }, { discrete: true });
+          return { forwarded, prevented: event.defaultPrevented };
+        } finally { remove(); }
+      },
+      link(url: string, payload: "string" | "object", decorator: boolean) {
+        let handled = false;
+        editor.update(() => {
+          const node = decorator ? new InlineMediaNode() : $createTextNode("link label");
+          $getRoot().clear().append($createParagraphNode().append(node));
+          if (decorator) {
+            const selection = $createNodeSelection(); selection.add(node.getKey()); $setSelection(selection);
+          } else if (node instanceof InlineMediaNode) throw new Error("Expected text");
+          else node.select(0, node.getTextContentSize());
+          handled = editor.dispatchCommand(TOGGLE_LINK_COMMAND, payload === "string" ? url : { url, title: "Report" });
+        }, { discrete: true });
+        return editor.getEditorState().read(() => {
+          const paragraph = $getRoot().getFirstChildOrThrow();
+          const links = $isElementNode(paragraph) ? paragraph.getChildren().filter($isLinkNode) : [];
+          return { handled, links: links.map(node => ({ url: node.getURL(), href: node.sanitizeUrl(node.getURL()) })) };
+        });
+      },
+      async close() {
+        for (const cleanup of unregister.reverse()) cleanup();
+        await act(async () => root.unmount());
+        vi.unstubAllGlobals();
+      },
+    };
+  }
+
+  it.each(['{"status":"ready","items":[1,2]}', '{"email":"user@example.test"}', "replacement words", "first line\nsecond line", "/workspace/report.json", "reports/status.md", "#document-report", "v1.2.3", "https://", "www."])(
+    "replaces selected text through the real paste command for %j", async replacement => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.paste(replacement)).toEqual({ text: replacement, links: [] }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it("replaces selected text across a soft line break", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    try { expect(harness.paste('{"status":"ready"}', true)).toEqual({ text: '{"status":"ready"}', links: [] }); }
+    finally { await harness.close(); }
+  });
+
+  it("replaces selected text with rich HTML through the native paste owner", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const replacement = '{"email":"user@example.test"}';
+    try {
+      expect(harness.paste(replacement, false, `<strong>${replacement}</strong>`)).toEqual({ text: replacement, links: [] });
+      expect(harness.formats()).toEqual([{ text: replacement, bold: true }]);
+    } finally { await harness.close(); }
+  });
+
+  it("keeps a genuine URL from an HTML clipboard as an intentional link", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const url = "https://example.test/report";
+    try { expect(harness.paste(url, false, `<a href="${url}">${url}</a>`)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
+    finally { await harness.close(); }
+  });
+
+  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test", "user+updates@sub.example.test", "user@bücher.de", "josé@example.test"])(
+    "keeps selected-text URL paste as an intentional link (%s)", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.paste(url)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it.each(["files", "collapsed", "token", "decorator"] as const)(
+    "leaves %s paste with its existing handler", async kind => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.yieldsPaste(kind)).toEqual({ forwarded: true, prevented: false }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it.each(["/issues/TEST-1#document-report", "reports/status.md", "../report.md", "#document-report", "mailto:user@example.test"])(
+    "preserves manual and decorator link destination %s", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try {
+        expect(harness.link(url, "object", false)).toEqual({ handled: true, links: [{ url, href: url === "reports/status.md" ? "https://reports/status.md" : url }] });
+        expect(harness.link(url, "string", true)).toEqual({ handled: true, links: [{ url, href: url === "reports/status.md" ? "https://reports/status.md" : url }] });
+      } finally { await harness.close(); }
+    },
+  );
+
+  it.each(["javascript:alert(1)", "data:text/html,unsafe", "vbscript:unsafe"])(
+    "preserves executable link guards for %s", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try {
+        expect(harness.link(url, "string", true)).toEqual({ handled: false, links: [] });
+        expect(harness.link(url, "object", false)).toEqual({ handled: true, links: [{ url, href: "about:blank" }] });
+      } finally { await harness.close(); }
+    },
+  );
+
+  it("allows a user to clear loaded text as the first editor change", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.textContent = "";
+      editor.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+
+    await act(async () => root.unmount());
+  });
+
+  it.each(["Delete", "Backspace"])("allows first-change clearing when Lexical handles %s without an input event", async (key) => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="Loaded draft" onChange={handleChange} />);
+    });
+    await flush();
+    const editor = container.querySelector('[contenteditable="true"]')!;
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
+    });
+    expect(handleChange).toHaveBeenCalledExactlyOnceWith("");
+    await act(async () => root.unmount());
   });
 
   it("does not recreate the mention decoration observer when the external value changes", async () => {
@@ -463,6 +819,7 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-PARSE");
     expect(handleChange).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -493,6 +850,7 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-RENDER");
     expect(consoleError).toHaveBeenCalledWith(
       "Markdown rich editor failed; falling back to raw textarea",
       expect.objectContaining({
@@ -531,7 +889,522 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("Affected versions: <= v0.3.1");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(fallbackCode(container)).toBe("MDE-EMPTY");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps prose with bare angle brackets in the rich editor", async () => {
+    const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    // The editor is handed the escaped form: the placeholder is hidden from the
+    // HTML tokenizer, while `<=` cannot open a tag and is left exactly as typed.
+    const received = mdxEditorMockState.markdownValues.at(-1);
+    expect(received).toContain("Rename \\<name> to the real name.");
+    expect(received).toContain("Affected versions: <= v0.3.1");
+
+    // What the user sees is still the markdown they wrote.
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not report MDXEditor's initial markdown normalization as a change", async () => {
+    // MDXEditor rewrites `-` bullets to `*` on load and flags it as normalization.
+    mdxEditorMockState.emitMountNormalizedMarkdown = "* first\n* second";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={"- first\n- second"} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    // The editor keeps its normalized document; nothing pushes the original back.
+    expect(container.textContent).toContain("* first");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("returns editor output to the parent with the transport escaping removed", async () => {
+    const value = "Affected versions: <= v0.3.1\n\nRename <name> to the real name.";
+    // What the real exporter emits for this document: `<` re-escaped, `<=` bare.
+    mdxEditorMockState.emitMountChange =
+      "Affected versions: <= v0.3.1\n\nRename \\<name> to the real name.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+
+    // The parent stores the clean form — these fields feed agent prompts, so a
+    // stray `\<` would leak into a prompt.
+    expect(handleChange).toHaveBeenCalledWith(value);
+    expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\<"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([
+    ["Steer the current turn&#x20;", "Steer the current turn "],
+    ["Steer the current turn &#x20;\n", "Steer the current turn  \n"],
+    ["Use `&#x20;`&#x20;", "Use `&#x20;` "],
+    ["First line&#x20;\nsecond&#x20;\n", "First line&#x20;\nsecond \n"],
+    ["**bold&#x20;**&#x20;\n", "**bold&#x20;** \n"],
+    ["First line&#x20;\nsecond", "First line&#x20;\nsecond"],
+    ["**bold&#x20;**\n", "**bold&#x20;**\n"],
+    ["Use \\&#x20;", "Use \\&#x20;"],
+    ["```text\n&#x20;", "```text\n&#x20;"],
+    ["    &#x20;", "    &#x20;"],
+  ])("stores trailing editor spaces without changing literal entities: %s", async (exported, stored) => {
+    mdxEditorMockState.emitMountChange = exported;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value="Draft" onChange={handleChange} />);
+    });
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("stores intraword underscores as typed instead of the exporter's escaped form", async () => {
+    const value = "Your final answer must be exactly E2E_ASK_12_journey_1793913565974_507b01b8.";
+    // The real exporter escapes every literal underscore, including inside words.
+    mdxEditorMockState.emitMountChange =
+      "Your final answer must be exactly E2E\\_ASK\\_12\\_journey\\_1793913565974\\_507b01b8.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
+    expect(handleChange.mock.calls.every(([next]) => !String(next).includes("\\_"))).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("round-trips code with its backslashes while storing prose underscores as typed", async () => {
+    const stored = "Run snake_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    // The exporter escapes the prose underscore; code and the boundary run are as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run snake\\_case:\n\n```py\nprint('a\\_b')\n```\n\nThen `keep\\_this` and \\_\\_init\\_\\_.";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("stores a pasted command's `=` as typed instead of the highlight exporter's escaped form", async () => {
+    const value = "Run node -e 'const fs=require(\"fs\");x.map(a=>a)' then check a == b.\n\n```js\nconst keep\\=1\n```";
+    // MDXEditor's highlight extension escapes every prose `=`; code is exported as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run node -e 'const fs\\=require(\"fs\");x.map(a\\=>a)' then check a \\=\\= b.\n\n```js\nconst keep\\=1\n```";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps a code span after an escaped HTML-like tag byte-identical", async () => {
+    const stored = "<div>\n`a\\_b` and snake_case";
+    // The exporter escapes the `<` (reversed on storage) and the prose underscore.
+    mdxEditorMockState.emitMountChange = "\\<div>\n`a\\_b` and snake\\_case";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={stored} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not notify the parent when a prop sync echoes escaped markdown back", async () => {
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="" onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    // The editor echoes an imperative `setMarkdown` back through `onChange` in
+    // editor space, while the component compares in stored space.
+    mdxEditorMockState.emitMountChange = "Rename \\<name> here";
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> here"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("recovers the rich editor on retry after a transient parse failure", async () => {
+    mdxEditorMockState.emitMountParseError = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    expect(fallbackCode(container)).toBe("MDE-PARSE");
+
+    // The failure was transient; the next mount imports the same markdown fine.
+    mdxEditorMockState.emitMountParseError = false;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+    expect(handleChange).not.toHaveBeenCalledWith("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("re-arms the empty-onChange guard when the editor is retried", async () => {
+    // The sequence this guards: the editor mounts, reports an edit (spending the
+    // one-shot mount guard), then fails. The user retries, and the fresh mount
+    // emits the empty onChange that the guard exists to swallow — which would
+    // otherwise wipe the parent's value.
+    mdxEditorMockState.emitMountChange = "Rename \\<name> to the real name.";
+    mdxEditorMockState.emitMountParseError = true;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+
+    mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountParseError = false;
+    mdxEditorMockState.emitMountEmptyReset = true;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalledWith("");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not fall back again while a retried editor is still populating", async () => {
+    mdxEditorMockState.emitMountParseError = true;
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Rename <name> to the real name."
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await flush();
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+
+    // The retried editor paints its content between the first check and the
+    // confirming re-check, so the heuristic must not call it empty.
+    mdxEditorMockState.emitMountParseError = false;
+    mdxEditorMockState.populateDelayMs = 150;
+
+    await act(async () => {
+      clickRetryRichEditor(container);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+    expect(container.textContent).toContain("Rename <name> to the real name.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("escapes angle brackets in markdown inserted through the ref", async () => {
+    const editorRef = { current: null as MarkdownEditorRef | null };
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          ref={editorRef}
+          value="Intro."
+          onChange={() => {}}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+    await flush();
+
+    await act(async () => {
+      editorRef.current?.insertMarkdown("\n\nRename <name> to the real name.");
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      "\n\nRename \\<name> to the real name.",
+    ]);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("handles Markdown paste once before the inner editor receives it", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="" onChange={() => {}} />);
+    });
+    await flush();
+    const editable = container.querySelector('[data-testid="mdx-editor"]')!;
+    const innerPaste = vi.fn();
+    editable.addEventListener("paste", innerPaste);
+    const pasted = '```json\n{"content":"nonce\\n"}\n```';
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => pasted },
+    });
+    await act(async () => { editable.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([pasted]);
+    expect(innerPaste).not.toHaveBeenCalled();
+
+    const dashed = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(dashed, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "- a single dashed line" },
+    });
+    await act(async () => { editable.dispatchEvent(dashed); });
+    expect(dashed.defaultPrevented).toBe(true);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      pasted,
+      "- a single dashed line",
+    ]);
+
+    const plain = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(plain, "clipboardData", {
+      value: { types: ["text/plain"], getData: () => "ordinary text" },
+    });
+    await act(async () => { editable.dispatchEvent(plain); });
+    expect(plain.defaultPrevented).toBe(false);
+    expect(innerPaste).toHaveBeenCalledOnce();
+    await act(async () => { root.unmount(); });
+  });
+
+  it("leaves a markdown paste inside a nested code block", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<MarkdownEditor value="```txt\n\n```" onChange={() => {}} />);
+    });
+    await flush();
+
+    const editable = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement;
+    const code = document.createElement("div");
+    code.className = "cm-content";
+    code.setAttribute("contenteditable", "true");
+    const text = document.createTextNode("");
+    code.appendChild(text);
+    editable.appendChild(code);
+
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    code.focus();
+
+    const pasted = "- keep this line in the code block\n- and this one";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+    const innerPaste = vi.fn();
+    code.addEventListener("paste", innerPaste);
+
+    await act(async () => {
+      code.dispatchEvent(event);
+    });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+    expect(innerPaste).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("escapes angle brackets in pasted markdown", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="Intro." onChange={() => {}} placeholder="Markdown body" />,
+      );
+    });
+    await flush();
+
+    const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+    const pasted = "## Setup\n\n- Rename <name> to the real name\n";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      configurable: true,
+      value: {
+        types: ["text/plain"],
+        getData: (type: string) => (type === "text/plain" ? pasted : ""),
+      },
+    });
+
+    await act(async () => {
+      scope?.dispatchEvent(event);
+    });
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(mdxEditorMockState.insertedMarkdownValues).toEqual([
+      "## Setup\n\n- Rename \\<name> to the real name\n",
+    ]);
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).not.toContain("Rich editor unavailable for this markdown");
 
     await act(async () => {
       root.unmount();
@@ -643,6 +1516,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 100,
       left: 250,
+      maxWidth: 542,
     });
   });
 
@@ -655,6 +1529,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 340,
       left: 154,
+      maxWidth: 182,
     });
   });
 
@@ -667,6 +1542,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 12,
       left: 92,
+      maxWidth: 180,
     });
   });
 
@@ -679,6 +1555,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 372,
       left: 210,
+      maxWidth: 582,
     });
   });
 
@@ -692,6 +1569,7 @@ describe("MarkdownEditor", () => {
     ).toEqual({
       top: 160,
       left: 130,
+      maxWidth: 182,
     });
   });
 
@@ -829,6 +1707,21 @@ describe("MarkdownEditor", () => {
     editable.remove();
   });
 
+  it("places the caret after a plain action command", () => {
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    editable.textContent = "/goal\u00a0";
+    document.body.appendChild(editable);
+
+    expect(placeCaretAtEditableEnd(editable)).toBe(true);
+
+    const selection = window.getSelection();
+    expect(selection?.anchorNode).toBe(editable);
+    expect(selection?.anchorOffset).toBe(1);
+
+    editable.remove();
+  });
+
   function createTouchEvent(
     type: "touchstart" | "touchmove" | "touchend",
     touches: Array<{ clientX: number; clientY: number }>,
@@ -852,6 +1745,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    onSubmit?: () => void,
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -861,6 +1755,8 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          onSubmit={onSubmit}
+          submitKey="enter"
         />,
       );
     });
@@ -891,6 +1787,21 @@ describe("MarkdownEditor", () => {
     expect(menu).toBeTruthy();
     return { option: option!, root, menu: menu! };
   }
+
+  it("accepts a mention on Enter before submitting the message", async () => {
+    const onSubmit = vi.fn();
+    const handleChange = vi.fn();
+    const { root } = await openMentionMenuFor(handleChange, undefined, undefined, onSubmit);
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true });
+    await act(() => { editable.dispatchEvent(shiftEnter); });
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(handleChange).not.toHaveBeenCalled();
+    await act(() => { editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(handleChange).toHaveBeenCalled();
+    await act(() => { root.unmount(); });
+  });
 
   it("accepts mention selection from a touch tap", async () => {
     const handleChange = vi.fn();
@@ -1023,6 +1934,64 @@ describe("MarkdownEditor", () => {
       menu.dispatchEvent(wheel);
     });
     expect(wheel.defaultPrevented).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("lets wheel and touch scrolling reach the autocomplete menu inside a modal", async () => {
+    const root = createRoot(container);
+    const mentions = Array.from({ length: 12 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+
+    await act(async () => {
+      root.render(
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Create task</DialogTitle>
+            <MarkdownEditor value="@Pap" onChange={() => {}} mentions={mentions} />
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    await flush();
+
+    const editable = document.body.querySelector('[data-testid="mdx-editor"]');
+    const textNode = editable?.firstChild;
+    expect(textNode?.nodeType).toBe(Node.TEXT_NODE);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode!, "@Pap".length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await flush();
+
+    const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]');
+    expect(menu).toBeTruthy();
+
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 80 });
+    act(() => {
+      menu?.dispatchEvent(wheel);
+    });
+    expect(wheel.defaultPrevented).toBe(false);
+
+    const touchMove = createTouchEvent("touchmove", [{ clientX: 100, clientY: 90 }]);
+    act(() => {
+      menu?.firstElementChild?.dispatchEvent(touchMove);
+    });
+    expect(touchMove.defaultPrevented).toBe(false);
 
     await act(async () => {
       root.unmount();

@@ -16,9 +16,7 @@ The host plugin installer runs `npm install` into the managed plugin directory, 
 
 ## Runtime support note
 
-Modal's official JS SDK README pins support to **Node 22 or later**. Paperclip's repo baseline is currently `node >= 20`; empirically `modal@0.7.4` imports and operates against the Modal API under Node 20, so the plugin runs there today, but the vendor support contract is Node 22+. The plugin logs a startup warning when it detects Node `< 22`. Operators who can pin their Paperclip runtime to Node 22+ should do so; treat Node-20 usage as best-effort until the host bumps its baseline.
-
-The empirical Node 20 compatibility check is recorded in [PAPA-352](/PAPA/issues/PAPA-352).
+Paperclip and this plugin require **Node 24 or later**. The plugin logs a startup warning when it detects an older host runtime.
 
 ## Configuration
 
@@ -27,7 +25,7 @@ Configure Modal from `Instance Settings -> Environments`, not from the plugin's 
 | Field | Required | Description |
 | --- | --- | --- |
 | `appName` | yes | Modal App name. The plugin calls `modal.apps.fromName(appName, { createIfMissing: true })`, so the App is created on first acquire if it does not already exist. |
-| `image` | yes | Container image passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:20`. |
+| `image` | yes | Container image passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:24`. |
 | `tokenId` / `tokenSecret` | yes | Modal auth tokens. Both must be provided together. Paperclip stores pasted values as company secrets. The plugin worker runs in a child process that does not inherit host env vars, so `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` set on the Paperclip server are **not** read by the plugin — provide the tokens in this form. |
 | `environment` | no | Optional Modal environment name. Falls back to the SDK profile default. |
 | `workdir` | no | Remote working directory inside the sandbox. Defaults to `/workspace/paperclip`. |

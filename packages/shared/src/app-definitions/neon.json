@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "slug": "neon",
+  "name": "Neon",
+  "description": "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.",
+  "categories": [
+    "data"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/neon.png"
+  },
+  "urlPatterns": [
+    "https://mcp.neon.tech/*"
+  ],
+  "docsUrl": "https://neon.com/docs/ai/neon-mcp-server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.neon.tech/mcp",
+        "scopesHint": [
+          "read",
+          "write"
+        ]
+      },
+      "guidanceMd": "Connect Neon in the browser. Open Advanced to pin one project or enable read-only mode. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S4",
+      "label": "Sign in with Neon",
+      "consoleLinks": {
+        "docs": "https://neon.com/docs/ai/neon-mcp-server"
+      },
+      "warnings": [
+        "A Neon account. The hosted server grants broad project and database management, so use a development project and review write actions before connecting production data.",
+        "Neon recommends its hosted server for development and testing. Review write and destructive actions before execution."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Pin to project ID",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional Neon project ID",
+          "helperMd": "Optional. Restrict this connection to one project. Copy the project ID from Neon Console → Project settings → General.",
+          "validation": {
+            "pattern": "^[a-z0-9-]+$",
+            "maxLength": 64
+          },
+          "transport": {
+            "location": "query",
+            "name": "projectId"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to limit SQL to SELECT queries and schema inspection.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          },
+          "advanced": true
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.neon.tech/mcp"
+      },
+      "guidanceMd": "Use a customer-created Neon API key. Prefer a project-scoped key for one development project; personal and organization keys reach every project they can access. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Neon API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "napi_... or neon_project_key_...",
+          "secret": true,
+          "helperMd": "Project, branch, compute, snapshot, SQL and schema changes within the key’s reach. A project-scoped key limits access to one project with Editor rights; personal and organization keys reach every project they can access. Paperclip cannot increase an existing key’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://console.neon.tech/app/settings/api-keys",
+        "docs": "https://neon.com/docs/ai/neon-mcp-server"
+      },
+      "warnings": [
+        "A Neon account. The hosted server grants broad project and database management, so use a development project and review write actions before connecting production data.",
+        "Neon recommends its hosted server for development and testing. Review write and destructive actions before execution."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Pin to project ID",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional Neon project ID",
+          "helperMd": "Optional. Restrict this connection to one project. Copy the project ID from Neon Console → Project settings → General.",
+          "validation": {
+            "pattern": "^[a-z0-9-]+$",
+            "maxLength": 64
+          },
+          "transport": {
+            "location": "query",
+            "name": "projectId"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to limit SQL to SELECT queries and schema inspection.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          },
+          "advanced": true
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ]
+    }
+  ]
+}

@@ -1,106 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
-import { MANAGED_CONFIG_ENV_KEY, parseManagedConfigEnv } from "./managed-config.js";
+import { applyManagedEnvironments } from "./managed-environments.js";
 import {
-  applyManagedEnvironments,
-  type ApplyManagedEnvironmentsOptions,
-} from "./managed-environments.js";
-
-const noDb = null as unknown as Db;
-
-function parsedConfig(overrides: Record<string, unknown> = {}) {
-  const config = parseManagedConfigEnv({
-    [MANAGED_CONFIG_ENV_KEY]: JSON.stringify({
-      v: 1,
-      mode: "cloud",
-      catalogVersion: "2026.720.0",
-      features: {},
-      plugins: { autoInstall: ["daytona"] },
-      ...overrides,
-    }),
-  });
-  if (!config) throw new Error("expected a parsed managed config");
-  return config;
-}
-
-function environmentRow(overrides: Record<string, unknown> = {}) {
-  const now = new Date();
-  return {
-    id: "env-1",
-    name: "Daytona",
-    description: null,
-    driver: "sandbox",
-    status: "active",
-    config: {},
-    envVars: {},
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  };
-}
-
-function reconciliationResult(
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    environment: environmentRow(),
-    action: "added" as const,
-    stockStatus: "missing" as const,
-    updateAvailable: false,
-    stockHash: "sha256:stock",
-    ...overrides,
-  };
-}
-
-function readyDriverResolver(status = "ready") {
-  return vi.fn(async () => ({
-    plugin: { id: "plugin-1", pluginKey: "sandbox-providers/daytona", status },
-  }));
-}
-
-function runningWorkerManager(running = true) {
-  return { isRunning: vi.fn(() => running), getWorker: vi.fn(() => undefined) };
-}
-
-type WorkerManagerSeam = NonNullable<ApplyManagedEnvironmentsOptions["workerManager"]>;
-type RecoveryHandle = NonNullable<ReturnType<WorkerManagerSeam["getWorker"]>>;
-
-/** A worker handle fake that records `ready` listeners so tests can fire them. */
-function recoveryHandle() {
-  const readyListeners: Array<(payload: { pluginId: string }) => void> = [];
-  const handle: RecoveryHandle = {
-    on: vi.fn((_event, listener) => {
-      readyListeners.push(listener);
-    }),
-    off: vi.fn((_event, listener) => {
-      const at = readyListeners.indexOf(listener);
-      if (at !== -1) readyListeners.splice(at, 1);
-    }),
-  };
-  return {
-    handle,
-    fireReady: () => {
-      for (const listener of [...readyListeners]) listener({ pluginId: "plugin-1" });
-    },
-  };
-}
-
-/** Lets the fire-and-forget recovery ensure settle. */
-function tick() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
-type EnvironmentsSeam = NonNullable<ApplyManagedEnvironmentsOptions["environments"]>;
-
-function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): EnvironmentsSeam {
-  return {
-    ensureManagedSandboxEnvironment:
-      overrides.ensureManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(reconciliationResult()),
-    archiveManagedSandboxEnvironment:
-      overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
-  };
-}
+  environmentRow,
+  environmentsSeam,
+  noDb,
+  parsedConfig,
+  readyDriverResolver,
+  reconciliationResult,
+  recoveryHandle,
+  runningWorkerManager,
+  tick,
+} from "./managed-environments.test-support.js";
 
 describe("applyManagedEnvironments", () => {
   it("no-ops for self-hosted instances and for documents without environments", async () => {
@@ -154,6 +64,7 @@ describe("applyManagedEnvironments", () => {
       provider: "daytona",
       config: { target: "us" },
       stockVersion: "2026.720.0",
+      platformFullyManaged: true,
     });
     // The frozen parsed config must not leak into the service (the row's
     // config is mutated downstream when the provider key is forced in).
@@ -328,6 +239,7 @@ describe("applyManagedEnvironments", () => {
       provider: "daytona",
       config: { target: "us" },
       stockVersion: "2026.720.0",
+      platformFullyManaged: true,
     });
     expect(handle.off).toHaveBeenCalledTimes(1);
   });
@@ -459,5 +371,72 @@ describe("applyManagedEnvironments", () => {
 
     expect(result).toMatchObject({ ensured: 0, failed: 1 });
     expect(environments.archiveManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("fills the instance default with the managed sandbox under managed-sandbox-only", async () => {
+    const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+    const config = parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      fillInstanceDefault,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    // The locked fill (`fillUnsetInstanceDefault`) decides whether to write.
+    expect(fillInstanceDefault).toHaveBeenCalledWith("env-1");
+  });
+
+  it("leaves the instance default alone while managed-sandbox-only is not declared", async () => {
+    // Without the mode, local execution is a legitimate default; provisioning
+    // the managed environment must not silently move runs into the sandbox.
+    const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      fillInstanceDefault,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+
+    expect(fillInstanceDefault).not.toHaveBeenCalled();
+  });
+
+  it("never reverts a filled default when managed-sandbox-only is not declared", async () => {
+    // A filled default is an ordinary set value. With the mode off, and even
+    // with no environments declared, boot writes nothing to the default.
+    const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+    const environments = environmentsSeam();
+    expect(await applyManagedEnvironments(noDb, parsedConfig({}), {
+      env: {},
+      workerManager: runningWorkerManager(),
+      fillInstanceDefault,
+      environments,
+    })).toBeNull();
+    expect(fillInstanceDefault).not.toHaveBeenCalled();
+    expect(environments.ensureManagedSandboxEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("keeps the environment ensured when filling the default fails", async () => {
+    const result = await applyManagedEnvironments(noDb, parsedConfig({
+      features: { enableManagedSandboxOnly: true },
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    }), {
+      env: {},
+      workerManager: runningWorkerManager(),
+      fillInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(result).toMatchObject({ ensured: 1, failed: 0 });
   });
 });

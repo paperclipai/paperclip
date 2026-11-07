@@ -31,9 +31,9 @@ export interface AssignedLabel {
   unassigned: boolean;
 }
 
-/** "Company default" / "2 agents" / "Not assigned yet". */
+/** "Organization default" / "2 agents" / "Not assigned yet". */
 export function assignedLabel(summary: ToolProfileSummary): AssignedLabel {
-  if (summary.isCompanyDefault) return { text: "Company default", unassigned: false };
+  if (summary.isCompanyDefault) return { text: "Organization default", unassigned: false };
   if (summary.appliesToAgentCount > 0) {
     return { text: plural(summary.appliesToAgentCount, "agent"), unassigned: false };
   }

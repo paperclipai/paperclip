@@ -271,3 +271,29 @@ describe("isPiUnknownSessionError", () => {
     expect(isPiUnknownSessionError("working fine", "no errors")).toBe(false);
   });
 });
+
+
+describe("terminal provider failures", () => {
+  it("surfaces and deduplicates errors from Pi assistant messages", () => {
+    const message = { role: "assistant", content: [], stopReason: "error", errorMessage: "400 Context limit exceeded" };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message },
+      { type: "turn_end", message },
+      { type: "agent_end", messages: [message] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual(["400 Context limit exceeded"]);
+  });
+  it("reports an error even when the provider omitted its message", () => {
+    expect(parsePiJsonl(JSON.stringify({ type: "turn_end", message: { role: "assistant", stopReason: "error" } })).errors)
+      .toEqual(["Pi provider request failed."]);
+  });
+});
+
+describe("Pi price availability", () => {
+  it("retains unpriced usage and counts cache writes without treating a missing price as free", () => {
+    const event = { type: "turn_end", message: { role: "assistant", content: [], usage: { input: 10, output: 3, cacheRead: 100, cacheWrite: 20 } } };
+    expect(parsePiJsonl(JSON.stringify(event)).usage).toEqual({ inputTokens: 30, cachedInputTokens: 100, outputTokens: 3, costUsd: null });
+    event.message.usage = { ...event.message.usage, cost: { total: 0 } } as typeof event.message.usage;
+    expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
+  });
+});

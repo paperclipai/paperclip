@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
+import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { ToastViewport } from "./ToastViewport";
 import { ToastProvider } from "../context/ToastContext";
@@ -178,6 +179,90 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).toContain("Approve");
     expect(el.textContent).toContain("Request changes");
     expect(el.textContent).toContain("Send back to work");
+  });
+
+  // PAP-16506 P4: an opt-in policy warns before the card offers Approve, because
+  // the server refuses the verdict. The default earns no pixels.
+  const reviewItemWithPolicy = (reviewPolicy?: unknown) =>
+    buildItem({
+      sourceKind: "review" as AttentionSourceKind,
+      inlineResolvable: true,
+      subject: {
+        kind: "issue",
+        id: "issue-1",
+        companyId: "c1",
+        title: "PR ready for review",
+        identifier: null,
+        status: "in_review",
+        href: "/PAP/issues/PAP-1",
+        metadata: {
+          reviewAttentionState: "stalled",
+          ...(reviewPolicy === undefined ? {} : { reviewPolicy }),
+        },
+      },
+    });
+
+  it("says nothing about who can approve on a review with no policy set", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={reviewItemWithPolicy()}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(el.querySelector('[data-testid="review-policy-badge"]')).toBeNull();
+    expect(el.textContent).not.toContain("Anyone else");
+    expect(el.textContent).not.toContain("Human only");
+    // The verbs still render — suppressing the badge must not suppress the card.
+    expect(el.textContent).toContain("Send back to work");
+  });
+
+  it("badges the opt-in constraint when the issue carries one", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={reviewItemWithPolicy("human_only")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const badge = el.querySelector('[data-testid="review-policy-badge"]');
+    expect(badge?.getAttribute("data-review-policy")).toBe("human_only");
+    expect(badge?.textContent).toContain("Human only");
+    expect(badge?.getAttribute("title")).toContain("Agents cannot");
+  });
+
+  it("badges a not_creator policy as 'Anyone else'", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={reviewItemWithPolicy("not_creator")}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const badge = el.querySelector('[data-testid="review-policy-badge"]');
+    expect(badge?.getAttribute("data-review-policy")).toBe("not_creator");
+    expect(badge?.textContent).toContain("Anyone else");
+  });
+
+  it("shows no badge for an explicit default or an unrecognised policy", () => {
+    for (const policy of ["anyone", "board_only"]) {
+      const el = render(
+        <AttentionQueueRow
+          item={reviewItemWithPolicy(policy)}
+          companyId="c1"
+          expanded
+          onToggleExpand={noop}
+          onDismiss={noop}
+        />,
+      );
+      expect(el.querySelector('[data-testid="review-policy-badge"]')).toBeNull();
+    }
   });
 
   it("deep-links a covered review instead of inlining", () => {
@@ -742,94 +827,178 @@ describe("AttentionQueueRow", () => {
     expect(gallery?.querySelectorAll("a")).toHaveLength(0);
   });
 
-  // Decision training (PAP-14299): a trainable row shows the train affordance;
-  // the trained/untrained state renders purely from `trainingExampleId`.
-  function trainableItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
+  // PAP-17287: the collapsed row must say who may resolve an interaction before
+  // its compact verbs are used, and a denial must keep the server's reason.
+  function interactionItem(
+    audience: AttentionItem["resolverAudience"],
+    verbs: AttentionItem["decisionVerbs"] = [
+      { id: "accept", label: "Accept", description: null },
+      { id: "reject", label: "Reject", description: null },
+    ],
+  ) {
     return buildItem({
       sourceKind: "issue_thread_interaction",
       subject: {
         kind: "interaction",
         id: "interaction-1",
         companyId: "c1",
-        title: "Approve the migration plan?",
+        title: "Close this confirmation?",
         identifier: null,
         status: "pending",
-        href: "/PAP/issues/PAP-1",
-        metadata: { issueId: "issue-1", kind: "request_confirmation" },
+        href: "/PAP/issues/issue-1#interaction-interaction-1",
+        metadata: { kind: "request_confirmation", issueId: "issue-1" },
       },
-      ...overrides,
+      decisionVerbs: verbs,
+      resolverAudience: audience,
     });
   }
 
-  // Training lives in the row's overflow menu AND on a visible inline "Train"
-  // pill for untrained rows. Menu items live in a portal that
-  // only mounts once opened — environment-flaky in jsdom (see the dismiss test
-  // above) — so the untrained path asserts the menu exists, no trained badge is
-  // shown, and the onTrain contract is exercised through the visible pill.
-  it("shows a visible Train pill (no trained badge) and fires onTrain when clicked", () => {
-    const onTrain = vi.fn();
+  const openAudience: AttentionItem["resolverAudience"] = {
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "anyone",
+    effectiveResolverPolicySource: "requested",
+    resolverPolicyProvenance: "inherited",
+    addresseeAgentId: null,
+    addresseeName: null,
+    createdByAgentId: "agent-watchdog",
+    createdByAgentName: "Watchdog",
+  };
+
+  it("states the server-derived audience before the compact decision verbs", () => {
     render(
       <AttentionQueueRow
-        item={trainableItem()}
+        item={interactionItem(openAudience)}
         companyId="c1"
         expanded={false}
         onToggleExpand={noop}
         onDismiss={noop}
-        onTrain={onTrain}
       />,
     );
-    expect(container?.querySelector('[aria-label="Row actions"]')).toBeTruthy();
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("anyone");
+    expect(audience?.getAttribute("data-audience-open")).toBe("true");
+    expect(audience?.textContent).toContain("Anyone");
+    expect(audience?.textContent).toContain("Anyone can respond");
+
+    // Reading order is the point: the audience qualifies the buttons, so it has
+    // to precede them in the DOM as well as on screen.
+    const actions = container?.querySelector('[aria-label="Decision actions"]');
+    expect(audience && actions && audience.compareDocumentPosition(actions))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("names the addressed responder on a restricted collapsed row", () => {
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          addresseeAgentId: "agent-codex",
+          addresseeName: "CodexCoder",
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Only CodexCoder or the board can respond");
+    // A collapsed row spends its line on the responder, not on a badge that
+    // repeats the clause beside it.
+    expect(audience?.textContent).not.toContain("Addressed —");
+  });
+
+  // PAP-17289: the row's shell is `overflow-hidden`, so a clause that cannot
+  // wrap is cut mid-word with no ellipsis and names a responder that does not
+  // exist. jsdom does no layout, so this asserts the wrapping rule itself.
+  it("lets a long addressee name wrap instead of being cut mid-word", () => {
+    const addresseeName = "ReleaseEngineeringPlatformCoordinationServiceBot";
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          addresseeAgentId: "agent-release",
+          addresseeName,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    const summary = audience?.querySelector('[data-testid="interaction-audience-summary"]');
+    expect(summary?.textContent).toBe(`Only ${addresseeName} or the board can respond`);
+    expect(summary?.parentElement?.className).toContain("break-words");
+  });
+
+  it("renders no audience line when the feed carries no resolver metadata", () => {
+    render(
+      <AttentionQueueRow
+        item={interactionItem(null)}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    // Never guess a policy client-side: silence beats a wrong audience.
+    expect(container?.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+  });
+
+  it("keeps the server denial reason and names the responder when a compact accept is refused", async () => {
+    vi.mocked(issuesApi.acceptInteraction).mockRejectedValue(
+      new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      }),
+    );
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          requestedResolverPolicy: "human_only",
+          effectiveResolverPolicy: "human_only",
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const accept = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Accept",
+    );
+    act(() => accept?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const feedback = document.body.textContent ?? "";
+    expect(feedback).toContain("This issue-thread interaction is human-only.");
+    expect(feedback).toContain("Only the board can respond.");
+    expect(feedback).not.toMatch(/try again/i);
+  });
+
+  it("does not surface training state or actions for decisions", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ trainingExampleId: "example-1" })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(container?.textContent).not.toContain("Train");
     expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
-    const trainPill = container?.querySelector('[data-testid="attention-train-inline"]');
-    expect(trainPill?.textContent).toContain("Train");
-    act(() => trainPill?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
-  });
-
-  it("hides the visible Train pill once trained (the badge stands in for it)", () => {
-    render(
-      <AttentionQueueRow
-        item={trainableItem({ trainingExampleId: "example-1" })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={noop}
-      />,
-    );
     expect(container?.querySelector('[data-testid="attention-train-inline"]')).toBeNull();
-    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeTruthy();
-  });
-
-  it("renders a Trained ✓ badge once trained and fires onTrain when it is clicked", () => {
-    const onTrain = vi.fn();
-    render(
-      <AttentionQueueRow
-        item={trainableItem({ trainingExampleId: "example-1" })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={onTrain}
-      />,
-    );
-    const badge = container?.querySelector('[data-testid="attention-trained-badge"]');
-    expect(badge?.textContent).toContain("Trained");
-    act(() => badge?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
-  });
-
-  it("does not offer training on a decision that isn't anchored to an issue", () => {
-    render(
-      <AttentionQueueRow
-        item={buildItem({ subject: { ...buildItem().subject, metadata: {} }, relatedIssue: null })}
-        companyId="c1"
-        expanded={false}
-        onToggleExpand={noop}
-        onDismiss={noop}
-        onTrain={noop}
-      />,
-    );
     expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
   });
 });

@@ -1,4 +1,6 @@
-import type { Db } from "@paperclipai/db";
+import { agents, plugins, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { conflict } from "../errors.js";
 import type {
   EnvironmentProbeResult,
   PluginEnvironmentConfig,
@@ -30,6 +32,101 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+type AgentEnvironmentRef = { driver: string; config: Record<string, unknown> | null };
+type AgentEnvironmentPlugin = {
+  pluginKey: string;
+  manifestJson: { environmentDrivers?: Array<{ driverKey: string; kind?: string; requiresAgent?: boolean }> };
+};
+
+export function pluginHasAgentEnvironments(plugin: AgentEnvironmentPlugin) {
+  const drivers = plugin.manifestJson.environmentDrivers?.filter(driver => driver.requiresAgent === true) ?? [];
+  return drivers.length > 0 && drivers.every(driver => driver.kind !== "sandbox_provider");
+}
+
+export function pluginServesAgentEnvironment(plugin: AgentEnvironmentPlugin, environment: AgentEnvironmentRef | null | undefined) {
+  if (environment?.driver !== "plugin" || environment.config?.pluginKey !== plugin.pluginKey) return false;
+  return plugin.manifestJson.environmentDrivers?.some(driver => driver.requiresAgent === true && driver.kind !== "sandbox_provider"
+    && driver.driverKey === environment.config?.driverKey) ?? false;
+}
+
+export async function pluginForAgentEnvironment(db: Db, environment: AgentEnvironmentRef) {
+  const pluginKey = environment.config?.pluginKey;
+  if (environment.driver !== "plugin" || typeof pluginKey !== "string") return null;
+  const plugin = await pluginRegistryService(db).getByKey(pluginKey);
+  return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
+}
+
+/** Whether a saved environment change would give active agents a plugin that has not prepared them. */
+export async function agentsNeedSetupForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  const plugin = after ? await pluginForAgentEnvironment(db, after) : null;
+  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return false;
+  const usesEnvironment = or(users.environmentId ? eq(agents.defaultEnvironmentId, users.environmentId) : undefined,
+    users.inheritsDefault ? isNull(agents.defaultEnvironmentId) : undefined);
+  if (!usesEnvironment) return false;
+  const [waiting] = await db.select({ id: agents.id }).from(agents).where(and(usesEnvironment,
+    inArray(agents.lifecycleState, ["ready", "verifying"]),
+    sql`not coalesce(${agents.lifecycleRequiredPluginIds}, '[]'::jsonb) @> ${JSON.stringify([plugin.id])}::jsonb`)).limit(1);
+  return Boolean(waiting);
+}
+
+/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
+export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  if (await agentsNeedSetupForEnvironmentChange(db, before, after, users)) {
+    throw conflict("Agents that use this environment need setup first. Pause those agents, save this change, and then resume them.",
+      { code: "environment_requires_agent_setup" });
+  }
+}
+
+export async function pluginEnvironmentRequiresAgent(db: Db, environment: AgentEnvironmentRef) {
+  return await pluginForAgentEnvironment(db, environment) !== null;
+}
+
+/**
+ * The worker methods a sandbox provider must advertise before the host reuses
+ * a provider lease across runs. The host resumes a lease through
+ * `environmentResumeLease`, ends it through `environmentReleaseLease`, and tears
+ * down a stale lease through `environmentDestroyLease`. The reuse path destroys
+ * the stale lease when a resume fails and then acquires a fresh lease, so a
+ * provider that omits any of the three methods can strand the stale lease and
+ * can never complete the reuse path.
+ *
+ * The runtime capability normalizer maps `reusableLeases` to these same methods,
+ * so the acquisition guard, the effective-capability snapshot, and the published
+ * provider-capabilities value all read one source and cannot drift.
+ */
+export const REUSABLE_LEASE_WORKER_METHODS = [
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+] as const;
+
+/**
+ * The worker methods a sandbox provider must advertise before the customImage
+ * setup gate in `environment-custom-images.ts` allows an interactive setup
+ * session. The setup lifecycle starts a session through
+ * `environmentStartInteractiveSetup`, polls it through
+ * `environmentGetInteractiveSetup`, and cancels it through
+ * `environmentCancelInteractiveSetup`. A provider that omits any of the three
+ * can strand a setup session partway through the lifecycle.
+ */
+export const INTERACTIVE_SETUP_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+] as const;
+
+/** The worker method the customImage template-capture gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_CAPTURE_WORKER_METHODS = [
+  "environmentCaptureTemplate",
+] as const;
+
+/** The worker method the customImage template-delete gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_DELETE_WORKER_METHODS = [
+  "environmentDeleteTemplate",
+] as const;
+
 export interface ReadyPluginWorkerRecovery {
   pluginKeys: readonly string[];
   startWorker(plugin: { id: string; pluginKey: string }): Promise<boolean>;
@@ -44,12 +141,22 @@ export interface ReadyPluginEnvironmentDriver {
   description?: string;
   configSchema: PluginEnvironmentDriverDeclaration["configSchema"];
   supportsReusableLeases?: PluginEnvironmentDriverDeclaration["supportsReusableLeases"];
+  sandboxCapabilities?: PluginEnvironmentDriverDeclaration["sandboxCapabilities"];
+  /**
+   * The running worker for this exact plugin advertises ALL reusable-lease
+   * lifecycle methods (`REUSABLE_LEASE_WORKER_METHODS`: resume, release, and
+   * destroy). The published provider-capabilities value grants reusable leases
+   * only when the declaration allows them AND this flag is true, so presentation
+   * matches the acquisition guard, which also verifies the same methods live.
+   */
+  reusableLeaseMethodsVerified: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
   templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
   templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
   supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
+  supportsLoginPty?: PluginEnvironmentDriverDeclaration["supportsLoginPty"];
 }
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
@@ -108,6 +215,62 @@ export async function resolvePluginEnvironmentDriverByKey(input: {
   });
 }
 
+type CachedProviderSchema = { pluginId: string; revision: string; schema: Record<string, unknown> | null };
+const providerSchemas = new WeakMap<Db, Map<string, CachedProviderSchema>>();
+const MAX_CACHED_PROVIDER_SCHEMAS = 32;
+const MAX_CACHED_PROVIDER_SCHEMA_BYTES = 64 * 1024;
+
+export async function resolvePluginSandboxProviderConfigSchema(input: {
+  db: Db; driverKey: string;
+}): Promise<Record<string, unknown> | null> {
+  const { db, driverKey } = input;
+  let cache = providerSchemas.get(db);
+  const cached = cache?.get(driverKey);
+  const unchanged = sql`coalesce(plugin_id = ${cached?.pluginId ?? null}::uuid
+    and revision = ${cached?.revision ?? null}, false)`;
+  const [row] = await db.execute<{
+    pluginId: string; revision: string; unchanged: boolean; configSchema: unknown;
+  }>(sql`with selected_provider as materialized (
+    select ${plugins.id} as plugin_id, (
+      select declaration.value->'configSchema'
+      from jsonb_array_elements(${plugins.manifestJson}->'environmentDrivers')
+        with ordinality as declaration(value, position)
+      where declaration.value->'driverKey' = to_jsonb(${driverKey}::text)
+        and declaration.value->>'kind' = 'sandbox_provider'
+      order by declaration.position limit 1
+    ) as schema_value
+    from ${plugins}
+    where ${plugins.manifestJson} @> ${JSON.stringify({ environmentDrivers: [{ driverKey, kind: "sandbox_provider" }] })}::jsonb
+    order by ${plugins.installOrder} limit 1
+  ), versioned_provider as materialized (
+    select plugin_id, schema_value,
+      encode(sha256(convert_to(coalesce(schema_value::text, 'null'), 'UTF8')), 'hex') as revision
+    from selected_provider
+  )
+  select plugin_id as "pluginId", revision, ${unchanged} as unchanged,
+    case when ${unchanged} then null else schema_value end as "configSchema"
+  from versioned_provider`);
+  if (!row) {
+    cache?.delete(driverKey);
+    return null;
+  }
+  if (row.unchanged) {
+    if (!cached || cached.pluginId !== row.pluginId || cached.revision !== row.revision) {
+      throw new Error("Sandbox provider schema revision did not match the retained definition");
+    }
+    return structuredClone(cached.schema);
+  }
+  const schema = row.configSchema && typeof row.configSchema === "object" && !Array.isArray(row.configSchema)
+    ? row.configSchema as Record<string, unknown> : null;
+  cache?.delete(driverKey);
+  if (Buffer.byteLength(JSON.stringify(schema)) <= MAX_CACHED_PROVIDER_SCHEMA_BYTES) {
+    if (!cache) { cache = new Map(); providerSchemas.set(db, cache); }
+    if (cache.size >= MAX_CACHED_PROVIDER_SCHEMAS) cache.delete(cache.keys().next().value!);
+    cache.set(driverKey, { pluginId: row.pluginId, revision: row.revision, schema: structuredClone(schema) });
+  }
+  return schema;
+}
+
 export async function resolvePluginSandboxProviderDriverByKey(input: {
   db: Db;
   driverKey: string;
@@ -115,7 +278,7 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
   requireRunning?: boolean;
 }): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["list"]>>[number]; driver: PluginEnvironmentDriverDeclaration } | null> {
   const pluginRegistry = pluginRegistryService(input.db);
-  const plugins = await pluginRegistry.list();
+  const plugins = await pluginRegistry.list({ sandboxProviderDriverKey: input.driverKey });
   for (const plugin of plugins) {
     const driver = plugin.manifestJson.environmentDrivers?.find(
       (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
@@ -128,6 +291,35 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
     return { plugin, driver };
   }
   return null;
+}
+
+/**
+ * Resolve the sandbox-provider driver declaration from one exact plugin id.
+ *
+ * A driver key is only unique inside a single manifest. Two installed plugins
+ * can declare the same driver key. A lease pins the plugin that acquired it
+ * through `metadata.pluginId`. Use this resolver, not the by-key resolver, when
+ * the caller must read the declaration from that exact plugin. The by-key
+ * resolver returns the first installed plugin with the key, which can be a
+ * different, even disabled, plugin.
+ *
+ * This resolver fails closed. It returns `null` when the plugin id is unknown,
+ * or when that plugin no longer declares a `sandbox_provider` driver with the
+ * given key.
+ */
+export async function resolvePluginSandboxProviderDriverById(input: {
+  db: Db;
+  pluginId: string;
+  driverKey: string;
+}): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["getById"]>>; driver: PluginEnvironmentDriverDeclaration } | null> {
+  const pluginRegistry = pluginRegistryService(input.db);
+  const plugin = await pluginRegistry.getById(input.pluginId);
+  if (!plugin) return null;
+  const driver = plugin.manifestJson.environmentDrivers?.find(
+    (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
+  ) as PluginEnvironmentDriverDeclaration | undefined;
+  if (!driver) return null;
+  return { plugin, driver };
 }
 
 export async function listReadyPluginEnvironmentDrivers(input: {
@@ -173,6 +365,13 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     if (!input.workerManager.isRunning(plugin.id)) {
       continue;
     }
+    // The plugin is running, so read the live worker's verified methods once per
+    // plugin. A provider advertises reusable leases only when its worker carries
+    // all reuse lifecycle methods; the declaration alone never grants them.
+    const workerMethods = new Set(input.workerManager.getWorker(plugin.id)?.supportedMethods ?? []);
+    const reusableLeaseMethodsVerified = REUSABLE_LEASE_WORKER_METHODS.every(
+      (method) => workerMethods.has(method),
+    );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
         .filter((driver) => driver.kind === "sandbox_provider")
@@ -184,12 +383,15 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           description: driver.description,
           configSchema: driver.configSchema,
           supportsReusableLeases: driver.supportsReusableLeases,
+          sandboxCapabilities: driver.sandboxCapabilities,
+          reusableLeaseMethodsVerified,
           supportsInteractiveSetup: driver.supportsInteractiveSetup,
           interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
           supportsTemplateCapture: driver.supportsTemplateCapture,
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
+          supportsLoginPty: driver.supportsLoginPty,
         })),
     );
   }
@@ -369,6 +571,7 @@ export async function resumePluginEnvironmentLease(input: {
   config: PluginEnvironmentConfig;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }): Promise<PluginEnvironmentLease> {
   const { plugin } = await resolvePluginEnvironmentDriver(input);
   return await input.workerManager.call(plugin.id, "environmentResumeLease", {
@@ -379,6 +582,7 @@ export async function resumePluginEnvironmentLease(input: {
     config: input.config.driverConfig,
     providerLeaseId: input.providerLeaseId,
     leaseMetadata: input.leaseMetadata,
+    ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
   });
 }
 

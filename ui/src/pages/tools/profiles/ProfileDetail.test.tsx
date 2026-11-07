@@ -34,6 +34,7 @@ vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn()
 vi.mock("@/api/tools", () => ({ toolsApi: api }));
 vi.mock("./useProfilesData", () => ({ useProfilesData: () => profilesData.current }));
 
+import { ApiError } from "@/api/client";
 import { ProfileDetail } from "./ProfileDetail";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -223,6 +224,47 @@ describe("ProfileDetail", () => {
     expect(container.textContent).toContain("New tools that appear later");
   });
 
+  it("keeps the loaded profile visible when a refetch fails transiently", async () => {
+    setData([profile()]);
+    profilesData.current.profiles = {
+      ...(profilesData.current.profiles as Record<string, unknown>),
+      status: "success",
+      fetchStatus: "idle",
+      error: new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    };
+    await render();
+
+    expect(container.textContent).toContain("Everyday work");
+    expect(container.textContent).toContain("What it allows");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("shows readable copy and a Retry button for a real error", async () => {
+    const refetch = vi.fn();
+    setData([]);
+    profilesData.current.profiles = {
+      isLoading: false,
+      status: "error",
+      fetchStatus: "idle",
+      data: undefined,
+      error: new ApiError("Boom", 500, { error: "Boom" }),
+      refetch,
+    };
+    await render();
+
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).toContain("Couldn't load the profile");
+    expect(container.textContent).not.toContain("Profile not found");
+
+    const retry = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Retry"));
+    expect(retry, "Retry button").toBeTruthy();
+    flushSync(() => {
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(refetch).toHaveBeenCalled();
+  });
+
   it("shows degraded app rows and the 0-tools warning state", async () => {
     setData([profile()], [tool({})], [
       { status: "disabled", healthStatus: "error" },
@@ -339,7 +381,7 @@ describe("ProfileDetail", () => {
     });
     await Promise.resolve();
 
-    expect(document.body.textContent).toContain("Reassign the company default to another profile before deleting it.");
+    expect(document.body.textContent).toContain("Reassign the organization default to another profile before deleting it.");
     const dialogDelete = [...document.body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent?.trim() === "Delete") as HTMLButtonElement | undefined;
     expect(dialogDelete?.disabled).toBe(true);
     expect(api.deleteProfile).not.toHaveBeenCalled();

@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "../types";
@@ -97,6 +98,7 @@ function SecretField({
 }
 
 export function HermesGatewayConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -138,7 +140,7 @@ export function HermesGatewayConfigFields({
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
 
-  return (
+  return configFieldsForSection(section, (
     <>
       <Field
         label="API base URL"
@@ -174,7 +176,7 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
-      <Field
+      <Field configSection="runPolicy"
         label="Session key strategy"
         hint="Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default."
       >
@@ -190,7 +192,7 @@ export function HermesGatewayConfigFields({
         </select>
       </Field>
 
-      <Field label="Timeout seconds">
+      <Field configSection="runPolicy" label="Timeout seconds">
         <DraftNumberInput
           value={Number.isFinite(timeoutSec) ? timeoutSec : DEFAULT_TIMEOUT_SEC}
           onCommit={(v) => writeValue("timeoutSec", v)}
@@ -248,5 +250,5 @@ export function HermesGatewayConfigFields({
         />
       </Field>
     </>
-  );
+  ));
 }
