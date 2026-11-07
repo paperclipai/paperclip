@@ -130,7 +130,7 @@ these are true:
 - The saved configuration names the current command and proxy paths.
 - The session is settled. It has no active or ambiguous turn, startup attempt,
   receipt-limit interrupt, pending tool call, undelivered provider event, or
-  working goal.
+  working goal. An observed provider exit with nothing in flight is settled.
 
 A changed OpenCode release, an unsettled session, and state written before the
 release digest existed keep the exact binding and fail closed as above.

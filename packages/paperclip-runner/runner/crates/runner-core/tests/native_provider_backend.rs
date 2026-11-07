@@ -2625,6 +2625,78 @@ fn opencode_release_change_still_refuses_a_settled_session() {
 
 #[test]
 #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
+fn exited_opencode_session_continues_after_a_controller_proxy_rebuild() {
+    // The turn completes, then the idle provider exits nonzero. The observed
+    // exit leaves no provider work in flight, so a rebuilt proxy re-binds it.
+    let directory = temporary_directory("opencode-exited-proxy-rebuild");
+    let mut config = opencode_config(&directory);
+    let proxy_script = directory.join("qualified-opencode-proxy-script");
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(
+        &proxy_script,
+        format!(
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract --fail-after-turn-completion --fail-after-turn-completion-delay-ms 250\n",
+            env!("CARGO_BIN_EXE_fake-codex-app-server"),
+            directory.join("fake-opencode-state.json").display(),
+            directory.join("fake-opencode-calls.log").display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_script, fs::Permissions::from_mode(0o500)).unwrap();
+    config
+        .opencode_launch_profile
+        .as_mut()
+        .unwrap()
+        .proxy_script = qualified_artifact(proxy_script);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Finish the task."}),
+        ))
+        .unwrap();
+    poll_opencode_until(&mut first, "session.failed");
+    acknowledge_delivered_events(&mut first);
+    drop(first);
+    // The runner restarts an exited idle provider on its next poll. A hard
+    // kill can land first and leave the observed exit as the saved lifecycle.
+    let state_path = directory.join("codex-provider-state.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(saved["activeProviderTurnId"].is_null());
+    assert_eq!(saved["pendingEvents"], json!([]));
+    saved["lifecycle"] = json!("provider_exited");
+    fs::write(&state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let rebuilt = rebuild_opencode_proxy(&directory, &config);
+    let resumes_before = opencode_call_count(&directory, "thread/resume");
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &rebuilt);
+    recovered
+        .execute(&command(4, "runner.drain", json!({})))
+        .expect("an exited, settled session re-binds to the rebuilt proxy");
+    assert_eq!(
+        opencode_call_count(&directory, "thread/resume"),
+        resumes_before + 1,
+        "recovery restarts the same OpenCode conversation",
+    );
+    drop(recovered);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
 fn opencode_proxy_rebuild_refuses_an_active_turn() {
     let directory = temporary_directory("opencode-active-proxy-rebuild");
     let mut config = opencode_config(&directory);

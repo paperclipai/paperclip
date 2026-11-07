@@ -2034,13 +2034,18 @@ impl CodexCommandExecutor {
     //   (bind_opencode_launch_profile has already checked this).
     // - No provider work is in flight: no active or ambiguous turn, startup
     //   attempt, receipt-limit interrupt, pending tool call, undelivered event
-    //   or working goal. The next launch only loads the conversation.
+    //   or working goal. The next launch only loads the conversation. An
+    //   observed provider exit with nothing in flight qualifies, because
+    //   restore restarts that provider the same way.
     // Session start still verifies every artifact and the restored provider
     // identity.
     fn rebinds_settled_opencode_session(&self, state: &CodexProviderState) -> bool {
         state.opencode_release_digest.is_some()
             && state.opencode_release_digest == self.opencode_release_digest(&state.config)
-            && matches!(state.lifecycle.as_str(), "prepared" | "session_open")
+            && matches!(
+                state.lifecycle.as_str(),
+                "prepared" | "session_open" | "provider_exited"
+            )
             && state.active_provider_turn_id.is_none()
             && !state.ambiguous_turn_start_pending
             && state.startup_attempt.is_none()
