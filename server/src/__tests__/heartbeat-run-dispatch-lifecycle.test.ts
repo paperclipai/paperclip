@@ -11,7 +11,7 @@ afterEach(async () => {
   for (const stop of cleanup.splice(0)) await stop();
   vi.useRealTimers();
 });
-function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean } = {}) {
+function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean; loginHoldUntil?: number } = {}) {
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
   const dialect = new PgDialect();
@@ -23,13 +23,19 @@ function fixture(input: { due?: number; suppressed?: boolean; draining?: boolean
     return callback({ execute, transaction: db.transaction });
   } });
   const state = { due: input.due ?? null as number | null, suppressed: input.suppressed ?? false,
-    draining: input.draining ?? false, standby: false, fail: false };
+    draining: input.draining ?? false, standby: false, fail: false, loginHoldUntil: input.loginHoldUntil ?? null as number | null, launches: 0 };
   const promote = vi.fn(async () => {
     if (state.fail) throw new Error("database unavailable");
     if (state.due !== null && state.due <= Date.now()) state.due = null;
   });
   const next = vi.fn(async () => state.due);
-  const dispatch = vi.fn(async (_scope?: { companyId: string }) => {});
+  const dispatch = vi.fn(async (_scope?: { companyId: string }) => {
+    if (state.loginHoldUntil !== null && Date.now() >= state.loginHoldUntil) {
+      state.loginHoldUntil = null;
+      state.launches++;
+    }
+    return state.loginHoldUntil;
+  });
   const coordinator = createDeliveryWorkCoordinator({ owner: db,
     canRun: () => !state.draining && !state.standby, canReconcile: () => !state.standby, onError: vi.fn() });
   const worker = registerRunDispatchWork(coordinator, {
@@ -125,4 +131,40 @@ describe("run dispatch obligations", () => {
     f.state.due = Date.now() + 60_000; await f.notifyRetry(); await f.settle(); await f.worker.stop();
     await vi.advanceTimersByTimeAsync(90_000); expect(f.promote).toHaveBeenCalledTimes(2);
   });
+});
+
+// These deadlines model synthetic trusted holds. No production source is enabled.
+it.each([300_000, 600_000])("dispatches once after a synthetic hold/probe deadline (%s), without an external wake", async delay => {
+  const f = fixture({ loginHoldUntil: 1_000_000 + delay });
+  await f.worker.ready;
+  await f.settle();
+  expect(f.coordinator.nextWakeAt()).toBe(1_000_000 + delay);
+  await vi.advanceTimersByTimeAsync(delay - 1_001);
+  expect(f.state.launches).toBe(0);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.state.launches).toBe(1);
+  expect(f.dispatch).toHaveBeenLastCalledWith(undefined);
+  await vi.advanceTimersByTimeAsync(600_000);
+  expect(f.state.launches).toBe(1);
+  expect(f.coordinator.nextWakeAt()).toBeNull();
+});
+
+it("reconstructs a synthetic hold deadline on restart and ignores duplicate registration", async () => {
+  const due = 1_300_000;
+  const first = fixture({ loginHoldUntil: due });
+  await first.worker.ready;
+  await first.settle();
+  await first.worker.stop();
+  await first.coordinator.stop();
+  const restarted = fixture({ loginHoldUntil: due });
+  await restarted.worker.ready;
+  await restarted.settle();
+  restarted.worker.wake();
+  restarted.worker.wake();
+  await restarted.settle();
+  expect(restarted.coordinator.nextWakeAt()).toBe(due);
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(restarted.state.launches).toBe(1);
+  await vi.advanceTimersByTimeAsync(600_000);
+  expect(restarted.state.launches).toBe(1);
 });

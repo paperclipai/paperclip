@@ -387,7 +387,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     try {
       await new Promise<void>((resolve, reject) => {
         worker = registerTaskDrainExpiryWork(coordinator, () => {
-          void heartbeat.resumeQueuedRunsAfterDrain().then(resolve, reject);
+          void heartbeat.resumeQueuedRunsAfterDrain().then(() => resolve(), reject);
         });
         startTaskDrain({ ttlMs: 5 });
       });
