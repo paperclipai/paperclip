@@ -33,9 +33,12 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
 
   // People view, restore and refresh a card on the company's Status page. Single-card responses carry that
   // route so an agent can give the person a usable link instead of an API instruction.
-  async function withHref<T extends { id: string; companyId: string }>(card: T) {
-    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, card.companyId)).limit(1);
-    return company ? { ...card, href: `/${company.issuePrefix}/status/${card.id}` } : card;
+  async function companyIssuePrefix(companyId: string) {
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+    return company?.issuePrefix ?? null;
+  }
+  function withHref<T extends { id: string }>(card: T, issuePrefix: string | null) {
+    return issuePrefix ? { ...card, href: `/${issuePrefix}/status/${card.id}` } : card;
   }
 
   async function assertStatusCardsEnabled() {
@@ -169,6 +172,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertCanMutate(req, companyId);
     assertAgentPromptLimit(req, req.body.interestPrompt);
     const actor = getActorInfo(req);
+    // Resolve the link before creating the card: the catch below deletes the card, so nothing that
+    // runs after the compile is queued may fail there.
+    const issuePrefix = await companyIssuePrefix(companyId);
     const card = await service.create(companyId, req.body, {
       agentId: actor.actorType === "agent" ? actor.actorId : null,
       userId: actor.actorType === "user" ? actor.actorId : null,
@@ -176,7 +182,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     try {
       const compile = await enqueueCompile(req, card.id);
       await logMutation(req, companyId, "status_card.created", card.id, { state: card.state });
-      res.status(201).json(await withHref(publicCard(compile.card)));
+      res.status(201).json(withHref(publicCard(compile.card), issuePrefix));
     } catch (error) {
       await service.remove(card.id);
       throw error;
@@ -187,9 +193,9 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     await assertStatusCardsEnabled();
     const card = await getAccessibleResource(req, res, service.getById(req.params.id as string), "Status card not found");
     if (!card) return;
-    res.json(await withHref(publicCard(await service.hydrate(card, {
+    res.json(withHref(publicCard(await service.hydrate(card, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
-    }))));
+    })), await companyIssuePrefix(card.companyId)));
   });
 
   router.patch("/status-cards/:id", validate(patchStatusCardSchema), async (req, res) => {
@@ -211,7 +217,7 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       fields: Object.keys(req.body),
       archived: Boolean(updated.archivedAt),
     });
-    res.json(await withHref(publicCard(compile?.card ?? restore?.card ?? updated)));
+    res.json(withHref(publicCard(compile?.card ?? restore?.card ?? updated), await companyIssuePrefix(card.companyId)));
   });
 
   router.delete("/status-cards/:id", async (req, res) => {
