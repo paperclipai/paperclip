@@ -662,7 +662,7 @@ fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 
-Use the regular rows on **Connectors** to add OpenRouter, Amazon Bedrock,
+Use the regular rows on **Connectors** to add OpenRouter, Wally, Amazon Bedrock,
 Google Gemini, a Responses API, Messages API, Chat Completions API, or local
 endpoint connection. Each row has its own Connect action and saved accounts.
 The catalog tags these entries `model-provider`; no category UI is shown.
@@ -685,9 +685,9 @@ credentials belong to the connection; the model belongs to the agent.
 | --- | --- |
 | Codex legacy and Codex New Runner (app-server) | OpenRouter; custom/local OpenAI Responses endpoints |
 | Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
-| OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
+| OpenCode legacy and New Runner | OpenRouter; Wally; custom/local Chat Completions |
 | Pi legacy and New Runner | OpenRouter; native OpenAI, Anthropic, and Google API keys with a matching `provider/model` |
-| Hermes local | OpenRouter; custom/local Chat Completions |
+| Hermes local | OpenRouter; Wally; custom/local Chat Completions |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
 Migration `0306` adds Google to both account-default provider constraints. Local
@@ -699,6 +699,24 @@ and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
 catalog discovery for custom gateways are not part of this implementation.
+
+### Wally (2026-11-06)
+
+[Wally](https://www.runwally.com) serves open-weight models through an
+OpenAI-compatible Chat Completions API. A Wally connection stores no URL. Like
+OpenRouter, it always uses the official endpoint,
+`https://inference.runanywhere.ai/v1`, with the API key as a bearer token.
+Create a key in the [RunAnywhere console](https://console.runanywhere.ai).
+OpenCode, Hermes and fast responses can use the connection. Codex and Claude
+cannot, because Wally does not serve the Responses or Messages API.
+
+Model IDs come from the public
+[model list](https://inference.runanywhere.ai/v1/models), for example
+`deepseek-v4.1-flash`. Fast responses have a short output limit, so choose a
+model that does not think by default, such as `deepseek-v4-flash-0731`. Saving
+the connection does not validate the key; use **Run test**. Usage billing shows
+as unknown, the same as a custom gateway.
+See the [API reference](https://docs.runanywhere.ai/wally-cloud/api).
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),

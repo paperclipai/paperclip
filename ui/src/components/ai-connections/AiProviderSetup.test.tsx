@@ -32,7 +32,7 @@ it("reconnects an older OpenRouter account without adding routing metadata", asy
   }
 });
 
-const providerSources = ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+const providerSources = ["openrouter", "wally", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
 it("shows advanced providers directly when entered from advanced connection mode", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
@@ -42,7 +42,7 @@ it("shows advanced providers directly when entered from advanced connection mode
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" advancedOnly onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
     const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
-    expect(choices).toEqual(["OpenRouter", "Amazon Bedrock", "Custom gateway", "Local endpoint"]);
+    expect(choices).toEqual(["OpenRouter", "Wally", "Amazon Bedrock", "Custom gateway", "Local endpoint"]);
     expect(container.querySelector("details")).toBeNull();
   } finally {
     await act(async () => root.unmount()); client.clear();
@@ -134,6 +134,32 @@ it.each(["google", "openai", "anthropic", "xai"] as const)("allows an ordinary m
   try {
     await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider={provider} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
     expect(credentialProps).toMatchObject({ provider, ownership: "personal", allAgents: false, agentIds: [], disabled: false });
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
+it("saves Wally as an OpenAI chat route on its official endpoint with a bearer key", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const fill = async (label: string, value: string) => {
+    const input = container.querySelector(`input[aria-label="${label}"]`)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider="wally" onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    expect(container.querySelector('input[aria-label="Provider URL"]')).toBeNull();
+    expect(container.querySelector('[aria-label="API format"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Authentication"]')).toBeNull();
+    await fill("API key", "wally-key");
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(aiConnectionsApi.create).toHaveBeenLastCalledWith("company", expect.objectContaining({ provider: "openai", method: "api_key", apiKey: "wally-key", routing: { kind: "wally", protocol: "chat", auth: "bearer", models: [] } }));
   } finally {
     await act(async () => root.unmount()); client.clear();
   }
