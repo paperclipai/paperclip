@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
+import { releaseDeadControllerResultLeases } from "../services/native-runtime/native-dead-controller-result-lease.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { classifyNativeRunnerRecoveryEvidence, currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
@@ -374,6 +375,32 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const { run, owner } = await restart(f);
     expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
   }, 90_000);
+
+  it("keeps an unexpired accepted-result executor lease without process-space proof", async () => {
+    const f = await seedAcceptedResult("ACCEPTED-UNPROVEN-PROCESS-SPACE", runner => `${runner}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001,
+      processStartedAt: new Date(Date.now() - 60_000) });
+    const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const now = new Date();
+    expect(before.leaseExpiresAt?.getTime()).toBeGreaterThan(now.getTime());
+    expect(before).toMatchObject({ phase: "workspace_finalizing", resultId: expect.any(String) });
+    const isProcessAlive = vi.fn(() => false);
+    const readProcessStartedAt = vi.fn(async () => null);
+    const released = await releaseDeadControllerResultLeases(f.db, {
+      now, runIds: [f.runId], isProcessAlive, readProcessStartedAt,
+    });
+    expect(released).toEqual([]);
+    expect(isProcessAlive).not.toHaveBeenCalled();
+    expect(readProcessStartedAt).not.toHaveBeenCalled();
+    const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(after).toMatchObject({ leaseOwner: before.leaseOwner, leaseExpiresAt: before.leaseExpiresAt,
+      controllerBootId: before.controllerBootId, controllerPid: before.controllerPid,
+      phase: before.phase, resultId: before.resultId });
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.status).toBe("running");
+    expect(await f.db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+      .where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
+  }, 60_000);
 
   it("keeps the accepted result leased while its earlier-boot controller process is still alive", async () => {
     // Another live server (or an orphaned controller of an earlier boot) can
