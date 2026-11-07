@@ -380,6 +380,19 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       expect(teardown).toHaveBeenCalledTimes(1);
       expect(result.destroyed).toBe(1);
     });
+    it("does not count a sweep attempt lost to a dead server as a failed attempt", async () => {
+      // The lost sweep claim had already counted attempt 3; the retry is attempt 3 again.
+      const scope = await seedCompanyAndEnvironment();
+      const leaseId = await insertOrphanEphemeralLease({ ...scope, updatedAt: new Date(Date.now() - 60_000),
+        metadata: { ...claimMetadata({ ...await exitedClaimer(), countedAttempt: true }), [ATTEMPTS_KEY]: 3 } });
+      const teardown = vi.fn(async () => { throw new Error("Provider unavailable"); });
+      const service = heartbeatService(db, { environmentRuntime: {
+        retryPendingSandboxTeardown: teardown,
+      } as unknown as HeartbeatEnvironmentRuntime });
+      await service.sweepPendingCleanupLeases();
+      expect(teardown).toHaveBeenCalledOnce();
+      expect(await readAttempts(leaseId)).toBe(3);
+    });
     it("keeps the fence of a claim held by this live server", async () => {
       const { leaseId, teardown } = await sweepClaimedBy({ ...await currentControllerProcess(), attemptId: "lost-claim" });
       expect(teardown).not.toHaveBeenCalled();

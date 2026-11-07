@@ -1463,8 +1463,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         const controller = readControllerProcess(saved);
         const attemptId = saved?.attemptId;
         if (!controller || typeof attemptId !== "string" || !await controllerProcessExited(controller)) continue;
+        // A dead server is not a failed teardown. A sweep claim already counted
+        // its attempt, so give it back; claims from other paths never counted.
+        const returnAttempt = saved?.countedAttempt === true;
         await db.update(environmentLeases)
-          .set({ metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint))` })
+          .set({ metadata: sql`jsonb_set(jsonb_set(${pendingCleanupMetadataObjectSql()},
+            '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint)),
+            array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}],
+            to_jsonb(greatest(${pendingCleanupAttemptsSql()} - ${returnAttempt ? 1 : 0}, 0)::int), true)` })
           .where(and(
             eq(environmentLeases.id, row.id),
             eq(environmentLeases.status, "pending_cleanup"),
@@ -1503,7 +1509,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)
           || ${JSON.stringify({ ...(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {}),
             pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
-            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000, pendingCleanupController: { ...controller, attemptId },
+            pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+            pendingCleanupController: { ...controller, attemptId, countedAttempt: true },
           })}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
