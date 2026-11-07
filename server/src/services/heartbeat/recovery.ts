@@ -1,3 +1,4 @@
+import { releaseDeadControllerResultLeases } from "../native-runtime/native-dead-controller-result-lease.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -934,6 +935,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean; trigger?: "same_run_retry" }) {
+    // A hard kill cannot release its accepted results the way a graceful drain
+    // does. Release leases whose earlier-boot controller has exited, so the
+    // finalization below settles them now instead of after lease expiry.
+    const releasedResults = await releaseDeadControllerResultLeases(db, { now, runIds,
+      liveRunExecutions: activeRunExecutions });
+    for (const released of releasedResults) {
+      const run = await getRun(released.runId).catch(() => null);
+      if (run) await appendRunEvent(run, { eventType: "native.recovery.transition", stream: "system", level: "info",
+        message: "Server restart released the accepted native result of a stopped controller for finalization",
+        payload: { restartKind: "hard", runnerDisposition: "awaiting_result_finalization", reason: released.reason },
+      }).catch(error => logger.warn({ err: error, runId: released.runId }, "failed to record released native result lease"));
+    }
     if (!runIds && !options?.skipDelegatedWork) {
       await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
       await reconcileNativeFinalizations(db, undefined, {

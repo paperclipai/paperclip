@@ -1713,6 +1713,16 @@ expired lease proves that the earlier owner is gone, and no provider work
 started. A live lease, a lease of the current boot, a dispatched adapter, or a
 recorded process keeps the five-minute guard.
 
+A native run can accept its result and then lose its server to a hard kill
+before finalization. Its result stays leased to the controller of the earlier
+boot, which cannot release the lease the way a graceful drain does. Startup
+native recovery releases that lease at once when the lease belongs to a
+different boot and its recorded controller process has exited or its PID now
+names another process. The stored result is then finalized without another
+provider turn, and saved follow-up messages are reconsidered. A live owner, an
+owner without a recorded process, a lease of the current boot, and a remote
+workspace keep the lease until it expires. Lease age alone is never proof.
+
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
 Native finalization reconciliation (part of native recovery and the orphan
