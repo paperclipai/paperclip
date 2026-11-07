@@ -78,6 +78,7 @@ Keep the Claude ACP process. At each turn or run boundary, revoke the bridge cre
   - T3: tokens remain unguessable, per-generation and runner-owned.
   - T5: the run-scoped gateway token rotates with the run.
   - T6: generation identity is persisted with the token epoch, and a recovered runner mints new tokens.
+- **Required: bind the epoch at authentication and recheck it before dispatch.** The bridge authenticates the bearer before it reads the request body, and the sidecar binds a call to the active turn only after that. A request that authenticated under epoch N can therefore finish arriving after rotation to N+1. It holds no pending tool receipt while its body is in transit, so the pending-call guard cannot block the next turn. The bridge must record the epoch a request authenticated with, and reject the request if the current epoch differs after the body is read and before dispatch. It must make the same check before it binds the call to a turn. Rotation must not be acknowledged while any request authenticated under the old epoch is still being read.
 - **Cost:** removes the process spawn and the old process's checkpoint and shutdown. It keeps one `session/load`. The expected saving is the generation start plus the part of the deferred initialization that is process start-up rather than session load, measured below.
 - **Unknowns to settle before code:**
   1. Whether Claude ACP supports a second `session/load` on a live process with different MCP servers and instructions, and tears down the first query's MCP clients, which is required so old-epoch connections cannot persist.
@@ -90,6 +91,7 @@ Keep the Claude ACP process. At each turn or run boundary, revoke the bridge cre
 - Persisted state gains the token epoch and generation ID. Previous-release story (`rules/upgrade-safe-run-state.mdc`): a session saved by the current release has no token epoch. It resumes by relaunching, as today, and the first relaunch establishes epoch 1. No refusal is needed.
 - Restart recovery must never reuse a revoked token. A recovered runner rotates tokens before admitting any call.
 - Chaos qualification: K1, K2 and K6 waves with Claude on warm, plus a new fault, "interrupt a turn with a tool call in flight, then send a follow-up", which must show the late call rejected with an authentication error. All existing R1–R6 checks must stay green.
+- Red/green test for the authentication-to-dispatch gap: start a tool request under epoch N and hold its body; rotate to N+1 and start the next turn; then release the body. The request must be rejected and must never reach a turn.
 
 ## Expected TTFT gain
 
