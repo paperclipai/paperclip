@@ -163,8 +163,6 @@ databaseSuite("environment task lease authority", () => {
     await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin",
       config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual", status: "running" });
-    // The first attempt's submit failed before admission; cleanup stopped (tombstoned) the task and
-    // recorded the stop, but the lease itself was never a reused one.
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId,
       provider: "plugin:fixture:tasks", providerLeaseId: "tombstoned-task", status: "active", leasePolicy: "reuse_by_environment",
       metadata: { driver: "plugin", pluginId, pluginKey: pluginId, driverKey: "tasks", runnerTaskLease: true, runnerTaskReused: false,
@@ -196,7 +194,6 @@ databaseSuite("environment task lease authority", () => {
         expect(lease.metadata).toMatchObject({ runnerTaskExecutionStopped: false, runnerTaskDispatched: false,
           runnerTaskSessionRetained: false, runnerTaskSourceRecovery: { schema: "fixture" } });
       } else {
-        // A stopped task with session state keeps its identity; nothing is completed or reallocated.
         expect(calls).toEqual(["describe:tombstoned-task"]);
         expect(lease.providerLeaseId).toBe("tombstoned-task");
       }
