@@ -780,6 +780,18 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].statusVersion).toBe(blockedIssue.statusVersion);
   });
 
+  it("does not open a reconciliation incident for a native run whose model the provider rejected", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "blocked" });
+    const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", errorCode: "native_provider_model_rejected" }).where(eq(heartbeatRuns.id, runId));
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => { throw new Error("must not restart a rejected model"); });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+  });
+
   it.each(["active", "escalated"])("repairs a failed native task with an existing %s recovery action", async (status) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
