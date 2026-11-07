@@ -15,6 +15,16 @@ exact source proof under publication row locks. A changed source or checkpoint
 keeps local authority. Provider stop verification and any later file export
 remain the recovery owner's separate obligations.
 
+The same local file handoff can preserve a blocked prepared source after an
+established native session is interrupted, or after its file export recovery is
+exhausted. The interrupted source must retain its exact task failure block and
+declared recovery allocations. The exhausted source must retain its accepted
+result, bound original allocation, exhausted system recovery and blocked file
+recovery. An empty list of additional recovery allocations does not remove the
+original prepared allocation binding. The migration checks these records again
+under the same physical and task locks before publication. It keeps the failed
+run, accepted result, recovery action and remote file obligation unchanged.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown

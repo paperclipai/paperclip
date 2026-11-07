@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { inspectFinalizedWorkspaceRecoveryHold, type FinalizedWorkspaceRecoveryHold } from "./finalized-workspace-recovery-migration.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
@@ -8,6 +8,8 @@ import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-work
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { workspaceExportCauses } from "./workspace-recovery-source.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
+import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 
 type ReadDb = Pick<Db, "select">;
 type Workspace = Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "sourceIssueId">;
@@ -131,7 +133,7 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
   if (!settled) return null;
   const failureBlock = recovery.evidence.nativeFailureBlock as { runId?: unknown; statusVersion?: unknown } | undefined;
   if (recovery.kind === "active_run_watchdog" && recovery.status === "active"
-    && recovery.cause === "runner_remote_provider_artifact_incompatible" && settled.run.status === "failed"
+    && ["runner_remote_provider_artifact_incompatible", "native_session_interrupted"].includes(recovery.cause) && settled.run.status === "failed"
     && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null && settled.owner.resultId === null
     && settled.owner.failureCode === recovery.cause && recovery.sourceIssueId === settled.run.nativeIssueId
     && recovery.ownerType === "board" && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId
@@ -159,6 +161,29 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
     if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId)
       return { fingerprint: fingerprint({ recovery, source }), finalizedHold: null, preparedSource: source };
+  }
+  const system = readSystemRecovery(recovery.evidence), workspaceRecovery = readWorkspaceRecovery(recovery.evidence);
+  if (recovery.kind === "active_run_watchdog" && recovery.status === "active"
+    && recovery.cause === "native_workspace_sync_out_retry_exhausted" && settled.run.status === "failed"
+    && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null && settled.owner.resultId
+    && settled.owner.failureCode === recovery.cause && settled.run.completionContractId
+    && recovery.sourceIssueId === settled.run.nativeIssueId && ["system", "board"].includes(recovery.ownerType)
+    && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId && recovery.wakePolicy === null
+    && recovery.fingerprint === nativeSha256({ runId: settled.run.id, failureCode: recovery.cause })
+    && system?.sourceRunId === settled.run.id && system.state === "exhausted" && system.nextAttemptAt === null
+    && workspaceRecovery?.runId === settled.run.id && workspaceRecovery.status === "blocked"
+    && !["workspaceRestoreRecovery", "historicalWorkspaceSource", "nativeFailureBlock"].some(key => recovery.evidence?.[key] != null)) {
+    const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
+      executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+      eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
+    const [result] = await db.select().from(nativeRunResults).where(and(
+      eq(nativeRunResults.companyId, input.workspace.companyId), eq(nativeRunResults.issueId, recovery.sourceIssueId),
+      eq(nativeRunResults.runId, settled.run.id), eq(nativeRunResults.id, settled.owner.resultId),
+      eq(nativeRunResults.completionContractId, settled.run.completionContractId), eq(nativeRunResults.schemaStatus, "accepted")));
+    if (!task || task.status !== "blocked" || task.executionRunId !== null || task.checkoutRunId !== null || !result) return null;
+    const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
+    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId)
+      return { fingerprint: fingerprint({ recovery, system, workspaceRecovery, source, task, result }), finalizedHold: null, preparedSource: source };
   }
   const held = await inspectFinalizedWorkspaceRecoveryHold(db, {
     companyId: input.workspace.companyId, workspaceId: input.workspace.id, recovery,
