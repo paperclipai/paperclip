@@ -62,6 +62,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { shouldSkipRunnerBinary } from "./build-binary.mjs";
 
 export const BUILD_INPUTS_SCHEMA = "paperclip.runner-build-inputs.v2";
 
@@ -161,12 +162,14 @@ function prunePendingRecords(packageRoot, buildId, now) {
 /**
  * The outputs every consumer of the vendored Runner reads; a build that did
  * not produce them is not recorded, and a tree missing any of them is not
- * current whatever the stamp says.
+ * current whatever the stamp says. A build with PAPERCLIP_SKIP_RUNNER_BINARY
+ * set does not produce the native binary, so it is not an expected output.
  */
-export function expectedBuildOutputs(packageRoot, platform = process.platform) {
+export function expectedBuildOutputs(packageRoot, platform = process.platform, { runnerBinary = true } = {}) {
   const executable = platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
-  return ["dist/index.js", "dist/live/index.js", "dist/testing.js", `dist/bin/${executable}`]
-    .map((relative) => path.join(packageRoot, ...relative.split("/")));
+  const outputs = ["dist/index.js", "dist/live/index.js", "dist/testing.js"];
+  if (runnerBinary) outputs.push(`dist/bin/${executable}`);
+  return outputs.map((relative) => path.join(packageRoot, ...relative.split("/")));
 }
 
 function walk(root, relativeDirectory, { skipNames, skippedDirectories, skipDotDirectories }, out) {
@@ -323,7 +326,9 @@ export function recordRunnerBuild({
   arch = process.arch,
   buildId = null,
   now = () => new Date(),
+  env = process.env,
 }) {
+  const runnerBinary = !shouldSkipRunnerBinary(env);
   const stampPath = buildInputsStampPath(packageRoot);
   const candidates = buildId === null ? finishingBuildIds() : [String(buildId)];
   let pending = null;
@@ -343,7 +348,7 @@ export function recordRunnerBuild({
   }
   rmSync(pendingPath, { force: true });
 
-  const missing = expectedBuildOutputs(packageRoot, platform).filter((file) => !existsSync(file));
+  const missing = expectedBuildOutputs(packageRoot, platform, { runnerBinary }).filter((file) => !existsSync(file));
   if (missing.length > 0) {
     removeBuildInputsStamp(stampPath);
     throw new Error(`the Runner build finished without producing ${path.relative(packageRoot, missing[0])}`);
@@ -370,6 +375,7 @@ export function recordRunnerBuild({
     arch,
     startedAt: pending.startedAt,
     recordedAt: now().toISOString(),
+    runnerBinary,
     outputCount: outputs.length,
     outputs,
   };
@@ -386,7 +392,9 @@ export function assessRunnerBuild({
   packageRoot,
   platform = process.platform,
   arch = process.arch,
+  env = process.env,
 }) {
+  const runnerBinary = !shouldSkipRunnerBinary(env);
   const stampPath = buildInputsStampPath(packageRoot);
   const stamp = readBuildInputsStamp(stampPath);
   if (!stamp) {
@@ -408,7 +416,15 @@ export function assessRunnerBuild({
       stampPath,
     };
   }
-  const missing = expectedBuildOutputs(packageRoot, platform).filter((file) => !existsSync(file));
+  if (runnerBinary && stamp.runnerBinary === false) {
+    return {
+      current: false,
+      code: "runner_binary_skipped",
+      detail: "the recorded build skipped the native runner binary, and this consumer needs it",
+      stampPath,
+    };
+  }
+  const missing = expectedBuildOutputs(packageRoot, platform, { runnerBinary }).filter((file) => !existsSync(file));
   if (missing.length > 0) {
     return {
       current: false,

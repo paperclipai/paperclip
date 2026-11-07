@@ -355,6 +355,29 @@ test("a build that did not begin, or that left a required output missing, cannot
   });
 });
 
+test("a build that skips the native binary is recorded without it, and serves only consumers that skip it", async () => {
+  await withRepo(async ({ repoRoot, packageRoot }) => {
+    const skip = { PAPERCLIP_SKIP_RUNNER_BINARY: "1" };
+    await rm(path.join(packageRoot, "dist", "bin"), { recursive: true, force: true });
+
+    beginRunnerBuild({ repoRoot, packageRoot });
+    assert.throws(
+      () => recordRunnerBuild({ repoRoot, packageRoot, env: {} }),
+      /the Runner build finished without producing dist\/bin\/paperclip-runnerd/,
+      "a default build still requires the native binary",
+    );
+
+    beginRunnerBuild({ repoRoot, packageRoot });
+    const record = recordRunnerBuild({ repoRoot, packageRoot, env: skip });
+    assert.equal(record.recorded, true);
+    assert.equal(record.runnerBinary, false);
+    assert.equal(readBuildInputsStamp(buildInputsStampPath(packageRoot)).runnerBinary, false);
+
+    assert.equal(assessRunnerBuild({ repoRoot, packageRoot, env: skip }).current, true);
+    assert.equal(assessRunnerBuild({ repoRoot, packageRoot, env: {} }).code, "runner_binary_skipped");
+  });
+});
+
 test("record-build-inputs.mjs brackets the build for the package it is pointed at", async () => {
   await withRepo(async ({ repoRoot, packageRoot }) => {
     const run = (...args) => execFileAsync(process.execPath, [recordScript, ...args, "--package-root", packageRoot]);

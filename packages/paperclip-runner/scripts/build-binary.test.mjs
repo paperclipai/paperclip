@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { buildRunnerBinary, shouldSkipRunnerBinary } from "./build-binary.mjs";
+
+const packageJson = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
+);
 
 test("shouldSkipRunnerBinary identifies truthy environment flags", () => {
   assert.equal(shouldSkipRunnerBinary({}), false);
@@ -19,7 +24,14 @@ test("shouldSkipRunnerBinary identifies truthy environment flags", () => {
   assert.equal(shouldSkipRunnerBinary({ PAPERCLIP_SKIP_RUNNER_BINARY: "YES" }), true);
 });
 
-test("buildRunnerBinary skips cargo build and removes staged binary when option is set", async () => {
+test("the package build reaches the binary step only through the skip-aware script", () => {
+  const steps = packageJson.scripts.build.split(" && ");
+  assert.ok(steps.includes("node scripts/build-binary.mjs"));
+  assert.equal(steps.includes("pnpm run build:binary"), false);
+  assert.ok(steps.indexOf("node scripts/build-binary.mjs") < steps.indexOf("node scripts/record-build-inputs.mjs --finish"));
+});
+
+test("buildRunnerBinary skips the binary step and removes a staged binary when the option is set", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runner-build-test-"));
   try {
     const stagedBinDir = path.join(tempDir, "dist", "bin");
@@ -27,88 +39,62 @@ test("buildRunnerBinary skips cargo build and removes staged binary when option 
     const stagedBin = path.join(stagedBinDir, executable);
     mkdirSync(stagedBinDir, { recursive: true });
     writeFileSync(stagedBin, "old-binary", "utf8");
-    assert.equal(existsSync(stagedBin), true);
 
-    let cargoCalled = false;
-    let stageCalled = false;
-
+    let spawned = false;
     const result = await buildRunnerBinary({
       packageRoot: tempDir,
       env: { PAPERCLIP_SKIP_RUNNER_BINARY: "1" },
       spawnFn: () => {
-        cargoCalled = true;
+        spawned = true;
         return { status: 0 };
-      },
-      stageFn: () => {
-        stageCalled = true;
       },
     });
 
     assert.equal(result.skipped, true);
-    assert.equal(cargoCalled, false, "cargo must not be called when skipping binary");
-    assert.equal(stageCalled, false, "stage must not be called when skipping binary");
-    assert.equal(existsSync(stagedBin), false, "existing binary must be removed when skipping");
-    assert.equal(existsSync(stagedBinDir), false, "staged bin dir must be removed when skipping");
+    assert.equal(spawned, false, "the binary step must not run when skipping the binary");
+    assert.equal(existsSync(stagedBin), false, "an existing binary must be removed when skipping");
+    assert.equal(existsSync(stagedBinDir), false, "the staged bin directory must be removed when skipping");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("buildRunnerBinary executes cargo and stages binary when option is unset", async () => {
+test("buildRunnerBinary runs the package's build:binary script when the option is unset", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runner-build-test-"));
   try {
-    let cargoCalled = false;
-    let cargoCommand = "";
-    let cargoArgs = [];
-    let stageCalled = false;
-
+    const calls = [];
     const result = await buildRunnerBinary({
       packageRoot: tempDir,
       env: {},
-      spawnFn: (cmd, args) => {
-        cargoCalled = true;
-        cargoCommand = cmd;
-        cargoArgs = args;
+      spawnFn: (command, args, options) => {
+        calls.push({ command, args, cwd: options.cwd });
         return { status: 0 };
-      },
-      stageFn: async () => {
-        stageCalled = true;
       },
     });
 
     assert.equal(result.skipped, false);
-    assert.equal(cargoCalled, true);
-    assert.equal(cargoCommand, "cargo");
-    assert.ok(cargoArgs.includes("--bin"));
-    assert.ok(cargoArgs.includes("paperclip-runnerd"));
-    assert.equal(stageCalled, true);
+    assert.deepEqual(calls, [{ command: "pnpm", args: ["run", "build:binary"], cwd: tempDir }]);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
 
-test("buildRunnerBinary fails without fallback when cargo is missing and option is unset", async () => {
+test("buildRunnerBinary fails without fallback when the binary step cannot start", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runner-build-test-"));
   try {
-    const missingError = new Error("spawnSync cargo ENOENT");
+    const missingError = new Error("spawnSync pnpm ENOENT");
     missingError.code = "ENOENT";
 
     await assert.rejects(
-      async () => {
-        await buildRunnerBinary({
-          packageRoot: tempDir,
-          env: {},
-          spawnFn: () => ({
-            error: missingError,
-            status: null,
-          }),
-        });
-      },
+      () => buildRunnerBinary({
+        packageRoot: tempDir,
+        env: {},
+        spawnFn: () => ({ error: missingError, status: null }),
+      }),
       (err) => {
         assert.equal(err.code, "ENOENT");
         return true;
       },
-      "buildRunnerBinary must fail when cargo is missing, not fall back silently",
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
