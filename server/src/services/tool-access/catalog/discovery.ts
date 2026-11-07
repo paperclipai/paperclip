@@ -5,6 +5,7 @@ import type { ActorInfo } from "../types.js";
 import { createOAuthDiscovery } from "../oauth/discovery.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import { projectedConnectionHeaders } from "../connection-methods.js";
+import { mergeHeaderRecords } from "@paperclipai/shared";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
@@ -72,10 +73,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
-    let headers = credentialHeaders ?? {
-      ...projectedConnectionHeaders(connection),
-      ...(await resolveCredentialHeaders(connection, actor)),
-    };
+    let headers = credentialHeaders
+      ? mergeHeaderRecords(projectedConnectionHeaders(connection), credentialHeaders)
+      : mergeHeaderRecords(
+          projectedConnectionHeaders(connection),
+          await resolveCredentialHeaders(connection, actor),
+        );
     if (connection.config.sourceTemplateKey === "google-workspace" && !workspaceEndpoint) {
       const grant = await vaultGrantForConnection(connection, actor);
       const scopes = googleWorkspaceGrantedScopes(grant);
@@ -147,16 +150,18 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       }
     } else {
       response = await sendToolsList(headers);
-      // `tools/list` is read-only, so a 400 can safely be retried after the MCP
+      // `tools/list` is read-only, so a 400 or 401 can safely be retried after the MCP
       // initialize handshake. Stateful servers such as Supabase require the
-      // returned Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400) {
+      // returned Mcp-Session-Id on every non-initialization request, and servers
+      // that guard uninitialized sessions may return 401.
+      if (response.status === 400 || response.status === 401) {
         try {
           const sessionHeaders = await initializeMcpHttpSession({
             send: sendRemote,
             headers,
             requestId: "paperclip-catalog-refresh",
           });
+          await response.body?.cancel().catch(() => undefined);
           response = await sendToolsList(sessionHeaders);
           usedInitializedSession = response.ok;
         } catch {
@@ -213,12 +218,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         resources: vercelConnectResourcesFor(connection),
       });
       vercelConnect?.evict(request);
-      headers = {
-        ...projectedConnectionHeaders(connection),
-        ...(await resolveVercelCredentialHeaders(connection, grant, {
+      headers = mergeHeaderRecords(
+        projectedConnectionHeaders(connection),
+        await resolveVercelCredentialHeaders(connection, grant, {
           forceRefresh: true,
-        })),
-      };
+        }),
+      );
       response = await sendToolsList(headers);
     }
     if (
@@ -226,12 +231,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       connection.authKind === "oauth" &&
       connection.credentialSource === "paperclip_vault"
     ) {
-      headers = {
-        ...projectedConnectionHeaders(connection),
-        ...(await resolveCredentialHeaders(connection, actor, {
+      headers = mergeHeaderRecords(
+        projectedConnectionHeaders(connection),
+        await resolveCredentialHeaders(connection, actor, {
           forceRefresh: true,
-        })),
-      };
+        }),
+      );
       response = await sendToolsList(headers);
       if (
         response.status === 401 &&

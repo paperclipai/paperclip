@@ -7,14 +7,14 @@ import { createOAuthDiscovery } from "./discovery.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
-import { connectionMethodForConnection } from "../connection-methods.js";
+import { connectionMethodForConnection, projectedConnectionHeaders } from "../connection-methods.js";
 import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, companyMemberships, principalPermissionGrants, issueThreadInteractions, toolApplications, toolConnections } from "@paperclipai/db";
 import type { ConnectToolAppResult } from "@paperclipai/shared";
-import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { getConnectableAppDefinition, mergeHeaderRecords, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
 
@@ -425,7 +425,10 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       const refresh = await refreshCatalog(connection.id, input.actor, {
         enableAllByDefault: shouldFinalizeDefaults,
         skipDefaultProfileSync: shouldFinalizeDefaults,
-        credentialHeaders: { Authorization: `Bearer ${token.accessToken}` },
+        credentialHeaders: mergeHeaderRecords(
+          projectedConnectionHeaders(connection),
+          { Authorization: `Bearer ${token.accessToken}` },
+        ),
       });
       const [application] = await db
         .select()
