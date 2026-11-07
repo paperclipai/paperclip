@@ -944,7 +944,7 @@ The caller describes the rest of the supplied context in a required
 not covered yet: selecting either returns `unprojected_context_source`, never a
 smaller set.
 
-Migration `0438` adds triggers that run in the statement of every source write,
+Migration `0439` adds triggers that run in the statement of every source write,
 whatever service, route, tool, import or direct SQL performs it. They rewrite
 that source's rows in `issue_project_references`: company-scoped candidates
 indexed by `(company_id, project_id)` for reverse lookup, including
