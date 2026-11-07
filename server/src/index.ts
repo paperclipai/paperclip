@@ -1812,7 +1812,7 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
       unsubscribeNativeResponsePresentation = worker.stop;
       server.on("close", worker.stop);
-      await worker.ready;
+      trackHeartbeatSchedulerWork(worker.ready);
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativePendingEffectWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
