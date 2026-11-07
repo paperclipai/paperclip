@@ -66,9 +66,8 @@ it("seals and restores the actual standalone source within a fresh existing veri
 it.each(["separate_capture", "inventory_expired", "capture_deadline", "capture_cancelled", "final_inventory_expired"] as const)(
   "keeps read-only capture phase budgets and source safety: %s", async scenario => {
   const before = await readWorkspaceInventory(source);
-  const actualNow = performance.now.bind(performance);
   let advancedMs = 0;
-  vi.spyOn(performance, "now").mockImplementation(() => actualNow() + advancedMs);
+  vi.spyOn(performance, "now").mockImplementation(() => advancedMs);
   const deadlines: Array<{ ms: number; controller: AbortController }> = [];
   vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
     const controller = new AbortController();
@@ -103,7 +102,7 @@ it.each(["separate_capture", "inventory_expired", "capture_deadline", "capture_c
     if (!input.args?.[1]?.includes("const inspect=")) return { exitCode: 1, stdout: "",
       stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, timedOut: false, signal: null,
       pid: process.pid, startedAt: new Date().toISOString() };
-    const result = await exec(input.command, input.args, { cwd: input.cwd, timeout: input.timeoutMs,
+    const result = await exec(input.command, input.args, { cwd: input.cwd, timeout: 30_000,
       maxBuffer: 4 * 1024 ** 2, env: { PATH: process.env.PATH, ...input.env } });
     inventoryCalls++;
     if (inventoryCalls === 2) {
@@ -111,8 +110,7 @@ it.each(["separate_capture", "inventory_expired", "capture_deadline", "capture_c
       if (scenario === "inventory_expired") deadlines[0]!.controller.abort(new DOMException("Metadata timeout", "TimeoutError"));
     }
     if (inventoryCalls === 3) {
-      expect(input.timeoutMs).toBeGreaterThan(0);
-      expect(input.timeoutMs).toBeLessThan(2_000);
+      expect(input.timeoutMs).toBe(2_000);
       if (scenario === "final_inventory_expired") {
         advancedMs += 2_000;
         deadlines[2]!.controller.abort(new DOMException("Metadata timeout", "TimeoutError"));
