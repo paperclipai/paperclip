@@ -15,10 +15,12 @@ exact source proof under publication row locks. A changed source or checkpoint
 keeps local authority. Provider stop verification and any later file export
 remain the recovery owner's separate obligations.
 
-The same local file handoff can preserve a blocked prepared source after an
-established native session is interrupted with ambiguous state, or after its file export recovery is
-exhausted. The interrupted source must retain its exact task failure block and
-declared recovery allocations. The exhausted source must retain its accepted
+The same local file handoff can preserve a blocked prepared source after a
+native session is interrupted with ambiguous state, or after its file export
+recovery is exhausted. The interruption may precede a provider session. Its
+recorded session flag must be a boolean; it does not prove remote recovery.
+The interrupted source must retain its exact task failure block and declared
+recovery allocations. The exhausted source must retain its accepted
 result, bound original allocation, exhausted system recovery and blocked file
 recovery. An empty list of additional recovery allocations does not remove the
 original prepared allocation binding. The migration checks these records again

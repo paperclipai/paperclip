@@ -527,15 +527,16 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
   }
   async function artifactFailureFixture(descendant = false, cause: "runner_remote_provider_artifact_incompatible" | "native_session_interrupted" = "runner_remote_provider_artifact_incompatible") {
     const f = await recoveryFixture(descendant), statusVersion = 2;
-    const profile = { ...f.run.runnerProfileJson, sessionCheckpoint: { backendKind: "runner", providerSessionId: "fixture-established-session",
-      ...(cause === "native_session_interrupted" ? { terminal: { runTerminalState: "failed" } } : {}) } };
+    const profile = { ...f.run.runnerProfileJson, sessionCheckpoint: cause === "native_session_interrupted"
+      ? { backendKind: "runner" } : { backendKind: "runner", providerSessionId: "fixture-established-session" } };
     const restore = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
-    await db.update(heartbeatRuns).set({ runnerProfileJson: profile, nextEventSeq: 250,
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile, nextEventSeq: cause === "native_session_interrupted" ? 1 : 250,
       resultJson: { ...f.run.resultJson, workspaceRestoreRecovery: restore } }).where(eq(heartbeatRuns.id, f.run.id));
-    const events = ["session.started", ...Array.from({ length: 124 }, () => ["tool.execution.started", "tool.execution.completed"]).flat()];
-    await db.insert(heartbeatRunEvents).values(events.map((eventType, index) => ({ companyId: f.companyId,
+    const events = cause === "native_session_interrupted" ? [] : ["session.started", ...Array.from({ length: 124 }, () => ["tool.execution.started", "tool.execution.completed"]).flat()];
+    if (events.length) await db.insert(heartbeatRunEvents).values(events.map((eventType, index) => ({ companyId: f.companyId,
       runId: f.run.id, agentId: f.run.agentId, seq: index + 1, eventType })));
     const evidence = await nativeProviderRecoveryEvidence({ db, runId: f.run.id, metadataOnly: true, sourceFailureCode: cause });
+    expect(evidence).toMatchObject({ recoveryMode: cause === "native_session_interrupted" ? "ambiguous_state" : "exact_checkpoint_resume", providerSessionEstablished: cause !== "native_session_interrupted" });
     const disposition = nativeSessionFailureDisposition(1, new Date(), cause);
     const phase = evidence.recoveryMode === "ambiguous_state" ? "terminal_failure" : disposition.phase;
     const failureCode = evidence.recoveryMode === "ambiguous_state" ? cause : disposition.failureCode;
@@ -620,12 +621,13 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
   it.each((["interrupted", "exhausted"] as const).flatMap(kind =>
-    ["owner", "active", "fingerprint", "allocation", "recovery", ...(kind === "interrupted" ? ["mode"] : [])].map(mode => ({ kind, mode }))))("keeps $kind local files held on $mode mismatch", async ({ kind, mode }) => {
+    ["owner", "active", "fingerprint", "allocation", "recovery", ...(kind === "interrupted" ? ["mode", "provider-flag"] : [])].map(mode => ({ kind, mode }))))("keeps $kind local files held on $mode mismatch", async ({ kind, mode }) => {
     const f = await heldLocalFixture(kind);
     if (mode === "owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "unreleased", leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.run.id));
     if (mode === "active") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.run.id));
     if (mode === "fingerprint") await db.update(issueRecoveryActions).set({ fingerprint: "00".repeat(32) }).where(eq(issueRecoveryActions.id, f.warning.id));
     if (mode === "mode") await db.update(issueRecoveryActions).set({ evidence: { ...f.warning.evidence, recoveryMode: "exact_checkpoint_resume" } }).where(eq(issueRecoveryActions.id, f.warning.id));
+    if (mode === "provider-flag") await db.update(issueRecoveryActions).set({ evidence: { ...f.warning.evidence, providerSessionEstablished: "false" } }).where(eq(issueRecoveryActions.id, f.warning.id));
     if (mode === "allocation") await db.update(environmentLeases).set({ providerLeaseId: randomUUID() }).where(eq(environmentLeases.id, f.lease.id));
     if (mode === "recovery") await db.update(issueRecoveryActions).set({ evidence: kind === "exhausted"
       ? { ...f.warning.evidence, systemRecovery: { ...createSystemRecovery(f.run.id), state: "running" } }
