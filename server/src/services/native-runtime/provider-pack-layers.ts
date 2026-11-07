@@ -152,7 +152,8 @@ export async function stageProviderPackLayers(input: {
     const hash = createHash("sha256");
     await measure("provider_pack.archive.verify_missing", () => pipeline((async function* () {
       for (const layer of layers) {
-        const file = await open(`${archive.sourceRoot}/${layer.name}`, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const file = await open(`${archive.sourceRoot}/${layer.name}`, constants.O_RDONLY | constants.O_NOFOLLOW)
+          .catch(error => { throw invalidArchive("archive_unreadable", error); });
         try {
           const metadata = await file.stat(), layerHash = createHash("sha256");
           if (!metadata.isFile() || metadata.size !== layer.bytes) throw invalidArchive("size_mismatch");

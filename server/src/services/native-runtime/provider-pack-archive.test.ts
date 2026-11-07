@@ -148,7 +148,9 @@ it.skipIf(!tar || !hasZstd)("rejects a corrupt missing layer before transfer and
   expect((await fs.readdir(root)).some(name => name.includes(".upload-"))).toBe(false);
   await fs.appendFile(`${pack}.archives/0.tar.zst`, "corrupt");
   remote.syncIn.mockClear();
-  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid");
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid: size_mismatch");
+  await fs.unlink(`${pack}.archives/0.tar.zst`);
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-3` })).rejects.toThrow("runner_remote_provider_archive_invalid: archive_unreadable");
   expect(remote.syncIn).not.toHaveBeenCalled();
 });
 
