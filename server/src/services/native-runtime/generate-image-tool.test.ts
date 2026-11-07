@@ -262,6 +262,27 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
     }
   });
 
+  it("does not call OpenAI when the connection grant is revoked after the first check", async () => {
+    const f = await fixture();
+    const fetchMock = stubOpenAiImages();
+    await db.execute(sql.raw(`create or replace function n12_revoke_on_image_start() returns trigger language plpgsql as $$
+      begin
+        if new.action = 'runner.image_generate' and new.details->>'outcome' = 'started' then
+          update connection_grants set status = 'revoked' where id = '${f.binding.imageGeneration.grantId}';
+        end if;
+        return new;
+      end $$;
+      create trigger n12_revoke_on_image_start after insert on activity_log for each row execute function n12_revoke_on_image_start();`));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+      await expect(authority.execute({ tool: "generate_image", callId: randomUUID(), arguments: { prompt: "logo" } })).rejects.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("drop trigger if exists n12_revoke_on_image_start on activity_log; drop function if exists n12_revoke_on_image_start();"));
+    }
+  });
+
   it("refuses when the run's AI connection is no longer an active OpenAI API key", async () => {
     const f = await fixture();
     const fetchMock = stubOpenAiImages();

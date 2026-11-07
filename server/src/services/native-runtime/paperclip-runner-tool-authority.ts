@@ -1267,7 +1267,11 @@ export class PaperclipRunnerToolAuthority {
     // Stop, reassignment or a budget stop can commit while the writes above
     // wait. Recheck live authority as the last step before paying.
     try {
-      await authorize();
+      const live = await authorize();
+      // The grant can be revoked while the writes above wait; a revoked grant
+      // does not delete the key, so reload connection access too.
+      await connections.selectImageGeneration({ companyId: this.binding.companyId, agentId: this.binding.agentId,
+        connectionId: binding.connectionId, grantId: binding.grantId, userId: live.run.responsibleUserId });
     } catch (error) {
       await setReceipt({ state: "failed", error: "Image generation was stopped before any request was sent" }).catch(() => undefined);
       await audit("refused").catch(() => undefined);
