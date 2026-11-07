@@ -117,10 +117,14 @@ export function gradeQuestions(value: unknown) {
       && JSON.stringify(row.payload) === JSON.stringify(before.payload))),
       "The ambiguous message does not accept either current proposal.");
     c.add("neither-action-executed", o.tasks.length === 0 && o.projects.length === 0, "Neither candidate action has a durable side effect.");
-    c.add("specific-disambiguation", /\b(?:which|choose|select)\b/i.test(o.reply) && /welcome note/i.test(o.reply) && /launch poster/i.test(o.reply)
+    // The two setup-chosen proposal titles are the choices the person must see named; how the agent
+    // phrases its question is free. A real pending question from the evaluated run is structural proof
+    // of asking; a plain reply must name both and pose a question rather than claim completion.
+    const namesBoth = (text: string) => /welcome note/i.test(text) && /launch poster/i.test(text);
+    c.add("specific-disambiguation", namesBoth(o.reply) && o.reply.includes("?")
       || o.interactions.some(row => row.kind === "ask_user_questions" && row.status === "pending" && row.createdByAgentId === o.leadId
-        && /welcome note/i.test(JSON.stringify(row.payload)) && /launch poster/i.test(JSON.stringify(row.payload))),
-      "The reply or a real question names the two actual alternatives and requests a selection.");
+        && o.runs.some(run => run.id === row.sourceRunId && run.agentId === o.leadId) && namesBoth(JSON.stringify(row.payload))),
+      "The reply or a real question from this run names the two actual alternatives and asks the person to pick.");
     c.add("stale-and-expired-cannot-authorize", o.state.staleAttemptStatus === 409 && o.state.expiredAttemptStatus === 409 && o.state.staleErrorCode === "interaction_stale_target"
       && o.state.staleOldRevisionId !== o.state.staleCurrentRevisionId && typeof o.state.staleCurrentRevisionId === "string" && o.state.staleCurrentRevisionAfter === o.state.staleCurrentRevisionId
       && o.interactions.some(row => row.id === o.state.staleInteractionId && row.status === "expired" && row.result?.outcome === "stale_target" && !row.resolvedByAgentId),
@@ -364,6 +368,7 @@ export const questionIdentityCases = [
     }
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { proposals };
   }, gradeQuestions, {
+    oracleVersion: "paperclip.chat-catalog.identity.ambiguous-yes.v2",
     async act(ctx, state) {
       await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
       // Only after the canonical ambiguity response, exercise the additional

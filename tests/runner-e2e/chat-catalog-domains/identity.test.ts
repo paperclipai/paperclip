@@ -141,6 +141,18 @@ describe("identity catalog independent oracle calibration", () => {
     const o = valid("questions-and-approvals.ambiguous-yes"); o.state.staleCurrentRevisionAfter = "unexpected-revision";
     expect(gradeQuestions(o).passed).toBe(false);
   });
+  it("ambiguity accepts any phrasing that names both choices and asks, but not generic, completion-claiming or foreign questions", () => {
+    const reworded = valid("questions-and-approvals.ambiguous-yes"); reworded.reply = "Do you want the launch poster, or the welcome note?";
+    expect(gradeQuestions(reworded).passed).toBe(true);
+    for (const reply of ["Which one do you mean?", "Done: the welcome note and launch poster are underway."]) {
+      const o = valid("questions-and-approvals.ambiguous-yes"); o.reply = reply; expect(gradeQuestions(o).passed).toBe(false);
+    }
+    const asked = valid("questions-and-approvals.ambiguous-yes"); asked.reply = "";
+    asked.interactions.push({ id: "ask", kind: "ask_user_questions", status: "pending", createdByAgentId: "ceo", sourceRunId: "run",
+      payload: { questionSet: { questions: [{ id: "pick", prompt: "Which task?", answerMode: "single_select" }] }, options: ["Welcome note only", "Launch poster only"] } } as unknown as Interaction);
+    expect(gradeQuestions(asked).passed).toBe(true);
+    const foreign = structuredClone(asked); foreign.interactions.at(-1)!.sourceRunId = "other-run"; expect(gradeQuestions(foreign).passed).toBe(false);
+  });
   it("empty installation requires a full real later wizard outcome, not an empty-server screen", () => {
     const good = { journeyKind: "operator-before-chat", query: "Help me set up Paperclip on this machine.", querySent: false,
       cliSha256: "a".repeat(64), cliVersion: "1.0.0", initialHomeEntries: 0, companiesBeforeWizard: 0,
