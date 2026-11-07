@@ -14322,6 +14322,10 @@ async function createRunnerdBackendWithinSessionClaim(
       await current.acceptAccountingEvent(event);
     } : undefined,
     onRecoveryAccountingEvent: input.onAccountingEvent ? async (event: PrpEvent, source: Parameters<NonNullable<typeof recoveryUsage>>[1]) => {
+      // Only usage needs a proven recovery source. A lifecycle event that
+      // fails here closes the Runner connection without an ACK, and the
+      // Runner then replays that event without end.
+      if (!isNativeUsageAccountingEvent(event)) return;
       const current = sessionToolAuthorityEpochs.get(sessionScopeId);
       if (!current) throw new Error("native_recovery_usage_source_unproven");
       await current.acceptRecoveryAccountingEvent(event, () => {
