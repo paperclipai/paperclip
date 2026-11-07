@@ -20,7 +20,7 @@ export type ControllerProcess = { bootId: string; pid: number; hostHash: string;
  * from any earlier boot never did.
  */
 const bootId = randomUUID();
-const UNKNOWN_PROCESS_SPACE = "unknown";
+export const UNKNOWN_PROCESS_SPACE = "unknown";
 
 /**
  * Names the space in which PIDs are comparable: one kernel boot and, on Linux,
@@ -48,7 +48,8 @@ function processSpaceHash(): string {
 
 const hostHash = processSpaceHash();
 
-async function observedProcessStartedAt(pid: number): Promise<number | null> {
+/** OS-observed start time of any PID (epoch ms), or null when it cannot be read. */
+export async function observedProcessStartedAt(pid: number): Promise<number | null> {
   try {
     const startedAt = Date.parse(await readProcessStartedAt(pid) ?? "");
     return Number.isFinite(startedAt) ? startedAt : null;
