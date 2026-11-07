@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Bounded synthetic contention experiment; not hosted performance acceptance.
-// Run: node --expose-gc scripts/benchmark-workspace-archive-io.mjs
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -37,14 +35,12 @@ async function worker(file, highWaterMark) {
   const load = () => {
     if (!active) return;
     const until = performance.now() + contentionMs;
-    while (performance.now() < until) { /* controlled competing main-thread work */ }
+    while (performance.now() < until) {}
     loadTurns++; pending = setImmediate(load);
   };
   pending = setImmediate(load);
   const start = performance.now();
   try {
-    // Same full-file passes as capture verification and snapshot upload. The
-    // fixed key/IV are synthetic only and make baseline/treatment comparable.
     const verified = await digest(file), plaintext = await digest(file);
     const cipher = createCipheriv("aes-256-gcm", Buffer.alloc(32, 1), Buffer.alloc(12, 2));
     cipher.setAAD(Buffer.from("synthetic-workspace-archive-io-benchmark"));
