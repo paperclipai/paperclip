@@ -343,6 +343,28 @@ Unrelated runs remain active. Existing controller checkpoint identity, artifact
 provenance, configuration and snapshot checks still apply. The `paperclip.native-controller-prestage.v1` counts describe this phase; neither successful prestaging
 nor zero deferred controller sources authorizes volume detachment.
 
+The same finite controller-only entry also preserves settled failed sources.
+A committed failed result may import its exact checkpoint under the normal
+owner checks without changing the failed outcome. A terminal failed controller
+that cannot earn executable recovery authority instead gets an encrypted
+evidence archive through the existing native harness object owner.
+
+Online archival verifies the exact retained session pointer, company, agent,
+task, admitted source binding, terminal run and released coordinator. It rejects
+related queued/running work, checkout, expired-but-retained ownership and a busy
+physical finalizer. Source/profile/coordinator fingerprints and original file
+bytes are checked at publication, including after the upload. Pending object
+records commit before upload; a raced source cannot publish a current archive.
+The operation leaves original files, failed status, leases and recovery history
+unchanged. The `archivedFailed` count records preservation, never successful
+execution or permission to take over an agent.
+
+The live Cloud path uses online preparation and static ephemeral arming on the
+retained volume. Replacement startup must recheck the original bytes after the
+old deployment stops. That final check, not an archive copy or process-local
+busy map, establishes the cutover boundary. The offline fallback below is for
+an independently quiet instance; it is not the live staging delivery path.
+
 The final offline migration still stops all writers, verifies every durable
 object, imports deferred sources and all other data, and exports only its normal
 complete eligibility receipt. Qualification starts from the saved pristine

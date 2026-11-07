@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDb, environments, instanceSettings, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environments, instanceSettings, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { fillUnsetInstanceDefault } from "../services/managed-instance-default.js";
 import { applyManagedEnvironments } from "../services/managed-environments.js";
@@ -18,6 +19,8 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 90_000);
   afterAll(async () => { await database?.cleanup(); });
   beforeEach(async () => {
+    await db.delete(agents);
+    await db.delete(companies);
     await db.delete(instanceSettings);
     await db.delete(environments);
     const [sandbox] = await db.insert(environments).values({
@@ -45,6 +48,13 @@ const support = await getEmbeddedPostgresTestSupport();
   it("fills an unset default, including on a fresh instance with no settings row", async () => {
     expect(await fillUnsetInstanceDefault(db, sandboxId)).toEqual({ filled: true, previousDefaultEnvironmentId: null });
     expect(await instanceDefault()).toBe(sandboxId);
+  });
+
+  it("fills with the managed sandbox while active agents follow the default (a sandbox needs no agent setup)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Managed", issuePrefix: `M${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ companyId, name: "Ready agent", adapterType: "process", defaultEnvironmentId: null });
+    expect(await fillUnsetInstanceDefault(db, sandboxId)).toEqual({ filled: true, previousDefaultEnvironmentId: null });
   });
 
   it("fills a default that names the local environment", async () => {

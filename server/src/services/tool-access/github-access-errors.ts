@@ -24,7 +24,7 @@ export function projectGitHubActionResult(sourceTemplateKey: unknown, result: Re
  * provider text stays in the untrusted result, never in these instructions. */
 export function githubAccessDeniedInstructions(toolName: string, connectionMethodKey: unknown = null): string {
   const operation = (toolName.split(":").pop() ?? "").trim().toLowerCase().replace(/-/g, "_");
-  const base = "GitHub denied this approved action because the Paperclip GitHub connection cannot access the requested account or repository. Do not retry or request approval for the same call until GitHub access is repaired. Never automatically replay the stored approval.";
+  const base = "GitHub denied this action because the Paperclip GitHub connection cannot access the requested account or repository. Do not retry or request approval for the same call until GitHub access is repaired. Never automatically replay an approved write.";
   if (connectionMethodKey === "mcp-key") {
     return `${base} Ask the user to check the personal access token's resource owner, repository selection and required permissions in GitHub. They must update or replace the token on the GitHub connection's Permissions page. Continue after they confirm the access change.`;
   }
@@ -32,7 +32,7 @@ export function githubAccessDeniedInstructions(toolName: string, connectionMetho
     return `${base} Ask the user to open the GitHub connection's Permissions page and check its connected account, authentication method and requested repository access. Continue after they repair that connection.`;
   }
   if (operation === "create_repository") {
-    return `${base} Tell the user that Paperclip cannot create this repository with the current GitHub access. Ask them to create the repository at https://github.com/new, give the Paperclip GitHub App access to it, and select Refresh access on the GitHub connection's Permissions page. Then continue with that existing repository.`;
+    return `${base} Check the repository owner. Connecting a GitHub user does not by itself grant App access to their personal account. For a personal repository, the Paperclip GitHub App needs access to that personal account. For an organization repository, it needs access to that organization; use the tool's organization argument only for an owner the user requested. Open the GitHub connection's Permissions page, select Add More Repos on GitHub, choose the intended account, then Refresh access. If creation remains unavailable, ask the user to create it at https://github.com/new and grant the App access before continuing.`;
   }
   return `${base} Tell the user which account or repository you need. Ask them to give the Paperclip GitHub App access from the GitHub connection's Permissions page and select Refresh access. Continue after they confirm.`;
 }

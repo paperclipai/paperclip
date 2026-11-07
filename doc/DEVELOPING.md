@@ -1278,6 +1278,26 @@ family, including the separate deadline and settlement regressions, with:
 pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
 ```
 
+#### PR Vitest retry
+
+PR CI retries a failing Vitest case once, so a single contention flake does not
+force a re-run of the whole workflow. `scripts/ci/vitest-retry.mjs` owns the gate.
+The default is one retry when `GITHUB_ACTIONS=true` and `GITHUB_WORKFLOW=PR`.
+Reusable workflows inherit the caller's name, so `pr-trusted.yml` gets the retry
+through `pr.yml`. Release, release verify, cloud readiness, master and local runs
+keep zero retries. `PAPERCLIP_VITEST_RETRY` overrides the default in any context.
+For example, set the `CI_VITEST_RETRY` repository variable to `0` to turn the retry
+off, or set `PAPERCLIP_VITEST_RETRY=1` locally to reproduce the CI behavior.
+
+`scripts/run-vitest-stable.mjs` passes `--retry` to every `vitest run`. This
+covers the general, workspace, chat, native Runner and serialized lanes and the
+selected-file path. The Runner package config sets `retry` itself, because its
+lane runs Vitest directly. A test that passes only on a retry is still a flake.
+`scripts/ci/retry-reporter.mjs` adds a `Flaky test passed on retry` warning
+annotation for each such test, and a row to the step summary with the file, test,
+retry count and job. Fix a test that this reporter reports. Do not treat the
+retry as the fix. Playwright retries stay at zero.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
@@ -2078,12 +2098,14 @@ sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
   "driver": "plugin",
   "pluginKey": "example.remote-host-plugin",
   "driverKey": "tasks",
-  "driverConfig": {}
+  "driverConfig": {},
+  "instanceDefault": true
 }
 ```
 
-Names and `pluginKey`–`driverKey` pairs must be unique, and `driverConfig` must
-not contain secret-like keys. Any other key refuses startup. `plugins.autoInstall`
+Names and `pluginKey`–`driverKey` pairs must be unique, `driverConfig` must not
+contain secret-like keys, and `instanceDefault` is allowed on at most one plugin
+entry and never on the sandbox entry. Any other key refuses startup. `plugins.autoInstall`
 holds catalog keys, not manifest ids, so boot also refuses to start unless an
 auto-installed bundled or distribution catalog entry installs the entry's
 `pluginKey`.
@@ -2092,14 +2114,27 @@ Boot validates the driver config through the plugin, marks the row
 `managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
 unmarked row for the same plugin and driver. While the plugin is down, the row is
 archived; it comes back when the worker is ready. Removing an entry never archives
-its row. Plugin entries do not change the instance default.
+its row.
 
-Under `enableManagedSandboxOnly`, boot fills the instance default with the
-managed sandbox only when the default is unset, names the local environment, or
-names a deleted one. The fill locks the default row and rechecks it, so a
+Boot fills the instance default only when it is unset, names the local
+environment, or names a deleted one. A plugin entry with `instanceDefault` fills
+first, right after its ensure; then, under `enableManagedSandboxOnly`, the
+managed sandbox fills. So a new instance gets the plugin environment, and an
+existing instance keeps the default it already has. If the plugin is down at a
+new instance's first boot, the managed sandbox fills the default instead, and the
+plugin environment does not replace it later. Recovery after boot never fills.
+Like an admin's default write, the plugin fill declines while an active agent
+that follows the default has not been prepared by that plugin; the managed
+sandbox then fills as usual. The fill locks the default row and rechecks it, so a
 concurrent boot or admin write is never overwritten. A filled default is an
 ordinary set value: nothing reverts it when the mode is later turned off, and an
 admin can change it in instance settings.
+
+`server/src/services/managed-config-capabilities.json` lists the managed-config
+capabilities a release supports, for the control plane to read at a release
+commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
+(`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
+entries only while that list includes `pluginEnvironments`.
 
 
 ### Experimental native remote workspace storage

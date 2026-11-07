@@ -5329,6 +5329,19 @@ html:not(.dark) .coordinator-sidebar {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
 
+:root {
+  --tc-image-grid-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr));
+  --tc-image-grid-max-width: 40rem;
+}
+
+.tc-image-grid {
+  display: grid;
+  grid-template-columns: var(--tc-image-grid-columns);
+  gap: calc(var(--spacing) * 2);
+  width: 100%;
+  max-width: var(--tc-image-grid-max-width);
+}
+
 .paperclip-patch-line { min-width: 0; }
 span.paperclip-patch-line { display: block; }
 .paperclip-patch-line[data-patch-line="add"] { color: var(--patch-add-fg); background: var(--diff-add-bg); }

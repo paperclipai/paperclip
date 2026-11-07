@@ -19,6 +19,8 @@ import { materializeManagedProjectWorkspace } from "../services/managed-reposito
 import { materializeIsolatedRemoteWorkspaceSource } from "../services/isolated-remote-workspace-source.js";
 import { realizeExecutionWorkspace, ensurePersistedExecutionWorkspaceAvailable } from "../services/workspace-runtime.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { withExecutionWorkspaceLifecycleLock } from "../services/execution-workspace-lifecycle-lock.js";
+import { withWorkspaceSourceLocks } from "../services/workspace-source-lock.js";
 import { prepareProjectRepositoryWorkspaces, mergeExecutionWorkspaceMetadataForPersistence } from "../services/heartbeat/workspaces.js";
 import { describeGitExpirationFailure, expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { nestedWorktreeBranchPrefix, restoreNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
@@ -183,6 +185,70 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     return { ...f, nestedSource, nestedRemote, nestedA, preparation, nested: nested!, settings, settingsPath, nestedSettingsPath,
       sharedBase: resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId: f.projectId!, repoName: "nested" }) };
   }
+
+  it("restores expired managed nested contents under the runtime-control source fence", async () => {
+    const f = await nestedFixture(true, false);
+    expect(await f.expire({ expireBase: false })).toMatchObject({ expired: true, baseExpired: false });
+    const workspace = await f.row();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const sourceOwner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId!] }, async () => {
+      entered(); await pending;
+    });
+    await started;
+    const restore = withExecutionWorkspaceLifecycleLock(db, f.workspaceId, () =>
+      ensurePersistedExecutionWorkspaceAvailable({ db, base: f.base, workspace,
+        issue: { id: f.issueId, identifier: "GC-1", title: "Runtime restore" },
+        agent: { id: null, name: "Fixture", companyId: f.companyId }, skipHostProvision: true,
+        prepareRestoredLocalSource: async sourceCwd => {
+          const identity = await fs.realpath(sourceCwd);
+          return async () => { expect(await fs.realpath(sourceCwd)).toBe(identity); };
+        } })).then(value => ({ value }), error => ({ error }));
+    let restored: Awaited<typeof restore> | undefined;
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+      expect(await exists(f.cwd)).toBe(false);
+    } finally { release(); await sourceOwner; restored = await restore; }
+    expect(restored).not.toHaveProperty("error");
+    expect(restored && "value" in restored ? restored.value?.cwd : null).toBe(f.cwd);
+    expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
+    expect(await fs.readFile(f.nestedSettingsPath)).toEqual(f.settings);
+    expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
+  });
+
+  it("takes the project fence before the lifecycle lock during an actual nested reopen", async () => {
+    const f = await nestedFixture(true, true);
+    expect(await f.expire({ expireBase: false })).toMatchObject({ expired: true, baseExpired: false });
+    await fs.rm(f.sharedBase, { recursive: true });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const owner = withWorkspaceSourceLocks(db, { companyId: f.companyId, projectIds: [f.projectId!] }, async () => {
+      entered(); await pending;
+    });
+    await started;
+    const reopen = f.reopen().then(value => ({ value }), error => ({ error }));
+    let result: Awaited<typeof reopen> | undefined;
+    try {
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select count(*)::int n from pg_stat_activity where datname=current_database() and wait_event='advisory'`);
+        expect(waiting[0].n).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+      const key = `execution_workspace_lifecycle:${f.workspaceId}`;
+      const granted = await db.execute(sql`select count(*)::int n from pg_locks where locktype='advisory' and granted
+        and classid=((hashtextextended(${key},0)>>32)&4294967295)::oid and objid=(hashtextextended(${key},0)&4294967295)::oid`);
+      expect(granted[0].n).toBe(0);
+      expect(await exists(f.cwd)).toBe(false);
+    } finally { release(); await owner; result = await reopen; }
+    expect(result).toMatchObject({ value: { ok: true, reopened: true } });
+    expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
+    expect(await fs.readFile(f.nestedSettingsPath)).toEqual(f.settings);
+    expect((await fs.stat(f.nestedSettingsPath)).mode & 0o777).toBe(0o640);
+  });
 
   it("expires a nested workspace and its unused private base with the generated ignore entry", async () => {
     const f = await nestedFixture(false);

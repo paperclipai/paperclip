@@ -55,6 +55,14 @@ describe("issue validators", () => {
     }
   });
 
+  it("accepts an optional attachment-preparation identity and rejects malformed markers", () => {
+    const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
+    const attachmentPreparation = { attachmentId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3" };
+    expect(issueCommentMetadataSchema.parse({ ...metadata, attachmentPreparation }).attachmentPreparation).toEqual(attachmentPreparation);
+    expect(issueCommentMetadataSchema.parse(metadata).attachmentPreparation).toBeUndefined();
+    expect(issueCommentMetadataSchema.safeParse({ ...metadata, attachmentPreparation: { attachmentId: "bad-id" } }).success).toBe(false);
+  });
+
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
     const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
     expect(
