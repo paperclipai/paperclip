@@ -1346,6 +1346,50 @@ fn codex_transport_buffers_notifications_while_waiting_for_responses() {
 }
 
 #[test]
+fn codex_compaction_turn_binds_the_turn_reported_after_its_empty_response() {
+    let directory = temporary_directory("compaction-turn");
+    let config = provider_config(&directory, &[]);
+    let mut provider = CodexProvider::start(&config, None).expect("start fake Codex provider");
+    let started = provider
+        .start_compaction_turn()
+        .expect("start compaction turn");
+    assert_eq!(
+        started.pointer("/turn/id"),
+        Some(&json!("provider-compact-turn-1"))
+    );
+    assert_eq!(
+        provider.active_provider_turn_id(),
+        Some("provider-compact-turn-1")
+    );
+    // A second start while the compaction turn runs is refused.
+    assert!(provider.start_compaction_turn().is_err());
+
+    let mut event_types = Vec::new();
+    let deadline = event_deadline();
+    while std::time::Instant::now() < deadline {
+        if let Some(CodexProviderEvent::Notification { method, params }) =
+            provider.poll().expect("poll provider event")
+        {
+            event_types.extend(
+                normalize_codex_notification(&method, &params)
+                    .into_iter()
+                    .map(|event| event.event_type),
+            );
+        }
+        if event_types.iter().any(|event| event == "turn.completed") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(event_types.iter().any(|event| event == "turn.started"));
+    assert!(event_types.iter().any(|event| event == "context.compacted"));
+    assert!(event_types.iter().any(|event| event == "turn.completed"));
+    assert_eq!(provider.active_provider_turn_id(), None);
+    provider.shutdown().expect("stop provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
 fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
     let directory = temporary_directory("account-notifications");
     let config = provider_config(&directory, &["--account-notifications"]);
@@ -4340,6 +4384,98 @@ fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_rec
 }
 
 #[test]
+fn restart_continuation_ignores_late_usage_for_the_turn_lost_on_restore() {
+    // RC-20c: a resumed Codex thread reported the cumulative usage of the turn
+    // lost to the restart after it accepted the continuation turn. The runner
+    // must treat that usage as history of a settled turn, not as a foreign
+    // event that fails the continuation with turn_binding_mismatch.
+    let directory = temporary_directory("restart-continuation-stale-usage");
+    let config = provider_config(
+        &directory,
+        &[
+            "--durable-turn-ids",
+            "--linger-after-turn-start",
+            "--stale-usage-after-turn-start",
+        ],
+    );
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Run the long benchmark."}),
+        ))
+        .unwrap();
+    drop(first);
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec(&json!({
+            "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut restored = CodexCommandExecutor::new(&directory);
+    restored
+        .execute(&command("snapshot", 4, "session.snapshot", json!({})))
+        .unwrap();
+    let lost = poll_and_ack(&mut restored).unwrap();
+    assert!(lost.iter().any(|event| event.event_type == "turn.failed"
+        && event.payload["error"]["code"] == "provider_turn_lost_on_restore"));
+    let accepted = restored
+        .execute(&command(
+            "continue",
+            5,
+            "turn.start",
+            json!({"text": "Continue after the restart."}),
+        ))
+        .unwrap();
+    assert_eq!(accepted.result["providerTurnId"], "provider-turn-2");
+    let mut events = Vec::new();
+    for _ in 0..50 {
+        events.extend(poll_and_ack(&mut restored).unwrap());
+        if events
+            .iter()
+            .any(|event| event.event_type == "turn.started")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.payload["code"] == "turn_binding_mismatch"
+                || event.payload["error"]["code"] == "turn_binding_mismatch"),
+        "late usage for the lost turn must not fail the continuation: {:?}",
+        events
+            .iter()
+            .map(|event| (&event.event_type, &event.payload))
+            .collect::<Vec<_>>()
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.terminal" || event.event_type == "turn.failed"));
+    assert!(events.iter().any(|event| event.event_type == "turn.started"
+        && event.payload["providerTurnId"] == "provider-turn-2"));
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     let directory = temporary_directory("durable-tool-ended-offline");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
@@ -4421,6 +4557,120 @@ fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     assert_eq!(late.result["status"], "settled_after_turn");
 
     recovered.shutdown().expect("stop recovered provider");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+fn drain_completed_turn(executor: &mut CodexCommandExecutor, label: &str) {
+    let mut turn_completed = false;
+    let deadline = event_deadline();
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(executor).expect(label);
+        turn_completed |= events
+            .iter()
+            .any(|event| event.event_type == "turn.completed");
+        if turn_completed && events.is_empty() {
+            return;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    panic!("{label}: the turn did not complete before the deadline");
+}
+
+#[test]
+fn saved_codex_thread_attaches_after_a_release_changes_its_feature_toggles() {
+    // A thread saved by an earlier release keeps that release's feature
+    // toggles. The next run's controller sends the current policy, which no
+    // longer disables image generation. Attachment must adopt the current
+    // toggles and restart the provider on the same thread.
+    let directory = temporary_directory("feature-policy-attach");
+    let mut config = provider_config(
+        &directory,
+        &["--durable-turn-ids", "--record-process-start"],
+    );
+    let current_args = config.args.clone();
+    config
+        .args
+        .extend(["--disable".to_owned(), "image_generation".to_owned()]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("prepare the thread with the earlier release's toggles");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the thread");
+    executor
+        .execute(&command(
+            "first-turn",
+            3,
+            "turn.start",
+            json!({"text": "Work under the earlier release."}),
+        ))
+        .expect("start the first turn");
+    drain_completed_turn(&mut executor, "drain the first turn");
+
+    let mut protected = current_args.clone();
+    protected.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+    let error = executor
+        .execute(&command(
+            "protected-attach",
+            4,
+            "run.attach",
+            json!({
+                "authorizedTools": task_context_tool_set(),
+                "runtimeLaunchArgs": protected,
+            }),
+        ))
+        .expect_err("a sandbox change stays protected");
+    assert!(
+        error.to_string().contains("protected launch arguments"),
+        "unexpected attach error: {error}"
+    );
+
+    let attached = executor
+        .execute(&command(
+            "attach",
+            5,
+            "run.attach",
+            json!({
+                "authorizedTools": task_context_tool_set(),
+                "runtimeLaunchArgs": current_args,
+            }),
+        ))
+        .expect("the saved thread adopts the current feature toggles");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+
+    executor
+        .execute(&command(
+            "second-turn",
+            6,
+            "turn.start",
+            json!({"text": "Continue under the current release."}),
+        ))
+        .expect("start a turn on the same thread after attachment");
+    drain_completed_turn(&mut executor, "drain the second turn");
+
+    let calls = fs::read_to_string(directory.join("calls.log")).expect("read the call log");
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| *line == "process-start")
+            .count(),
+        2,
+        "the provider restarts once to apply the current toggles: {calls}"
+    );
+
+    executor.shutdown().expect("stop the provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

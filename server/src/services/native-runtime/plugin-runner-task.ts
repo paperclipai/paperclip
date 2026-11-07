@@ -1,7 +1,7 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
@@ -47,6 +47,10 @@ export function createPluginRunnerTaskOwner(input: {
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
   warmTaskVersion?: 1;
+  releaseResumeVersion?: 1;
+  releasedSource?: DurableRecoveryIdentity;
+  onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
+  onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
@@ -78,12 +82,8 @@ export function createPluginRunnerTaskOwner(input: {
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
-    const result = environmentTaskResultSchema.parse(await (phase
+    return parseEnvironmentTaskResult(operation, taskId, await (phase
       ? measureRunPhase(phase, () => input.task(operation, { expectedTaskId: taskId })) : input.task(operation, { expectedTaskId: taskId })));
-    if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted")) {
-      throw new Error("Plugin Runner returned an invalid operation result");
-    }
-    return result;
   };
   let removeStartupAbort = () => {};
   const bindStartupAbort = () => {
@@ -271,7 +271,8 @@ export function createPluginRunnerTaskOwner(input: {
     });
     return { child, completion, restart: null };
   };
-  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal) => {
+  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal, expectedIdentity?: DurableRecoveryIdentity) => {
+    const desired = expectedIdentity ? structuredClone(expectedIdentity) : undefined;
     const generation = ++registrationGeneration;
     let registrationReleased = false;
     let outbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
@@ -287,7 +288,15 @@ export function createPluginRunnerTaskOwner(input: {
       activate: () => {
         activation = (async () => {
           if (input.adoptIdentity) {
-            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            if (!desired || runId === input.adoptIdentity.runId) {
+              if (desired && Object.entries(input.adoptIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)) {
+                throw new Error("Plugin Runner adoption identity mismatch");
+              }
+              await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            } else if (!preparedIdentity || Object.entries(preparedIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)
+              || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key => desired[key as keyof DurableRecoveryIdentity] !== input.adoptIdentity![key as keyof DurableRecoveryIdentity])) {
+              throw new Error("Plugin Runner adoption identity mismatch");
+            }
           } else await running;
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
           const ingress = await endpoint();
@@ -321,6 +330,8 @@ export function createPluginRunnerTaskOwner(input: {
         if (submitted) {
           await call({ kind: "complete" });
           completed = true;
+          const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+          if (identity) await input.onRetired?.(identity);
         }
       },
       release: async (reason?: "detach") => {
@@ -333,6 +344,25 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get releaseResume() {
+      if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
+      return {
+        releasedSource: input.releasedSource,
+        release: async (identity: DurableRecoveryIdentity) => {
+          requireReleaseResume();
+          const outbound = activeOutbound;
+          outbound?.quiesce();
+          await release(identity);
+          await outbound?.close();
+          if (activeOutbound === outbound) activeOutbound = null;
+        },
+        resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
+          const outcome = await resume(identity, ticket);
+          if (outcome === "resumed") await input.onResumed?.(identity);
+          return outcome;
+        },
+      };
+    },
     get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
     get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
@@ -344,7 +374,7 @@ export function createPluginRunnerTaskOwner(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner archived state unavailable");
       return result.state;
     },
-    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal),
+    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal, identity),
     ...(input.adoptIdentity ? { adoptExistingRunner: {
       // Provider ownership is attested by Launcher, never by a controller-local PID.
       pid: null, processGroupId: null, startedAt: null,
@@ -366,7 +396,26 @@ export function createPluginRunnerTaskOwner(input: {
         createHash("sha256").update(bytes).digest("hex") !== result.sha256) throw new Error("Plugin Runner file integrity check failed");
     return bytes;
   };
-  return { launcher, registration, driver, readWorkspaceFile,
+  const requireReleaseResume = () => {
+    if (released || stopRequested || detached) throw new Error("Plugin Runner lifecycle operation cancelled");
+    if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) {
+      throw new Error("Plugin Runner release/resume unavailable");
+    }
+  };
+  // The caller owns settlement, connection quieting and exact-ticket retries.
+  const release = async (identity: DurableRecoveryIdentity): Promise<void> => {
+    requireReleaseResume();
+    await call(environmentTaskOperationSchema.parse({ kind: "release", identity }));
+    requireReleaseResume();
+  };
+  const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable"> => {
+    requireReleaseResume();
+    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket }));
+    requireReleaseResume();
+    if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+    return result.outcome;
+  };
+  return { launcher, registration, driver, readWorkspaceFile, release, resume,
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,

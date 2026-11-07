@@ -55,7 +55,7 @@ import {
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
 import { isCancelledNativeStartup, isInterruptedNativePreparation } from "../cancelled-native-startup.js";
-import { settleInterruptedNativeBootstrap } from "../legacy-execution-recovery.js";
+import { settleInterruptedNativeBootstrap, recordInterruptedPreparationContinuation } from "../legacy-execution-recovery.js";
 import {
   executionBlockerPredicate,
   getExecutionBlocker,
@@ -573,7 +573,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function resumeRemoteStopComments(run: NonNullable<Awaited<ReturnType<typeof getRunExecutionWait>>>, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
     let interruptedPreparation = false;
-    if (run.status === "interrupted" && run.runtimeMode === "legacy" &&
+    if (["interrupted", "failed"].includes(run.status) && run.runtimeMode === "legacy" &&
         !run.runtimeModeResolvedAt && run.executionStage === "preparing") {
       const current = await getRun(run.id, { includeExecutionEvidence: true });
       if (current && await isInterruptedNativePreparation(db, current)) {
@@ -617,12 +617,20 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       requestId ? eq(agentWakeupRequests.id, requestId) : undefined,
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
-    if (interruptedPreparation && !pending.length && !requestId && !(await getSchedulingSuppression()).suppressed) {
-      const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues).where(and(
-        eq(issues.companyId, run.companyId), eq(issues.id, issueId),
-      ));
-      if (task?.assigneeAgentId === run.agentId && ["todo", "in_progress", "in_review"].includes(task.status)) {
-        await dependencies.scheduleBoundedRetry(run.id);
+    if (interruptedPreparation) {
+      if (pending.length || requestId) await recordInterruptedPreparationContinuation(db, run, "delegated");
+      else {
+        const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues).where(and(
+          eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+        ));
+        if (!(await getSchedulingSuppression()).suppressed && task?.assigneeAgentId === run.agentId &&
+            ["todo", "in_progress", "in_review"].includes(task.status)) {
+          const retry = await dependencies.scheduleBoundedRetry(run.id);
+          await recordInterruptedPreparationContinuation(db, run,
+            retry.outcome === "scheduled" ? retry.run.status === "cancelled" ? "blocked" : "delivered"
+              : retry.outcome === "retry_exhausted" ? "exhausted" : "deferred",
+            retry.outcome === "scheduled" ? retry.run.id : undefined);
+        } else await recordInterruptedPreparationContinuation(db, run, "deferred");
       }
     }
     for (const wake of pending) {
@@ -809,7 +817,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }, commentIds),
       requestedByActorType: "user", requestedByActorId: actorId,
       ...(interrupted ? { queuedCommentInterruptId: queueId } : { queuedCommentRequestId: queueId }),
-      issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      issueStateGuard: { assigneeAgentId: wake.agentId,
+        statuses: ["todo", "in_progress", "in_review", "blocked", ...(interrupted ? ["done"] : [])] },
       idempotencyKey: `queued-comment-${interrupted ? "interrupt" : "delivery"}:${queueId}`,
     }, queueId);
   }

@@ -117,6 +117,9 @@ import { AcpxTurnControlLedger, parseAcpxTurnControl } from "../drivers/acpx/tur
 const turnControls = new AcpxTurnControlLedger();
 const MAX_PENDING_TOOLS = 512;
 const MAX_PENDING_INPUTS = 16;
+const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
+const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
+let outputFailed = false;
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
   return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
@@ -173,6 +176,12 @@ let openParams: AcpxSidecarOpenParams | null = null;
 let claudeCompactionCount = 0;
 let runId: string | null = null;
 let turnId: string | null = null;
+/**
+ * A restored session runs in a new provider process whose MCP request ids
+ * restart. The controller keys semantic calls by run and call id, so prefix
+ * this process's ids to keep them distinct from calls earlier in the run.
+ */
+let callIdNamespace: string | null = null;
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -371,6 +380,9 @@ async function dispatch(
     );
     host = openedHost;
     openParams = params;
+    callIdNamespace = params.expectedIdentity === undefined
+      ? null
+      : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
     emit("runtime.process", {
       role: "sidecar",
       pid: process.pid,
@@ -795,6 +807,20 @@ async function pumpTurn(
   }
   // A terminal frame is also runnerd's permission to recycle this provider.
   // Publish it only after no callback can inherit this turn's mutable binding.
+  // runnerd can settle this turn offline using the same observation as session.goal.get.
+  // Fall back to the original terminal frame if the observation is unavailable or too large.
+  let goalAtTerminal: ReturnType<typeof observedGoalProjection> | undefined;
+  try {
+    goalAtTerminal = observedGoalProjection(activeHost.goalCapability(), activeHost.goalSnapshot(), turnId !== null);
+  } catch {
+    // The terminal stays authoritative even if the optional observation fails.
+  }
+  if (goalAtTerminal) {
+    const payload = { ...terminal, goalAtTerminal };
+    // Rust admits the payload separately from the larger sidecar frame.
+    if (Buffer.byteLength(JSON.stringify(payload)) <= MAX_EVENT_PAYLOAD_BYTES
+      && emit("runtime.turn_terminal", payload, currentTurnId)) return;
+  }
   emit("runtime.turn_terminal", terminal, currentTurnId);
 }
 
@@ -804,7 +830,10 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
   if (!activeTurnId || !activeRunId || call.signal.aborted) {
     throw new Error("ACPX tool call is not bound to an active turn");
   }
-  const callId = boundedIdentity(call.callId, "callId");
+  const providerCallId = boundedIdentity(call.callId, "callId");
+  const callId = callIdNamespace === null
+    ? providerCallId
+    : boundedIdentity(`${callIdNamespace}:${providerCallId}`, "callId");
   if (tools.has(callId) || normalizingTools.has(callId)) throw new Error("ACPX tool call is duplicated");
   const operationId = boundedIdentity(call.tool, "operationId");
   if (tools.size + normalizingTools.size >= MAX_PENDING_TOOLS) {
@@ -1628,9 +1657,17 @@ function response(
 }
 
 function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): boolean {
+  if (outputFailed) return false;
   const line = stringifyAcpxSidecarFrame(value);
-  if (Buffer.byteLength(line) > ACPX_SIDECAR_MAX_FRAME_BYTES) {
+  const bytes = Buffer.byteLength(line);
+  if (bytes > ACPX_SIDECAR_MAX_FRAME_BYTES) {
     process.stderr.write("[paperclip-acpx-sidecar] output_frame_too_large\n");
+    return false;
+  }
+  if (process.stdout.writableLength + bytes + 1 > MAX_BUFFERED_OUTPUT_BYTES) {
+    outputFailed = true;
+    process.stderr.write("[paperclip-acpx-sidecar] output_buffer_limit_exceeded\n");
+    requestShutdown("ACPX sidecar output buffer limit exceeded");
     return false;
   }
   process.stdout.write(`${line}\n`);
@@ -1815,7 +1852,7 @@ async function shutdown(reason: string): Promise<void> {
   turnId = null;
   lines.close();
   process.stdin.pause();
-  process.exitCode = cleanupIncomplete ? 1 : 0;
+  process.exitCode = cleanupIncomplete || outputFailed ? 1 : 0;
 }
 
 function retainActiveHostCleanup(

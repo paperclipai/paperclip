@@ -12,7 +12,7 @@ import { notifyInstructionCollection } from "../../../services/instruction-colle
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
-import { userStopBoundaryAt } from "../../../services/run-cancellation.js";
+import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
@@ -27,6 +27,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueTreeHolds,
   issues,
   nativeRunFinalizations,
   projects,
@@ -52,7 +53,9 @@ import { issueService } from "../../../services/issues.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
+  ISSUE_PAUSED_ERROR_CODE,
   ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+  pauseSuppressionResult,
 } from "../../../services/issue-tree-control.js";
 import {
   continuationSummaryParksExecutor,
@@ -414,7 +417,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
-    if (input.conversationContinuation) {
+    if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
     }
@@ -654,7 +657,7 @@ export function createPostgresRunDispatchAdapter(
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
-      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+      pendingResponse: issue && (input.conversationContinuation || retryReason === "interrupted_preparation" || context.connectionIntentResolution === "existing_connection")
         ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
         : null,
       issueFound: issue !== null,
@@ -745,6 +748,17 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    // A retry a pause refused is owed one re-dispatch when that pause is released.
+    const pauseHoldId = input.errorCode === ISSUE_PAUSED_ERROR_CODE ? readNonEmptyString(input.details.holdId) : null;
+    if (pauseHoldId) {
+      // Hold the pause against a concurrent release until this refusal commits,
+      // so release either sees the refused retry or the retry sees no pause.
+      // Under a released pause the retry stays parked for the next promotion.
+      const [active] = await tx.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(
+        eq(issueTreeHolds.companyId, input.companyId), eq(issueTreeHolds.id, pauseHoldId),
+        eq(issueTreeHolds.status, "active"))).for("share");
+      if (!active) return { applied: false };
+    }
     await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
@@ -752,6 +766,9 @@ export function createPostgresRunDispatchAdapter(
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined, runId: input.runId });
+    const pauseSuppression = pauseHoldId ? pauseSuppressionResult({
+      holdId: pauseHoldId, rootIssueId: readNonEmptyString(input.details.rootIssueId),
+    }) : null;
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -759,6 +776,9 @@ export function createPostgresRunDispatchAdapter(
         finishedAt: input.now,
         error: input.reason,
         errorCode: input.errorCode,
+        ...(pauseSuppression ? {
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(pauseSuppression)}::jsonb`,
+        } : {}),
         updatedAt: input.now,
       })
       .where(
@@ -996,10 +1016,12 @@ export function createPostgresRunDispatchAdapter(
     )).for("update");
     const [source] = preservation ? await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
-      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "cancelled"),
+      eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["cancelled", "failed"]),
       sql`${heartbeatRuns.id}::text = ${preservation.evidence.runId}`,
     )) : [];
-    if (!preservation || !source) return null;
+    // A user-stopped run can settle as failed when its unreachable runner's
+    // transport fails closed. Only that recorded Stop makes a failed source eligible.
+    if (!preservation || !source || (source.status === "failed" && !recordedUserStop(source))) return null;
     const baseline = readNativeWorkspaceSyncReference(source.runnerProfileJson?.nativeWorkspaceSync);
     // Copyback from a native baseline replays the saved turn. Without one, only
     // a message sent after the Stop is saved; admission still applies all gates.
@@ -1479,7 +1501,8 @@ export function createPostgresRunDispatchAdapter(
         }
       }
       const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
-        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
+        runId: run.id, projectId: scope.projectId, reservationId: input.reservationId,
+        admittedRecovery: Boolean(input.recoveryLeaseOwner) });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
       if (input.recoveryLeaseOwner) {
         const [owner] = run.runtimeMode === "native" ? await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(

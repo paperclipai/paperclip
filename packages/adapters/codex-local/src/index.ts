@@ -8,10 +8,15 @@ export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
-// Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
-// bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
-// Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
+// The default is `gpt-6.1-sol`: the reviewed OpenAI rate card in server/src/services/codex-pricing.ts
+// prices it at half of `gpt-5.6-sol`. It applies only to agents without an explicit model; a stored
+// model is never rewritten. Always use a concrete slug rather than a bare family alias such as
+// `gpt-5.6`: OpenAI ships no model metadata for bare slugs, so the Codex CLI warns and falls back to
+// generic context limits.
 export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
+// The floor-free model a remote Codex CLI too old for the requested model falls back to. It stays
+// `gpt-5.6-sol` because the default `gpt-6.1-sol` itself needs Codex 0.159.0 or newer.
+export const CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 
 export function resolveCodexLocalCliPolicy(config: unknown, options: { networkAccess?: boolean } = {}) {
@@ -219,8 +224,7 @@ export const models = [
   { id: "gpt-6-astra", label: "gpt-6-astra" },
   { id: "gpt-6-sol", label: "gpt-6-sol" },
   { id: "gpt-6-luna", label: "gpt-6-luna" },
-  // DEFAULT_CODEX_LOCAL_MODEL is gpt-5.6-sol, the first 5.6 entry.
-  { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
+  { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
   { id: "gpt-5.5", label: "gpt-5.5" },

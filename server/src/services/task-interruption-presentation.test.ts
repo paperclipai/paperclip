@@ -48,6 +48,36 @@ describe("queued dependency wait presentation", () => {
   });
 });
 
+describe("never-started task refused by admission", () => {
+  const todo = { ...issue, status: "todo" };
+  const admissionWait = { id: "wake", status: "skipped", reason: "budget.blocked", agentId: "agent" };
+  it("names an accounting hold as an automatic wait without a Retry", () => {
+    expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false })).toMatchObject({
+      responsibility: "system", state: "working", canRetry: false,
+      retryWait: { reason: "budget.blocked", message: expect.stringContaining("starts automatically") } });
+  });
+  it("keeps pauses and budget stops as user actions instead of promising an automatic start", () => {
+    for (const [state, action] of [
+      [{ project: { pausedAt: new Date(), pauseReason: null } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ paused: true }, "resume"],
+      [{ agent: { status: "paused", pauseReason: "manual" } }, "resume"],
+      [{ company: { status: "paused", pauseReason: "budget" } }, "budget"],
+      [{ approval: true }, "approval"],
+    ] as const) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait, paused: false, approval: false, ...state }))
+        .toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: action });
+    }
+  });
+  it("shows nothing for other refusals, started tasks or another assignee", () => {
+    for (const changed of [{ reason: "agent.not_invokable" }, { status: "queued" }, { agentId: "other" }]) {
+      expect(projectTaskInterruption(todo, { agent, admissionWait: { ...admissionWait, ...changed }, paused: false, approval: false }))
+        .toBeNull();
+    }
+    expect(projectTaskInterruption({ ...todo, status: "cancelled" }, { agent, admissionWait, paused: false, approval: false })).toBeNull();
+  });
+});
+
 describe("unadmitted chat Retry presentation", () => {
   const now = Date.parse("2026-01-01T12:00:00Z");
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
@@ -80,6 +110,24 @@ describe("unadmitted chat Retry presentation", () => {
   });
 });
 
+// The native coordinator resumes the same run itself after an attach failure.
+// A manual Retry offered meanwhile would race that automatic resume.
+it("shows a pending native same-run resume instead of a competing Retry", () => {
+  const now = Date.parse("2026-11-06T15:25:50.000Z");
+  const failed = { ...run, runtimeMode: "native" as const, errorCode: "native_session_interrupted", resultJson: null };
+  const resumeAt = new Date("2026-11-06T15:26:18.687Z");
+  expect(projectTaskInterruption(issue, { run: { ...failed, nativeResumeAt: resumeAt }, agent, paused: false, approval: false }, now))
+    .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: resumeAt.toISOString() });
+  // A due resume is being dispatched; it is still not the user's turn.
+  expect(projectTaskInterruption(issue, { run: { ...failed, nativeResumeAt: new Date(now - 30_000) }, agent, paused: false, approval: false }, now))
+    .toMatchObject({ state: "working", canRetry: false });
+  // A resume that never ran, or no resume at all, leaves exactly one Retry.
+  expect(projectTaskInterruption(issue, { run: { ...failed, nativeResumeAt: new Date(now - 10 * 60_000) }, agent, paused: false, approval: false }, now))
+    .toMatchObject({ state: "failed", canRetry: true });
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false }, now))
+    .toMatchObject({ state: "failed", canRetry: true });
+});
+
 it("explains a persisted Retry wait without exposing the saved payload", () => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id,
@@ -95,11 +143,26 @@ it("explains a persisted Retry wait without exposing the saved payload", () => {
     .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it("names a budget gate instead of generic execution checks for a refused Retry", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "budget.blocked" } }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "budget.blocked",
+      message: "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage." } });
+});
+
+it.each(["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
     .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
+it("keeps Retry for a Retry declined for its requester's access, since a new click replaces it", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "retry_authority_denied" } }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "retry_authority_denied" } });
 });
 
 it("preserves the actual workspace preparation error without changing retry authority", () => {

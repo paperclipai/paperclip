@@ -97,6 +97,12 @@ When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list.
 
+Agent-owned tasks show **In Progress** only while a task-linked run is queued
+or running. When execution ends, their visible status reflects recovery
+(**Blocked**), a pending response or review (**In Review**), monitoring, or
+remaining work (**Todo**). The stored lifecycle status still controls execution
+and recovery. Human-owned tasks retain their selected ownership status.
+
 Tasks waiting between automatic checks show **Monitoring** with a blue clock.
 Task lists, board columns, filters, search, recent navigation and task properties
 use the same read-only display state. The task retains its execution lifecycle
@@ -146,7 +152,22 @@ adds a new line. Settings → Experimental → **Command/Ctrl+Enter to Submit**
 restores the previous behavior, where Enter adds a new line and Command/Ctrl+Enter
 submits.
 
+### Routine responsibility
+
+The routine Overview shows its responsible user beside Default agent. People with
+`tasks:assign` can select an active company member from the name's picker.
+The change creates a routine revision and applies to future automatic tasks.
+Existing tasks keep their responsibility. Manual runs use the person who starts
+them. Agents cannot transfer routine responsibility.
+
+
 ### Task collection creation filters
+
+Tasks opens All tasks for new users. A saved view or an explicit view in the URL
+takes precedence over this default.
+The task table orders rows by Last updated, newest first, without highlighting a
+column header. Selecting a column sort activates its header and direction arrow;
+explicit sort URLs retain that selection.
 
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
@@ -429,7 +450,7 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Tasks defaults to **Mine**, with a saved view per person and company. Mine uses
+Tasks defaults to **All tasks**, with a saved view per person and company. Mine uses
 the previous Inbox's personal participation rules, mixed attention items,
 read/unread title weights, keyboard shortcuts, archive and undo, mobile
 swipe-to-archive, grouping, and saved columns. Its existing preferences carry
@@ -443,7 +464,7 @@ In the Classic workspace, an opt-in setting (`enableCombinedInboxTasks`, off by 
 folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
 to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
 Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
-Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+Done). Bare `/issues` opens the last-used view, defaulting to All tasks; links that
 carry a task filter open All. Old `/inbox` links redirect to the matching view.
 
 ### CSV file previews

@@ -127,14 +127,24 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     const authoritative = envelope.receipt.pricingProvenance
       && !["rate_card", "unknown"].includes(envelope.receipt.pricingProvenance.source);
     const rateCardOnly = envelope.producerEvent && envelope.receipt.pricingProvenance?.source === "rate_card";
-    const changed = envelope.lateDelta !== undefined
+    // A charge settled without its final receipt accepts a complete receipt's
+    // own price, including a rate-card price, as a correction. Reconciliation
+    // can only post a receipt that carries its price; token changes are
+    // detected below as usual.
+    const ownPrice = envelope.receipt.cacheAdjustedCostUsd ?? envelope.receipt.costUsdExact ?? envelope.receipt.costUsd;
+    const unavailableClosed = previous.accountingReceiptUnavailable === true && envelope.receipt.complete === true
+      && ownPrice != null && envelope.receipt.costStatus !== "unpriced" && envelope.receipt.usageBasis !== "session_cumulative";
+    const changed = unavailableClosed || envelope.lateDelta !== undefined
       || (envelope.producerEvent?.eventType === "usage.reported" && !envelope.receipt.usage)
       || envelope.receipt.usageBasis === "session_cumulative"
       || ["provider", "biller", "model", "billingType"].some(key => {
         const value = envelope.receipt[key as keyof typeof envelope.receipt];
         return value !== undefined && value !== null && value !== previous[key];
       }) || Object.entries(envelope.receipt.usage ?? {}).some(([key, value]) => previous[key] !== value)
-      || (!rateCardOnly && incomingMoney !== null && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
+      // A projection alone cannot be posted against a charge settled without
+      // its receipt; only the receipt's own price (above) can correct it.
+      || (!rateCardOnly && incomingMoney !== null && (previous.accountingReceiptUnavailable !== true || ownPrice != null)
+        && (acceptedMoney === null || compareCents(incomingMoney, acceptedMoney) !== 0))
       || (!rateCardOnly && envelope.receipt.costStatus !== undefined && envelope.receipt.costStatus !== comparison.costStatus)
       || (authoritative
         && receiptFingerprint(envelope.receipt.pricingProvenance) !== receiptFingerprint(comparison.pricingProvenance ?? null));
@@ -311,7 +321,8 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
-    && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
+    && late.sourceId === previous.accountingReceiptSourceId && sameTokens
+    && (authoritative || (previous.accountingReceiptUnavailable === true && receipt.pricingProvenance?.source === "rate_card"))
     && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1
     && receipt.model === events[0].event.model && receipt.provider === events[0].event.provider
     && biller === events[0].event.biller && billingType === events[0].event.billingType
@@ -329,7 +340,14 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }

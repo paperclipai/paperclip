@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { projectExecution } from "./execution-projection.js";
 import { startTaskDrain, stopTaskDrain } from "./task-admission.js";
+import { resetStartupRecoveryStateForTests, setStartupRecoveryPhase } from "../startup-recovery-state.js";
 
 type Run = Parameters<typeof projectExecution>[0];
 type Coordinator = NonNullable<Parameters<typeof projectExecution>[1]>;
@@ -38,6 +39,16 @@ const project = (
 ) => projectExecution(r, c, pending, undefined, now);
 
 describe("execution truth projection", () => {
+  it("offers Stop for every live run, including a long-silent native turn", () => {
+    const silentSince = new Date(now.getTime() - 35 * 60_000);
+    const silent = run({ lastUsefulActionAt: silentSince, startedAt: silentSince });
+    expect(project(silent)).toMatchObject({ phase: "working", canStop: true });
+    expect(project(run({ runtimeMode: "legacy" }), undefined).canStop).toBe(true);
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now).canStop).toBe(true);
+    for (const status of ["succeeded", "cancelled", "timed_out", "failed"] as const) {
+      expect(project(run({ status }), undefined).canStop).toBe(false);
+    }
+  });
   it("shows maintenance only for admission that has not started", () => {
     startTaskDrain();
     try {
@@ -47,6 +58,28 @@ describe("execution truth projection", () => {
     } finally { stopTaskDrain(); }
     expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
       .toMatchObject({ phase: "queued", label: "Queued", cause: null });
+  });
+  it.each(["starting", "recovering", "draining"] as const)("names a server restart while it holds queued work: %s", phase => {
+    setStartupRecoveryPhase(phase);
+    try {
+      for (const queued of [run({ status: "queued", startedAt: null }), run({ status: "queued", startedAt: now, retryOfRunId: "prior" })]) {
+        const projection = projectExecution(queued, undefined, [], undefined, now);
+        expect(projection).toMatchObject({ phase: "queued", label: "Waiting for server restart", cause: "server_restarting" });
+        expect(projection.nextAction).toMatch(/starts automatically/);
+      }
+      // A live run is not relabelled; restart recovery owns its own state.
+      expect(project().phase).toBe("working");
+    } finally { resetStartupRecoveryStateForTests(); }
+    expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+      .toMatchObject({ label: "Queued", cause: null });
+  });
+  it("keeps the maintenance hold reason while a restarted server is still recovering", () => {
+    setStartupRecoveryPhase("recovering");
+    startTaskDrain();
+    try {
+      expect(projectExecution(run({ status: "queued", startedAt: null }), undefined, [], undefined, now))
+        .toMatchObject({ label: "Waiting for maintenance", cause: "task_drain" });
+    } finally { stopTaskDrain(); resetStartupRecoveryStateForTests(); }
   });
   it.each(["queued", "recovering", "blocked", "recovered"] as const)("shows the exact saved workspace recovery state instead of stale repair instructions: %s", status => {
     const sourceRunId = "ec036e06-90a3-4b69-81db-a8eab7dbfbac";

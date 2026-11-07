@@ -101,6 +101,50 @@ describe("prepareClaudeConfigSeed", () => {
       .resolves.toBe(JSON.stringify({ theme: "dark", permissions: { defaultMode: "default" } }));
   });
 
+  it("seeds bypassPermissions only when it is requested", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-bypass-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "settings.json"), JSON.stringify({
+      theme: "light",
+      permissions: { defaultMode: "acceptEdits", allow: ["Bash(*)"] },
+      hooks: { PreToolUse: [{ matcher: "*" }] },
+    }), "utf8");
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const defaultSeed = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    const bypassSeed = await prepareClaudeConfigSeed(env, onLog, "company-1", {
+      permissionDefaultMode: "bypassPermissions",
+    });
+
+    expect(bypassSeed).not.toBe(defaultSeed);
+    await expect(fs.readFile(path.join(defaultSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "default" } }));
+    await expect(fs.readFile(path.join(bypassSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ theme: "light", permissions: { defaultMode: "bypassPermissions" } }));
+  });
+
+  it("writes a bypassPermissions settings file when the host has none", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-bypass-empty-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    await fs.mkdir(sourceDir, { recursive: true });
+
+    const onLog = vi.fn(async () => {});
+    const env = createEnv(root, sourceDir);
+    const defaultSeed = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    const bypassSeed = await prepareClaudeConfigSeed(env, onLog, "company-1", {
+      permissionDefaultMode: "bypassPermissions",
+    });
+
+    await expect(fs.access(path.join(defaultSeed, "settings.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(bypassSeed, "settings.json"), "utf8"))
+      .resolves.toBe(JSON.stringify({ permissions: { defaultMode: "bypassPermissions" } }));
+  });
+
   it("strips local-only settings from remote Claude config seeds", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-config-boundary-"));
     cleanupDirs.push(root);

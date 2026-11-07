@@ -99,6 +99,17 @@ impl CommandLifecycle {
         }
     }
 
+    /// A rejected suspension changed no provider state: the provider still
+    /// owns its session. Keep the runner serving its controller so it can
+    /// retry, instead of recording `suspended` over a live provider and
+    /// exiting. A failed shutdown still stops the runner.
+    fn after_failure(command: &Command) -> Self {
+        match command.command_type.as_str() {
+            "runner.suspend" => Self::Continue,
+            _ => Self::for_terminal(command),
+        }
+    }
+
     fn merge(self, next: Self) -> Self {
         match (self, next) {
             (Self::Shutdown, _) | (_, Self::Shutdown) => Self::Shutdown,
@@ -447,10 +458,44 @@ impl CumulativeAckPersistence {
 }
 
 pub fn run_durable_runner<E: CommandExecutor>(
+    config: DurableRunnerConfig,
+    bootstrap_ticket: BootstrapTicket,
+    executor: E,
+) -> Result<(), DurableRunnerError> {
+    run_durable_runner_with_host_control(config, bootstrap_ticket, executor, None)
+}
+
+#[cfg(not(unix))]
+pub struct HostControl;
+#[cfg(unix)]
+use crate::host_control::{HostControl, HostIdentity, HostRequest};
+
+#[cfg(unix)]
+struct HostedRunnerControl {
+    channel: HostControl,
+    park_id: Option<String>,
+    claiming: Option<(String, String)>,
+}
+
+#[cfg(unix)]
+impl HostedRunnerControl {
+    fn new(channel: HostControl) -> Self {
+        Self {
+            channel,
+            park_id: None,
+            claiming: None,
+        }
+    }
+}
+
+pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
     mut config: DurableRunnerConfig,
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
+    #[allow(unused_variables)] host_control: Option<HostControl>,
 ) -> Result<(), DurableRunnerError> {
+    #[cfg(unix)]
+    let mut host_control = host_control.map(HostedRunnerControl::new);
     let started = Instant::now();
     config.validate()?;
     if let Some(admission) = config
@@ -508,7 +553,50 @@ pub fn run_durable_runner<E: CommandExecutor>(
     let mut reconnect_attempt = 0_u32;
     let mut next_connection_attempt = Instant::now();
 
-    loop {
+    'session: loop {
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            if control.park_id.is_some() {
+                let remaining = (!config.max_runtime.is_zero())
+                    .then(|| config.max_runtime.saturating_sub(started.elapsed()));
+                if remaining.is_some_and(|duration| duration.is_zero()) {
+                    persist_lifecycle_before_shutdown(
+                        &mut state,
+                        &store,
+                        &mut executor,
+                        "suspended",
+                    )?;
+                    return Ok(());
+                }
+                match process_host_control(
+                    control,
+                    &mut state,
+                    &store,
+                    &mut executor,
+                    true,
+                    remaining,
+                ) {
+                    Ok(HostAction::Claim(ticket)) => {
+                        bootstrap_ticket = Some(ticket);
+                        lease = None;
+                        authenticated_once = false;
+                        disconnected_since = None;
+                        reconnect_attempt = 0;
+                    }
+                    Ok(HostAction::Retire) => return Ok(()),
+                    Ok(_) => continue,
+                    Err(error) => {
+                        let _ = persist_lifecycle_before_shutdown(
+                            &mut state,
+                            &store,
+                            &mut executor,
+                            "suspended",
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        }
         if authenticated_once {
             let disconnected_at = disconnected_since.get_or_insert_with(Instant::now);
             if config
@@ -584,6 +672,22 @@ pub fn run_durable_runner<E: CommandExecutor>(
             continue;
         }
         let using_bootstrap = lease.is_none();
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            match process_host_control(control, &mut state, &store, &mut executor, false, None) {
+                Ok(HostAction::Park) => {
+                    lease = None;
+                    bootstrap_ticket = None;
+                    continue 'session;
+                }
+                Ok(HostAction::Retire) => return Ok(()),
+                Err(error) => {
+                    let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                    return Err(error);
+                }
+                _ => {}
+            }
+        }
         let connect_deadline = connection_attempt_deadline(
             &config,
             started,
@@ -743,6 +847,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                     }
                     Err(error) => {
                         state.record_diagnostic(format!(
@@ -786,6 +894,8 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 welcome.warm_transition_version,
                 connection.protocol_version,
             )?;
+            #[cfg(unix)]
+            admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -861,6 +971,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
         if let Some(next) = authority_rotation {
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
+            #[cfg(unix)]
+            if let Some(control) = host_control.as_mut() {
+                control.claiming = None;
+            }
             disconnected_since = Some(Instant::now());
             continue;
         }
@@ -994,6 +1108,34 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Read control before starting another fsynced provider batch.
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
+            #[cfg(unix)]
+            {
+                if let Some(control) = host_control.as_mut() {
+                    match process_host_control(
+                        control,
+                        &mut state,
+                        &store,
+                        &mut executor,
+                        false,
+                        None,
+                    ) {
+                        Ok(HostAction::Park) => {
+                            // The private owner now holds the exact idle cut. No
+                            // old PRP frame, lease renewal, or provider poll may follow.
+                            lease = None;
+                            bootstrap_ticket = None;
+                            drop(transport);
+                            continue 'session;
+                        }
+                        Ok(HostAction::Retire) => return Ok(()),
+                        Err(error) => {
+                            let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                            return Err(error);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let control_message = transport.receive_json();
             poll_executor_events_when_control_idle(
                 &mut state,
@@ -1058,6 +1200,8 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         welcome.warm_transition_version,
                         connection.protocol_version,
                     )?;
+                    #[cfg(unix)]
+                    admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -1135,6 +1279,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                         disconnected_since = Some(Instant::now());
                         break;
                     }
@@ -1236,6 +1384,148 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 .reconnect_delay
                 .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
+}
+
+#[cfg(unix)]
+enum HostAction {
+    None,
+    Park,
+    Claim(BootstrapTicket),
+    Retire,
+}
+
+#[cfg(unix)]
+fn admit_host_claim(
+    control: Option<&HostedRunnerControl>,
+    command: &Command,
+    next_authority: Option<&DurableRunnerConfig>,
+) -> Result<(), DurableRunnerError> {
+    if control.is_some_and(|control| control.claiming.is_some())
+        && !(matches!(
+            command.command_type.as_str(),
+            "session.snapshot"
+                | "runner.drain"
+                | "runner.suspend"
+                | "runner.shutdown"
+                | "turn.stop"
+        ) || (command.command_type == "run.attach" && next_authority.is_some()))
+    {
+        return Err(DurableRunnerError::invalid(
+            "claimed Runner requires authority attachment before execution",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_host_control<E: CommandExecutor>(
+    control: &mut HostedRunnerControl,
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    executor: &mut E,
+    parked: bool,
+    remaining: Option<Duration>,
+) -> Result<HostAction, DurableRunnerError> {
+    let Some(request) = control.channel.receive(parked, remaining)? else {
+        return Ok(HostAction::None);
+    };
+    if control.channel.replay(&request)? {
+        return Ok(HostAction::None);
+    }
+    match &request {
+        HostRequest::Park {
+            id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        } if !parked
+            && control.park_id.is_none()
+            && control.claiming.is_none()
+            && host_park_cut_matches(
+                state,
+                identity,
+                *last_controller_command_seq,
+                *acked_source_seq,
+            )
+            && executor.host_park_ready()? =>
+        {
+            control.park_id = Some(id.clone());
+            control.channel.reply(&request, "parked")?;
+            Ok(HostAction::Park)
+        }
+        HostRequest::Claim {
+            id,
+            park_id,
+            bootstrap_ticket,
+            ..
+        } if parked && control.park_id.as_ref() == Some(park_id) => {
+            let ticket = BootstrapTicket::new(bootstrap_ticket.clone())?;
+            control.claiming = Some((park_id.clone(), id.clone()));
+            control.park_id = None;
+            control.channel.reply(&request, "claimed")?;
+            Ok(HostAction::Claim(ticket))
+        }
+        HostRequest::Retire {
+            park_id,
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+            ..
+        } if match (
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        ) {
+            (None, None, None, None) => parked && control.park_id.as_ref() == Some(park_id),
+            (Some(claim_id), Some(identity), Some(command_seq), Some(acked_seq)) => {
+                !parked
+                    && control
+                        .claiming
+                        .as_ref()
+                        .is_some_and(|(park, claim)| park == park_id && claim == claim_id)
+                    && host_park_cut_matches(state, identity, *command_seq, *acked_seq)
+                    && executor.host_park_ready()?
+            }
+            _ => false,
+        } =>
+        {
+            persist_lifecycle_before_shutdown(state, store, executor, "suspended")?;
+            control.channel.reply(&request, "retired")?;
+            Ok(HostAction::Retire)
+        }
+        _ => {
+            control.channel.reply(&request, "conflict")?;
+            Ok(HostAction::None)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn host_park_cut_matches(
+    state: &DurableState,
+    identity: &HostIdentity,
+    command_seq: u64,
+    acked_seq: u64,
+) -> bool {
+    identity.runner_instance_id == state.runner_instance_id
+        && identity.environment_lease_id == state.environment_lease_id
+        && identity.run_id == state.run_id
+        && identity.normalized_session_id == state.normalized_session_id
+        && identity.turn_id == state.turn_id
+        && identity.item_id == state.item_id
+        && command_seq == state.last_controller_command_seq
+        && acked_seq == state.acked_source_seq
+        && state.outbox.is_empty()
+        && state.acked_source_seq == state.highest_source_seq()
+        && state.warm_transition.is_none()
+        && state.pending_terminal_delivery.is_none()
+        && state.pending_provider_cleanup.is_none()
+        && state
+            .processed_commands
+            .values()
+            .all(|command| !matches!(command.status.as_str(), "pending" | "indeterminate"))
 }
 
 fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
@@ -1695,6 +1985,23 @@ fn deliver_warm_attachment(
     }
 }
 
+/// A replayed terminal command must reproduce the lifecycle its fence
+/// recorded. One legacy exception: runners built before a failed
+/// `runner.suspend` stopped being terminal persisted a `suspended` fence for
+/// it. Its replay now continues; honour that old fence so an upgraded runner
+/// can still deliver the journaled result and finish the old transition.
+fn replay_satisfies_terminal_fence(
+    pending: &PendingTerminalDelivery,
+    result_status: &str,
+    lifecycle: CommandLifecycle,
+) -> bool {
+    lifecycle.durable_state() == Some(pending.lifecycle.as_str())
+        || (pending.command_type == "runner.suspend"
+            && pending.lifecycle == "suspended"
+            && matches!(result_status, "failed" | "rejected")
+            && lifecycle == CommandLifecycle::Continue)
+}
+
 fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
@@ -1719,7 +2026,7 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
             ));
         }
         let (result, lifecycle) = process_command(state, store, config, executor, command)?;
-        if lifecycle.durable_state() != Some(pending.lifecycle.as_str()) {
+        if !replay_satisfies_terminal_fence(&pending, &result.status, lifecycle) {
             return Err(DurableRunnerError::invalid(
                 "pending terminal command did not replay its durable lifecycle",
             ));
@@ -2014,6 +2321,8 @@ fn process_command<E: CommandExecutor>(
                     // the old receipt must not replace the newer command cursor
                     // with another terminal-delivery fence at an older sequence.
                     CommandLifecycle::Continue
+                } else if result.status == "failed" {
+                    CommandLifecycle::after_failure(command)
                 } else {
                     CommandLifecycle::for_terminal(command)
                 };
@@ -2061,7 +2370,7 @@ fn process_command<E: CommandExecutor>(
             }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
-            return Ok((result, CommandLifecycle::for_terminal(command)));
+            return Ok((result, CommandLifecycle::after_failure(command)));
         }
     };
     if matches!(
@@ -2718,6 +3027,271 @@ mod tests {
             deadline_at: None,
             precondition: None,
             payload: json!({}),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_parking_requires_exact_cut_and_replays_claim_without_reusing_ticket() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct IdleExecutor {
+            proofs: usize,
+            shutdowns: usize,
+            ready: bool,
+        }
+        impl CommandExecutor for IdleExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.proofs += 1;
+                Ok(self.ready)
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdowns += 1;
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-host-retirement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let mut state = DurableState::new(&config);
+        let (socket, mut host) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(host.try_clone().unwrap());
+        let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+        let mut executor = IdleExecutor {
+            proofs: 0,
+            shutdowns: 0,
+            ready: true,
+        };
+        let park = json!({"op":"park","id":"park-1","identity":{
+            "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+            "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+        },"lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        let mut exchange = |request: &Value,
+                            state: &mut DurableState,
+                            control: &mut HostedRunnerControl,
+                            executor: &mut IdleExecutor,
+                            parked: bool| {
+            writeln!(host, "{request}").unwrap();
+            let action = process_host_control(
+                control,
+                state,
+                &store,
+                executor,
+                parked,
+                Some(Duration::from_secs(1)),
+            )
+            .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (action, serde_json::from_str::<Value>(&line).unwrap())
+        };
+        state.last_controller_command_seq = 1;
+        assert_eq!(
+            exchange(&park, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.last_controller_command_seq = 0;
+        assert!(matches!(
+            exchange(&park, &mut state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        assert!(matches!(
+            exchange(&park, &mut state, &mut control, &mut executor, true).0,
+            HostAction::None
+        ));
+        assert_eq!(executor.proofs, 1);
+        let claim = json!({"op":"claim","id":"claim-1","parkId":"park-1","bootstrapTicket":"fresh-private-ticket"});
+        assert!(matches!(
+            exchange(&claim, &mut state, &mut control, &mut executor, true).0,
+            HostAction::Claim(_)
+        ));
+        assert!(matches!(
+            exchange(&claim, &mut state, &mut control, &mut executor, false).0,
+            HostAction::None
+        ));
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        let mut next_authority = config.clone();
+        next_authority.run_id = "next-run".to_owned();
+        assert!(admit_host_claim(
+            Some(&control),
+            &command("run.attach"),
+            Some(&next_authority)
+        )
+        .is_ok());
+        let mut changed = claim;
+        changed["bootstrapTicket"] = json!("different-private-ticket");
+        assert_eq!(
+            exchange(&changed, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        assert_eq!(executor.shutdowns, 0);
+        let mut premature_park = park.clone();
+        premature_park["id"] = json!("park-before-attach");
+        assert_eq!(
+            exchange(
+                &premature_park,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-1"});
+        assert_eq!(
+            exchange(&retire, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        let conditional_retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1",
+            "claimId":"claim-1","identity":park["identity"],
+            "lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        for (field, value) in [
+            ("parkId", json!("wrong-park")),
+            ("claimId", json!("wrong-claim")),
+            ("lastControllerCommandSeq", json!(1)),
+            ("ackedSourceSeq", json!(1)),
+        ] {
+            let mut stale = conditional_retire.clone();
+            stale["id"] = json!(format!("stale-{field}"));
+            stale[field] = value;
+            assert_eq!(
+                exchange(&stale, &mut state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        let mut wrong_identity = conditional_retire.clone();
+        wrong_identity["id"] = json!("stale-identity");
+        wrong_identity["identity"]["runId"] = json!("another-run");
+        assert_eq!(
+            exchange(
+                &wrong_identity,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        executor.ready = false;
+        assert_eq!(
+            exchange(
+                &conditional_retire,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        assert_eq!(executor.shutdowns, 0);
+        executor.ready = true;
+        // Simulate completed run.attach before a later exact parked cut.
+        control.claiming = None;
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
+        let mut next_park = park.clone();
+        next_park["id"] = json!("park-2");
+        assert!(matches!(
+            exchange(&next_park, &mut state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-2"});
+        assert!(matches!(
+            exchange(&retire, &mut state, &mut control, &mut executor, true).0,
+            HostAction::Retire
+        ));
+        assert_eq!(executor.shutdowns, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_blocks_without_provider_polls_and_retires_on_eof_or_lifetime() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct ParkedExecutor(Arc<AtomicUsize>);
+        impl CommandExecutor for ParkedExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("parked provider cannot execute");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(true)
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("parked provider cannot poll");
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        for eof in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-hosted-park-stop-{}-{eof}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            let mut config = config(directory.clone());
+            config.max_runtime = if eof {
+                Duration::ZERO
+            } else {
+                // Include durable startup under parallel-suite filesystem load.
+                Duration::from_secs(2)
+            };
+            let (socket, mut host) = UnixStream::pair().unwrap();
+            let control = HostControl::new(socket).unwrap();
+            writeln!(host,"{}",json!({"op":"park","id":"park-stop","identity":{
+                "runnerInstanceId":config.runner_instance_id,"environmentLeaseId":config.environment_lease_id,
+                "runId":config.run_id,"normalizedSessionId":config.normalized_session_id,"turnId":config.turn_id,"itemId":config.item_id,
+            },"lastControllerCommandSeq":0,"ackedSourceSeq":0})).unwrap();
+            let shutdowns = Arc::new(AtomicUsize::new(0));
+            let executor = ParkedExecutor(shutdowns.clone());
+            let saved_config = config.clone();
+            let task = std::thread::spawn(move || {
+                run_durable_runner_with_host_control(
+                    config,
+                    BootstrapTicket::new("unused-bootstrap".to_owned()).unwrap(),
+                    executor,
+                    Some(control),
+                )
+            });
+            let mut reply = String::new();
+            BufReader::new(&host).read_line(&mut reply).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply).unwrap()["status"],
+                "parked"
+            );
+            if eof {
+                drop(host);
+                assert!(task.join().unwrap().is_err());
+            } else {
+                assert!(task.join().unwrap().is_ok());
+            }
+            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                DurableStateStore::new(&directory)
+                    .unwrap()
+                    .load_or_create(&saved_config)
+                    .unwrap()
+                    .0
+                    .lifecycle,
+                "suspended"
+            );
+            fs::remove_dir_all(directory).unwrap();
         }
     }
 
@@ -5141,7 +5715,10 @@ mod tests {
     #[test]
     fn failed_lifecycle_commands_replay_their_terminal_transition() {
         for (command_type, expected_lifecycle) in [
-            ("runner.suspend", CommandLifecycle::Suspend),
+            // A rejected suspension leaves the provider's session live, so the
+            // runner keeps serving its controller (which may retry) rather
+            // than recording `suspended` over it and exiting.
+            ("runner.suspend", CommandLifecycle::Continue),
             ("runner.shutdown", CommandLifecycle::Shutdown),
         ] {
             let directory = std::env::temp_dir().join(format!(
@@ -5396,6 +5973,87 @@ mod tests {
         assert_eq!(first_stop, CommandLifecycle::Shutdown);
         assert_eq!(replay_stop, CommandLifecycle::Shutdown);
         assert_eq!(executor.calls, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_failed_suspend_fence_still_reconciles_after_upgrade() {
+        let fence = |command_type: &str, lifecycle: &str| PendingTerminalDelivery {
+            command_id: "command_1".to_owned(),
+            controller_seq: 1,
+            command_type: command_type.to_owned(),
+            lifecycle: lifecycle.to_owned(),
+        };
+        // An old runner persisted `suspended` for a failed suspend; the
+        // upgraded replay continues, and must still satisfy that fence.
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Suspend
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Shutdown
+        ));
+        // A completed suspend or a shutdown must still replay its own lifecycle.
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Continue
+        ));
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+    }
+
+    #[test]
+    fn rejected_suspend_keeps_the_runner_serving_its_controller() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-rejected-suspend-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = FailingExecutor { calls: 0 };
+        let command = command("runner.suspend");
+
+        let (result, lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+        let (replayed, replay_lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(replayed.status, "failed");
+        // The provider still owns its session: no `suspended` lifecycle and no
+        // exit, so a fresh runner.suspend from the controller can be served.
+        assert_eq!(lifecycle, CommandLifecycle::Continue);
+        assert_eq!(replay_lifecycle, CommandLifecycle::Continue);
+        assert_eq!(lifecycle.durable_state(), None);
+        assert_eq!(executor.calls, 1);
+        let mut retry = CountingExecutor { calls: 0 };
+        let (_, retry_lifecycle) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut retry,
+            &Command {
+                command_id: "command-suspend-retry".to_owned(),
+                controller_seq: 2,
+                ..command.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(retry_lifecycle, CommandLifecycle::Suspend);
         fs::remove_dir_all(directory).unwrap();
     }
 
