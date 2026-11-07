@@ -1235,6 +1235,45 @@ a snapshot and belongs to the sandbox, so it moves into the restored root. Only 
 old preparation or restore receipt and export staging are dropped. A retained
 native continuation then reads its runner state at the same path.
 
+A sandbox resumed from its provider's saved image keeps earlier folders in a
+lower overlay layer. Without the overlay `redirect_dir` feature, the kernel
+refuses to rename such a directory with `EXDEV`, so the retired root cannot move
+aside. The restore then replaces the root in place: it removes the old saved
+files and export staging, moves the restored files in, and leaves the runtime
+state where it is without a copy.
+
+Restore commands take a sandbox-side SQLite OS lock keyed by the canonical root,
+outside the directories being replaced. The private lock file is permanent; it
+is never unlinked to recover ownership. A lost reply does not release it. The OS
+releases it when the command exits or dies. Contenders wait only for this active
+operation, for at most 120 seconds, without blocking the command event loop.
+This reuses the `node:sqlite` locking dependency of the qualified Node runtime.
+An expired lock wait remains retryable only while the caller still owns the same
+clean epoch and saved snapshot. It does not clear the predecessor's lock. A corrupt
+fence or receipt instead reports a closed refusal reason and is not retried.
+
+The caller supplies its existing workspace authority epoch. While holding the
+operation lock, the command atomically writes and syncs a private epoch fence
+before changing the root. That fence is outside SQLite's rollback transaction,
+so killing the process cannot erase its newer authority. Lower epochs, changed
+identities or digests within one epoch, and missing epochs for already fenced
+roots are refused. Opaque identity strings do not establish ordering. Legacy
+unfenced receipts remain readable, but destructive retired-root replacement
+requires an epoch; unknown or malformed authority records fail closed.
+
+An in-place replacement first publishes a versioned pending marker bound to the
+root, epoch, identity, saved digest and final directory mode. It has no completed
+`identity`, so an older reader cannot adopt it. Under the same lock, a matching
+retry finishes stale preparation-receipt removal and mode cleanup, then atomically
+publishes the ordinary completed receipt. An authorized higher-epoch replacement
+can reconcile an earlier pending root before restoring its selected save; a
+conflicting identity in the same epoch remains held. Completed adoption preserves
+later file and permission edits.
+
+These fences protect participating commands. A legacy command that never took
+the lock still needs actual stop evidence from the existing recovery owner before
+hosted recovery proceeds; a timeout alone never supplies that evidence.
+
 The provider's own idle auto-stop must not coincide with the warm runner idle
 window. The host forwards the run's effective warm idle window (environment
 `runnerIdleTimeoutMs`, else the agent's `idleTimeoutMs`) to the sandbox provider
