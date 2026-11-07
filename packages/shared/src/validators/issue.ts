@@ -771,6 +771,10 @@ const createIssueBaseSchema = z.object({
     .strict()
     .optional()
     .nullable(),
+  /**
+   * Inherit the project and workspace strategy of this issue. The new task never
+   * shares the source issue's realized workspace; it gets its own from the project base.
+   */
   inheritExecutionWorkspaceFromIssueId: z.string().guid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
