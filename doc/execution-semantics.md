@@ -1075,7 +1075,13 @@ transfer's own scratch paths and the explicit source exclusions. Older providers
 that omit files fail inventory verification rather than publish an incomplete save.
 Fallback inventory is limited to 100,000 entries, 64 standalone repositories,
 1 MiB of configuration, 1,024 settings and 256 refspec/merge entries. Controller
-verification and archive normalization share a two-minute cancellation deadline.
+verification shares a two-minute budget across the received-tree check and both
+source rechecks. Controller archive normalization has its own five-minute
+cancellation deadline, matching normal sandbox capture. Time spent sealing does
+not consume the remaining metadata verification budget. The fallback does not
+extend a caller deadline or create new execution authority. Its save interface
+currently has no caller abort signal; the existing source ownership checks still
+fence durable publication.
 These limits reject excessive work before publication and keep the source retained.
 Inventory rechecks cancellation after file identity validation and before opening
 the read stream. An expired deadline rejects the capture without an unhandled
