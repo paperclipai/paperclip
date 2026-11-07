@@ -26,6 +26,8 @@ import { createSavedWorkspaceLoader, readRemoteWorkspaceAuthority, saveRemoteWor
 import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
+import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, boardRecoveryApp, db, interruptedRemotePreparation, makeRetryDue, root, run, seed, withheldPreparationRetry } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -278,6 +280,73 @@ describe("automatic retained workspace recovery", () => {
     if (reviewPending) expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0])
       .toMatchObject({ status: "pending", result: null, resolvedAt: null });
   }, 30_000);
+
+  // RC-50: a restart killed the controller that owned the saved-result copyback.
+  // s13/t06: the kill landed 2 s after Retry. s12/t01: it landed during a later
+  // attempt, after an earlier export failure had already spent one.
+  it.each([
+    { wave: "s13", spentAttempts: 0, expectedStrategy: "finalize_result" },
+    { wave: "s12", spentAttempts: 1, expectedStrategy: "continue" },
+  ])("lets an accepted Retry finish after a killed copyback owner instead of waiting forever ($wave)", async ({ spentAttempts, expectedStrategy }) => {
+    const f = await acceptedRemoteExport();
+    const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
+    if (spentAttempts) {
+      f.runtime.resumeRunLease.mockRejectedValueOnce(new Error("Workspace checkpoint payload mismatch"));
+      await recoverRetainedWorkspace(f.input);
+      await makeRetryDue(f.actionId);
+    }
+    const app = boardRecoveryApp();
+    const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+    // The controller that claimed copyback was SIGKILLed on another host
+    // (no local proof is possible), leaving its durable receipt behind.
+    const dead = { token: randomUUID(), hostname: "killed-controller", pid: 91826,
+      controllerBootId: randomUUID(), processStartedAt: new Date().toISOString() };
+    const source = await run(f.runId);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: dead } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    for (let pass = 0; pass < 8; pass++) {
+      await recoverRetainedWorkspace(f.input);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+      await makeRetryDue(f.actionId);
+    }
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(spentAttempts);
+    // Rechecking an unverifiable owner is not an attempt and never ends in a stale "Retry recovery" handoff.
+    const held = await action(f.actionId);
+    expect(readSystemRecovery(held.evidence)).toMatchObject({ state: "awaiting_evidence", attempts: spentAttempts,
+      failure: { code: "copyback_stop_unconfirmed" } });
+    expect(held.evidence.workspaceOwnerRecovery).toEqual({ state: "operator_required", owner: dead });
+    // Retry names the one action that can progress it, instead of "finalizing" forever.
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", payload: { executionWait: { reason: "workspace_owner_stop_required" } } });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "workspace_owner_stop_required" } });
+    await request(app).post(`/api/issues/${f.issueId}/recovery-actions/resume-workspace-finalization`).send({
+      actionId: f.actionId, runId: f.runId, ownerToken: dead.token, controllerAndCopybackStopped: true,
+      stopEvidence: "The killed control-plane process exited and its host was replaced.",
+    }).expect(202);
+    expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeUndefined();
+    // The same steps the periodic sweep runs for this action.
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    await resumePreservedResultFinalization(db, f.companyId, f.runId);
+    await heartbeatService(db).resumeTaskRetry(f.companyId, retry.requestId!);
+    // The one accepted click now does work: it finishes the saved result, or,
+    // after an earlier recovery handoff (s12), continues in exactly one new run.
+    const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+    expect(settled).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    if (expectedStrategy === "finalize_result") {
+      expect(settled).toMatchObject({ runId: f.runId, payload: { taskRetry: { strategy: "finalize_result" } } });
+      await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "done" });
+    } else {
+      expect(settled.payload).toMatchObject({ taskRetry: { strategy: "continue" } });
+      expect(await db.select({ id: heartbeatRuns.id, previousRunId: sql<string>`${heartbeatRuns.contextSnapshot}->>'previousRunId'` })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued"))))
+        .toEqual([{ id: settled.runId, previousRunId: f.runId }]);
+    }
+  }, 60_000);
 
   it("preserves an explicitly requested superseded remote export without applying its result over newer work", async () => {
     const f = await acceptedRemoteExport();

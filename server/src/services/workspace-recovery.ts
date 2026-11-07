@@ -439,12 +439,36 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const owned = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
     retainedRepairActionId: input.actionId }, runAttempt);
   if (!owned.acquired && owned.reason === "owner_unverified") {
-    const current = await loadSystemRecovery(db, input);
-    const reserved = current && reserveSystemRecoveryAttempt(current);
-    if (current && reserved) await updateSystemRecovery(db, input, current,
-      failSystemRecovery(reserved, new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence")));
+    await holdForUnverifiedCopybackOwner(db, input);
     await recheckStoppedWorkspaceRecovery(db, input, false);
   }
+}
+
+/**
+ * A copyback owner that a restart killed can never confirm its own stop, and
+ * Retry cannot release its receipt (RC-50). Rechecking that receipt is not a
+ * recovery attempt: the bounded recovery window still applies, but no attempt
+ * is spent. Record the exact receipt so the board can confirm the stop through
+ * `resumeNativeWorkspaceAfterOwnerStop`, and so Retry names this wait.
+ */
+async function holdForUnverifiedCopybackOwner(db: Db, input: Source) {
+  const current = await loadSystemRecovery(db, input);
+  if (!current || current.state === "complete" || current.state === "exhausted") return;
+  const [source] = await db.select({ owner: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceFinalizationOwner'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const owner = source?.owner;
+  const next = failSystemRecovery(current, new SystemRecoveryFailure("copyback_stop_unconfirmed", "recheck_evidence"));
+  if (!await updateSystemRecovery(db, input, current, next)) return;
+  if (!owner || typeof owner !== "object" || typeof (owner as { token?: unknown }).token !== "string") return;
+  await db.update(issueRecoveryActions).set({
+    // A confirmation names one receipt; a newer unverified owner needs its own.
+    evidence: sql`(${issueRecoveryActions.evidence} - 'workspaceOwnerStop') || jsonb_build_object('workspaceOwnerRecovery',
+      jsonb_build_object('state', 'operator_required', 'owner', ${JSON.stringify(owner)}::jsonb))`,
+    updatedAt: new Date(),
+  }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+    eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${next.generationId}`,
+    sql`${issueRecoveryActions.evidence}#>'{workspaceOwnerRecovery,owner}' is distinct from ${JSON.stringify(owner)}::jsonb`));
 }
 
 const cursors = new WeakMap<Db, string>();
