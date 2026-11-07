@@ -3,7 +3,7 @@ import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
-import { mainPerson } from "./internal-privacy.js";
+import { agentStatus, cleanupPrivacyProbes, mainPerson } from "./internal-privacy.js";
 import { checks, entity, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
 import { installCommentaryReader } from "./internal-commentary-reader.js";
 interface Feedback { id: string; kind: string; preview: string; runId: string; agent: { id: string; name: string }; task: { id: string; title: string } | null; body?: string }
@@ -23,11 +23,12 @@ export function gradeAgentFeedback(value: unknown) {
     && o.hiddenEntry.agent.id === privateWorker?.id && o.hiddenEntry.task?.id === hidden?.id
     && o.runs.some(run => run.id === o.hiddenEntry!.runId && run.agentId === privateWorker.id && run.status === "succeeded"),
     "The stated suggestions and complaints are genuinely submitted through bound native tools by their own agents and source task runs.");
-  c.add("agent-submission-is-not-board-read", o.agentReadStatus === 403 && !!commentaryHref(o)
-    && /\b(?:cannot|can't|unable|don't have|do not have|human|board.only|restricted|permission|authorized)\b/i.test(o.reply)
-    && /\b(?:commentary|feedback|complaints?|suggestions?)\b/i.test(o.reply)
-    && !/\b(?:I (?:read|browsed|reviewed|checked)|our agents (?:complain|reported)|Morgan (?:complained|suggested))\b/i.test(o.reply),
-    "The CEO directs the person to the authorized commentary view instead of claiming it browsed the board-only submissions.");
+  // The reply's wording is not matched. The submitted feedback text is a
+  // setup-chosen literal the chat agent cannot read, so relaying it means the
+  // answer came from outside the human's commentary access.
+  const relayed = (initial ?? []).some(row => row.preview && o.reply.toLowerCase().includes(row.preview.toLowerCase()));
+  c.add("agent-submission-is-not-board-read", o.agentReadStatus === 403 && !!commentaryHref(o) && !relayed,
+    "The chat agent cannot read board-only commentary, links the person to the authorized commentary view, and does not relay the submitted feedback.");
   const marker = String(o.state.privateMarker);
   c.add("restricted-source-and-preview-excluded", [403, 404].includes(o.privateTaskStatus) && o.hiddenDetailStatus === 404
     && !o.entries.some(row => row.id === o.hiddenEntry!.id || row.task?.id === hidden?.id || row.preview.includes(marker))
@@ -59,7 +60,13 @@ function agentFeedback(): ChatCatalogCase {
       await ctx.input.api.post(`/api/projects/${privateProject.id}/access-members`, { subjectType: "agent", subjectId: privateWorker.id });
       const hidden = await ctx.input.api.post<Entity>(`${root}/issues`, { title: "Restricted feedback prerequisite", projectId: privateProject.id, status: "todo", priority: "medium", assigneeAgentId: privateWorker.id,
         description: `Synthetic qualification prerequisite. Submit exactly one sanitized suggestion through the bound submit_suggestion tool, with body: 'Keep run context discoverable (${privateMarker}).' Use a stable idempotency key. Do not expose private task body or quote prompts in feedback. Finish this small prerequisite task after the real tool acknowledgement; no other work is requested.` });
-      const t = await task(ctx, "Synthetic agent feedback prerequisite", p.id, { status: "todo", assigneeAgentId: worker.id,
+      // The prerequisite task scripts the exact feedback text, so the agent
+      // answering in chat must not be able to read it: only the submitting
+      // worker and the human reader see this source.
+      const feedbackSource = await ctx.input.api.post<Entity>(`${root}/projects`, { name: "Agent feedback source", visibility: "private" });
+      for (const member of [{ subjectType: "agent", subjectId: worker.id }, { subjectType: "user", subjectId: casey.id }])
+        await ctx.input.api.post(`/api/projects/${feedbackSource.id}/access-members`, member);
+      const t = await task(ctx, "Synthetic agent feedback prerequisite", feedbackSource.id!, { status: "todo", assigneeAgentId: worker.id,
         description: "Synthetic qualification prerequisite. Submit one complaint through the bound submit_complaint tool: 'Tool discovery is hard to scan in a long run.' Submit a separate suggestion through submit_suggestion: 'Keep a compact index of available tools.' These are separate synthetic fixture incidents. Use separate stable idempotency keys; submit only once each. Finish this prerequisite task after the real acknowledgements; do not browse or summarize other agents' feedback." });
       const saved = await pollUntil({ label: "Genuine run-bound prior agent suggestions and complaints", deadlineAt: Date.now() + 240_000,
         load: async () => { const entries = await ctx.input.api.get<{ items: Feedback[] }>(`${root}/agent-commentary?limit=100`);
@@ -69,6 +76,8 @@ function agentFeedback(): ChatCatalogCase {
           && value.privateEntries.some(row => row.agent.id === privateWorker.id && row.task?.id === hidden.id && row.preview.includes(privateMarker)),
         reject: value => value.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "Actual prerequisite feedback run did not finish; preserve setup evidence" : undefined });
       const hiddenEntry = saved.privateEntries.find(row => row.agent.id === privateWorker.id && row.task?.id === hidden.id)!;
+      for (const source of [t, hidden]) if (![403, 404].includes(await agentStatus(ctx, ctx.input.fixtures.agent.id, `/api/issues/${source.id}`)))
+        throw new Error("The chat agent can read a task that scripts feedback text; the answer would leak outside commentary access");
       key = await ctx.input.api.postSensitive(`/api/agents/${ctx.input.fixtures.agent.id}/keys`, { name: `commentary-read-control-${ctx.input.nonce}` }); ctx.input.privateSecrets.push(key!.token);
       await ctx.input.evidence("chat-catalog-genuine-feedback-prerequisites.json", { entries: saved.entries, hiddenEntry, runIds: saved.runs.map(row => row.id) });
       readerSession = await installCommentaryReader(ctx, casey, ownerId);
@@ -85,11 +94,12 @@ function agentFeedback(): ChatCatalogCase {
     } catch (error) {
       try { await readerSession?.restore(); readerSession = undefined;
         if (key) { await ctx.input.api.delete(`/api/agents/${ctx.input.fixtures.agent.id}/keys/${key.id}`, { allowNotFound: true }); key = undefined; }
+        await cleanupPrivacyProbes(ctx);
       } finally { await casey.dispose(); casey = undefined; }
       throw error;
     }
   }, gradeAgentFeedback);
-  return { ...base, authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 600_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.agent-feedback.v2", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 600_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-agent-feedback.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-commentary-reader.ts", "chat-run-evidence-observer.ts"],
     async observe(ctx, state): Promise<FeedbackObservation> {
       if (!key) throw new Error("Feedback read probe was not created during setup"); const o = await observeInternal(ctx, state); const root = `/api/companies/${o.companyId}`;
@@ -131,6 +141,7 @@ function agentFeedback(): ChatCatalogCase {
     async cleanup(ctx) { try {
       await readerSession?.restore(); readerSession = undefined;
       if (key) { await ctx.input.api.delete(`/api/agents/${ctx.input.fixtures.agent.id}/keys/${key.id}`, { allowNotFound: true }); key = undefined; }
+      await cleanupPrivacyProbes(ctx);
     } finally { await casey?.dispose(); casey = undefined; } },
   };
 }
