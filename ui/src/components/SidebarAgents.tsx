@@ -542,6 +542,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentRouteRef(agent)) }),
       ]);
       pushToast({
+        presentation: { title: { key: action === "pause" ? "shell:agent_paused" : "shell:agent_resumed" } },
         title: action === "pause" ? translateShell("shell:agent_paused") : translateShell("shell:agent_resumed"),
         body: agent.name,
         tone: "success",
@@ -549,6 +550,10 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     },
     onError: (error, { agent, action }) => {
       pushToast({
+        presentation: {
+          title: { key: action === "pause" ? "shell:could_not_pause_agent" : "shell:could_not_resume_agent" },
+          error: { cause: error },
+        },
         title: action === "pause" ? translateShell("shell:could_not_pause_agent") : translateShell("shell:could_not_resume_agent"),
         body: error instanceof Error ? error.message : agent.name,
         tone: "error",

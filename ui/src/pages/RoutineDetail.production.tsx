@@ -415,6 +415,10 @@ export function RoutineDetail() {
         pushToast({
           title: t("work:copy.routineChanged_cd400e"),
           body: t("work:copy.someoneElseUpdatedThisRoutineReloadToSeeThe_be054f"),
+          presentation: {
+            title: { key: "work:copy.routineChanged_cd400e" },
+            body: { key: "work:copy.someoneElseUpdatedThisRoutineReloadToSeeThe_be054f" },
+          },
           tone: "warn",
         });
         return;
@@ -422,6 +426,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToSaveRoutine_34cf35"),
         body: describeError(mutationError, { action: t("work:copy.saveTheRoutine_0cd92f") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToSaveRoutine_34cf35" },
+          error: { cause: mutationError, action: { key: "work:copy.saveTheRoutine_0cd92f" } },
+        },
         tone: "error",
       });
     },
@@ -456,6 +464,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.routineRunFailed_296c7c"),
         body: describeError(runError, { action: t("work:copy.startTheRoutineRun_b7d489") }).body,
+        presentation: {
+          title: { key: "work:copy.routineRunFailed_296c7c" },
+          error: { cause: runError, action: { key: "work:copy.startTheRoutineRun_b7d489" } },
+        },
         tone: "error",
       });
     },
@@ -478,6 +490,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToUpdateRoutine_658553"),
         body: describeError(statusError, { action: t("work:copy.updateTheRoutine_b91df2") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToUpdateRoutine_658553" },
+          error: { cause: statusError, action: { key: "work:copy.updateTheRoutine_b91df2" } },
+        },
         tone: "error",
       });
     },
@@ -517,6 +533,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToAddTrigger_3c4a07"),
         body: describeError(triggerError, { action: t("work:copy.createTheTrigger_800ccc") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToAddTrigger_3c4a07" },
+          error: { cause: triggerError, action: { key: "work:copy.createTheTrigger_800ccc" } },
+        },
         tone: "error",
       });
     },
@@ -536,6 +556,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToUpdateTrigger_4707ca"),
         body: describeError(triggerError, { action: t("work:copy.updateTheTrigger_4347d3") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToUpdateTrigger_4707ca" },
+          error: { cause: triggerError, action: { key: "work:copy.updateTheTrigger_4347d3" } },
+        },
         tone: "error",
       });
     },
@@ -555,6 +579,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToDeleteTrigger_86096d"),
         body: describeError(triggerError, { action: t("work:copy.deleteTheTrigger_03274f") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToDeleteTrigger_86096d" },
+          error: { cause: triggerError, action: { key: "work:copy.deleteTheTrigger_03274f" } },
+        },
         tone: "error",
       });
     },
@@ -576,6 +604,10 @@ export function RoutineDetail() {
       pushToast({
         title: t("work:copy.failedToRotateWebhookSecret_1caaab"),
         body: describeError(triggerError, { action: t("work:copy.rotateTheWebhookSecret_1c6f8b") }).body,
+        presentation: {
+          title: { key: "work:copy.failedToRotateWebhookSecret_1caaab" },
+          error: { cause: triggerError, action: { key: "work:copy.rotateTheWebhookSecret_1c6f8b" } },
+        },
         tone: "error",
       });
     },
@@ -770,6 +802,10 @@ export function RoutineDetail() {
         pushToast({
           title: t("work:copy.defaultAgentRequired_2761f3"),
           body: t("work:copy.setADefaultAgentBeforeEnablingRoutineAutomation_1885fd"),
+          presentation: {
+            title: { key: "work:copy.defaultAgentRequired_2761f3" },
+            body: { key: "work:copy.setADefaultAgentBeforeEnablingRoutineAutomation_1885fd" },
+          },
           tone: "warn",
         });
         return;

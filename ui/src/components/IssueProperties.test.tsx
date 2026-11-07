@@ -19,6 +19,7 @@ import { IssueProperties } from "./IssueProperties";
 import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
 import { ApiError } from "../api/client";
+import { i18n } from "../i18n";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -3087,6 +3088,73 @@ describe("IssueProperties", () => {
     expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
     expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
+  });
+
+  it.each([
+    { locale: "en", future: "In 1s", due: "Due now", overdue: "Overdue by 1m", momentarily: "checking momentarily…", nextTick: "fires on next tick", attempt: "Attempt 3", paused: "Automatic checks paused", cleared: "Cleared" },
+    { locale: "zh-CN", future: "1秒后", due: "现在到期", overdue: "已逾期 1分", momentarily: "即将检查…", nextTick: "在下一次轮询时触发", attempt: "第 3 次尝试", paused: "自动检查已暂停", cleared: "已解除" },
+  ])("keeps monitor timing explanations semantic in $locale as time advances", async (copy) => {
+    const previousLocale = i18n.language;
+    await i18n.changeLanguage(copy.locale);
+    vi.useFakeTimers();
+    const now = new Date(2026, 6, 17, 13, 56);
+    vi.setSystemTime(now);
+    const monitor = {
+      status: "scheduled" as const,
+      nextCheckAt: new Date(now.getTime() + 1_000).toISOString(),
+      lastTriggeredAt: null, attemptCount: 3, notes: "Verify deployment",
+      scheduledBy: "board" as const, clearedAt: null, clearReason: null,
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    const rowText = () => container.querySelector('[data-testid="monitor-row-trigger"]')?.textContent;
+    const renderMonitor = async (overrides: Partial<Issue> = {}) => {
+      await act(() => root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueProperties issue={createIssue({
+            status: "in_progress",
+            executionPolicy: createExecutionPolicy({ monitor }),
+            executionState: createExecutionState({ monitor }),
+            monitorAttemptCount: 3, ...overrides,
+          })} childIssues={[]} onUpdate={vi.fn()} inline />
+        </QueryClientProvider>,
+      ));
+    };
+    try {
+      await renderMonitor();
+      expect(rowText()).toContain(copy.future);
+      expect(rowText()).toContain(copy.attempt);
+      expect(rowText()).not.toContain(copy.momentarily);
+      expect(rowText()).not.toContain(copy.nextTick);
+      await act(() => { vi.advanceTimersByTime(1_000); });
+      expect(rowText()).toContain(copy.due);
+      expect(rowText()).toContain(copy.momentarily);
+      expect(rowText()).not.toContain(copy.nextTick);
+      await act(() => { vi.advanceTimersByTime(59_000); });
+      expect(rowText()).toContain(copy.due);
+      expect(rowText()).toContain(copy.momentarily);
+      await act(() => { vi.advanceTimersByTime(1_000); });
+      expect(rowText()).toContain(copy.overdue);
+      expect(rowText()).toContain(copy.nextTick);
+      expect(rowText()).not.toContain(copy.momentarily);
+      expect(rowText()).not.toContain(copy.attempt);
+      await renderMonitor({ status: "blocked" });
+      expect(rowText()).toContain(copy.paused);
+      expect(rowText()).not.toContain(copy.nextTick);
+      expect(rowText()).not.toContain(copy.momentarily);
+      await renderMonitor({
+        executionPolicy: createExecutionPolicy(),
+        executionState: createExecutionState({ monitor: { ...monitor, status: "cleared", nextCheckAt: null } }),
+      });
+      expect(rowText()).toContain(copy.cleared);
+      expect(rowText()).not.toContain(copy.nextTick);
+      expect(rowText()).not.toContain(copy.momentarily);
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+      vi.useRealTimers();
+      await i18n.changeLanguage(previousLocale);
+    }
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {

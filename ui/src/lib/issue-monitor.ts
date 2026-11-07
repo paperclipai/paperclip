@@ -91,10 +91,21 @@ function formatDuration(durationMs: number): string {
   return hours > 0 ? t("display:monitor_days_hours", { days: days, hours: hours }) : t("display:monitor_days", { count: days });
 }
 
+/** Timing is independent of localized labels and monitor lifecycle state. */
+export function getMonitorTimingState(
+  nextCheckAt: MonitorDate,
+  now: MonitorDate = new Date(),
+): "future" | "due-now" | "overdue" {
+  const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
+  if (deltaMs > 0) return "future";
+  return deltaMs > -DUE_NOW_GRACE_MS ? "due-now" : "overdue";
+}
+
 export function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
   const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
-  if (deltaMs > 0) return t("display:monitor_in", { duration: formatDuration(deltaMs) });
-  if (deltaMs > -DUE_NOW_GRACE_MS) return t("display:monitor_due");
+  const timing = getMonitorTimingState(nextCheckAt, now);
+  if (timing === "future") return t("display:monitor_in", { duration: formatDuration(deltaMs) });
+  if (timing === "due-now") return t("display:monitor_due");
   return t("display:monitor_overdue", { duration: formatDuration(Math.abs(deltaMs)) });
 }
 
@@ -221,11 +232,11 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
     return { state: retryIsScheduled || attemptCount > 1 ? "retrying" : "scheduled", source, nextCheckAt, attemptCount, serviceName };
   }
 
-  const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
-  if (deltaMs <= -DUE_NOW_GRACE_MS) {
+  const timing = getMonitorTimingState(nextCheckAt, now);
+  if (timing === "overdue") {
     return { state: "overdue", source, nextCheckAt, attemptCount, serviceName };
   }
-  if (deltaMs <= 0) {
+  if (timing === "due-now") {
     return { state: "due-now", source, nextCheckAt, attemptCount, serviceName };
   }
   return {

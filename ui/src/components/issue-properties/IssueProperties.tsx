@@ -59,6 +59,7 @@ import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
+  getMonitorTimingState,
   formatMonitorEtaLabel,
   formatMonitorOffset,
   useMonitorCountdown,
@@ -1344,8 +1345,9 @@ export function IssueProperties({
   const canCheckMonitorNow = canCheckIssueMonitorNow(issue, monitorServiceName);
   const monitorNow = useMonitorCountdown(monitorPaused ? null : monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
-  const monitorIsDueNow = monitorRelative === "due now";
-  const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
+  const monitorTiming = monitorNextCheckAt ? getMonitorTimingState(monitorNextCheckAt, monitorNow) : null;
+  const monitorIsDueNow = monitorTiming === "due-now";
+  const monitorIsOverdue = monitorTiming === "overdue";
   const monitorPrimary = monitorNextCheckAt
     ? monitorPaused ? t("final-components-b:issue-properties.IssueProperties.Automatic_checks_paused_03d978") : formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
     : monitorState?.status === "cleared"
