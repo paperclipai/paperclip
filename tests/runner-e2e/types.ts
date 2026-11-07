@@ -160,6 +160,12 @@ export interface RunnerTaskFixture {
   id: string;
   label: string;
   groups: readonly string[];
+  /**
+   * Opt-in group. When set, the task is selected only by naming this group
+   * (`--group`), the case (`--case`), or an exact execution ID. Suite, profile
+   * and environment selectors alone never select it.
+   */
+  explicitGroup?: string;
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;

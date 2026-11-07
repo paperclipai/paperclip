@@ -19,8 +19,10 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
 }
 
 associate(["product-journeys"], {
+  "saved-skill-use": ["skills/policy", "skills/versions", "documents-artifacts/documents"],
   "company-access-isolation": ["companies/selection", "access/resources"],
   "repository-continuation": ["projects/task-context", "documents-artifacts/attachments"],
+  "task-dependency-resume": ["tasks/properties", "tasks/completion", "documents-artifacts/documents"],
   "routine-scheduled-run": ["routines/definition", "routines/triggers", "routines/history", "routines/management"],
   "file-input-answer": ["documents-artifacts/attachments", "documents-artifacts/documents"],
   "inbox-triage": ["inbox-search/views", "inbox-search/triage"], "task-create": ["tasks/create"], "ask-question": ["questions-and-approvals/questions"],
@@ -69,6 +71,7 @@ associate(["first-task", "confirmation-replies", "completion-updates"], Object.f
   "revise-accept", "reject-no-execution",
 ].map((id) => [id, ["onboarding/first-task"]])));
 associate(["first-task"], { "ordinary-task-control": ["tasks/completion"] });
+associate(["onboarding-approval-history"], { "interview-hire-execute": ["onboarding/first-task", "questions-and-approvals/continuation", "tasks/completion"] });
 associate(["confirmation-replies"], {
   "confirmation-ambiguous": ["questions-and-approvals/confirmations", "questions-and-approvals/audience"],
   "unanswered-question-return": ["questions-and-approvals/dismiss-and-reopen", "questions-and-approvals/continuation"],

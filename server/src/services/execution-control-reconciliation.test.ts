@@ -149,6 +149,49 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     });
   });
 
+  it("keeps the run's prior failure code as the reported root cause", async () => {
+    const { runId } = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({
+      errorCode: "native_execution_ownership_unverified",
+      resultJson: { workspaceRestoreFailure: "restore_failed" },
+    }).where(eq(heartbeatRuns.id, runId));
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await reconcileAbandonedExecutionControl(db);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "failed",
+      errorCode: "execution_finalization_deadline_exceeded",
+      resultJson: { workspaceRestoreFailure: "restore_failed", originalFailureCode: "native_execution_ownership_unverified" },
+    });
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)[0]?.[0]).toMatchObject({
+      runId,
+      errorCode: "execution_finalization_deadline_exceeded",
+      diagnostics: { execution: { originalFailureCode: "native_execution_ownership_unverified" } },
+    });
+  });
+
+  it("does not replace an earlier recorded root cause or record the deadline as its own cause", async () => {
+    const earlier = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({
+      errorCode: "native_execution_ownership_unverified",
+      resultJson: { originalFailureCode: "native_provider_session_failed" },
+    }).where(eq(heartbeatRuns.id, earlier.runId));
+    const repeated = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({ errorCode: "execution_finalization_deadline_exceeded" })
+      .where(eq(heartbeatRuns.id, repeated.runId));
+
+    await reconcileAbandonedExecutionControl(db);
+
+    const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, [earlier.runId, repeated.runId]));
+    expect(runs.find(run => run.id === earlier.runId)?.resultJson).toEqual({ originalFailureCode: "native_provider_session_failed" });
+    expect(runs.find(run => run.id === repeated.runId)?.resultJson ?? {}).not.toHaveProperty("originalFailureCode");
+  });
+
   it("leaves a run owned by a live legacy controller to that controller", async () => {
     const { runId } = await seedAbandonedRunFixture();
     const leaseExpiresAt = new Date(Date.now() + 45_000);

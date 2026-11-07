@@ -2,7 +2,7 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
@@ -31,6 +31,7 @@ interface WriterState {
   timer?: NodeJS.Timeout;
   flushing?: Promise<void>;
   closed: boolean;
+  admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
   sourcePrefixVerified: boolean;
@@ -84,12 +85,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       else activeUploads--;
     };
   }
-  function journal(logRef: string) {
+  function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
     if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(logRef))
       throw new Error("Invalid object log reference");
     return createObjectByteJournal({
       provider: options.provider,
       prefix: `${options.keyPrefix}/segments-v1/${logRef}`,
+      readPriority,
     });
   }
   function schedule(state: WriterState) {
@@ -167,6 +169,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     const state = writers.get(handle);
     if (!state || state.closed) throw new Error("Object run log writer is closed");
+    const admission = admit(state, handle, event);
+    state.admitting.add(admission);
+    try { return await admission; }
+    finally { state.admitting.delete(admission); }
+  }
+  async function admit(state: WriterState, handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     state.signal?.throwIfAborted();
     if (state.failure) throw state.failure;
     const bytes = Buffer.from(
@@ -186,7 +194,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
         totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
       ) {
-        if (state.closed) throw new Error("Object run log writer is closed");
         if (state.failure) throw state.failure;
         if (!waiting) {
           if (admissions >= 32 || admissionBytes + bytes.length > MAX_PENDING_BYTES)
@@ -210,7 +217,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
           capacityWaiters.add(wake);
         });
       }
-      if (state.closed) throw new Error("Object run log writer is closed");
       state.signal?.throwIfAborted();
       if (state.failure) throw state.failure;
       if (event.preservesSourceCoverage !== true || event.sourceCursor !== undefined &&
@@ -267,6 +273,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         pending: [],
         pendingBytes: 0,
         closed: false,
+        admitting: new Set(),
         signal: input.signal,
         sourcePrefixVerified,
         coverageEligible: true,
@@ -323,6 +330,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       capacityChanged();
       try {
         await flush(state);
+        await Promise.allSettled([...state.admitting]);
+        await flush(state);
         state.writer = await state.journal.close(state.writer, state.signal);
         if (finalizeOptions?.computeDigest === false)
           return { bytes: state.writer.head.end, sha256: null, compressed: false };
@@ -344,7 +353,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     },
     async read(handle, opts = {}) {
       if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
-      const store = journal(handle.logRef),
+      const store = journal(handle.logRef, opts.priority ?? "interactive"),
         snapshot = await store.head(opts.signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");
       const offset = Math.max(0, opts.offset ?? 0),

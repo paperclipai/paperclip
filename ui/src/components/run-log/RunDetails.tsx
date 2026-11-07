@@ -1,3 +1,4 @@
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { heartbeatsApi } from "../../api/heartbeats";
@@ -330,13 +331,16 @@ function WorkspaceOperationLogViewer({
   censorUsernameInLogs: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { data: logData, isLoading, error } = useQuery({
+  const logQuery = useQuery({
     queryKey: ["workspace-operation-log", operation.id],
     queryFn: () => heartbeatsApi.workspaceOperationLog(operation.id),
     enabled: open && Boolean(operation.logRef),
     refetchInterval: open && operation.status === "running" ? 2000 : false,
   });
 
+  const logView = useQueryView(logQuery);
+  const { data: logData } = logQuery;
+  const isLoading = logView.kind === "loading" || logView.kind === "reconnecting";
   const chunks = useMemo(
     () => (logData?.content ? parseStoredLogContent(logData.content) : []),
     [logData?.content],
@@ -354,12 +358,8 @@ function WorkspaceOperationLogViewer({
       {open && (
         <div className="rounded-md border border-border bg-background/70 p-2">
           {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
-          {error && (
-            <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
-            </div>
-          )}
-          {!isLoading && !error && chunks.length === 0 && (
+          {logView.kind === "error" && <QueryErrorState size="inline" error={logView.error} onRetry={logView.retry} retrying={logView.isFetching} />}
+          {!isLoading && logView.kind !== "error" && chunks.length === 0 && (
             <div className="text-xs text-muted-foreground">No persisted log lines.</div>
           )}
           {chunks.length > 0 && (

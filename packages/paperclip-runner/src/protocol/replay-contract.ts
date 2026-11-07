@@ -504,6 +504,23 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
       issues: (eventValidator.errors ?? []).map(ajvIssue),
     };
   }
+  // The published schemas leave normalizedSessionId optional, but every
+  // producer sets it (the TypeScript PrpEvent type and the Rust event structs
+  // both require it), and consumers compare it to the expected session. The
+  // schema already limits its type and length when it is present.
+  if (record?.normalizedSessionId === undefined) {
+    return {
+      ok: false,
+      event: null,
+      issues: [
+        {
+          code: "schema_validation",
+          path: "/normalizedSessionId",
+          message: "event normalizedSessionId is required",
+        },
+      ],
+    };
+  }
   return { ok: true, event: value, issues: [] };
 }
 

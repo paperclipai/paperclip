@@ -49,6 +49,7 @@ const apiPrefixes: Record<string, string> = {
   "company-skill-policy.ts": "/api",
   "connection-intents.ts": "/api",
   "connection-event-wake.ts": "/",
+  "ephemeral-enrollment.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "dot-runner.ts": "/api",
@@ -118,6 +119,7 @@ const explicitOpenApiCoverageExclusions = new Set<string>();
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
+  "POST /api/instance/ephemeral-enrollment/prepare",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -1436,4 +1438,13 @@ it("documents explicit owner removals in the timeline response event enum", () =
   expect(schema.properties.events.items.properties.kind.enum).toEqual([
     "created", "commented", "approved", "delegated", "assigned", "unassigned",
   ]);
+});
+
+it("documents canonical saved-resource links in catalog team install responses", () => {
+  const operation = buildOpenApiSpec().paths["/api/companies/{companyId}/teams/catalog/{catalogId}/install"].post;
+  expect(operation.description).toContain("resourceLinks");
+  const schema = operation.responses[201].content["application/json"].schema;
+  expect(schema.required).toContain("resourceLinks");
+  expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
+  expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
 });
