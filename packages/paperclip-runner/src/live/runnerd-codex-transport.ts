@@ -4667,6 +4667,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
     if (this.#attachmentOperation !== null) {
       return Promise.reject(new Error("native_runner_run_attachment_in_progress"));
@@ -4684,6 +4685,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
@@ -4696,6 +4698,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     turnId: string;
     itemId: string;
     currentRunGrant?: NativeRunRuntimeGrant;
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void> {
     if (this.#pendingWarmRecoveryCompletion !== null) {
       throw new Error("native_runner_warm_transition_completion_pending");
@@ -4751,7 +4754,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             this.#runAttachTemplate,
             desired,
             this.#authorizedTools,
-            this.options.resumeCompletionContract,
+            // A retained transport's options belong to its first run.
+            input.completionContract ?? this.options.resumeCompletionContract,
             currentRunGrant?.runtimeContext,
             currentRunGrant ? { text: currentRunGrant.instructions, context: currentRunGrant.runtimeContext } : undefined,
           )
@@ -4759,7 +4763,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             core.store.state,
             desired,
             this.#authorizedTools,
-            this.options.resumeCompletionContract,
+            // A retained transport's options belong to its first run.
+            input.completionContract ?? this.options.resumeCompletionContract,
             currentRunGrant?.runtimeContext,
             currentRunGrant ? { text: currentRunGrant.instructions, context: currentRunGrant.runtimeContext } : undefined,
           );

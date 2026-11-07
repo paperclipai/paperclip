@@ -1478,8 +1478,14 @@ impl CodexProvider {
                 revision: revision.to_owned(),
                 criterion_ids: criterion_ids.to_vec(),
             });
+        // The completion contract is run-scoped and changes with each follow-up.
+        // Codex app-server never receives it (runnerd validates the claim), and
+        // the OpenCode proxy receives the current contract with each turn/start,
+        // so neither needs a cold resume to adopt it. Other providers keep the
+        // cold-resume boundary.
+        let contract_changed = completion_contract != self.completion_contract;
         if authorized_tools != self.authorized_tools
-            || completion_contract != self.completion_contract
+            || (contract_changed && !matches!(self.config.provider.as_str(), "codex" | "opencode"))
         {
             return Ok(false);
         }
@@ -1503,12 +1509,13 @@ impl CodexProvider {
         // The provider process and its thread remain authoritative. Exact
         // settled-turn identities stay in memory so delayed output from an
         // earlier run cannot be accepted as the next turn. A changed semantic
-        // tool or completion contract returns false so the caller can preserve
-        // the existing cold-resume behavior for that incompatible boundary.
+        // tool set (or a changed contract for other providers) returned false
+        // above so the caller preserves the cold-resume boundary.
         self.completed_turn_authority = None;
         self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.expected_shutdown = false;
+        self.completion_contract = completion_contract;
         Ok(true)
     }
 
@@ -2088,6 +2095,14 @@ impl CodexProvider {
         if self.config.provider == "opencode" {
             if let Some(run_id) = run_id {
                 turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+            // A warm attachment can change the contract in place; the proxy's
+            // launch parameters still name the first run's.
+            if let Some(contract) = self.completion_contract.as_ref() {
+                turn_params_object.insert(
+                    "paperclipCompletionContract".to_owned(),
+                    json!({"revision": contract.revision, "criterionIds": contract.criterion_ids}),
+                );
             }
         }
         if let Some(effort) = effort {
