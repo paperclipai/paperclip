@@ -820,6 +820,17 @@ export function registerOwnershipReconciliationWork(
       // A record inside a grace window (rule I7) is a real future obligation.
       const graceDue = report.nextDueAt?.getTime() ?? null;
       nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
+      if (fingerprint !== lastFingerprint) {
+        // One line per change of the in-progress set: the verdict counts per
+        // kind are the Phase 1 data (server log only, never Telemetry).
+        logger.info({
+          inProgress: report.inProgress,
+          violations: report.violations.length,
+          kinds: Object.fromEntries(report.kinds.filter(kind => kind.inProgress > 0 || kind.error)
+            .map(kind => [kind.kind, { ...kind.verdicts, ...(kind.truncated ? { truncated: true } : {}),
+              ...(kind.error ? { error: kind.error } : {}) }])),
+        }, "ownership reconciliation pass");
+      }
       lastFingerprint = fingerprint;
       lastReport = report;
       options.onReport?.(report);
