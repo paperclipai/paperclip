@@ -25,6 +25,9 @@ export async function settleFailedNativeRecoveryPreparation(db: Db, input: {
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)))
       .for("update");
     if (run?.status !== "failed") return false;
+    // Register the work before the writes it announces. A spare wake when no
+    // coordinator matches below is harmless.
+    await notifyExecutionRunWork(tx as unknown as Db, { companyId: input.companyId });
     const now = new Date();
     const [settled] = await tx.update(nativeRunFinalizations).set({
       phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, controlDeadlineAt: null,
@@ -40,7 +43,6 @@ export async function settleFailedNativeRecoveryPreparation(db: Db, input: {
     if (!settled) return false;
     await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: now, executionControlDeadlineAt: null })
       .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
-    await notifyExecutionRunWork(tx as unknown as Db, { companyId: input.companyId });
     return true;
   });
 }
