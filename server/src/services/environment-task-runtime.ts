@@ -261,13 +261,15 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     if (marked.length !== 1) throw new Error("Plugin warm task attachment lost authority");
   }
   try {
-    if (operation.kind === "describe" && metadata.runnerTaskReused === true) {
+    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true && metadata.runnerTaskSessionRetained !== true;
+    if (operation.kind === "describe" && (metadata.runnerTaskReused === true || stoppedWithoutSession)) {
       const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
         driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
         issueId: lease.issueId, config: driverConfig, taskId, runId: run?.id ?? null, agentId: run?.agentId ?? null,
         projectIds, lease: {providerLeaseId: taskId, metadata}, operation:{kind:"status"},
       }));
-      if (state.kind === "status" && state.executionStopped === true) {
+      if (state.kind === "status" && state.executionStopped === true &&
+          (metadata.runnerTaskReused === true || state.sessionStateAvailable !== true)) {
         await executeEnvironmentTask(db, workers, {...input, operation:{kind:"status"}});
         await executeEnvironmentTask(db, workers, {...input, operation:{kind:"complete"}});
         // Preserve the predecessor's stop proof for checkpoint authorization.
