@@ -681,13 +681,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // the same subscription identity preserve its cache and session state.
     const credentialIdentity = credentialBytes
       ? readSubscriptionAccountId(credentialBytes) ?? createHash("sha256").update(credentialBytes).digest("hex") : null;
-    runtimeSkillDigest = createHash("sha256").update(JSON.stringify({
+    const runtimeHomeInputs = {
       runtimeSkillDigest, credentialHome, credentialIdentity, selectedConfigDigest, apiKey: envConfig.OPENAI_API_KEY ?? null,
-    })).digest("hex");
+    };
+    runtimeSkillDigest = createHash("sha256").update(JSON.stringify(runtimeHomeInputs)).digest("hex");
     // Different authorized versions/assignments get separate homes, including
     // session state. Previously permitted private links cannot survive revocation.
     configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
       connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id, runtimeSkillDigest);
+    const managedAiConnection = parseObject(config.managedAiConnection);
+    const managedIdentity = [managedAiConnection.sessionIdentity, managedAiConnection.identity]
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+    if (managedIdentity && !await pathExists(configuredCodexHome)) {
+      runtimeSkillDigest = createHash("sha256").update(JSON.stringify({
+        ...runtimeHomeInputs, credentialHome: managedIdentity,
+      })).digest("hex");
+      configuredCodexHome = path.join(path.dirname(configuredCodexHome), runtimeSkillDigest);
+    }
   }
   if (!executionTargetIsRemote) {
     await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
