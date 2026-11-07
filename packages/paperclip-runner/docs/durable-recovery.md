@@ -114,10 +114,26 @@ Retry then continues the task in a fresh provider session in the same workspace.
 
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the
-executable, each by path and SHA-256). These providers do not re-bind. A changed
+executable, each by path and SHA-256). Cursor Cloud does not re-bind. A changed
 profile fails restore with the same `provider_state_incompatible`
 classification and follows the same disposition, so the controller does not
 retry the restore or try to reattach a runner that already rejected it.
+
+Saved OpenCode state also records the SHA-256 of the OpenCode executable, the
+upstream release that owns the saved conversation. The Node command and the
+proxy bundle are controller runtime: a rebuild or deploy between a hard kill and
+recovery replaces their bytes, and the proxy keeps no state of its own. Restore
+re-binds a saved OpenCode session to the current launch profile only when all of
+these are true:
+
+- The saved release digest equals the current executable's digest.
+- The saved configuration names the current command and proxy paths.
+- The session is settled. It has no active or ambiguous turn, startup attempt,
+  receipt-limit interrupt, pending tool call, undelivered provider event, or
+  working goal. An observed provider exit with nothing in flight is settled.
+
+A changed OpenCode release, an unsettled session, and state written before the
+release digest existed keep the exact binding and fail closed as above.
 
 ## Profile identity
 
