@@ -1,3 +1,5 @@
+import { idleChatHistoryChecksForOwner } from "./chat-channels/idle-history-proof.js";
+import { readSlackIdleIncomingProof, slackHasRegisteredOptionsAtCurrentBuild } from "./chat-channels/slack/idle-incoming.js";
 import { apiWakeFingerprint, createApiWakeAdmission, type ApiWakeAdmission } from "./idle-api-wake-admission.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
@@ -19,6 +21,7 @@ import { hasConnectionEventWakeReceiver } from "./connection-event-wake.js";
 export interface IdleIncomingWakeProof {
   capability: IdleIncomingWakeCapability;
   apiWakeAdmission?: ApiWakeAdmission;
+  completedActionIds?: readonly string[];
   connectionIds: string[];
   endpointIds: string[];
   /** A broker enrollment cannot discharge these credential continuity obligations. */
@@ -92,6 +95,18 @@ export async function readIdleIncomingWakeProof(
         challenge: capability.apiKeyProof!.challenge, keyHash: row.keyHash }),
         expiresAt: row.expiresAt === null ? null : new Date(row.expiresAt).toISOString() })),
     });
+  }
+  if (capability.routes.includes("slack-broker-events-v1")) {
+    const config = paperclipCloudConnectorConfigFromEnv();
+    const slack = await readSlackIdleIncomingProof(tx, { capabilities: input.capabilities,
+      identity: config ? { instanceId: config.instanceId, environment: config.environment } : undefined,
+      receiverBound: hasConnectionEventWakeReceiver(input.receiverOwner), beforeRead, remaining,
+      registeredOptions: slackHasRegisteredOptionsAtCurrentBuild });
+    if (slack) {
+      proof.endpointIds.push(...slack.endpointIds);
+      proof.connectionIds.push(...slack.connectionIds);
+      if (slack.completedActionIds.length) proof.completedActionIds = slack.completedActionIds;
+    }
   }
   if (!capability.routes.includes("github-broker-events-v1")) {
     await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
@@ -286,6 +301,11 @@ export function incomingWakeWorkQuery(
       continuityConnectionIds.includes(id),
     ) ?? []),
   ];
+  if ((reason === "chat_actions" || reason === "chat_deliveries") && proof?.completedActionIds?.length) {
+    const check = idleChatHistoryChecksForOwner(proof.completedActionIds).find(value => value.reason === reason);
+    if (!check) throw new Error("Chat history owner query missing");
+    return typeof check.query === "string" ? sql.raw(check.query) : check.query;
+  }
   if (reason === "agent_api_keys")
     return proof?.apiWakeAdmission !== undefined
       ? sql`SELECT 1 WHERE false`

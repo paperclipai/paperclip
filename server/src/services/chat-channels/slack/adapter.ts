@@ -1,8 +1,29 @@
+import { createHash } from "node:crypto";
+import type { ModalElement } from "chat";
+import { slackDeferredCallbackActive } from "./cloud-callback.js";
+import { slackFormOpenContext } from "./cloud-forms.js";
+import { SlackCloudReceiptError } from "./cloud-event.js";
 import { SlackAdapter } from "@chat-adapter/slack";
 import type { AdapterPostableMessage, LinkPreview, RawMessage } from "chat";
 import { slackSelectionMessage } from "./cards.js";
 
 export class PaperclipSlackAdapter extends SlackAdapter {
+  override async openModal(triggerId: string, modal: ModalElement, contextId?: string): Promise<{ viewId: string }> {
+    const current = slackFormOpenContext();
+    if (!current) {
+      if (slackDeferredCallbackActive()) throw new SlackCloudReceiptError("callback_trigger_owner_required", "attention");
+      return super.openModal(triggerId, modal, contextId);
+    }
+    const view = current.operation.view;
+    if (!view || current.operation.closed || current.updateAttempted || createHash("sha256").update(triggerId).digest("hex") !== current.operation.triggerDigest)
+      throw new SlackCloudReceiptError("form_provider_attempt_changed", "attention");
+    current.updateAttempted = true;
+    const result = await super.updateModal(view.id, { ...modal, notifyOnClose: true }, { hash: view.hash, externalId: view.externalId, contextId });
+    if (result.viewId !== view.id || !result.viewHash) throw new SlackCloudReceiptError("form_update_receipt_invalid", "attention");
+    current.updatedView = { ...view, hash: result.viewHash };
+    return { viewId: result.viewId };
+  }
+
   override async postMessage(threadId: string, message: AdapterPostableMessage): Promise<RawMessage> {
     const payload = slackSelectionMessage(message);
     if (!payload) return super.postMessage(threadId, message);

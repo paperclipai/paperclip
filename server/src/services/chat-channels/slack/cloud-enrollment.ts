@@ -145,6 +145,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
   resolveCredentials: ReturnType<typeof createChatCredentials>["resolveCredentials"];
   runtimeGeneration(setup: InternalSetupState): number;
   connector?: Pick<PaperclipCloudConnector, "slackEventsAvailable" | "slackEventEnrollment">;
+  onCommitted?(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], values: { endpointId: string; active: boolean; subject: string; instanceId: string; environment: import("../../paperclip-cloud-connector.js").PaperclipCloudConnectorEnvironment }): Promise<void>;
 }) {
   return async (endpointId: string, _actorUserId: string | null | undefined, lease: CredentialMutationLeaseGuard) => {
     const [current] = await db.select({ endpoint: chatEndpoints, connection: toolConnections }).from(chatEndpoints)
@@ -189,6 +190,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
           sql`${chatEndpoints.setup}->'slackCloudIntent'->>'id'=${intent.id}`,
           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer,0)=${intent.runtimeGeneration}`)).returning({ id: chatEndpoints.id });
       if (updated.length !== 1) throw new Error("Slack configuration changed before event enrollment committed");
+      if (change.receipt) await options.onCommitted?.(tx, { endpointId, active: intent.active, subject: intent.subject, instanceId: intent.instanceId, environment: config.environment });
       await lease.assertOwned(tx);
     });
     try {

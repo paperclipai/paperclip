@@ -462,6 +462,11 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       );
   });
 
+  router.post("/chat-endpoints/:endpointId/provider-work/:actionId/retry", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/provider-work/:actionId/retry"), validate(z.object({}).strict()), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.json(await service.retrySlackFormReceipt(endpointId(req), String(req.params.actionId), connectionRequestContext(req)));
+  });
+
   router.post("/chat-endpoints/:endpointId/test", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/test"), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.json(await service.test(endpointId(req), undefined, connectionRequestContext(req)));

@@ -1,3 +1,9 @@
+import { stageSlackFormSubmission } from "../slack/form-session.js";
+import { slackFormSubmissionEvidence } from "../slack/cloud-forms.js";
+import { slackFormOpenContext } from "../slack/cloud-forms.js";
+import { stageSlackFormSession, confirmSlackFormSessionUpdate } from "../slack/form-session.js";
+import { SlackCloudReceiptError } from "../slack/cloud-event.js";
+import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { slackQuestionFormValidationError } from "../slack/question-forms.js";
@@ -115,6 +121,7 @@ import { createChatConfirmationActions } from "./confirmation-actions.js";
 type ResourceRow = typeof chatEndpointResources.$inferSelect;
 type PrincipalResolution = { principal: typeof chatExternalPrincipals.$inferSelect; userId: string | null; linkedDenied: boolean };
 type InteractionCallbacksOptions = {
+  withCredentialMutationLease?: ReturnType<typeof import("../../chat-credential-mutation-lease.js").chatCredentialMutationLease>;
   heartbeat: import("../../issue-assignment-wakeup.js").IssueAssignmentWakeupDeps;
   CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities>;
   MAX_ERROR_TEXT: number;
@@ -998,7 +1005,8 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               )
               .digest("hex")}`
           : null;
-        const preflight = await db.transaction(async (tx) => {
+        const cloudForm = event.provider === "slack" ? slackFormOpenContext() : undefined;
+        const runPreflight = (lease?: CredentialMutationLeaseGuard) => db.transaction(async (tx) => {
           await requireCurrentExternalActionAuthorization(tx, {
             conversationId: conversation.id,
             endpointId: record.endpoint.id,
@@ -1037,6 +1045,13 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             })
             .onConflictDoNothing()
             .returning({ id: chatActions.id });
+          if (cloudForm && attempt) {
+            if (!lease || !cloudForm.environment) throw new SlackCloudReceiptError("form_credential_lease_unavailable", "retry");
+            const held = await stageSlackFormSession(tx, { operation: cloudForm.operation, currentBinding: cloudForm.currentBinding,
+              principalId: principal.principal.id, resolved, lease, environment: cloudForm.environment });
+            cloudForm.sessionActionId = held.actionId;
+            if (held.kind !== "update") return { kind: "duplicate" as const };
+          }
           return attempt
             ? {
                 kind: "ready" as const,
@@ -1045,6 +1060,10 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               }
             : { kind: "duplicate" as const };
         });
+        if (cloudForm && !options.withCredentialMutationLease) throw new SlackCloudReceiptError("form_credential_lease_unavailable", "retry");
+        const preflight = cloudForm
+          ? await options.withCredentialMutationLease!(record.endpoint, lease => runPreflight(lease))
+          : await runPreflight();
         if (preflight.kind === "denied") return deny(safelyKnown);
         if (preflight.kind === "duplicate") {
           if (event.provider === "discord") {
@@ -1096,6 +1115,12 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           );
           if (event.provider === "discord") return deny(safelyKnown);
           return;
+        }
+        if (cloudForm) {
+          if (!cloudForm.sessionActionId || !cloudForm.updatedView) throw new SlackCloudReceiptError("form_update_receipt_unavailable", "retry");
+          const updated = await db.transaction(tx => confirmSlackFormSessionUpdate(tx, { companyId: record.endpoint.companyId,
+            endpointId: record.endpoint.id, principalId: principal.principal.id, operationId: cloudForm.operation.id }, cloudForm.operation.view!, cloudForm.updatedView!.hash));
+          if (!updated) throw new SlackCloudReceiptError("form_update_settlement_changed", "retry");
         }
         if (attemptActionId) {
           const [settledAttempt] = await db
@@ -1713,6 +1738,12 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
       }
       return { action: "clear" };
     };
+    const persistSlackFormTerminal = async (tx: DbTransaction, resolved: IssueThreadInteraction) => {
+      if (event.provider !== "slack" || !slackFormSubmissionEvidence()) return;
+      await stageSlackFormSubmission(tx, { companyId: record.endpoint.companyId, endpointId: record.endpoint.id,
+        conversationId: conversation.id, principalId: principal.principal.id, authorizedUserId: principal.userId!,
+        runtimeGeneration: runtimeContext.generation, submitReceiptId: loaded.actionRowId, publicationId: originalPublication.id, resolved });
+    };
     if (loaded.status === "processed") {
       if (!isExactProcessedReplay(loaded)) {
         return deny(
@@ -1723,6 +1754,13 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           },
           loaded.payload,
         );
+      }
+      if (event.provider === "slack" && slackFormSubmissionEvidence()) {
+        await db.transaction(async tx => {
+          await requireCurrentExternalActionAuthorization(tx, { conversationId: conversation.id, endpointId: event.endpointId,
+            expectedUserId: principal.userId!, principalId: principal.principal.id, runtimeContext });
+          await persistSlackFormTerminal(tx, interaction!);
+        });
       }
       if (event.event.relatedThread) {
         await recordCurrentMicrosoftTeamsRoute(
@@ -1874,6 +1912,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
               interactionId: resolved.id,
             });
             if (!completed) throw denialError();
+            await persistSlackFormTerminal(tx, resolved);
             await tx
               .update(chatActions)
               .set({
@@ -1958,6 +1997,12 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
         ).find((candidate) => candidate.id === interaction.id);
         if (!currentInteraction || currentInteraction.status === "pending") {
           return false;
+        }
+        if (event.provider === "slack" && slackFormSubmissionEvidence() && currentInteraction.status === "answered"
+          && currentInteraction.resolvedByUserId === principal.userId) {
+          await requireCurrentExternalActionAuthorization(tx, { conversationId: conversation.id, endpointId: event.endpointId,
+            expectedUserId: principal.userId!, principalId: principal.principal.id, runtimeContext });
+          await persistSlackFormTerminal(tx, currentInteraction);
         }
         await enqueueTerminalIssueInteractionChatPublications(
           tx,

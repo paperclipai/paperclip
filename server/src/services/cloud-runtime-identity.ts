@@ -587,3 +587,24 @@ export function verifyCloudControlAssertion(input: {
   }
   return payload as CloudControlClaims;
 }
+
+export function verifyCloudConnectorReceipt<T extends { binding: { instanceId: string } }>(input: { compactJws: string; env?: NodeJS.ProcessEnv }, parseReceipt: (value: unknown) => T): T {
+  const env = input.env ?? process.env;
+  if (Buffer.byteLength(input.compactJws, "ascii") > 12_000 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(input.compactJws))
+    throw new Error("Invalid connector ACK receipt encoding");
+  const [headerPart, payloadPart, signaturePart] = input.compactJws.split(".");
+  const header = decodeJsonPart(headerPart, "connector receipt header");
+  if (Object.keys(header).sort().join() !== "alg,kid,typ" || header.alg !== "EdDSA"
+    || header.typ !== "paperclip-connector-ack-receipt+jwt" || typeof header.kid !== "string" || !header.kid)
+    throw new Error("Invalid connector ACK receipt header");
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
+  if (!verify(null, Buffer.from(`${headerPart}.${payloadPart}`, "ascii"), key, Buffer.from(signaturePart, "base64url")))
+    throw new Error("Invalid connector ACK receipt signature");
+  const claims = decodeJsonPart(payloadPart, "connector receipt claims");
+  if (Object.keys(claims).sort().join() !== "aud,iss,receipt,sub,v" || claims.v !== 1 || claims.iss !== CLOUD_RUNTIME_IDENTITY_ISSUER
+    || claims.aud !== "paperclip-connector-ack-receipt/v1" || claims.sub !== nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID))
+    throw new Error("Invalid connector ACK receipt claims");
+  const receipt = parseReceipt(claims.receipt);
+  if (receipt.binding.instanceId !== claims.sub) throw new Error("Connector ACK receipt instance changed");
+  return receipt;
+}

@@ -35,7 +35,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
@@ -86,7 +86,7 @@ export type SealedConnectorEvents = {
   }>;
 };
 
-type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1";
+type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1" | "slack.form-open.v1" | "slack.callbacks.v1";
 
 type SealedEnvelope = {
   v: 1;
@@ -116,8 +116,10 @@ type ConnectorResponse = {
   leaseId?: unknown;
   events?: unknown;
   acknowledged?: unknown;
+  formReceipts?: unknown;
   githubApps?: { version: number };
   slackEvents?: { version: number };
+  slackForm?: unknown;
   enrollment?: unknown;
   retirement?: unknown;
   eventWakeVersion?: unknown;
@@ -125,6 +127,7 @@ type ConnectorResponse = {
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
   "slack-events": "/v1/connector/slack-events",
+  "slack-forms": "/v1/connector/slack-forms",
   "github-app": "/v1/connector/github-apps",
   status: "/v1/connector/instance-status",
   session: "/v1/connector/sessions",
@@ -156,6 +159,8 @@ const BROKER_REJECTION_REASONS = new Set([
   "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
   "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
   "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
+  "SLACK_FORM_SUBJECT_CHANGED", "SLACK_FORM_INSTANCE_CHANGED", "SLACK_FORM_ENROLLMENT_CHANGED", "SLACK_FORM_CREDENTIAL_CHANGED",
+  "SLACK_FORM_RETIREMENT_CHANGED", "SLACK_FORM_RETIREMENT_PROOF_MISSING", "SLACK_FORM_CUSTODY_CHANGED", "SLACK_FORM_RETIREMENT_SIGNER_UNAVAILABLE", "SLACK_FORM_CANONICAL_FACT_CHANGED", "SLACK_FORM_CANONICAL_FACT_BUDGET_CHANGED", "SLACK_FORM_CANONICAL_FACT_PENDING",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
 
@@ -290,7 +295,7 @@ export function createPaperclipCloudConnector(input: {
   async function call(
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
-    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment"; value: string },
+    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment" | "operation"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -391,10 +396,43 @@ export function createPaperclipCloudConnector(input: {
   }
 
   return {
+    instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
     eventWakeVersion: () => eventWakeVersion,
     async slackEventsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.slackEvents?.version === 1;
+    },
+    async slackFormOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }) {
+      const response = await call("slack-forms", values, { field: "operation", value: JSON.stringify(values.operation) });
+      if (!isRecord(response.slackForm)) throw badEnvelope();
+      if (values.operation.kind === "receipt" && values.operation.acceptedAckReceipt !== undefined) {
+        if (Object.keys(response.slackForm).sort().join() !== "acceptedReceiptDigest,needsTerminalOriginal" || typeof response.slackForm.acceptedReceiptDigest !== "string"
+          || !/^[a-f0-9]{64}$/.test(response.slackForm.acceptedReceiptDigest) || typeof response.slackForm.needsTerminalOriginal !== "boolean") throw badEnvelope();
+        return response.slackForm;
+      }
+      if (!["receipt", "terminal-ack"].includes(String(values.operation.kind))) return response.slackForm;
+      const envelope = parseEnvelope(response.slackForm.sealed, "events", "slack", "slack.form-open.v1");
+      const receipt = decryptEnvelope(envelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+      if (!isRecord(receipt) || receipt.version !== 1 || receipt.instanceId !== config.instanceId || receipt.environment !== config.environment) throw badEnvelope();
+      if (!isRecord(receipt.operation)) throw badEnvelope();
+      if (receipt.operation.closed !== null) {
+        if (!isRecord(receipt.operation.closed)) throw badEnvelope();
+        const closeEnvelope = parseEnvelope(receipt.operation.closed.evidence, "events", "slack", "slack.form-open.v1");
+        const evidence = decryptEnvelope(closeEnvelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+        if (!isRecord(evidence) || evidence.version !== 1 || !["close", "submission"].includes(String(evidence.kind)) || evidence.instanceId !== config.instanceId
+          || evidence.environment !== config.environment || evidence.operationId !== receipt.operation.id) throw badEnvelope();
+        receipt.operation.closed = { ...receipt.operation.closed, evidence };
+      }
+      if (receipt.operation.rejection !== null) {
+        if (!isRecord(receipt.operation.rejection)) throw badEnvelope();
+        const rejectionEnvelope = parseEnvelope(receipt.operation.rejection.evidence, "events", "slack", "slack.form-open.v1");
+        const evidence = decryptEnvelope(rejectionEnvelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+        if (!isRecord(evidence) || evidence.version !== 1 || evidence.kind !== "rejection" || evidence.instanceId !== config.instanceId
+          || evidence.environment !== config.environment || evidence.operationId !== receipt.operation.id
+          || evidence.responseDigest !== receipt.operation.rejection.responseDigest) throw badEnvelope();
+        receipt.operation.rejection = { ...receipt.operation.rejection, evidence };
+      }
+      return receipt;
     },
     async slackEventEnrollment(values: { subject: string; companyId: string; enrollment: Record<string, unknown> }) {
       const response = await call("slack-events", values, { field: "enrollment", value: JSON.stringify(values.enrollment) });
@@ -571,6 +609,24 @@ export function createPaperclipCloudConnector(input: {
             event.payload = { githubApp: delivery };
           }
           if (event.provider === "slack") {
+            if (event.payload.slackCallback !== undefined) {
+              const packet = event.payload.slackCallback;
+              if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+              const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.callbacks.v1");
+              const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.callbacks.v1", []);
+              if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
+                || delivery.bindingId !== packet.bindingId || delivery.acceptedAt !== event.createdAt || delivery.lane !== event.event
+                || !["command", "action"].includes(String(delivery.lane))) throw badEnvelope();
+              event.payload = { slackCallback: delivery };
+            } else if (event.payload.slackFormOpen !== undefined) {
+              const packet = event.payload.slackFormOpen;
+              if (!isRecord(packet) || typeof packet.operationId !== "string" || packet.bindingId !== `slack-form-open:${packet.operationId}`) throw badEnvelope();
+              const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.form-open.v1");
+              const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+              if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
+                || !isRecord(delivery.operation) || delivery.operation.id !== packet.operationId || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+              event.payload = { slackFormOpen: delivery };
+            } else {
             const packet = event.payload.slackEvent;
             if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
             const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.events.v1");
@@ -579,6 +635,7 @@ export function createPaperclipCloudConnector(input: {
               || delivery.environment !== config.environment || delivery.bindingId !== packet.bindingId
               || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
             event.payload = { slackEvent: delivery };
+            }
           }
           events.push(event);
         } catch {
@@ -586,6 +643,20 @@ export function createPaperclipCloudConnector(input: {
         }
       }
       return { leaseId: opened.leaseId, events, ...(failedEventIds.length ? { failedEventIds } : {}) };
+    },
+    async acknowledgeEventsWithReceipts(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<{ acknowledged: number; formReceipts: { deliveryId: string; receiptJws: string }[] }> {
+      const response = await call("event-ack", values, { field: "acknowledgement", value: JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds }) });
+      if (typeof response.acknowledged !== "number" || !Number.isSafeInteger(response.acknowledged) || response.acknowledged < 0
+        || !Array.isArray(response.formReceipts) || response.formReceipts.length > 50) throw badEnvelope();
+      const seen = new Set<string>();
+      const formReceipts = response.formReceipts.map((value: unknown) => {
+        if (!isRecord(value) || Object.keys(value).sort().join() !== "deliveryId,receiptJws" || typeof value.deliveryId !== "string"
+          || !/^slack_form_[a-f0-9]{64}$/.test(value.deliveryId) || !values.deliveryIds.includes(value.deliveryId) || seen.has(value.deliveryId)
+          || typeof value.receiptJws !== "string" || Buffer.byteLength(value.receiptJws, "ascii") > 12000) throw badEnvelope();
+        seen.add(value.deliveryId); return { deliveryId: value.deliveryId, receiptJws: value.receiptJws };
+      });
+      if (values.deliveryIds.filter(id => /^slack_form_[a-f0-9]{64}$/.test(id)).some(id => !seen.has(id))) throw badEnvelope();
+      return { acknowledged: response.acknowledged, formReceipts };
     },
     async acknowledgeEvents(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<number> {
       const acknowledgement = JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds });
@@ -618,7 +689,10 @@ function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: 
   return { kind: "paperclip_cloud", session };
 }
 
-export type PaperclipCloudConnector = ReturnType<typeof createPaperclipCloudConnector>;
+export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation"> & {
+  instanceIdentity?: () => Readonly<{ instanceId: string; environment: PaperclipCloudConnectorEnvironment }>;
+  slackFormOperation?: ReturnType<typeof createPaperclipCloudConnector>["slackFormOperation"];
+};
 export type PaperclipCloudGoogleWorkspaceConnector = PaperclipCloudConnector;
 
 /** Accept persisted Paperclip ID-era records while all new records use the Cloud strategy. */
