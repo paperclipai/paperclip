@@ -74,6 +74,14 @@ the process dies inside the effect window, recovery records an indeterminate
 result and refuses to execute that command again. Recent results are bounded;
 commands older than the compacted controller cursor fail closed.
 
+A controller can die after it sends `turn.start` but before it checkpoints the
+accepted turn. The provider keeps running that turn. On reattach, the host
+driver adopts the single active turn only when the latest completed
+`turn.start` result for this run accepted that exact turn id, and no run
+attachment came after it. The driver then emits the missing `turn.accepted`
+and waits for that turn instead of starting another. Any other active turn
+still fails closed as an unexpected turn.
+
 State written before complete-command fingerprints existed is migrated by
 compacting its legacy command journal through the last recorded controller
 sequence. The runner can recover, but it rejects redelivery of those older

@@ -606,6 +606,26 @@ function retargetRunAttachPayload(
   return payload;
 }
 
+/**
+ * The provider turn accepted by this run's latest durable `turn.start`
+ * command. Only a completed command whose authenticated result accepted the
+ * same controller-assigned turn id counts, and it must follow the latest run
+ * attachment so a prior run's turn on a reused Runner is never claimed.
+ */
+export function controllerAcceptedTurnStartId(commands: readonly unknown[]): string | null {
+  const ordered = commands.map(record).filter(command => typeof command.controllerSeq === "number")
+    .sort((left, right) => (left.controllerSeq as number) - (right.controllerSeq as number));
+  const latestStart = ordered.findLast(command => command.type === "turn.start");
+  if (!latestStart || latestStart.status !== "completed") return null;
+  const latestAttachment = ordered.findLast(command => command.type === "run.attach" || command.type === "run.prepare");
+  if (latestAttachment && (latestAttachment.controllerSeq as number) > (latestStart.controllerSeq as number)) return null;
+  const accepted = record(record(latestStart.result).result);
+  const providerTurnId = accepted.providerTurnId;
+  if (accepted.status !== "accepted" || typeof providerTurnId !== "string" || providerTurnId.length === 0) return null;
+  const requestedTurnId = record(latestStart.payload).turnId;
+  return requestedTurnId === undefined || requestedTurnId === providerTurnId ? providerTurnId : null;
+}
+
 function recoveredRunAttachment(state: {
   commands: readonly {
     commandId: string;
@@ -2094,7 +2114,10 @@ export function rehydrateRunnerdUsageNotification(
     // providerSessionId can be a distinct backend/agent session (ACPX is one
     // example), so it must remain metadata rather than become a thread bind.
     threadId: openedThreadId,
-    turnId: activeTurnId,
+    // Before this run's first turn there is no turn to own the usage. A
+    // shared thread can report usage from earlier work then; an empty owner
+    // would make the driver reject it as unowned authority.
+    ...(activeTurnId ? { turnId: activeTurnId } : {}),
     tokenUsage: {
       total: record(rawParams.cumulative),
       runDelta: record(rawParams.runDelta),
@@ -3865,6 +3888,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       )?.payload;
     const model = record(record(template).provider).model;
     return typeof model === "string" && model.startsWith("openrouter/");
+  }
+
+  controllerAcceptedTurnId(): string | null {
+    return controllerAcceptedTurnStartId(this.#core?.store.state.commands ?? []);
   }
 
   turnControlCapabilities(): NativeTurnControlCapabilities | null {

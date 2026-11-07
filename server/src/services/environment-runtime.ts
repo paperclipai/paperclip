@@ -501,6 +501,13 @@ export interface EnvironmentDriverAcquireInput {
    */
   warmRunnerIdleTimeoutMs?: number;
   /**
+   * The run's remote runner reconnect grace when the run places a remote runner
+   * on the sandbox. Forwarded to the provider worker only (never to lease
+   * identity or metadata), so a provider idle auto-stop cannot stop the sandbox
+   * during a controller outage the host still recovers.
+   */
+  runnerReconnectGraceMs?: number;
+  /**
    * Re-check the environment company binding inside the lease insert
    * transaction. The login acquire paths set this so a managed reconciliation
    * that binds the sandbox to another company between the route guard and this
@@ -557,6 +564,8 @@ export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInpu
   requestedCwd?: string;
   /** The run's warm runner idle window, forwarded to the provider worker only. */
   warmRunnerIdleTimeoutMs?: number;
+  /** The run's remote runner reconnect grace, forwarded to the provider worker only. */
+  runnerReconnectGraceMs?: number;
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
@@ -1661,6 +1670,8 @@ function createSandboxEnvironmentDriver(
           ...stripSandboxProviderEnvelope(parsed.config),
           // Provider-only view of the run's warm idle window (see the input doc).
           ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+          // Provider-only view of the run's remote runner reconnect grace.
+          ...(input.runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs: input.runnerReconnectGraceMs } : {}),
         };
         const storedConfig = pinnedSnapshotId ? { ...storedParsed.config, snapshot: pinnedSnapshotId } : storedParsed.config;
         if (pinnedSnapshotId) delete storedConfig.image;
@@ -2597,6 +2608,7 @@ function createSandboxEnvironmentDriver(
         }) as SandboxEnvironmentConfig),
         // Provider-only view of the run's warm idle window (see the input doc).
         ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+        ...(input.runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs: input.runnerReconnectGraceMs } : {}),
       };
       const resumed = await pluginWorkerManager.call(pluginId, "environmentResumeLease", {
         driverKey: providerKey, companyId: input.lease.companyId, environmentId: input.environment.id,
@@ -3837,6 +3849,8 @@ export function environmentRuntimeService(
       requestedExpiresAt?: Date | null;
       /** The run's warm runner idle window, forwarded to the provider worker only. */
       warmRunnerIdleTimeoutMs?: number;
+      /** The run's remote runner reconnect grace, forwarded to the provider worker only. */
+      runnerReconnectGraceMs?: number;
       /**
        * Re-check the environment company binding inside the lease insert
        * transaction. The login acquire paths set this to reject a foreign-company
@@ -3869,6 +3883,7 @@ export function environmentRuntimeService(
         requestedExpiresAt: input.requestedExpiresAt ?? null,
         assertCompanyBinding: input.assertCompanyBinding,
         ...(input.warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs: input.warmRunnerIdleTimeoutMs } : {}),
+        ...(input.runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs: input.runnerReconnectGraceMs } : {}),
       });
 
       return {

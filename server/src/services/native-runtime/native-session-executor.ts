@@ -378,6 +378,7 @@ type NativeSessionStartup = {
   priorRestartDetach?: symbol;
   leaseOwner?: string;
   executionLeaseRenewal?: NativeExecutionLeaseRenewal;
+  providerPackSourceAbort: AbortController;
   /** A fresh claim whose preparation failed before any provider turn. */
   unstartedClaim?: { leaseOwner: string; attempt: number };
   /** A provider session handle was published; a turn may have followed it. */
@@ -8780,6 +8781,7 @@ async function performNativeCancellation(
     && startup.sessionPublished !== true && startup.providerWorkMayPrecede !== true));
   if (startup) {
     startup.stopRequested = true;
+    startup.providerPackSourceAbort.abort(new NativeCancellationPendingRecoveryError());
     startup.executionContext?.abort(new Error("native_session_cancelled"));
     startup.cancellationSettled = new Promise<void>(resolve => { settleStartupCancellation = resolve; });
   }
@@ -9161,6 +9163,7 @@ export async function executePaperclipNativeSession(input: {
   let resolveStartup!: (session: ActiveNativeSession | null) => void;
   let settle!: () => void;
   const startup: NativeSessionStartup = {
+    providerPackSourceAbort: new AbortController(),
     priorRestartDetach: nativeRunsDetachingForRestart.get(runId),
     providerWorkMayPrecede: Boolean(input.restartRecovery),
     settled: new Promise<void>(resolve => { settle = resolve; }),
@@ -9317,6 +9320,7 @@ export async function executePaperclipNativeSession(input: {
     }
     throw error;
   } finally {
+    startup.providerPackSourceAbort.abort(new Error("native_execution_startup_completed"));
     for (const lease of diagnosticLeases) lease.retire();
     let startupUnsettled = false;
     if (startup.executionContext) {
@@ -9876,6 +9880,7 @@ async function executePaperclipNativeSessionWithinScope(
             remote: input.runnerExecutionTarget?.kind === "remote",
             confirmedDeadline: confirmedLeaseDeadline,
             onLost: () => {
+              startup.providerPackSourceAbort.abort(new Error("native_session_lease_lost"));
               startup.executionContext?.abort(new Error("native_session_lease_lost"));
               return input.runnerExecutionTarget?.kind === "remote"
                 ? detachNativeSessionsForRestart([input.execution.binding.runId], leaseOwner)
@@ -12801,6 +12806,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   runner: CommandManagedRuntimeRunner;
   configuredProviderPackRoot: string | null;
   manifest: RemoteProviderPackManifest;
+  signal?: AbortSignal;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
 }): Promise<{ root: string; manifest: RemoteProviderPackManifest; source: "staged" | "preinstalled" | "uploaded" }> {
@@ -12891,16 +12897,18 @@ export async function prepareRemoteProviderPackOnTarget(input: {
         root: configuredProviderPackRoot,
         sourceDigest: readRemoteProviderPackIdentity(configuredProviderPackRoot, false).digest,
         expectedDigest: expectedProviderPackManifest.digest,
+        manifest: expectedProviderPackManifest,
+        signal: input.signal,
         runner: remoteCommandRunner,
         cwd: remoteTarget.remoteCwd,
         targetPath: stagedRemoteProviderPackRoot,
         reuseRoots: preinstalledProviderPackRoots,
         trace: input.trace,
-        verifyDirectory: () => { readRemoteProviderPackManifest(configuredProviderPackRoot); },
-        stageDirectory: () => stageRemoteRunnerDirectory({
+        verifyDirectory: (sourceRoot) => { readRemoteProviderPackManifest(sourceRoot); },
+        stageDirectory: (sourceRoot) => stageRemoteRunnerDirectory({
           target: remoteTarget,
           runner: remoteCommandRunner,
-          sourcePath: configuredProviderPackRoot,
+          sourcePath: sourceRoot,
           targetPath: stagedRemoteProviderPackRoot,
           mode: 0o700,
         }),
@@ -14895,9 +14903,14 @@ async function createRunnerdBackendWithinSessionClaim(
       expectedProviderPackManifest &&
       stagedRemoteProviderPackRoot
     ) {
+      const sourceRunId = sessionToolAuthorityEpochs.get(sessionScopeId)?.runId ?? input.execution.binding.runId;
+      const startupSignal = nativeSessionStartups.get(sourceRunId)?.providerPackSourceAbort.signal;
+      const contextSignal = input.executionContext?.active ? input.executionContext.signal : undefined;
+      const sourceSignals = [startupSignal, contextSignal].filter((signal): signal is AbortSignal => !!signal);
       const prepared = await prepareRemoteProviderPackOnTarget({
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
         manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
+        signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
       });
       activeRemoteProviderPackRoot = prepared.root;
       providerPackVerified = true;
