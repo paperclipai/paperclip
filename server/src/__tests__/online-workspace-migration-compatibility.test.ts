@@ -109,6 +109,30 @@ describe.skipIf(!support.supported)("versioned online migration compatibility wi
     expect(onlineWorkspaceMigrationReceipt(result).members?.[0]?.operationId).toBe(completed.id);
     await oldColdRestore(f, "saved by old writer\n");
   }, 60_000);
+  it("reports a committed publication requiring reconciliation when the independent receipt read fails", async () => {
+    const f = await fixture(), transaction = db.transaction.bind(db);
+    let completedAtFault: string | null = null;
+    vi.spyOn(db, "transaction").mockImplementation((async (action, config) => {
+      if (config?.accessMode === "read only") {
+        const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId));
+        const completed = operations.find(operation => operation.status === "succeeded");
+        if (completed) {
+          completedAtFault = completed.id;
+          throw new Error("fixture_receipt_read_database_failed");
+        }
+      }
+      return transaction(action, config);
+    }) as Db["transaction"]);
+    try {
+      await expect(apply(request(f))).rejects.toThrow("online_migration_committed_receipt_requires_reconciliation");
+    } finally { vi.restoreAllMocks(); }
+    const [completed] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, f.workspaceId));
+    expect(completedAtFault).toBe(completed.id);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.finishedAt).not.toBeNull();
+    expect(old.readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBe(completed.metadata?.snapshotId);
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original user edits\n");
+  }, 60_000);
   it.each(["pending", "uploaded"])("resumes the old migration.v1 journal shape with the same operation and snapshot IDs (%s)", async state => {
     const f = await fixture(), abort = new AbortController();
     if (state === "pending") {
