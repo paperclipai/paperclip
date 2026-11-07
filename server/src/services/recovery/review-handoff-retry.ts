@@ -296,6 +296,8 @@ async function recordRefusedReviewHandoffAttempt(
   },
 ): Promise<Date> {
   return db.transaction(async (tx) => {
+    // Register the retry obligation before its write, so recovery tracks the write from the start.
+    await notifyIssueRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
     const [recorded] = await tx.insert(agentWakeupRequests).values({
       companyId: input.companyId,
       agentId: input.agentId,
@@ -308,8 +310,6 @@ async function recordRefusedReviewHandoffAttempt(
       idempotencyKey: input.idempotencyKey,
       finishedAt: new Date(),
     }).returning({ createdAt: agentWakeupRequests.createdAt });
-    // The refused attempt leaves an obligation: recovery must register its retry deadline.
-    await notifyIssueRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
     return recorded.createdAt;
   });
 }

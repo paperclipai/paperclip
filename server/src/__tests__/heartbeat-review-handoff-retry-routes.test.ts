@@ -18,6 +18,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -69,6 +70,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
   REVIEW_HANDOFF_NO_RECEIPT_REASON,
   REVIEW_HANDOFF_REFUSED_REASON,
@@ -654,6 +656,31 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
       attemptCount: 3,
       maxAttempts: 3,
     });
+    await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("registers the recovery obligation before it writes the refused attempt", async () => {
+    const { companyId, issueId, reviewerAgentId } = await seedFixture();
+    await db.delete(agents).where(eq(agents.id, reviewerAgentId));
+    const heartbeat = heartbeatService(db);
+    const intents: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.strandedAssignments, (event, hints) => {
+      if (event === "intent") intents.push(...(hints ?? []));
+    });
+
+    try {
+      await expect(
+        reconcileReviewHandoffAfterBlockerClear(db, {
+          issueId,
+          companyId,
+          enqueueWakeup: (agentId, req) => heartbeat.wakeup(agentId, req),
+        }),
+      ).rejects.toThrow("Agent not found");
+    } finally {
+      unsubscribe();
+    }
+
+    expect(intents).toContain(JSON.stringify({ companyId, issueId }));
     await heartbeat.drainActiveRunExecutions();
   });
 
