@@ -1,4 +1,7 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
@@ -117,6 +120,15 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * grace plus a margin, a terminal run whose recovery has settled no longer
  * holds new company work: its debt settles as unpriced, flagged so the
  * blocking policy still counts it and the board sees which run it was. */
+/** A run's accounting settled: an admission hold may have cleared. Held work
+ * (queued runs, saved messages and Retries, and tasks whose start or
+ * continuation was refused) waits passively, so wake its owners. */
+async function notifyAccountingHoldRelease(tx: object, companyId: string) {
+  await notifyRunDispatch(tx, { companyId });
+  await notifyDeferredExecutionEligibility(tx, { companyId });
+  await notifyIssueRecovery(tx, { companyId });
+}
+
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
 /** `at` is one shared cutoff, so the actionable scan and the wake query
  * cannot both miss a run whose bound falls between them. */
@@ -205,9 +217,13 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
-      if (object(run.usageJson).accountingLateReceiptPending === true)
+      if (object(run.usageJson).accountingLateReceiptPending === true) {
+        // Clearing late debt can release an admission hold too.
+        await notifyAccountingHoldRelease(tx, run.companyId);
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
+      }
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+      await notifyAccountingHoldRelease(tx, run.companyId);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
         projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
@@ -249,6 +265,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+    await notifyAccountingHoldRelease(tx, run.companyId);
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
@@ -272,6 +289,14 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
     const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";
+    // A lost receipt that already carries a provider-reported cost settles at
+    // that cost, as an estimate marked as a lower bound, not as unpriced.
+    const reportedLowerBound = receiptUnavailable && knownCostUsd !== null && billingType !== "subscription_included"
+      && usdToUnits(knownCostUsd) > 0n;
+    const lowerBoundProvenance = reportedLowerBound ? { source: "provider_reported", version: "accounting-receipt/v1",
+      ...object(usage.pricingProvenance),
+      evidence: [text(object(usage.pricingProvenance).evidence), "final receipt lost; provider-reported cost of the observed usage is a lower bound"]
+        .filter(Boolean).join("; ") } : null;
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
     const [agent] = await tx.select({ adapterType: agents.adapterType }).from(agents).where(eq(agents.id, run.agentId));
@@ -284,9 +309,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       issueId: text(scope.issueId), projectId: text(scope.projectId), billingCode: text(scope.billingCode),
       provider: text(usage.provider) ?? "unknown", biller: text(usage.biller) ?? text(usage.provider) ?? "unknown",
       providerRequestId: text(usage.providerRequestId),
-      pricingProvenance: withClosureTimeoutEvidence(lostReceiptEstimate?.pricingProvenance ?? object(usage.pricingProvenance), closureTimedOut),
+      pricingProvenance: withClosureTimeoutEvidence(lostReceiptEstimate?.pricingProvenance ?? lowerBoundProvenance ?? object(usage.pricingProvenance), closureTimedOut),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: lostReceiptEstimate ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: lostReceiptEstimate || reportedLowerBound ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -318,6 +343,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
+    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId);
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
       accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
       // A complete receipt arriving later may price this charge (see usage-receipts).
@@ -329,11 +355,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         // Late reconciliation measures a later receipt from the accepted money.
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
           pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
+        ...(lowerBoundProvenance ? { costStatus: "estimated", pricingProvenance: lowerBoundProvenance } : {}),
       })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
     if (closureTimedOut) await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting",
       action: "cost.accounting_closure_timed_out", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
-      details: { reason: "Final usage never arrived and no stop of its provider was verified; the run's known usage was recorded as unpriced.",
+      details: { reason: "Final usage never arrived and no stop of its provider was verified; the run's known usage was recorded as a lower bound, or as unpriced when it had no price.",
         timeoutMinutes: ACCOUNTING_CLOSURE_TIMEOUT_MS / 60_000 } }, publications);
     return true;
   }), { "budget.accounting.owner": "run" });

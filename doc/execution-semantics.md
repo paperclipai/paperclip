@@ -493,6 +493,8 @@ Repeated automatic signals for an unchanged gate share one durable skipped-wake 
 
 A new task whose first assignment wake is refused by a temporary budget hold (completed runs awaiting accounting, a native run recovering its accounting, or a hold awaiting reconciliation) stays `todo`. Stranded-work recovery does not move a task with no run to `blocked` for such a hold. The task shows the hold it waits for, and the assigned-task liveness sweep admits it once the hold clears, through normal admission and with one run. A reached hard stop or blocked unpriced usage remains a board decision. Removed assignees and cancelled tasks still do not wake.
 
+The same holds for accepted work beyond a first assignment. A temporary budget hold never terminally cancels or escalates accepted work: an unstarted queued run (a promoted comment, a Retry, or a recovery) stays queued, and stranded-work recovery leaves the task as it is instead of moving it to `blocked`. These waits are passive, so settling a run's accounting wakes queued-run dispatch, the saved-receipt worker, and stranded-work recovery for the company. The held work then starts through normal admission, once. When a native run reaches a terminal status through recovery, or releases its environment, each message saved behind it is hinted by its own receipt, so delivery does not wait out a company-wide rescan interval.
+
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
@@ -3811,6 +3813,23 @@ identity, zero-activity and pending-bootstrap-command checks apply before the
 remote directory claim; saved history and existing directories still prevent
 an unverified fresh start.
 
+Per-turn controller recovery uses the newest run selected by the canonical
+session selector. A readable older projection or an old external marker does
+not replace that selection. Replacing an older projection holds the existing source coordinator
+locks and requires settled controller state, committed results, released
+owners and stopped or fenced controllers for both source runs. The full
+session scope must match. A current or newer owner, changed local bytes,
+unreadable checkpoint or unsettled state blocks replacement. Refresh retains
+the exact old control-plane directory in the existing continuity archive. It
+keeps the selected run's failover backup and provider files active. The normal
+backup verification and provider resume checks still run; this refresh does
+not start a new provider session or declare a continuity break. A marker that
+already names the exact selected identity only rehydrates its own controller
+state. The existing retained-sandbox binding and suspended Runner read still
+govern that same-source resume. A current-run marker rehydrates only that run's
+own checkpoint before the existing bootstrap retry checks. A missing current
+checkpoint never selects an older turn instead.
+
 For the native runner, warm mode requests a reusable sandbox lease **before**
 lease acquisition. The environment's explicit runner lifecycle overrides the
 agent default; an inherited lifecycle uses the current agent setting on each
@@ -4421,6 +4440,20 @@ then preserves its in-place harness state. The later protocol attachment still
 authenticates the durable PRP authority. A provider lease acquisition described as
 `resumed` does not establish that this already-running harness was suspended.
 Ordinary resumed leases retain their verified suspension and backup checks.
+
+A scheduled same-run retry keeps the remote reattach claim of the attempt before
+it. Closing a failed adopted attempt suspends its Runner, which then exits, so the
+retry can find no live process. When the exact process is proven gone, the
+Runner's saved state is read again. If that state has the same six identity fields,
+lifecycle `suspended`, an empty outbox and no pending terminal delivery, provider
+cleanup or warm transition, the retry launches a Runner from that state instead
+of adopting one. This matches a settled staged source. Any other exit stays
+fail-closed for reconciliation, and the provider attempt budget still bounds the
+retries.
+The final admitted provider attempt may use this path; attempts above the limit
+cannot. Process verification and the final state read share one recovery
+deadline. A timeout, command failure, transport failure or invalid saved JSON on
+that final read keeps its closed recovery stage and reason in the diagnostic.
 
 Reattachment keeps the complete durable PRP binding, including its turn and item
 attachment IDs. A healthy warm handoff can create new attachment IDs within the

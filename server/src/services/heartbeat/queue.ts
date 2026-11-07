@@ -186,6 +186,7 @@ import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./r
 import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
+import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
 import type { PostCommitEffect as WakeQueuePostCommitEffect, createWakeQueue } from "../../modules/wake-queue/index.js";
@@ -908,6 +909,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     if (budgetBlock) {
       if (caseHandoffReceipt) return null;
+      // A temporary hold (accounting that is still settling) only delays
+      // accepted work. Cancelling the unstarted run would drop the user's
+      // message, Retry, or recovery it carries; keep it queued. Settling
+      // accounting re-notifies run dispatch. A reached hard stop is the board's.
+      if (!run.startedAt && !(await isBoardOwnedBudgetBlock(db, run.companyId, budgetBlock))) return null;
       await cancelRunInternal(run.id, budgetBlock.reason);
       return null;
     }

@@ -60,6 +60,8 @@ export type NativeRestartKind = "hot" | "hard" | "graceful";
 /** A recovery claim for one run failed unexpectedly and was deferred. */
 export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
 
+export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
+
 export type NativeRestartRecoveryClaim =
   | {
       kind: "reattach_existing_runner";
@@ -643,7 +645,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     };
   }
   // Continuing an attempt already counted needs no budget; a new one does.
-  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
