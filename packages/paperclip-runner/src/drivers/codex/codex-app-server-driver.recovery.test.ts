@@ -387,6 +387,68 @@ describe("Codex app-server Codex driver", () => {
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
 
+  describe("a turn accepted for a controller that died before checkpointing it", () => {
+    async function recoverAfterLostAcceptance(acceptedTurnId: string | null) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => acceptedTurnId,
+      });
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+          turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: "run-lost-acceptance",
+        normalizedSessionId: "normalized-lost-acceptance",
+        workingDirectory: WORKSPACE,
+      });
+      // RC-59: the dying controller checkpointed the resumed session, sent
+      // turn/start, and died before checkpointing the accepted turn.
+      const snapshot = await original.snapshot();
+      expect(snapshot.activeTurnId ?? null).toBeNull();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      // The runner releases the turn's start, held until the thread read
+      // bound the recovered turn, then the turn's own terminal.
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the turn when the runner's durable turn.start result names it", async () => {
+      const recovered = await recoverAfterLostAcceptance("turn-1");
+      expect((await recovered.snapshot()).activeTurnId).toBe("turn-1");
+      const events = await collectUntilTerminal(recovered.events());
+      const turnEvents = events.filter(event => event.eventType.startsWith("turn."));
+      expect(turnEvents.map(event => [event.eventType, event.turnId])).toEqual([
+        ["turn.accepted", "turn-1"],
+        ["turn.started", "turn-1"],
+        ["turn.completed", "turn-1"],
+      ]);
+      await expect(recovered.startTurn({ message: { role: "user", text: "Again." } }))
+        .rejects.toThrow();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it.each([
+      ["no accepted turn.start result", null],
+      ["a turn.start result for a different turn", "turn-other"],
+    ])("still fails closed on a foreign active turn with %s", async (_label, acceptedTurnId) => {
+      const recovered = await recoverAfterLostAcceptance(acceptedTurnId);
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await expect(collectUntilTerminal(recovered.events())).resolves.toBeDefined();
+      await expect(recovered.startTurn({ message: { role: "user", text: "Work." } }))
+        .rejects.toThrow("Provider started an unexpected turn.");
+      await recovered.close({ reason: "test complete" });
+    });
+  });
+
   it("rejects a recovered provider thread outside the assigned workspace", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
