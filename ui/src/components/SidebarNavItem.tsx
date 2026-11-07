@@ -6,6 +6,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { useTranslation } from "@/i18n";
 import { TruncatedText } from "./TruncatedText";
 
 /**
@@ -88,6 +89,7 @@ export function SidebarNavItem({
   trailingLabel,
   liveAccessory,
 }: SidebarNavItemProps) {
+  const { t } = useTranslation();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
   // sidebar preference is collapsed.
@@ -104,11 +106,11 @@ export function SidebarNavItem({
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
   const railStatusText = hasLive
-    ? `${liveCount} live`
+    ? t("nav.item.liveCount", { count: liveCount })
     : hasBadge
       ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
       : alert
-        ? "attention needed"
+        ? t("nav.item.attentionNeeded")
         : undefined;
   const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
     ? undefined
@@ -191,7 +193,7 @@ export function SidebarNavItem({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{t("nav.item.liveCount", { count: liveCount })}</span>
             </>
           )}
         </span>
