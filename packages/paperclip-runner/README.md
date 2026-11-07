@@ -1016,7 +1016,11 @@ rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
 model, task instructions, and its internal task/completion tools. Claude session
 loads and resumes receive the same native session options as session creation,
-including allowed tools and the selected settings sources. Local permission
+including allowed tools and the selected settings sources. Runner does not write
+a configured Claude effort into the user settings. A new Claude process can
+report the settings default when it loads or resumes the session, so ACPX sends
+the selected effort again on that connection. Runner admits no prompt until
+Claude acknowledges that effort. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains
