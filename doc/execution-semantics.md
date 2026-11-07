@@ -2291,11 +2291,14 @@ these refusals by closed classification, never by message text:
 `provider_attach_refused` (attaching the new run would change the durable
 provider profile or a protected launch argument) and
 `provider_side_effect_pending` (the saved session still owns a tool call or
-runtime input without a recorded result). The first ends the run with
+runtime input whose result was not delivered to the runner). The first ends the run with
 `native_provider_state_incompatible`; the second ends it with
 `native_provider_side_effect_pending`. Both stop automatic retries and give the
-task to an operator with the saved local and remote continuity state intact. A
-run with a pending side-effecting call never reaches replacement. Transport
+task to an operator with the saved local and remote continuity state intact.
+`native_provider_side_effect_pending` is an execution-reconciliation cause, so a
+generic Retry is not offered: the operator records whether the action ran, and
+the reconciled continuation starts a fresh provider session in the same
+workspace. A run with a pending side-effecting call never reaches replacement. Transport
 drops and other unclassified resume failures keep the existing retry and
 replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps

@@ -73,6 +73,7 @@ export const EXECUTION_RECONCILIATION_CAUSES = [
   "native_session_retry_exhausted",
   "native_restart_recovery_blocked",
   "native_continuation_requires_reconciliation",
+  "native_provider_side_effect_pending",
   "legacy_execution_requires_reconciliation",
 ] as const;
 export function requiresExecutionReconciliation(

@@ -86,6 +86,7 @@ import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { agentInstructionWorkingCopies } from "@paperclipai/db";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
@@ -13151,6 +13152,8 @@ describe("native session bounded recovery", () => {
     expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
       issueStatus: "blocked", recoveryOwner: { kind: "board" }, recoveryActionCause: code,
     });
+    // An operator reconciles the pending action; a generic Retry is not offered.
+    expect(requiresExecutionReconciliation(code)).toBe(true);
     // The same text without the typed class stays an ordinary interruption.
     expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
   });
