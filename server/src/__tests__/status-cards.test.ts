@@ -168,6 +168,32 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues).then((rows) => rows[0])).toMatchObject({ status: "cancelled" });
   });
 
+  it("creates nothing when the card link cannot be resolved", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    // The link lookup runs before the card is created, so its failure cannot strand a queued compile task.
+    const failingPrefixDb = new Proxy(db, {
+      get(target, property) {
+        if (property === "select") {
+          return (fields?: Record<string, unknown>) => {
+            if (fields && "issuePrefix" in fields) throw new Error("company read unavailable");
+            return target.select(fields as never);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as Db;
+    const response = await request(createApp(failingPrefixDb, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Recently updated launch tasks" });
+
+    expect(response.status).toBe(500);
+    expect(await db.select().from(statusCards)).toEqual([]);
+    expect(await db.select().from(issues)).toEqual([]);
+  });
+
   it("creates, patches, archives, restores, lists updates, and deletes a card", async () => {
     const company = await seedCompany();
     await enableStatusCards();
