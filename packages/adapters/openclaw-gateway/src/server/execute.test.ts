@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  buildAgentParams,
+  readAssistantChunk,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+} from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -121,5 +126,21 @@ describe("resolveClaimedApiKeyPath", () => {
   it("falls back to the shared default when value is not a string", () => {
     expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
     expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
+  });
+});
+
+describe("readAssistantChunk", () => {
+  it("keeps leading and trailing whitespace on streamed deltas", () => {
+    const chunks = ["Hello", " world", " ", "is", " blocked."].map((delta) =>
+      readAssistantChunk({ delta }),
+    );
+    expect(chunks).toEqual(["Hello", " world", " ", "is", " blocked."]);
+    expect(chunks.join("")).toBe("Hello world is blocked.");
+  });
+
+  it("ignores empty or non-string deltas and falls back to text", () => {
+    expect(readAssistantChunk({ delta: "", text: "  full reply  " })).toBe("full reply");
+    expect(readAssistantChunk({ delta: 42, text: "full reply" })).toBe("full reply");
+    expect(readAssistantChunk({})).toBeNull();
   });
 });
