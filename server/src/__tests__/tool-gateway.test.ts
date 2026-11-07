@@ -950,11 +950,24 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
     it.each([true, false])("rejects an invalid bearer before dispatch (notification: %s)", async (notification) => {
       const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
-      await request(fixture.app)
+      const response = await request(fixture.app)
         .post(fixture.endpoints[endpoint])
         .set("authorization", `Bearer ${tamperToken(fixture.token.token)}`)
         .send({ jsonrpc: "2.0", ...(!notification ? { id: "invalid" } : {}), method: "unsupported" })
         .expect(401);
+      if (notification) expect(response.text).toBe("");
+    });
+
+    it("sends no body for an unknown notification when verification fails internally", async () => {
+      const fixture = await createRunGatewayProtocolFixture(db, "authenticated");
+      vi.spyOn(fixture.gateway, "verifyNamedGatewayProtocolNotification")
+        .mockRejectedValueOnce(new Error("database unavailable"));
+      const response = await request(fixture.app)
+        .post(fixture.endpoints[endpoint])
+        .set("authorization", `Bearer ${fixture.token.token}`)
+        .send({ jsonrpc: "2.0", method: "notifications/unknown" })
+        .expect(500);
+      expect(response.text).toBe("");
     });
 
     it("retains HTTP 401 for a missing bearer", async () => {

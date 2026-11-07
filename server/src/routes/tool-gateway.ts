@@ -72,6 +72,21 @@ async function cancellableRequest<T>(req: Request, res: Response, work: (signal:
   }
 }
 
+// A JSON-RPC notification has no id, so it gets no response body: not on
+// success, and not when verification fails. A failure keeps its HTTP status.
+async function acknowledgeNotification(res: Response, verify: () => Promise<void>) {
+  try {
+    await verify();
+  } catch (err) {
+    if (!(err instanceof ToolGatewayHttpError)) {
+      logger.error({ err }, "named gateway notification verification failed");
+    }
+    res.status(err instanceof ToolGatewayHttpError ? err.status : 500).end();
+    return;
+  }
+  res.status(202).end();
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -109,21 +124,13 @@ async function handleMcpGatewayProtocol(
       });
       return;
     }
+    const verifyProtocolNotification = () => toolGateway.verifyNamedGatewayProtocolNotification({
+      ...locator,
+      bearerToken: token,
+      callerHeaders: headers,
+    });
     if (body.method === "notifications/initialized") {
-      try {
-        await toolGateway.verifyNamedGatewayProtocolNotification({
-          ...locator,
-          bearerToken: token,
-          callerHeaders: headers,
-        });
-      } catch (err) {
-        if (!(err instanceof ToolGatewayHttpError)) {
-          logger.error({ err }, "named gateway notification verification failed");
-        }
-        res.status(err instanceof ToolGatewayHttpError ? err.status : 500).end();
-        return;
-      }
-      res.status(202).end();
+      await acknowledgeNotification(res, verifyProtocolNotification);
       return;
     }
     if (body.method === "tools/list") {
@@ -233,15 +240,11 @@ async function handleMcpGatewayProtocol(
       res.json({ jsonrpc: "2.0", id, result });
       return;
     }
-    await toolGateway.verifyNamedGatewayProtocolNotification({
-      ...locator,
-      bearerToken: token,
-      callerHeaders: headers,
-    });
     if (body.id === undefined) {
-      res.status(202).end();
+      await acknowledgeNotification(res, verifyProtocolNotification);
       return;
     }
+    await verifyProtocolNotification();
     res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err) {
     if (res.destroyed) return;
