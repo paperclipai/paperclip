@@ -11,7 +11,7 @@ export type ConfigOptionDefinition = {
   key: string;
   type: string;
   validValues?: readonly string[];
-  default?: string | number | boolean;
+  default?: string | number | boolean | readonly string[];
   description: string;
   optional?: boolean;
 };
@@ -118,7 +118,7 @@ export const SERVER_OPTIONS: readonly ConfigOptionDefinition[] = [
   {
     key: "server.allowedHostnames",
     type: "string[]",
-    default: "[]",
+    default: [],
     description: "Allowed Host header values for DNS rebinding protection",
   },
   {
