@@ -65256,7 +65256,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (current.status === "failed") break;
         const retryAt = Date.parse(String(current.result?.retryAt));
         expect(Number.isFinite(retryAt)).toBe(true);
-        await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 1));
+        while (Date.now() < retryAt) await new Promise(resolve => setTimeout(resolve, Math.max(1, retryAt - Date.now())));
         await f.service.processFailedChatRunRetries();
       }
       const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
