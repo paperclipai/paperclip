@@ -1208,12 +1208,12 @@ changes can repeat the dependency install; this bounds retained builder disk
 at the cost of install-cache granularity. The build reports workspace and pack
 sizes, and final runtime and CLI checks still execute in the published image.
 
-Build speed comes from three layout rules. The Rust third-party dependency
-graph compiles in its own layer, keyed only by the Cargo manifests and lock, so
-a Runner source change recompiles one crate from the default-branch registry
-cache. The revision-metadata step sits above both `COPY --from` steps, so the
-cached base and CLI layers download while the builder stages compile. Both
-copies use `--link`, so they do not wait for that download.
+Build speed comes from two layout rules. The revision-metadata step sits above
+both `COPY --from` steps, so the cached base and CLI layers download while the
+builder stages compile. Both copies use `--link`, so they do not wait for that
+download. The Rust build keeps no dependency layer: retaining Cargo's target
+and registry trees (about 1.2 GB) exhausted the builder disk during the
+default-branch cache export.
 
 To publish only the image for a branch, without a paid gate, dispatch with
 `image_only`. Authorization, target resolution, catalog validation and the
