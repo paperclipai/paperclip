@@ -17,6 +17,30 @@ function selectorFor(markdown: string, quote: string) {
 }
 
 describe("document text projection", () => {
+  it.each([
+    ["````markdown", "```", "````"],
+    ["```text", "~~~", "```"],
+    ["~~~~text", "~~~", "~~~~~"],
+    ["~~~text", "```", "~~~"],
+    ["```text", "``` trailing", "```"],
+  ])("preserves literal markers inside %s fences", (opening, inner, closing) => {
+    const markdown = [opening, inner, "# literal", inner, closing, "# After"].join("\n");
+    const projection = projectMarkdownToText(markdown);
+
+    expect(projection.text).toBe(`${inner} # literal ${inner} After`);
+    const selector = selectorFor(markdown, "# literal");
+    expect(selector.position.markdownStart).toBe(markdown.indexOf("# literal"));
+    expect(selector.position.markdownEnd).toBe(markdown.indexOf("# literal") + "# literal".length);
+    const verified = verifyDocumentAnchorSelector({ markdown, selector });
+    expect(verified.ok).toBe(true);
+    const remapped = remapDocumentAnchor({
+      previousAnchor: verified.anchor!,
+      nextMarkdown: `Intro\n\n${markdown}`,
+    });
+    expect(remapped.anchorState).toBe("active");
+    expect(remapped.anchor?.selectedText).toBe("# literal");
+  });
+
   it("projects markdown into normalized rendered text with source ranges", () => {
     const markdown = [
       "# Heading",
