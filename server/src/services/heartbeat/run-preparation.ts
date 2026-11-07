@@ -870,8 +870,11 @@ export function configuredPaperclipApiBaseUrl(): string | null {
     : null;
 }
 
-export function paperclipRuntimeApiBaseUrl(): string {
-  const runtime = readNonEmptyString(process.env.PAPERCLIP_RUNTIME_API_URL);
+// A pinned PAPERCLIP_RUNTIME_API_URL is the callback origin on the Paperclip host.
+// A remote execution target (sandbox or SSH) cannot dial that origin, so it
+// keeps the configured PAPERCLIP_API_URL.
+export function paperclipRuntimeApiBaseUrl(input: { remoteExecution?: boolean } = {}): string {
+  const runtime = input.remoteExecution ? null : readNonEmptyString(process.env.PAPERCLIP_RUNTIME_API_URL);
   if (runtime) {
     return runtime.replace(/\/+$/, "").replace(/\/api$/, "");
   }
@@ -908,6 +911,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
+  remoteExecution?: boolean;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveToolAssignmentsForAgent(
@@ -1218,7 +1222,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipRuntimeApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${paperclipRuntimeApiBaseUrl({ remoteExecution: input.remoteExecution })}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -1240,6 +1244,7 @@ export function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  remoteExecution?: boolean;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -1254,7 +1259,7 @@ export function createAdapterRuntimeToolAccess(input: {
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
   if (!configuredPaperclipApiBaseUrl()) return undefined;
-  const baseUrl = paperclipRuntimeApiBaseUrl();
+  const baseUrl = paperclipRuntimeApiBaseUrl({ remoteExecution: input.remoteExecution });
   return Object.freeze({
     version: 1,
     guidance: CONNECTION_INTENT_AGENT_GUIDANCE,

@@ -279,6 +279,20 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     return seeded;
   }
 
+  it("gives a remote execution target the configured API origin, never a host-local runtime origin", async () => {
+    const [owner] = await seedAssignedAgents(1);
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3199";
+
+    const [server] = await buildPaperclipRuntimeMcpServers({
+      db,
+      agent: owner!.agent,
+      runId: owner!.run.id,
+      remoteExecution: true,
+    });
+
+    expect(server!.url).toMatch(/^https:\/\/paperclip\.example\.test\/mcp\/gateways\/gw_[a-f0-9]{32}$/);
+  });
+
   it("rejects another agent's run token on a run-scoped gateway", async () => {
     const [owner, other] = await seedAssignedAgents(2);
     const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });

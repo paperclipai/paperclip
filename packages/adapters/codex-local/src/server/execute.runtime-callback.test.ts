@@ -6,8 +6,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const RUNTIME_ORIGIN = "http://127.0.0.1:3199";
 const PUBLIC_DASHBOARD_ORIGIN = "https://dashboard.paperclip.example.test";
 
-const { runAdapterExecutionTargetProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => ({
+const {
+  runAdapterExecutionTargetProcess,
+  ensureCommandResolvable,
+  resolveCommandForLogs,
+  ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  prepareAdapterExecutionTargetRuntime,
+  resolveAdapterExecutionTargetCommandForLogs,
+  runAdapterExecutionTargetShellCommand,
+  startAdapterExecutionTargetPaperclipBridge,
+} = vi.hoisted(() => ({
   runAdapterExecutionTargetProcess: vi.fn(),
+  ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
+  ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(async () => undefined),
+  prepareAdapterExecutionTargetRuntime: vi.fn(async () => ({
+    target: { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox/workspace" },
+    workspaceRemoteDir: "/sandbox/workspace",
+    runtimeRootDir: "/sandbox/.paperclip-runtime",
+    assetDirs: { home: "/sandbox/.paperclip-runtime/codex/home" },
+    restoreWorkspace: vi.fn(async () => undefined),
+  })),
+  resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "/usr/bin/codex"),
+  runAdapterExecutionTargetShellCommand: vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
+    pid: null,
+    startedAt: new Date().toISOString(),
+  })),
+  startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => null),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "/usr/bin/codex"),
 }));
@@ -23,7 +53,16 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
     "@paperclipai/adapter-utils/execution-target",
   );
-  return { ...actual, runAdapterExecutionTargetProcess };
+  return {
+    ...actual,
+    runAdapterExecutionTargetProcess,
+    ensureAdapterExecutionTargetCommandResolvable,
+    ensureAdapterExecutionTargetRuntimeCommandInstalled,
+    prepareAdapterExecutionTargetRuntime,
+    resolveAdapterExecutionTargetCommandForLogs,
+    runAdapterExecutionTargetShellCommand,
+    startAdapterExecutionTargetPaperclipBridge,
+  };
 });
 
 import { execute } from "./execute.js";
@@ -80,7 +119,10 @@ describe("codex execute — internal runtime callback endpoint", () => {
     }
   });
 
-  async function runCli(extraConfig: Record<string, unknown> = {}): Promise<{ configToml: string; env: Record<string, string> }> {
+  async function runCli(
+    extraConfig: Record<string, unknown> = {},
+    executionTarget?: Parameters<typeof execute>[0]["executionTarget"],
+  ): Promise<{ configToml: string; env: Record<string, string> }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-runtime-callback-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -112,6 +154,7 @@ describe("codex execute — internal runtime callback endpoint", () => {
           ],
         },
       },
+      ...(executionTarget ? { executionTarget } : {}),
       onLog: async () => {},
     });
 
@@ -177,5 +220,21 @@ describe("codex execute — internal runtime callback endpoint", () => {
     expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://10.0.0.5:3100");
     expect(env.PAPERCLIP_API_URL).toBe("http://10.0.0.5:3100");
     expect(configToml).toContain('url = "http://10.0.0.5:3100/mcp/gateways/gw-1"');
+  });
+
+  it("points managed MCP gateways of a remote target at PAPERCLIP_API_URL, never a host-local runtime origin", async () => {
+    setEnv("PAPERCLIP_RUNTIME_API_URL", RUNTIME_ORIGIN);
+    setEnv("PAPERCLIP_API_URL", PUBLIC_DASHBOARD_ORIGIN);
+
+    const { configToml } = await runCli({}, {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fixture",
+      remoteCwd: "/workspace",
+      runner: { execute: vi.fn() },
+    });
+
+    expect(configToml).toContain(`url = "${PUBLIC_DASHBOARD_ORIGIN}/mcp/gateways/gw-1"`);
+    expect(configToml).not.toContain(RUNTIME_ORIGIN);
   });
 });

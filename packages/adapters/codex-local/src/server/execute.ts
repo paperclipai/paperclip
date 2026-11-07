@@ -810,7 +810,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const managedMcp = await writeManagedCodexMcpConfig({
       codexHome: effectiveCodexHome,
-      apiBaseUrl: paperclipBaseEnv.PAPERCLIP_RUNTIME_API_URL,
+      // A remote target cannot dial a host-local runtime origin.
+      apiBaseUrl: executionTargetIsRemote
+        ? paperclipBaseEnv.PAPERCLIP_API_URL
+        : paperclipBaseEnv.PAPERCLIP_RUNTIME_API_URL,
       gateways: managedMcpGateways,
     });
     if (managedMcpGateways.length > 0) {
