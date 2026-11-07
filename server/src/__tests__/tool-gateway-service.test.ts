@@ -3203,7 +3203,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       .where(eq(connectionGrants.connectionId, connection.id));
     expect((await gateway.listToolsForSession(session.token)).some((item) => item.upstreamToolName === toolName)).toBe(false);
     await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
-      .rejects.toMatchObject({ reasonCode: "oauth_insufficient_scope" });
+      .rejects.toMatchObject({ reasonCode: "oauth_insufficient_scope", message: expect.stringContaining("Add account") });
     await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connection.id, agentId: agent.id,
       userId: "board", toolName, parameters: {} })).resolves.toMatchObject({ error: { reasonCode: "oauth_insufficient_scope" } });
     expect(provider).toHaveBeenCalledTimes(1);

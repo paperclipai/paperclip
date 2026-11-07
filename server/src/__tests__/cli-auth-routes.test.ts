@@ -561,4 +561,22 @@ describe("cli auth routes", () => {
     expect(mockBoardAuthService.getBoardApiKeyForUser).not.toHaveBeenCalled();
     expect(mockBoardAuthService.revokeBoardApiKey).not.toHaveBeenCalled();
   });
+
+  it("reports effective instance admin authority for the current actor", async () => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-1", name: "Owner", email: "owner@example.com" },
+      companyIds: ["company-1"],
+      memberships: [],
+      isInstanceAdmin: false,
+    });
+    const elevated = await createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin: true, companyIds: ["company-1"] });
+    const elevatedRes = await request(elevated).get("/api/cli-auth/me");
+    expect(elevatedRes.status).toBe(200);
+    expect(elevatedRes.body.isInstanceAdmin).toBe(true);
+
+    const member = await createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin: false, companyIds: ["company-1"] });
+    const memberRes = await request(member).get("/api/cli-auth/me");
+    expect(memberRes.status).toBe(200);
+    expect(memberRes.body.isInstanceAdmin).toBe(false);
+  });
 });

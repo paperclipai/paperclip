@@ -286,7 +286,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableBuiltInAgents: {
     title: "Built-in Agents",
     description:
-      "Show Paperclip-managed built-in agent surfaces, including roster badges, the Built-in agents tab, and setup controls.",
+      "Show Paperclip-managed built-in agent surfaces, including roster badges and setup controls.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

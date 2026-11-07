@@ -154,6 +154,9 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   update: vi.fn(),
 }));
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
+}));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -186,6 +189,10 @@ vi.mock("@/api/secrets", () => ({
 
 vi.mock("@/api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -459,6 +466,7 @@ describe("CompanyEnvironments — test provider button", () => {
     FakeWebSocket.instances = [];
     xtermMocks.reset();
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
@@ -1810,6 +1818,113 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       expect(getEnvironmentFormPage()).toBeNull();
     });
+  });
+
+  it("hides write controls from a non-admin member and keeps the list readable", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector("[data-testid='environment-admin-note']")).not.toBeNull();
+    });
+
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector("a[aria-label='Add environment']")).toBeNull();
+    expect(Array.from(container.querySelectorAll("a")).some((link) => link.textContent === "Edit")).toBe(false);
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.startsWith("Test"))).toBe(false);
+    expect(container.querySelector<HTMLSelectElement>("select[aria-label='Default environment']")?.disabled).toBe(true);
+  });
+
+  it.each([
+    ["create", `${ENVIRONMENTS_PATH}/new`],
+    ["edit", `${ENVIRONMENTS_PATH}/env-1/edit`],
+  ])("shows the admin requirement instead of the %s form to a non-admin member", async (_mode, path) => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, path));
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector("[data-testid='environment-admin-required']")).not.toBeNull();
+    });
+
+    expect(getEnvironmentFormPage()).toBeNull();
+    expect(document.body.querySelector("[data-testid='environment-delete-button']")).toBeNull();
+    expect(mockEnvironmentsApi.secretRefs).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an implicit local board", { source: "local_implicit", isInstanceAdmin: false }],
+    ["an instance admin", { source: "session", isInstanceAdmin: true }],
+  ])("keeps write controls for %s", async (_label, access) => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(access);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector("a[aria-label='Add environment']")).not.toBeNull();
+    });
+
+    expect(container.querySelector("[data-testid='environment-admin-note']")).toBeNull();
+    expect(Array.from(container.querySelectorAll("a")).some((link) => link.textContent === "Edit")).toBe(true);
+    expect(container.querySelector<HTMLSelectElement>("select[aria-label='Default environment']")?.disabled).toBe(false);
+  });
+
+  it("keeps controls hidden and offers retry when access cannot be checked on a form page", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValue(new ApiError("Server unavailable", 500, null));
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`));
+    });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Retry");
+    });
+
+    expect(getEnvironmentFormPage()).toBeNull();
+    expect(container.querySelector("[data-testid='environment-admin-required']")).toBeNull();
+  });
+
+  it("shows write controls to a session user with effective instance admin authority", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector("a[aria-label='Add environment']")).not.toBeNull();
+    });
+
+    expect(container.querySelector("[data-testid='environment-admin-note']")).toBeNull();
+  });
+
+  it("shows the access error and retry on the list while keeping write controls hidden", async () => {
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValue(new ApiError("Server unavailable", 500, null));
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Retry");
+    });
+
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector("a[aria-label='Add environment']")).toBeNull();
+    expect(container.querySelector("[data-testid='environment-admin-note']")).toBeNull();
   });
 
   it("does not offer delete on the add-environment page", async () => {

@@ -27,6 +27,7 @@ import {
   type EnvironmentCustomImageSetupSessionResult,
   type EnvironmentUpdateResult,
 } from "@/api/environments";
+import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
 import { describeError } from "@/api/errors";
@@ -90,6 +91,7 @@ type CompanyEnvironmentsProps = {
 };
 
 const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+const ENVIRONMENT_ADMIN_NOTE = "You can view environments here. Ask an instance admin to add, edit, delete, or test them.";
 
 function environmentEditPath(environmentId: string) {
   return `${ENVIRONMENTS_PATH}/${encodeURIComponent(environmentId)}/edit`;
@@ -1349,6 +1351,15 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
 
+  const boardAccessQuery = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+  });
+  const boardAccessView = useQueryView(boardAccessQuery);
+  const canManageEnvironments =
+    boardAccessQuery.data?.source === "local_implicit" || boardAccessQuery.data?.isInstanceAdmin === true;
+  const boardAccessLoaded = boardAccessQuery.data !== undefined;
+
   const environmentsQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
     queryFn: () => environmentsApi.list(selectedCompanyId!),
@@ -1383,7 +1394,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       ? ["environment-secret-refs", editingEnvironmentId]
       : ["environment-secret-refs", "none"],
     queryFn: () => environmentsApi.secretRefs(editingEnvironmentId!),
-    enabled: Boolean(editingEnvironmentId) && environmentsEnabled,
+    enabled: Boolean(editingEnvironmentId) && environmentsEnabled && canManageEnvironments,
   });
   const environmentSecretRefsView = useQueryView(environmentSecretRefsQuery);
   const environmentSecretRefHints = useMemo<SecretRefHintsContextValue>(() => {
@@ -1966,6 +1977,31 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     );
   }
 
+  if (isEnvironmentFormPage && !canManageEnvironments) {
+    if (boardAccessQuery.isLoading || boardAccessView.kind === "reconnecting") {
+      return <QueryPlaceholder label="Checking your access" />;
+    }
+    if (boardAccessView.kind === "error" && boardAccessView.errorKind !== "forbidden") {
+      return (
+        <QueryErrorState
+          error={boardAccessQuery.error}
+          action="check your access"
+          onRetry={boardAccessView.retry}
+          retrying={boardAccessView.isFetching}
+        />
+      );
+    }
+    return (
+      <div className="max-w-6xl space-y-3 text-sm" data-testid="environment-admin-required">
+        <div className="font-medium">Instance admin access required</div>
+        <div className="text-muted-foreground">{ENVIRONMENT_ADMIN_NOTE}</div>
+        <Button size="sm" variant="outline" asChild>
+          <Link to={ENVIRONMENTS_PATH}>Back to environments</Link>
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-6xl space-y-6" data-testid="instance-settings-environments-section">
       {!isEnvironmentFormPage ? (
@@ -1980,7 +2016,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 value={instanceDefaultEnvironmentId}
                 onChange={(event) =>
                   defaultEnvironmentMutation.mutate(event.target.value || null)}
-                disabled={defaultEnvironmentMutation.isPending}
+                disabled={defaultEnvironmentMutation.isPending || !canManageEnvironments}
               >
                 {managedSandboxOnly ? (
                   // Managed-sandbox-only instances never execute locally, so
@@ -2002,12 +2038,26 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               </select>
             </span>
           </label>
-          <Button size="icon-sm" variant="ghost" asChild>
-            <Link to={`${ENVIRONMENTS_PATH}/new`} aria-label="Add environment" title="Add environment">
-              <Plus className="h-4 w-4" />
-            </Link>
-          </Button>
+          {canManageEnvironments ? (
+            <Button size="icon-sm" variant="ghost" asChild>
+              <Link to={`${ENVIRONMENTS_PATH}/new`} aria-label="Add environment" title="Add environment">
+                <Plus className="h-4 w-4" />
+              </Link>
+            </Button>
+          ) : null}
         </div>
+        {boardAccessView.kind === "error" && boardAccessView.errorKind !== "forbidden" ? (
+          <QueryErrorState
+            error={boardAccessQuery.error}
+            action="check your access"
+            onRetry={boardAccessView.retry}
+            retrying={boardAccessView.isFetching}
+          />
+        ) : (boardAccessLoaded && !canManageEnvironments) || boardAccessView.kind === "error" ? (
+          <div className="text-xs text-muted-foreground" data-testid="environment-admin-note">
+            {ENVIRONMENT_ADMIN_NOTE}
+          </div>
+        ) : null}
 
         {environmentsQuery.isLoading || environmentsView.kind === "reconnecting" ? (
           <QueryPlaceholder label="Loading environments" />
@@ -2076,7 +2126,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    {environment.driver !== "local" ? (
+                    {canManageEnvironments && environment.driver !== "local" ? (
                       <Button
                         size="sm"
                         variant="outline"
@@ -2090,9 +2140,11 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                             : "Test provider"}
                       </Button>
                     ) : null}
-                    <Button size="sm" variant="ghost" asChild>
-                      <Link to={environmentEditPath(environment.id)}>Edit</Link>
-                    </Button>
+                    {canManageEnvironments ? (
+                      <Button size="sm" variant="ghost" asChild>
+                        <Link to={environmentEditPath(environment.id)}>Edit</Link>
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
                 {probe ? (
