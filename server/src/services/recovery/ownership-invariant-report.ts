@@ -97,14 +97,12 @@ export type OwnershipReportState = {
   reported: Set<string>;
   /** Keyset cursor of the wake-request scan of rule I4 (updated_at, id). */
   intentCursor: { at: string; id: string } | null;
-  /** Next page offset per kind, so a kind larger than one page is read in full across passes. */
-  offsets: Map<string, number>;
   /** Violations whose activity row failed to save; retried on the next pass. */
   unwritten: Map<string, InvariantViolation>;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
-  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, offsets: new Map(), unwritten: new Map() };
+  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, unwritten: new Map() };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -113,6 +111,8 @@ const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const ACCOUNTING_CLOSURE_MS = 10 * 60_000;
 /** An in-progress issue must show a next action within this time. */
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
+/** Records read per kind per pass; beyond this the kind is reported truncated. */
+const MAX_RECORDS_PER_KIND = 2_000;
 /** First I4 scan after boot looks back this far. */
 const INTENT_LOOKBACK_MS = 60 * 60_000;
 /** Refusal texts that name a temporary condition (invariant 4), as a
@@ -274,15 +274,17 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       ...(kind.coverageGap ? { coverageGap: kind.coverageGap } : {}) };
     kindReports.push(report);
     if (!kind.listInProgress) continue;
-    let records: InProgressRecord[];
-    const offset = state.offsets.get(kind.id) ?? 0;
+    // Read the whole kind in one pass, a page at a time, so rule I2 compares
+    // the same records on consecutive passes. Past the cap the kind is
+    // reported as truncated; that alone schedules no follow-up.
+    const records: InProgressRecord[] = [];
     try {
-      const listed = await kind.listInProgress(db, limit, offset);
-      records = listed.records;
-      report.truncated = listed.truncated;
-      // Rotate through a large kind; start over after its last page.
-      state.offsets.set(kind.id, listed.truncated ? offset + limit : 0);
-      if (listed.truncated) retryNeeded = true;
+      for (let offset = 0; ; offset += limit) {
+        const listed = await kind.listInProgress(db, limit, offset);
+        records.push(...listed.records);
+        if (!listed.truncated) break;
+        if (records.length >= MAX_RECORDS_PER_KIND) { report.truncated = true; break; }
+      }
       await resolveFenceHolders(db, records);
     } catch (error) {
       report.error = error instanceof Error ? error.message : String(error);

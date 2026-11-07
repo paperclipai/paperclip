@@ -74,8 +74,8 @@ export type OwnableKind = {
   obligation: Obligation;
   storage: "database" | "local_disk";
   /** Null when Phase 1 cannot enumerate the kind; the report names the gap. */
-  /** Lists one page in a stable order; the report rotates `offset` across
-   * passes so a large kind is read in full. */
+  /** Lists one page in a stable order; the report pages through the kind
+   * within one pass. */
   listInProgress: ((db: Db, limit: number, offset: number) => Promise<ListResult>) | null;
   /** Report-only in Phase 1. Phase 2 registers a compare-and-swap settle. */
   settle: null;
