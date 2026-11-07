@@ -2163,7 +2163,7 @@ export class PaperclipRunnerToolAuthority {
     const { result, publication } = receipt;
     if (publication) publishActivity(publication);
     const syncExternalObjects = this.binding.syncIssueExternalObjects ?? externalObjectService(this.db, {
-      enabled: async () => (await instanceSettingsService(this.db).getExperimental()).enableExternalObjects === true,
+      enabled: async (dbOrTx?: any) => (await instanceSettingsService(this.db).getExperimental({ db: dbOrTx })).enableExternalObjects === true,
     }).syncIssueSafely;
     await syncExternalObjects(this.binding.issueId);
     return result;

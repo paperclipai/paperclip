@@ -83,7 +83,7 @@ export function projectRoutes(db: Db) {
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const externalObjectsSvc = externalObjectService(db, {
-    enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
+    enabled: async (dbOrTx?: any) => (await instanceSettings.getExperimental({ db: dbOrTx })).enableExternalObjects === true,
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);

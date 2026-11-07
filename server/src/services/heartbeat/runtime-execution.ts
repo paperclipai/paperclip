@@ -750,7 +750,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               enqueueWakeup,
               syncIssueExternalObjects: externalObjectService(db, {
                 pluginWorkerManager: options.pluginWorkerManager,
-                enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
+                enabled: async (dbOrTx?: any) => (await instanceSettings.getExperimental({ db: dbOrTx })).enableExternalObjects === true,
               }).syncIssueSafely,
               onSpawn: async (meta) => {
                 markDispatchStarted();

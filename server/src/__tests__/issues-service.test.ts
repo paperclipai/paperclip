@@ -40,6 +40,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { externalObjectService } from "../services/external-objects.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -6946,6 +6947,158 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     );
 
     expect(comment.body).toBe("transaction-safe comment");
+  });
+
+  it("keeps update and create transaction reads on a single pooled connection", async () => {
+    const memberUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      id: randomUUID(),
+      companyId,
+      principalType: "user",
+      principalId: memberUserId,
+      membershipRole: "member",
+      status: "active",
+    });
+
+    const project = await db
+      .insert(projects)
+      .values({
+        id: randomUUID(),
+        companyId,
+        name: "TestProject",
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const pWorkspace = await db
+      .insert(projectWorkspaces)
+      .values({
+        id: randomUUID(),
+        companyId,
+        projectId: project.id,
+        name: "test-pws",
+        cwd: "/tmp/test",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const eWorkspace = await db
+      .insert(executionWorkspaces)
+      .values({
+        id: randomUUID(),
+        companyId,
+        projectId: project.id,
+        projectWorkspaceId: pWorkspace.id,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "test-ews",
+        cwd: "/tmp/test",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const created = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.create(
+        companyId,
+        {
+          title: "tx created issue",
+          assigneeAgentId: agentId,
+        },
+        tx,
+      ),
+    );
+    expect(created.assigneeAgentId).toBe(agentId);
+
+    const createdForUser = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.create(
+        companyId,
+        {
+          title: "tx created issue for user",
+          assigneeUserId: memberUserId,
+        },
+        tx,
+      ),
+    );
+    expect(createdForUser.assigneeUserId).toBe(memberUserId);
+
+    const updated = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.update(
+        issueId,
+        {
+          assigneeUserId: memberUserId,
+          projectWorkspaceId: pWorkspace.id,
+        },
+        tx,
+      ),
+    );
+    expect(updated?.assigneeUserId).toBe(memberUserId);
+    expect(updated?.projectWorkspaceId).toBe(pWorkspace.id);
+
+    const updatedWithWorkspace = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.update(
+        issueId,
+        {
+          executionWorkspaceId: eWorkspace.id,
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: { mode: "shared_workspace" },
+        },
+        tx,
+        undefined,
+        undefined,
+        { bindRuntimeSharedWorkspace: true },
+      ),
+    );
+    expect(updatedWithWorkspace?.executionWorkspaceId).toBe(eWorkspace.id);
+
+    const createdWithWorkspace = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.create(
+        companyId,
+        {
+          title: "tx created issue with workspace",
+          assigneeAgentId: agentId,
+          projectId: project.id,
+          projectWorkspaceId: pWorkspace.id,
+          workspaceSelection: {
+            kind: "configured_source",
+            projectWorkspaceId: pWorkspace.id,
+            mode: "shared",
+          },
+          workspaceSelectionSource: "explicit",
+          workspaceSelectionActor: { type: "board", userId: memberUserId },
+        },
+        tx,
+      ),
+    );
+    expect(createdWithWorkspace.projectWorkspaceId).toBe(pWorkspace.id);
+  });
+
+  it("keeps externalObjects syncComment on caller transaction on a single pooled connection", async () => {
+    const pluginWorkerManager = {
+      call: vi.fn().mockResolvedValue({
+        ok: true,
+        detections: [],
+      }),
+    };
+    const extSvc = externalObjectService(singleConnectionDb, {
+      pluginWorkerManager: pluginWorkerManager as any,
+      enabled: async (tx) =>
+        (await instanceSettingsService(singleConnectionDb).getExperimental({ db: tx })).enableExternalObjects === true,
+    });
+    const commentRow = await db
+      .insert(issueComments)
+      .values({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        body: "test comment with mention https://example.com/item/123",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await expect(
+      singleConnectionDb.transaction(async (tx) => {
+        await extSvc.syncComment(commentRow.id, tx);
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("nulls out a non-UUID x-paperclip-run-id instead of 500-ing", async () => {

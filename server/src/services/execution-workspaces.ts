@@ -1539,7 +1539,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const [agent] = assigneeAgentId ? await reader.select({ adapterConfig: agents.adapterConfig, permissions: agents.permissions }).from(agents)
       .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.companyId))) : [];
     const overrides = assigneeAgentId ? parseIssueAssigneeAdapterOverrides(task ? task.assigneeAdapterOverrides : input.assigneeAdapterOverrides) : null;
-    const experimental = await instanceSettingsService(db).getExperimental();
+    const experimental = await instanceSettingsService(db).getExperimental({ db: reader });
     const sourceId = input.sourceWorkspaceId ?? task?.projectWorkspaceId;
     const sourceProjectId = input.projectId ?? task?.projectId;
     const [source] = sourceId || sourceProjectId ? await reader.select({ repoUrl: projectWorkspaces.repoUrl }).from(projectWorkspaces).where(and(

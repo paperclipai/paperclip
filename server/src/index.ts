@@ -1279,7 +1279,7 @@ async function startServerWithDatabaseTeardown(
   });
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
-    enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
+    enabled: async (dbOrTx?: any) => (await instanceSettingsService(db).getExperimental({ db: dbOrTx })).enableExternalObjects === true,
   });
 
   // The retry backstop for orphan sandboxes. An acquire that rejects a
