@@ -174,7 +174,10 @@ export function imageChargeCostEvent(input: { agentId: string; issueId: string |
   const chargedAt = typeof input.charge.chargedAt === "string" && !Number.isNaN(Date.parse(input.charge.chargedAt)) ? new Date(input.charge.chargedAt) : new Date(0);
   return {
     agentId: input.agentId, issueId: input.issueId, projectId: typeof input.charge.projectId === "string" ? input.charge.projectId : null,
-    heartbeatRunId: input.runId, provider: "openai", biller: "openai", billingType: "metered_api" as const, model: String(input.charge.model),
+    // An uncertain charge has no usage. Billing type `unknown` keeps it from the
+    // zero-token metered exemption, so budgets that block unpriced spend see it.
+    heartbeatRunId: input.runId, provider: "openai", biller: "openai",
+    billingType: input.charge.costStatus === "unpriced" ? "unknown" as const : "metered_api" as const, model: String(input.charge.model),
     costStatus: input.charge.costStatus === "unpriced" ? "unpriced" as const : "estimated" as const, inputTokens: count(usage.textInputTokens) + count(usage.imageInputTokens), outputTokens: count(usage.outputTokens),
     costCents: String(input.charge.costCents), pricingProvenance: input.charge.pricingProvenance as never,
     providerRequestId: typeof input.charge.providerRequestId === "string" ? input.charge.providerRequestId : null,

@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { budgetServiceInTransaction } from "../budgets.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { imageGenerationBindingForRun, priceGeneratedImage, requestOpenAiImage } from "./generate-image-tool.js";
 
@@ -220,10 +221,15 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
     await expect(authority.execute({ tool: "generate_image", callId, arguments: { prompt: "logo" } })).rejects.toThrow("may have been billed");
     const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId));
     expect(costs).toHaveLength(1);
-    expect(costs[0]).toMatchObject({ provider: "openai", model: "gpt-image-2", costStatus: "unpriced" });
+    expect(costs[0]).toMatchObject({ provider: "openai", model: "gpt-image-2", costStatus: "unpriced", billingType: "unknown" });
     await expect(authority.execute({ tool: "generate_image", callId, arguments: { prompt: "logo" } })).rejects.toThrow("may have been billed");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(1);
+    // A budget that blocks unpriced spend now holds further paid work.
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "agent", scopeId: f.agentId, windowKind: "calendar_month_utc",
+      amount: 100_000, unpricedUsagePolicy: "block" });
+    expect(await budgetServiceInTransaction(db).getInvocationBlock(f.companyId, f.agentId, { issueId: f.issueId })).toMatchObject({
+      reason: expect.stringContaining("no reliable price") });
   });
 
   it("records no spend when OpenAI rejects the request", async () => {
