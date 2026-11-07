@@ -91,13 +91,13 @@ Agent boot (s, p50 / p95):
 | codex | 2.5 / 7.0 | 5.0 / 16.5 |
 | opencode | 12.0 / 37.0 | 22.0 / 65.5 |
 
-Restart recovery latency, from `ready` to the recovered run's next provider event (s, p50 / p95). The baseline has 3 to 6 samples per adapter, so the largest disposition row is used:
+Restart recovery latency, from `ready` to the recovered run's next provider event (s, p50 / p95). The source is the baseline's run 4, which has 2 samples per adapter and disposition, so the largest disposition row is used:
 
 | Adapter | Budget |
 |---|---|
-| claude | 8.0 / 48.0 |
-| codex | 5.5 / 6.5 |
-| opencode | 16.0 / 20.0 |
+| claude | 15.0 / 22.5 |
+| codex | 6.5 / 8.0 |
+| opencode | 25.5 / 38.5 |
 
 These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
 

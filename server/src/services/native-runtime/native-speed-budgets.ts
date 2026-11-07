@@ -2,7 +2,8 @@
  * Speed budgets for native runs (plan invariant 8, Phase 1).
  *
  * Source: the Phase 0 local baseline (doc/plans/2026-11-07-ttft-baseline.md,
- * `origin/master` f2d8a51027 plus #19838, Apple M5 Max, shared host). Each
+ * merged in #19846: TTFT and boot from runs 1 and 3, restart recovery from
+ * run 4; Apple M5 Max, shared host). Each
  * budget is the baseline value times 1.2, rounded up to 0.5 s. The table is
  * recorded in doc/plans/2026-11-07-durable-ownership-and-reconciliation.md.
  *
@@ -32,17 +33,17 @@ export const LOCAL_SPEED_BUDGETS: Readonly<Record<SpeedBudgetAdapter, {
   claude: {
     ttft: { cold: { p50Ms: s(16.5), p95Ms: s(30) }, warm: { p50Ms: s(9.5), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(9), p95Ms: s(20.5) }, warm: { p50Ms: s(3.5), p95Ms: s(16.5) } },
-    restart_recovery: { p50Ms: s(8), p95Ms: s(48) },
+    restart_recovery: { p50Ms: s(15), p95Ms: s(22.5) },
   },
   codex: {
     ttft: { cold: { p50Ms: s(6), p95Ms: s(17) }, warm: { p50Ms: s(10), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(2.5), p95Ms: s(7) }, warm: { p50Ms: s(5), p95Ms: s(16.5) } },
-    restart_recovery: { p50Ms: s(5.5), p95Ms: s(6.5) },
+    restart_recovery: { p50Ms: s(6.5), p95Ms: s(8) },
   },
   opencode: {
     ttft: { cold: { p50Ms: s(17.5), p95Ms: s(49) }, warm: { p50Ms: s(26.5), p95Ms: s(88) } },
     agent_boot: { cold: { p50Ms: s(12), p95Ms: s(37) }, warm: { p50Ms: s(22), p95Ms: s(65.5) } },
-    restart_recovery: { p50Ms: s(16), p95Ms: s(20) },
+    restart_recovery: { p50Ms: s(25.5), p95Ms: s(38.5) },
   },
 };
 
