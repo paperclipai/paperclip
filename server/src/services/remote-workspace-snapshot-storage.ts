@@ -17,6 +17,7 @@ const SCHEMA = "paperclip.workspace-snapshot.v1";
 const KEY_SCHEMA = "paperclip.workspace-snapshot-key.v1";
 const MAGIC = Buffer.from("PCWSE1\n");
 const FORMAT = "paperclip.remote-workspace-archive.v1";
+const DOWNLOAD_IDLE_TIMEOUT_MS = 5 * 60_000;
 type SnapshotRow = typeof executionWorkspaceSnapshots.$inferSelect;
 export interface WorkspaceSnapshotRef {
   schema: typeof SCHEMA;
@@ -304,14 +305,25 @@ export async function loadWorkspaceSnapshotArchive(input: {
   try {
     input.signal?.throwIfAborted();
     const ciphertext = path.join(scratch, "ciphertext"), plaintext = path.join(scratch, "plaintext");
-    const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal: input.signal });
     let received = 0; const digest = createHash("sha256");
-    const bounded = new Transform({ transform(bytes, _encoding, callback) {
-      received += bytes.length; digest.update(bytes);
-      callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
-    } });
-    try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600 }), { signal: input.signal }); }
-    finally { object.stream.destroy(); }
+    const stalled = new DOMException("remote_workspace_snapshot_download_stalled", "TimeoutError");
+    const idle = new AbortController();
+    const signal = input.signal ? AbortSignal.any([input.signal, idle.signal]) : idle.signal;
+    const timer = setTimeout(() => idle.abort(stalled), DOWNLOAD_IDLE_TIMEOUT_MS);
+    timer.unref();
+    try {
+      const object = await input.storage.getObject(ref.companyId, ref.objectKey, { signal });
+      const bounded = new Transform({ transform(bytes, _encoding, callback) {
+        if (bytes.length > 0) timer.refresh();
+        received += bytes.length; digest.update(bytes);
+        callback(received > ref.byteSize ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
+      } });
+      try { await pipeline(object.stream, bounded, createWriteStream(ciphertext, { flags: "wx", mode: 0o600 }), { signal }); }
+      finally { object.stream.destroy(); }
+    } catch (error) {
+      if (signal.aborted && signal.reason === stalled) throw stalled;
+      throw error;
+    } finally { clearTimeout(timer); }
     if (received !== ref.byteSize || digest.digest("hex") !== ref.sha256) failure("object_hash_mismatch");
     const file = await open(ciphertext, "r"), header = Buffer.alloc(MAGIC.length + 12), tag = Buffer.alloc(16);
     try { await file.read(header, 0, header.length, 0); await file.read(tag, 0, tag.length, ref.byteSize - tag.length); } finally { await file.close(); }
