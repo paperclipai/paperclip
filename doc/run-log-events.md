@@ -87,6 +87,24 @@ not qualify. No deliverable text means no timing sample. A recovered dispatch ca
 record newly committed output from the original start; it does not reproduce
 earlier output timing. The event contains no text or provider identifiers.
 
+## Speed budget breaches
+
+`run.performance.budget_exceeded` (schema `paperclip.run-performance-budget.v1`,
+level `warn`) records one native run that exceeded its p95 speed budget. The
+budgets come from the Phase 0 local baseline and are listed in
+`doc/plans/2026-11-07-durable-ownership-and-reconciliation.md` ("Speed budgets").
+`metric` is `ttft` (`task.time_to_first_token`), `agent_boot` (end of
+`heartbeat.queue` to the end of `runner.turn.submit` or `runner.session.resume`)
+or `restart_recovery` (startup recovery `ready` to the recovered run's first
+provider event). The payload names `adapter` (`codex`, `claude` or `opencode`),
+`environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
+start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
+`percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
+Each metric is checked at most once per run. Remote runs and other adapters have
+no budget yet. The event is written in detached diagnostic work after the
+measurement, so it adds no wait before `turn.start`. It is a run-log row only
+and never goes to Telemetry.
+
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,
 `provider_pack.link_preinstalled`, `provider_pack.clear_stale`, `provider_pack.upload`,

@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+import type { AdapterRuntimeEvent } from "../../adapters/index.js";
+import { createNativeRunTrace } from "./native-run-trace.js";
+import {
+  evaluateSpeedBudget,
+  LOCAL_SPEED_BUDGETS,
+  SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
+  speedBudgetAdapter,
+  speedBudgetFor,
+} from "./native-speed-budgets.js";
+
+describe("speed budgets", () => {
+  it("defines p50 below p95 for every adapter, metric and start", () => {
+    for (const budgets of Object.values(LOCAL_SPEED_BUDGETS)) {
+      for (const budget of [budgets.ttft.cold, budgets.ttft.warm, budgets.agent_boot.cold, budgets.agent_boot.warm,
+        budgets.restart_recovery]) {
+        expect(budget.p50Ms).toBeGreaterThan(0);
+        expect(budget.p50Ms).toBeLessThanOrEqual(budget.p95Ms);
+      }
+    }
+  });
+
+  it("maps native providers to budgeted adapters", () => {
+    expect(speedBudgetAdapter({ kind: "codex" })).toBe("codex");
+    expect(speedBudgetAdapter({ kind: "opencode" })).toBe("opencode");
+    expect(speedBudgetAdapter({ kind: "acpx", agent: "claude" })).toBe("claude");
+    expect(speedBudgetAdapter({ kind: "acpx", agent: "cursor" })).toBeNull();
+    expect(speedBudgetAdapter({ kind: "claude_managed" })).toBeNull();
+  });
+
+  it("judges one run against p95 and uses the looser budget when the start kind is unknown", () => {
+    const codexCold = LOCAL_SPEED_BUDGETS.codex.ttft.cold.p95Ms;
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: "cold", measuredMs: codexCold }))
+      .toBeNull();
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: "cold", measuredMs: codexCold + 1 }))
+      .toMatchObject({ metric: "ttft", adapter: "codex", startKind: "cold", budgetP95Ms: codexCold, percentile: "p95" });
+    const loose = speedBudgetFor("codex", "ttft", null);
+    expect(loose.p95Ms).toBe(Math.max(codexCold, LOCAL_SPEED_BUDGETS.codex.ttft.warm.p95Ms));
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "local", metric: "ttft", start: null, measuredMs: codexCold + 1 }))
+      .toBeNull();
+  });
+
+  it("does not judge remote runs or adapters without a baseline", () => {
+    expect(evaluateSpeedBudget({ adapter: "codex", environment: "remote", metric: "ttft", start: "cold", measuredMs: 1e9 })).toBeNull();
+    expect(evaluateSpeedBudget({ adapter: null, environment: "local", metric: "ttft", start: "cold", measuredMs: 1e9 })).toBeNull();
+  });
+});
+
+describe("speed budget checks in the native run trace", () => {
+  function traced(budget?: Parameters<typeof createNativeRunTrace>[0]["budget"]) {
+    const events: AdapterRuntimeEvent[] = [];
+    const trace = createNativeRunTrace({ runId: "run-1", startedAtMs: 0, budget,
+      onEvent: async event => { events.push(event); } });
+    const breaches = () => events.filter(event => event.eventType === SPEED_BUDGET_EXCEEDED_EVENT_TYPE)
+      .map(event => event.payload as Record<string, unknown>);
+    return { trace, breaches };
+  }
+
+  it("writes one run-log breach for a slow agent boot and none for a fast TTFT", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local" });
+    trace.setBudgetStart("cold");
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 100 });
+    const boot = LOCAL_SPEED_BUDGETS.codex.agent_boot.cold.p95Ms + 500;
+    await trace.record({ name: "runner.turn.submit", startedAtMs: 100, endedAtMs: 100 + boot });
+    // A second submit in the same run is not a second boot.
+    await trace.record({ name: "runner.turn.submit", startedAtMs: 100, endedAtMs: 100 + boot * 2 });
+    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 1_000 });
+    await trace.finish("ok");
+
+    expect(breaches()).toEqual([expect.objectContaining({
+      schema: "paperclip.run-performance-budget.v1", metric: "agent_boot", adapter: "codex", startKind: "cold",
+      measuredMs: boot, budgetP95Ms: LOCAL_SPEED_BUDGETS.codex.agent_boot.cold.p95Ms,
+    })]);
+  });
+
+  it("writes a breach for a slow TTFT recorded by deferred diagnostics before the trace closes", async () => {
+    const { trace, breaches } = traced({ adapter: "claude", environment: "local" });
+    trace.setBudgetStart("warm");
+    const ttft = LOCAL_SPEED_BUDGETS.claude.ttft.warm.p95Ms + 1;
+    trace.defer(async () => {
+      await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: ttft });
+    });
+    await trace.finish("ok");
+
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "ttft", adapter: "claude", startKind: "warm", measuredMs: ttft })]);
+  });
+
+  it("checks restart recovery latency once, from ready to the first provider event", async () => {
+    const { trace, breaches } = traced({ adapter: "opencode", environment: "local" });
+    const late = LOCAL_SPEED_BUDGETS.opencode.restart_recovery.p95Ms + 1_000;
+    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late, disposition: "resume_dead_runner" });
+    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late * 2, disposition: "resume_dead_runner" });
+    await trace.finish("ok");
+
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery", measuredMs: late,
+      disposition: "resume_dead_runner", startKind: "unknown" })]);
+  });
+
+  it("writes nothing for remote runs or without a budget subject", async () => {
+    for (const budget of [{ adapter: "codex" as const, environment: "remote" as const }, undefined]) {
+      const { trace, breaches } = traced(budget);
+      await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 1 });
+      await trace.record({ name: "runner.turn.submit", startedAtMs: 1, endedAtMs: 10_000_000 });
+      await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 10_000_000 });
+      await trace.finish("ok");
+      expect(breaches()).toEqual([]);
+    }
+  });
+});

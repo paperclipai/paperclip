@@ -9,6 +9,13 @@ import {
   getStartupTraceContext,
   type StartupTraceContextHandle,
 } from "../../instrumentation.js";
+import {
+  evaluateSpeedBudget,
+  SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
+  type SpeedBudgetAdapter,
+  type SpeedBudgetBreach,
+  type SpeedBudgetStart,
+} from "./native-speed-budgets.js";
 
 export const NATIVE_RUN_SPAN_EVENT_TYPE = "run.performance.span";
 export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 3;
@@ -260,6 +267,8 @@ export function createNativeRunTrace(input: {
   startedAtMs?: number;
   onEvent?: NativeRunTraceSink;
   traceContext?: StartupTraceContextHandle;
+  /** Speed-budget subject (invariant 8). Absent or remote means no check. */
+  budget?: { adapter: SpeedBudgetAdapter | null; environment: "local" | "remote" };
 }) {
   const tracing =
     input.traceContext ?? getStartupTraceContext("paperclip.native-runner");
@@ -337,6 +346,40 @@ export function createNativeRunTrace(input: {
       } catch {
         // Tracing is diagnostic-only and must never change runner control flow.
       }
+    }
+  };
+
+  // Speed budgets (invariant 8). Breaches are written detached, after the
+  // measurement, so the check never adds a wait to the turn path.
+  let budgetStart: SpeedBudgetStart | null = null;
+  let queueEndedAtMs: number | null = null;
+  let bootChecked = false;
+  const reportBudgetBreach = (breach: SpeedBudgetBreach | null): void => {
+    if (!breach || !input.onEvent) return;
+    defer(async () => {
+      await input.onEvent?.({
+        eventType: SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
+        stream: "system",
+        level: "warn",
+        message: `speed budget exceeded: ${breach.metric} ${breach.measuredMs}ms > p95 ${breach.budgetP95Ms}ms (${breach.adapter}, ${breach.startKind})`,
+        payload: breach,
+      });
+    });
+  };
+  const checkSpanBudget = (name: string, startedAtMs: number, endedAtMs: number): void => {
+    if (!input.budget) return;
+    const subject = { adapter: input.budget.adapter, environment: input.budget.environment };
+    if (name === "heartbeat.queue") queueEndedAtMs = endedAtMs;
+    if (name === "task.time_to_first_token") {
+      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "ttft", start: budgetStart,
+        measuredMs: endedAtMs - startedAtMs }));
+    }
+    // Agent boot: run claimed (end of heartbeat.queue) to the provider session
+    // accepting turn.start (end of runner.turn.submit or runner.session.resume).
+    if ((name === "runner.turn.submit" || name === "runner.session.resume") && !bootChecked && queueEndedAtMs !== null) {
+      bootChecked = true;
+      reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "agent_boot", start: budgetStart,
+        measuredMs: endedAtMs - queueEndedAtMs }));
     }
   };
 
@@ -479,6 +522,7 @@ export function createNativeRunTrace(input: {
       outcome,
       attributes: state.attributes,
     });
+    checkSpanBudget(state.name, state.startedAtMs, endedAtMs);
   };
 
   const activate = (scope: NativeRunSpanScope): void => {
@@ -570,7 +614,9 @@ export function createNativeRunTrace(input: {
 
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {
     if (ended) return;
-    await Promise.all([...pendingDiagnostics]);
+    // Settled diagnostics can defer more (a budget breach after a deferred
+    // measurement), so drain until none remain.
+    while (pendingDiagnostics.size > 0) await Promise.all([...pendingDiagnostics]);
     if (ended) return;
     ended = true;
     const endedAtMs = Date.now();
@@ -593,8 +639,27 @@ export function createNativeRunTrace(input: {
     });
   };
 
+  /** Labels the run cold (fresh provider session) or warm (reused). */
+  const setBudgetStart = (kind: SpeedBudgetStart): void => {
+    budgetStart ??= kind;
+  };
+
+  /** Restart recovery latency: control plane ready to the recovered run's
+   * next provider event, checked once per run. */
+  let recoveryChecked = false;
+  const checkRestartRecovery = (measurement: { readyAtMs: number | null; eventAtMs: number; disposition: string }): void => {
+    if (!input.budget || recoveryChecked || measurement.readyAtMs === null) return;
+    recoveryChecked = true;
+    if (measurement.eventAtMs < measurement.readyAtMs) return;
+    reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
+      metric: "restart_recovery", start: null, measuredMs: measurement.eventAtMs - measurement.readyAtMs,
+      disposition: measurement.disposition }));
+  };
+
   return {
     traceStartedAtMs,
+    setBudgetStart,
+    checkRestartRecovery,
     start,
     annotate,
     activate,

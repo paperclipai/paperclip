@@ -69,6 +69,38 @@ Each metric is reported by adapter (Codex, Claude/ACPX, OpenCode) and environmen
    - RC-27: a 5-minute orphan reaper.
 4. **Phase 0 measures, then sets budgets.** It records a baseline for every metric above. Phase 1 sets p50/p95 budgets per adapter and environment. From then on, every phase's exit criteria include "no regression against the baseline". The on-demand crash-point suite and the chaos soak also report TTFT and restart recovery latency.
 
+### Speed budgets (Phase 1)
+
+Phase 1 sets these budgets from the local baseline in `2026-11-07-ttft-baseline.md`. Each budget is the baseline value times 1.2, rounded up to 0.5 s. The 20% headroom covers the small samples and the shared host of the baseline. Daytona and other remote environments get budgets after their own baseline.
+
+A single run is checked against its p95 budget. When a run exceeds it, the run log gets one `run.performance.budget_exceeded` row (`doc/run-log-events.md`). The p50 budgets apply to aggregates: chaos waves, the baseline driver, and staging. Every later phase's exit criteria include "no regression against these budgets". The table lives in code at `server/src/services/native-runtime/native-speed-budgets.ts`.
+
+Time to first token (s, p50 / p95):
+
+| Adapter | Cold | Warm |
+|---|---|---|
+| claude | 16.5 / 30.0 | 9.5 / 28.5 |
+| codex | 6.0 / 17.0 | 10.0 / 28.5 |
+| opencode | 17.5 / 49.0 | 26.5 / 88.0 |
+
+Agent boot (s, p50 / p95):
+
+| Adapter | Cold | Warm |
+|---|---|---|
+| claude | 9.0 / 20.5 | 3.5 / 16.5 |
+| codex | 2.5 / 7.0 | 5.0 / 16.5 |
+| opencode | 12.0 / 37.0 | 22.0 / 65.5 |
+
+Restart recovery latency, from `ready` to the recovered run's next provider event (s, p50 / p95). The baseline has 3 to 6 samples per adapter, so the largest disposition row is used:
+
+| Adapter | Budget |
+|---|---|
+| claude | 8.0 / 48.0 |
+| codex | 5.5 / 6.5 |
+| opencode | 16.0 / 20.0 |
+
+These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
+
 ## Relationship to the zero-downtime upgrade work
 
 Separate work moves the control plane toward zero-downtime upgrades on an ephemeral filesystem. PostgreSQL holds execution authority and durable protocol state. Object storage holds workspace archives, provider checkpoints, logs, traces and skill assets. Replacement servers reuse stable encryption and signing secrets. Most of the foundations are on master; #19830 is still open. Entry points:
