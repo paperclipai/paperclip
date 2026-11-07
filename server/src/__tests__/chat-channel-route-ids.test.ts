@@ -2,9 +2,27 @@ import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { forbidden, notFound } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { hasCompanyAccess } from "../routes/authz.js";
 import { chatChannelRoutes } from "../routes/chat-channels.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
+
+vi.mock("../routes/connection-management-authz.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../routes/connection-management-authz.js")>();
+  return {
+    ...actual,
+    connectionManagementGuard: () => () => (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      if (req.actor.type === "agent" && !actual.connectionRequestUserId(req)) {
+        return next(forbidden("Connection management requires a responsible user"));
+      }
+      if (req.actor.type === "board" && req.params.companyId && !hasCompanyAccess(req, String(req.params.companyId))) {
+        return next(notFound("Connection management resource not found"));
+      }
+      next();
+    },
+  };
+});
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const otherCompanyId = "22222222-2222-4222-8222-222222222222";
@@ -77,7 +95,7 @@ describe("chat channel route ids", () => {
     await request(app()).get(`/api/chat-endpoints/${endpointId}`).expect(404);
   });
 
-  it("requires a board actor before validating the endpoint ID", async () => {
+  it("requires connection management authority before validating the endpoint ID", async () => {
     const agentActor = { type: "agent", agentId: "agent-1", companyId, source: "agent_key" } as unknown as Express.Request["actor"];
     await request(app(agentActor)).get("/api/chat-endpoints/PASTE_ID_HERE").expect(403);
     expect(chat.get).not.toHaveBeenCalled();
@@ -117,7 +135,7 @@ describe("chat channel route ids", () => {
   });
 
   it("rejects a malformed company ID on company-scoped chat routes before calling the service", async () => {
-    const server = app();
+    const server = app({ type: "board", source: "local_implicit", userId: "local-board" });
     for (const res of [
       await request(server).get("/api/companies/PASTE_ID_HERE/chat-endpoints"),
       await request(server)
@@ -141,7 +159,7 @@ describe("chat channel route ids", () => {
     const memberActor: Express.Request["actor"] = { ...adminActor, isInstanceAdmin: false };
     await request(app(memberActor))
       .delete(`/api/companies/${otherCompanyId}/chat-slack/manager-grants/PASTE_ID_HERE`)
-      .expect(403);
+      .expect(404);
     const malformed = await request(app())
       .delete(`/api/companies/${companyId}/chat-slack/manager-grants/PASTE_ID_HERE`)
       .expect(400);
