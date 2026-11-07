@@ -1,3 +1,4 @@
+import { guardSlackFixtureNetwork } from "./helpers/slack-cloud/transport.js";
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
 import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../vendor/paperclip-runner/index.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../vendor/paperclip-runner/testing.js";
@@ -158,6 +159,10 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  applyPendingMigrations,
+  closeCheckpointDb,
+  closeFileStorageDb,
+  closeLivenessDb,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -302,7 +307,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const historyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
-const externalTestDatabaseUrl = historyTestDatabaseUrl ?? process.env.PAPERCLIP_TEST_DATABASE_URL;
+const slackProtocolCapture = process.env.PAPERCLIP_SLACK_PROTOCOL_CAPTURE === "1";
+const slackProtocolDatabaseUrl = slackProtocolCapture ? resolveExternalTestDatabaseUrl("PAPERCLIP_SLACK_TEST_DATABASE_URL") : undefined;
+if (slackProtocolCapture && !slackProtocolDatabaseUrl) throw new Error("Slack protocol capture requires an explicit dedicated test database");
+const externalTestDatabaseUrl = slackProtocolDatabaseUrl ?? historyTestDatabaseUrl ?? process.env.PAPERCLIP_TEST_DATABASE_URL;
 const embeddedPostgresSupport = externalTestDatabaseUrl
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
@@ -1144,6 +1152,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   );
 
   beforeAll(async () => {
+    if (slackProtocolDatabaseUrl) await applyPendingMigrations(slackProtocolDatabaseUrl);
     mkdirSync(secretsTmpDir, { recursive: true });
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
       secretsTmpDir,
@@ -1173,6 +1182,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   }, 90_000);
 
   afterAll(async () => {
+    if (slackProtocolCapture && db) { await closeCheckpointDb(db, 1); await closeFileStorageDb(db, 1); await closeLivenessDb(db, 1); }
     await db?.$client.end();
     await tempDb?.cleanup();
     if (previousKeyFile === undefined)
@@ -44644,13 +44654,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
-  it("resolves a signed Slack modal correction after SDK context consumption exactly once", async () => {
-    const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
-    let pinned: ReturnType<typeof createChatSdkEndpointRuntime> | undefined;
-    let providerServer: Server | undefined;
+  it.each(slackProtocolCapture ? ["warm", "command-delayed", "action-delayed", "submission-delayed"] as const : ["warm"] as const)("captures signed Slack forwarding protocol with registered owners (%s)", async mode => {
+    const network = guardSlackFixtureNetwork({ requirePreload: slackProtocolCapture });
+    let configured: Awaited<ReturnType<typeof configuredSlackEndpoint>> | undefined;
+    let routedService: ChatChannelService | undefined;
+    let actualRuntime: ReturnType<typeof createChatRuntime> | undefined;
+    let failure: { error: unknown } | undefined;
     try {
+      const fixture = await seedCompany();
+      configured = await configuredSlackEndpoint(fixture);
+      const { callbacks, endpoint, runtime, service, wakeup } = configured;
+      actualRuntime = createChatRuntime();
+      const custody: Array<{ lane: string; elapsedMs: number; acknowledgedWithin3s: boolean; originalTimestamp: string | null }> = [];
+      const protocol: Array<{ method: string; triggerAgeMs?: number; outcome: string }> = [];
+      let triggerCreatedAt = 0;
       const channelId = "C-SIGNED-MODAL";
       const threadTs = "1788.100";
       const externalUserId = `U-MODAL-${randomUUID()}`;
@@ -44798,13 +44815,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }>;
       };
       const views: SlackView[] = [];
+      const exchangedTriggers = new Set<string>();
       const providerMethods: string[] = [];
       const unexpectedProviderMethods: string[] = [];
-      providerServer = createServer(async (request, response) => {
-        let body = "";
-        for await (const chunk of request) body += String(chunk);
-        const params = new URLSearchParams(body);
-        const method = request.url?.split("/").at(-1) ?? "";
+      const providerErrors: unknown[] = [];
+      const providerTransport = vi.fn(async (config: { url: string; baseURL: string; data: string }) => {
+        const target = new URL(config.url, config.baseURL);
+        expect(target.hostname).toBe("127.0.0.1");
+        const params = new URLSearchParams(config.data);
+        const method = target.pathname.split("/").at(-1) ?? "";
         providerMethods.push(method);
         let result: unknown;
         if (method === "conversations.replies") {
@@ -44832,33 +44851,71 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               profile: { display_name: "Maya" },
             },
           };
+        } else if (method === "conversations.info") {
+          result = { ok: true, channel: { id: channelId, name: "signed-modal", is_im: false } };
+        } else if (method === "chat.postEphemeral") {
+          result = { ok: true, message_ts: "1788.250" };
         } else if (method === "views.open") {
-          views.push(JSON.parse(params.get("view")!) as SlackView);
-          result = { ok: true, view: { id: "V-SIGNED-MODAL" } };
+          const triggerAgeMs = Date.now() - triggerCreatedAt;
+          const trigger = params.get("trigger_id")!;
+          const expired = triggerAgeMs >= 3_000;
+          const reused = exchangedTriggers.has(trigger);
+          protocol.push({ method, triggerAgeMs, outcome: expired ? "trigger_expired" : reused ? "trigger_exchanged" : "opened" });
+          if (expired || reused) result = { ok: false, error: expired ? "trigger_expired" : "trigger_exchanged" };
+          else {
+            exchangedTriggers.add(trigger);
+            views.push(JSON.parse(params.get("view")!) as SlackView);
+            result = { ok: true, view: { id: "V-SIGNED-MODAL" } };
+          }
         } else {
           unexpectedProviderMethods.push(method);
           result = { ok: false, error: "unexpected_test_provider_method" };
         }
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify(result));
+        return { data: result, status: 200, statusText: "OK", headers: {}, config, request: { path: target.pathname } };
       });
-      await new Promise<void>((resolve) =>
-        providerServer!.listen(0, "127.0.0.1", resolve),
-      );
       const onSubmit = vi.fn(callbacks.onModalSubmit);
-      pinned = createChatSdkEndpointRuntime({
-        ...configuration,
-        callbacks: { ...callbacks, onModalSubmit: onSubmit },
-        logger: "silent",
-        providerConfig: {
-          ...configuration.providerConfig,
-          credentials: {
-            ...credentials,
-            apiUrl: `http://127.0.0.1:${(providerServer.address() as AddressInfo).port}/api/`,
-          },
-        },
+      const onAction = vi.fn(callbacks.onAction);
+      const onCommand = vi.fn(callbacks.onSlashCommand);
+      const replace = actualRuntime.replaceEndpoint.bind(actualRuntime);
+      vi.spyOn(actualRuntime, "replaceEndpoint").mockImplementation(async input => {
+        if (input.providerConfig.provider !== "slack") throw new Error("Unexpected fixture provider");
+        onSubmit.mockImplementation(input.callbacks.onModalSubmit!);
+        onAction.mockImplementation(input.callbacks.onAction!);
+        onCommand.mockImplementation(input.callbacks.onSlashCommand!);
+        const value = await replace({ ...input, logger: "silent",
+          callbacks: { ...input.callbacks, onModalSubmit: onSubmit, onAction, onSlashCommand: onCommand },
+          providerConfig: { ...input.providerConfig,
+            credentials: { ...input.providerConfig.credentials, apiUrl: "http://127.0.0.1:1/api/" } } });
+        const client = (value.getProviderAdapter() as unknown as { _client: {
+          axios: { defaults: { adapter: unknown } }; views: { open(options: unknown): Promise<unknown> };
+        } })._client;
+        const open = client.views.open.bind(client.views);
+        client.views.open = async options => {
+          try { return await open(options); } catch (error) { providerErrors.push(error); throw error; }
+        };
+        client.axios.defaults.adapter = providerTransport;
+        return value;
       });
-      await pinned.initialize();
+      routedService = chatChannelService(db, { runtime: actualRuntime,
+        fetch: fakeSlackFetch() as typeof globalThis.fetch,
+        heartbeat: { wakeup: receiptBackedWakeup(wakeup) }, publicBaseUrl: "https://paperclip.example" });
+      fixtureServices.add(routedService);
+      const callbackUrl = `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`;
+      const forward = async (request: Request, lane: string) => {
+        const startedAt = Date.now();
+        const originalTimestamp = request.headers.get("x-slack-request-timestamp");
+        const originalSignature = request.headers.get("x-slack-signature");
+        const originalBody = await request.clone().text();
+        if (mode === "command-delayed" && lane === "command" || mode === "action-delayed" && lane === "action" || mode === "submission-delayed" && lane === "invalid_submission")
+          await new Promise(resolve => setTimeout(resolve, 3_500));
+        const response = await routedService!.handleWebhook(endpoint.publicId, "slack", request);
+        const elapsedMs = Date.now() - startedAt;
+        custody.push({ lane, elapsedMs, acknowledgedWithin3s: elapsedMs < 3_000, originalTimestamp });
+        expect(request.headers.get("x-slack-request-timestamp")).toBe(originalTimestamp);
+        expect(request.headers.get("x-slack-signature")).toBe(originalSignature);
+        expect(originalSignature).toBe(`v0=${createHmac("sha256", credentials.signingSecret!).update(`v0:${originalTimestamp}:${originalBody}`).digest("hex")}`);
+        return response;
+      };
       const signed = (payload: unknown) => {
         const body = new URLSearchParams({
           payload: JSON.stringify(payload),
@@ -44867,7 +44924,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const signature = createHmac("sha256", credentials.signingSecret!)
           .update(`v0:${timestamp}:${body}`)
           .digest("hex");
-        return new Request("https://paperclip.test/webhooks/slack", {
+        return new Request(callbackUrl, {
           method: "POST",
           headers: {
             "content-type": "application/x-www-form-urlencoded",
@@ -44882,8 +44939,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         username: "operator",
         name: "Modal Operator",
       };
-      const opened = await pinned.handleWebhook(
-        signed({
+      const beforeEvidence = ((await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)))[0]!.setup as InternalSetupState).slackCallbackSurfaces;
+      const invalidAuth = signed({ type: "block_actions", team: { id: "T-PAPERCLIP" }, user: wireUser, actions: [] });
+      invalidAuth.headers.set("x-slack-signature", `v0=${"0".repeat(64)}`);
+      expect((await routedService.handleWebhook(endpoint.publicId, "slack", invalidAuth)).status).toBe(401);
+      expect(onAction).not.toHaveBeenCalled();
+      expect(((await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)))[0]!.setup as InternalSetupState).slackCallbackSurfaces).toEqual(beforeEvidence);
+      const commandBody = new URLSearchParams({ command: endpoint.setup.command!, text: "", user_id: externalUserId,
+        user_name: "operator", channel_id: channelId, team_id: "T-PAPERCLIP", trigger_id: "synthetic-command-trigger" }).toString();
+      const commandTimestamp = String(Math.floor(Date.now() / 1_000));
+      const commandRequest = new Request(callbackUrl, { method: "POST", headers: {
+        "content-type": "application/x-www-form-urlencoded", "x-slack-request-timestamp": commandTimestamp,
+        "x-slack-signature": `v0=${createHmac("sha256", credentials.signingSecret!).update(`v0:${commandTimestamp}:${commandBody}`).digest("hex")}`,
+      }, body: commandBody });
+      const commandResponse = await forward(commandRequest, "command");
+      expect(commandResponse.status).toBe(200);
+      expect(onCommand).toHaveBeenCalledOnce();
+      expect(await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id),
+        eq(chatActions.kind, "provider_effect"), sql`${chatActions.providerActionId} like 'provider_effect:slash_notice:%'`)))
+        .toEqual([expect.objectContaining({ companyId: fixture.companyId, endpointId: endpoint.id,
+          payload: expect.objectContaining({ effect: "ephemeral_message", authorizationMode: "safe_notice", userId: externalUserId }) })]);
+      expect(custody.find(value => value.lane === "command")!.acknowledgedWithin3s).toBe(mode !== "command-delayed");
+      const actionPayload = {
           type: "block_actions",
           team: { id: "T-PAPERCLIP" },
           user: wireUser,
@@ -44897,9 +44974,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           message: { ts: publication.providerMessageId, thread_ts: threadTs },
           actions: [{ action_id: openAction.actionId, value: interaction.id }],
           trigger_id: "synthetic-signed-modal-trigger",
-        }),
-      );
+      };
+      const actionRequest = signed(actionPayload);
+      triggerCreatedAt = Date.now();
+      const opened = await forward(actionRequest, "action");
       expect(opened.status).toBe(200);
+      if (mode === "action-delayed") {
+        expect(protocol).toEqual([{ method: "views.open", triggerAgeMs: expect.any(Number), outcome: "trigger_expired" }]);
+        expect(protocol[0]!.triggerAgeMs).toBeGreaterThanOrEqual(3_000);
+        expect(views).toHaveLength(0);
+        const attempts = await db.select().from(chatActions).where(and(
+          eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "question_form_open_attempt"),
+        ));
+        expect(attempts).toEqual([expect.objectContaining({ status: "failed", result: expect.objectContaining({ retryable: false }) })]);
+        const pending = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
+        expect(pending).toEqual([expect.objectContaining({ status: "pending" })]);
+        expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id))).toEqual([]);
+        await forward(signed(actionPayload), "duplicate_action");
+        expect(protocol).toHaveLength(1);
+        expect(onSubmit).not.toHaveBeenCalled();
+        expect(unexpectedProviderMethods).toEqual([]);
+        expect(providerErrors).toEqual([expect.objectContaining({ code: "slack_webapi_platform_error", data: expect.objectContaining({ error: "trigger_expired" }) })]);
+        await Promise.all(providerTransport.mock.results.map(result => result.value));
+        expect(custody.find(value => value.lane === "action")!.acknowledgedWithin3s).toBe(false);
+        const observed = (await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)))[0]!.setup as InternalSetupState;
+        expect(observed.slackCallbackSurfaces?.interactivity?.url).toBe(callbackUrl);
+        expect(observed.slackCallbackSurfaces?.slashCommands?.url).toBe(callbackUrl);
+        if (process.env.PAPERCLIP_SLACK_PROTOCOL_CAPTURE === "1") console.info(JSON.stringify({ mode, protocol, custody }));
+        return;
+      }
+      expect(protocol[0]).toMatchObject({ method: "views.open", outcome: "opened" });
+      expect(protocol[0]!.triggerAgeMs).toBeLessThan(3_000);
+      expect(views).toHaveLength(1);
+      await forward(signed(actionPayload), "duplicate_action");
+      expect(protocol).toHaveLength(1);
       expect(views).toHaveLength(1);
       const view = views[0]!;
       const metadata = JSON.parse(view.private_metadata) as {
@@ -44997,7 +45105,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(before.deliveries).toEqual([]);
       expect(before.audits).toEqual([]);
       const wakeupsBefore = wakeup.mock.calls.length;
-      const invalid = await pinned.handleWebhook(submit(""));
+      const invalidStartedAt = Date.now();
+      const invalid = await forward(submit(""), "invalid_submission");
+      expect(custody.find(value => value.lane === "invalid_submission")!.acknowledgedWithin3s).toBe(mode !== "submission-delayed");
+      if (mode === "submission-delayed") expect(Date.now() - invalidStartedAt).toBeGreaterThanOrEqual(3_500);
       expect(invalid.status).toBe(200);
       expect(await invalid.json()).toEqual({
         response_action: "errors",
@@ -45023,9 +45134,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
           );
       await setRole("viewer");
-      const denied = await pinned.handleWebhook(
-        submit("Add regional failover"),
-      );
+      const denied = await forward(submit("Add regional failover"), "current_authority_submission");
       expect(denied.status).toBe(200);
       expect(await denied.json()).toEqual({
         response_action: "errors",
@@ -45051,9 +45160,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         conversationId: conversation.id,
       });
       await setRole("operator");
-      const corrected = await pinned.handleWebhook(
-        submit("  Add regional failover  "),
-      );
+      const corrected = await forward(submit("  Add regional failover  "), "corrected_submission");
       expect(corrected.status).toBe(200);
       expect(await corrected.json()).toEqual({ response_action: "clear" });
       await vi.waitFor(async () => {
@@ -45122,9 +45229,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           }),
         }),
       ]);
-      const duplicate = await pinned.handleWebhook(
-        submit("  Add regional failover  "),
-      );
+      const duplicate = await forward(submit("  Add regional failover  "), "duplicate_submission");
       expect(duplicate.status).toBe(200);
       expect(await duplicate.json()).toEqual({ response_action: "clear" });
       expect(await submissionState()).toEqual(accepted);
@@ -45154,23 +45259,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         providerMethods.filter((method) => method === "views.open"),
       ).toHaveLength(1);
       expect(unexpectedProviderMethods).toEqual([]);
+      await Promise.all(providerTransport.mock.results.map(result => result.value));
+      expect(providerErrors).toEqual([]);
+      const observed = (await db.select({ setup: chatEndpoints.setup }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)))[0]!.setup as InternalSetupState;
+      expect(observed.slackCallbackSurfaces?.interactivity?.url).toBe(callbackUrl);
+      expect(observed.slackCallbackSurfaces?.slashCommands?.url).toBe(callbackUrl);
+      if (process.env.PAPERCLIP_SLACK_PROTOCOL_CAPTURE === "1") console.info(JSON.stringify({ mode, protocol, custody, invalidSubmission: "errors", correctedSubmission: "clear", answerDeliveries: accepted.deliveries.length }));
+    } catch (error) {
+      failure = { error };
+      throw error;
     } finally {
-      try {
-        await pinned?.shutdown();
-      } finally {
-        try {
-          await retirePublicationFixture(service, endpoint.id);
-        } finally {
-          if (providerServer) {
-            await new Promise<void>((resolve, reject) => {
-              providerServer!.close((error) =>
-                error ? reject(error) : resolve(),
-              );
-              providerServer!.closeAllConnections();
-            });
-          }
-        }
+      const errors: unknown[] = [];
+      for (const cleanup of [
+        () => routedService?.shutdown(),
+        () => actualRuntime?.shutdown(),
+        () => configured ? retirePublicationFixture(configured.service, configured.endpoint.id) : undefined,
+        () => network.assertQuiet(),
+        () => network.restore(),
+      ]) {
+        try { await cleanup(); } catch (error) { errors.push(error); }
       }
+      if (errors.length) throw new AggregateError([...(failure ? [failure.error] : []), ...errors], "Slack protocol work or cleanup failed");
     }
   });
 

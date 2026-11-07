@@ -21,7 +21,7 @@ pnpm exec vitest run --config tests/restart-chaos/vitest.config.ts  # credential
 node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
-Options: `--triggers time,comment,retry,queued,tool` (fault timing, below),
+Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
 `--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance).
 
@@ -33,6 +33,26 @@ A replay inherits the masks saved in the source wave's `plan.json`;
 `--replay <wave>/<task> --rc06-masked` adds the mask to a replay of an unmasked wave.
 Each fault receipt records the host 1-minute load average (`loadAvg1m`); treat
 timeout failures above about 16 as load-suspect.
+
+## Restart storm (K13, `--storm-minutes`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude,opencode --concurrency 6 --storm-minutes 60 --seed 7
+```
+
+A storm wave fires faults on its own seeded clock instead of one fault per
+task. Each fault is drawn from `--faults` (default K1, K2, K4, K6) and fires
+2–4 minutes after the previous one settled (server ready), so a K4 hold never
+eats the next gap. Each fault hits every task in flight. While the storm lasts
+the harness launches a new task whenever one rests, keeping `--concurrency`
+in flight; `--tasks` (default 200) is only the pool. A pool that runs dry
+before the storm ends fails the wave as a harness error (`storm_pool_exhausted`). When the storm ends no
+new task or fault starts, the in-flight tasks drain to rest or their deadline,
+and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
+`storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
+receipts are in `faults.json`. A replay of a storm task fires the faults that
+crossed it, without a new storm. `--triggers time,result` may join a storm: a `result` task (C1) also fires its own K1 or K2 (from `--faults`) just after its run accepts a result, the next storm gap runs from its settle, and no triggered fault fires during the drain. Other triggers do not combine with a storm.
 
 ## Daytona (`--env daytona`)
 
@@ -98,7 +118,9 @@ fixture from `catalog.ts`, and the native Codex platform-qualification probe.
 **R6 sweep.** After the wave, `daytona-sweep.ts` lists (read-only) the
 sandboxes whose `paperclip-company-id` and `paperclip-environment-id` labels
 both equal the UUIDs this wave's isolated instance minted, re-checks every row,
-and reconciles them with the environment's leases. A sandbox archived after its
+and reconciles them with the environment's leases. It retries for the product's
+pending-cleanup backoff plus 90 seconds (6.5 minutes, capped at 8) before
+calling anything a leak. A sandbox archived after its
 lease was released is expected (the plugin archives on release and Daytona
 deletes it after 60 minutes). Any other live sandbox without a held lease, or
 an `active`/`pending_cleanup` lease, is a leak: it fails R6 for the
@@ -106,7 +128,10 @@ task whose run owns it, or the wave when no task does. The harness then deletes
 the wave's environment through Paperclip and lists again: a wave sandbox that
 is still neither archived nor destroyed after 90 seconds fails the wave and is
 reported for a person to act on (the environment's 60-minute ttl also expires
-it). The result is in `<wave>/sandbox-sweep.json`.
+it). An environment DELETE that returns 409 because a sandbox cleanup is still
+pending is retried for the same settle window; if it is still blocked then, the
+wave fails (not as a harness error) and the instance is kept, because its
+database owns the cleanup work. The result is in `<wave>/sandbox-sweep.json`.
 
 ## Fault timing (`--triggers`)
 
@@ -117,6 +142,7 @@ the observer, after a seeded delay:
 | Trigger | Fires | Plan |
 | --- | --- | --- |
 | `comment` | 0–5 s after the C1 follow-up was posted to a live run (C1 only) | C1 + K1, B8 |
+| `result` | 0–3 s after the run that received the C1 follow-up proposed or accepted its result, only while that run is still `running` (C1 only) | C1 + K1, B8 |
 | `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
 | `queued` | on the first poll whose run is still `queued` with no start | B1 |
 | `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
@@ -162,8 +188,10 @@ re-arms the task's own triggered faults instead of using their offsets.
 - B5 passes only when `bench.sh` wrote its own completion record showing it
   ran, and the harness itself saw at least three `.bench/progress` values
   while polling. This is best-effort against a deliberately adversarial agent.
-- R4 allows at most one active (queued, running or scheduled-retry) run per
-  sample. A wake comment may be served again only after a run that did not
+- R4 fails when two runs of the issue executed at the same time: both
+  `running` in one sample, or overlapping started→finished windows. A queued
+  or scheduled wake behind a running run is not a duplicate unless it starts
+  executing. A wake comment may be served again only after a run that did not
   succeed.
 - T-oracle commands (B1 tests and CLI) run agent-editable code. They run under
   a macOS Seatbelt sandbox with a scratch `HOME`, no network and no read access
@@ -173,5 +201,7 @@ re-arms the task's own triggered faults instead of using their offsets.
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
-- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.
+- The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
+- `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.

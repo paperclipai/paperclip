@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { beforeAll, beforeEach, afterEach, afterAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentFileRoots, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
+import { agents, agentFileRoots, agentInstructionWorkingCopies, authUsers, companies, companyMemberships, principalPermissionGrants, heartbeatRuns, createDb, closeFileStorageDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentFileStore, adoptAgentFiles, fileHash } from "../services/agent-file-store.js";
 import { invalidateAgentFileProjection, persistDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -193,15 +193,40 @@ describe("durable agent file authority", () => {
     expect(await store().read(companyId, agentId, "failed.txt", actor())).toBeNull();
   });
 
-  it("dry-runs migration without adopting files and requires stopped writers for publication", async () => {
+  it("dry-runs without adopting files and publishes settled legacy files online", async () => {
     await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Legacy"));
     const input = { companyId, apply: false, writersStopped: false };
     expect(await migrateAgentFiles(db, input)).toMatchObject({ results: [{ agentId, state: "needs_import" }], pageReady: false });
     expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual([]);
-    await expect(migrateAgentFiles(db, { ...input, apply: true })).rejects.toThrow("stopped writers");
-    expect(await migrateAgentFiles(db, { ...input, apply: true, writersStopped: true })).toMatchObject({ pageReady: true });
+    expect(await migrateAgentFiles(db, { ...input, apply: true })).toMatchObject({ pageReady: true });
     await replaceFilesystem();
     expect(await store().read(companyId, agentId, "AGENTS.md", actor())).toEqual(Buffer.from("Legacy"));
+  });
+
+  it("recognizes an active agent's existing durable head without restoring its filesystem projection", async () => {
+    await store().write({ companyId, agentId, path: "AGENTS.md", bytes: Buffer.from("Durable"), baseHash: null }, actor());
+    const [active] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", runtimeMode: "native" }).returning();
+    const before = await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId));
+    await fs.rm(root, { recursive: true });
+    expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: false }))
+      .toMatchObject({ results: [{ agentId, state: "durable" }], pageReady: true });
+    expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual(before);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active!.id)))[0]).toEqual(active);
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["pending_collection", "unavailable"])("preserves a %s working copy and keeps first adoption blocked", async state => {
+    await materializeInstructionBytes(root, "AGENTS.md", Buffer.from("Canonical files"));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date() }).returning();
+    const [copy] = await db.insert(agentInstructionWorkingCopies).values({ companyId, agentId, runId: run!.id,
+      responsibleUserId: userId, entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: path.join(home, "retained-copy"),
+      executionRoot: "/retained/agent-files", location: "local", state,
+      errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", receipt: { schema: "paperclip.agent-files.v1" } }).returning();
+    expect(await migrateAgentFiles(db, { companyId, apply: true, writersStopped: false }))
+      .toMatchObject({ results: [{ agentId, state: "working_copy_unsettled" }], pageReady: false });
+    expect(await db.select().from(agentFileRoots).where(eq(agentFileRoots.agentId, agentId))).toEqual([]);
+    expect((await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, run!.id)))[0]).toEqual(copy);
+    expect(await fs.readFile(path.join(root, "AGENTS.md"), "utf8")).toBe("Canonical files");
   });
 
   it("refuses migration while the agent has queued or running execution", async () => {

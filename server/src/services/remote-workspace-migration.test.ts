@@ -22,7 +22,7 @@ import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archi
 import { captureTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { captureRestorePoint, sealRestorePoint } from "./git-restore-point.js";
 import type { TaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
@@ -521,7 +521,8 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   });
   async function gitArchiveFixture(repoUrl = "https://example.invalid/repository.git", home = root) {
     const f = await seed(), projectId = randomUUID(), projectWorkspaceId = randomUUID(), branchName = "saved-task";
-    vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    await fs.mkdir(home, { recursive: true });
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(home)); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
     const base = resolveManagedProjectWorkspaceDir({ companyId: f.companyId, projectId, repoName: "repository" });
     await fs.mkdir(base, { recursive: true }); await git(base, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(base, "base.txt"), "base\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
@@ -965,8 +966,17 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await fs.rm(f.cwd, { recursive: true });
     return ref;
   }
-  it("imports an archived directory from its encrypted restore point after the old folder is gone", async () => {
-    const f = await seed(), retained = await retainDirectory(f);
+  it.each(["historical", "canonical"] as const)("imports an archived directory from its encrypted restore point after the old folder is gone (%s)", async location => {
+    let f = await seed();
+    if (location === "canonical") {
+      vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+      const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, f.issueId);
+      await fs.mkdir(path.dirname(cwd), { recursive: true });
+      await fs.rename(f.cwd, cwd);
+      await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, f.workspaceId));
+      f = { ...f, cwd };
+    }
+    const retained = await retainDirectory(f);
     expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
     const saved = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(saved.metadata)!;
@@ -1134,7 +1144,13 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("new local edits\n");
   });
   it("imports dirty unpushed Git work and restores it after the original folder disappears", async () => {
-    const f = await seed(); await git(f.cwd, "init", "-q", "-b", "feature");
+    let f = await seed();
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, f.issueId);
+    await fs.mkdir(path.dirname(cwd), { recursive: true }); await fs.rename(f.cwd, cwd);
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, f.workspaceId));
+    f = { ...f, cwd };
+    await git(f.cwd, "init", "-q", "-b", "feature");
     await git(f.cwd, "add", "."); await git(f.cwd, "commit", "-qm", "unpushed work");
     await git(f.cwd, "remote", "add", "origin", "https://example.invalid/repository.git");
     const head = await git(f.cwd, "rev-parse", "HEAD");

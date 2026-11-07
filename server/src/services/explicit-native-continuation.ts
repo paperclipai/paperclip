@@ -1,7 +1,7 @@
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
-import { canSelectFreshWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
+import { canSelectFreshWorkspace, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
@@ -16,8 +16,8 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
-import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
@@ -151,7 +151,8 @@ export async function admitExplicitNativeContinuation(input: {
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   ));
-  if (!task || task.assigneeAgentId !== agentId || ["done", "cancelled"].includes(task.status)) return null;
+  if (!task || task.assigneeAgentId !== agentId || task.status === "cancelled"
+    || task.status === "done" && !input.queuedCommentInterruptId) return null;
   const [retryWake] = input.taskRetryRequestId ? await db.select().from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId),
     eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -257,6 +258,28 @@ export async function admitExplicitNativeContinuation(input: {
         or(eq(heartbeatRuns.nativeIssueId, issueId), eq(heartbeatRuns.issueId, issueId),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`)))
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+    if (latest?.status === "succeeded") {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, latest.id),
+      )).for("update");
+      const [completed] = await db.select({ agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+        runtimeMode: heartbeatRuns.runtimeMode, finishedAt: heartbeatRuns.finishedAt,
+        nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId, contextSnapshot: continuationContext,
+      }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latest.id))).for("update");
+      if (!completed || completed.agentId !== agentId || completed.runtimeMode !== "native"
+        || completed.status !== "succeeded" || !completed.finishedAt
+        || (completed.nativeIssueId ?? completed.issueId ?? completed.contextSnapshot?.issueId) !== issueId
+        || coordinator?.phase !== "committed" || coordinator.leaseOwner || adapterExecutionControls.has(latest.id))
+        return blocked("controller_settling", "Waiting for the previous run to finish recovery. Your message will start automatically.");
+      const [result] = coordinator.resultId ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
+        eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
+        eq(nativeRunResults.runId, latest.id), eq(nativeRunResults.id, coordinator.resultId),
+        eq(nativeRunResults.schemaStatus, "accepted"),
+        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+      )).limit(1) : [];
+      if (!result || await hasPendingRunCleanup(db, companyId, latest.id))
+        return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
+    }
     if (latest?.runtimeMode === "native" && ["cancelled", "failed"].includes(latest.status) &&
         !sourceChecks.some(source => (source.evidence.runId ?? source.evidence.sourceRunId) === latest.id)) {
       sourceChecks.push({ cause: "native_continuation_requires_reconciliation", evidence: { runId: latest.id } });
@@ -274,7 +297,7 @@ export async function admitExplicitNativeContinuation(input: {
       !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
-  if (!sourceChecks.length) return null;
+  if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
@@ -286,10 +309,13 @@ export async function admitExplicitNativeContinuation(input: {
   )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
     inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  if (!sourceChecks.length) return null;
 
   const sources: Run[] = [];
   let readiness: ContinuationReadiness | undefined;
   const freshSources = new Map<string, string>();
+  const freshCandidates: Array<{ run: Run; intent: string; cause: string; evidence: Record<string, unknown>;
+    remote: boolean; leaseIds: string[] }> = [];
   const stoppedSessions: Array<{ evidence: Record<string, unknown>; retire: () => boolean }> = [];
   const cancelledStartupIds = new Set<string>();
   for (const action of sourceChecks) {
@@ -375,8 +401,20 @@ export async function admitExplicitNativeContinuation(input: {
           actionId: action.id, operationIds: recovery.preservationOperationIds });
       const repairedTerminal = completedResult && coordinator.phase === "terminal_failure"
         && await hasVerifiedWorkspaceRepair(db, run);
-      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled))
-        return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
+        // Nothing finishes the saved result while a stopped copyback owner is
+        // unverified. The run's live retained recovery records that hold; name
+        // its board action instead of an endless finalizing wait (RC-50).
+        const [ownerHold] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'`,
+          sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`)).limit(1);
+        return ownerHold
+          ? blocked("workspace_owner_stop_required", "A board member must confirm that the previous server stopped copying files. Your Retry is saved.")
+          : blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
+      }
     }
     // A repaired export no longer blocks execution. Its machine receipt still
     // binds the saved user turn; finalized file state alone is insufficient.
@@ -461,12 +499,24 @@ export async function admitExplicitNativeContinuation(input: {
         // A missing process identity is not evidence that a provider exited.
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
-            !await hasHistoricalSuspendedNativeSession(db, run)) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+            !await hasHistoricalSuspendedNativeSession(db, run) &&
+            !(run.runtimeMode === "native" &&
+              await recordUnidentifiedLocalRunnerStop(db, run, { record: !input.dryRun }))) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
         if (run.processGroupId && !processStopped(-run.processGroupId)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
       }
     }
-    if (!remote && run.runtimeMode === "native" && run.errorCode === "native_session_cleanup_quarantined") {
+    // The runner keeps a closing or quarantined provider session in process
+    // memory, keyed by this task. Its admission gate would refuse a successor
+    // at once, so hold the input here with the matching reason instead of
+    // dispatching a run that can only fail. A pending close settles by itself
+    // and its release wakes deferred execution; the held input then starts.
+    const retainedCleanup = !remote && run.runtimeMode === "native"
+      ? nativeSessionCleanupBlock({ companyId, issueId }) : null;
+    if (retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
+      return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
+    if (!remote && run.runtimeMode === "native" &&
+        (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
       // This is new user input, never permission to retry the interrupted turn.
       if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
       const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
@@ -478,11 +528,31 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
     if (freshIntent && !await hasVerifiedWorkspaceRepair(db, run)) {
       freshSources.set(run.id, freshIntent);
-      readiness = { mode: "fresh_isolated_workspace", retryIntentId: freshIntent, sourceRunId: run.id,
-        retainedSourceIds: [...new Set([...(readiness?.mode === "fresh_isolated_workspace" ? readiness.retainedSourceIds : []),
-          ...leases.map(lease => lease.id)])] };
+      freshCandidates.push({ run, intent: freshIntent, cause: action.cause, evidence: strategyEvidence, remote,
+        leaseIds: leases.map(lease => lease.id) });
     }
     sources.push(run);
+  }
+  if (freshCandidates.length) {
+    // R2: keep the task's own workspace when its single prior writer is
+    // contained and the directory is safe to reuse. Otherwise start the fresh
+    // isolated attempt and leave every source directory untouched. Several
+    // holds can describe the same failed run; each hold must permit the reuse.
+    const sourceRunIds = new Set(freshCandidates.map(candidate => candidate.run.id));
+    const only = sourceRunIds.size === 1 && freshCandidates.every(candidate => !candidate.remote) ? freshCandidates[0]! : null;
+    let retained: { id: string; cwd: string } | null = null;
+    const gitProbes = new Map<string, Promise<boolean>>();
+    for (const candidate of only ? freshCandidates : []) {
+      const checked = await retainedIssueWorkspaceForRetry(db, { companyId, issueId, agentId,
+        successorRunId: input.successorRunId, cause: candidate.cause, source: candidate.run, evidence: candidate.evidence, gitProbes });
+      if (!checked || (retained && (retained.id !== checked.id || retained.cwd !== checked.cwd))) { retained = null; break; }
+      retained = checked;
+    }
+    const last = freshCandidates.at(-1)!;
+    readiness = retained && only ? { mode: "reuse_issue_workspace", retryIntentId: only.intent, sourceRunId: only.run.id,
+      workspaceId: retained.id, cwd: retained.cwd }
+      : { mode: "fresh_isolated_workspace", retryIntentId: last.intent, sourceRunId: last.run.id,
+        retainedSourceIds: [...new Set(freshCandidates.flatMap(candidate => candidate.leaseIds))] };
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
@@ -500,6 +570,7 @@ export async function admitExplicitNativeContinuation(input: {
   // Prove required task history is available before retiring any hold.
   await buildExecutionContinuation({ db, companyId, issueId, agentId,
     context: { previousRunId: previous.id, wakeCommentId: commentId },
+    ...(nativeQueuedSend && task.status === "done" ? { prospectiveTaskStatus: "todo" as const } : {}),
     summary: null, exposeLowTrustRaw: false });
   const continuation = { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId! } : {}),
@@ -568,8 +639,8 @@ export async function admitExplicitNativeContinuation(input: {
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },
   });
   if (readiness) await persistActivity(db, { companyId, actorType: "system", actorId: "task-recovery",
-    action: "issue.fresh_workspace_selected", entityType: "issue", entityId: issueId,
-    details: { ...readiness, runId: input.successorRunId } });
+    action: readiness.mode === "reuse_issue_workspace" ? "issue.retry_workspace_reused" : "issue.fresh_workspace_selected",
+    entityType: "issue", entityId: issueId, details: { ...readiness, runId: input.successorRunId } });
   if (input.taskRetryRequestId) {
     const payload = sql`jsonb_set(${agentWakeupRequests.payload} #- '{taskRetry,continuation}', '{taskRetry,strategy}',
       ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`;

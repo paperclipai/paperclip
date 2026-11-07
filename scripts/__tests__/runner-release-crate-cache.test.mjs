@@ -361,7 +361,9 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   assert.deepEqual(lanes, [
     ["static checks", false],
     ["rust", true],
-    ["vitest package", false],
+    ["vitest package (1/3)", false],
+    ["vitest package (2/3)", false],
+    ["vitest package (3/3)", false],
     ["vitest native server", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {

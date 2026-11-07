@@ -1,4 +1,5 @@
 import { configuredEnvironment } from "../../configured-environment.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
 import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -64,6 +65,8 @@ export interface CodexAppServerTransport {
    * diagnostic context; transports must not forward it to the provider.
    */
   close(reason?: string): Promise<void>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;

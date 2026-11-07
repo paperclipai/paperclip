@@ -24,6 +24,7 @@ export const FIRST_TASK_CASES = [
     1,
   ],
   ["interview-plan-accept", "Interview, plan, and acceptance", "interview", 3],
+  ["plan-only-accept", "Approve a plan without authorizing execution", "plan", 2],
   ["task-card-accept", "Subtask accepted through a card", "task", 3],
   ["accept-while-running", "Accept a proposal while its agent is still running", "task", 3],
   ["task-reply-accept", "Subtask accepted in conversation", "task", 3],
@@ -60,12 +61,16 @@ export function firstTaskScenario(id: string, nonce: string) {
       entry[2] === "ambiguous"
         ? "Help me get my organization going."
         : entry[2] === "plan"
-          ? `Write a short plan for welcoming new members to our garden club. ${facts} Let me review the plan before any work starts.`
+          ? `Write a short plan for welcoming new members to our garden club. ${facts} ${id === "plan-only-accept"
+            ? "For this task, deliver only a plan. Do not implement it, hire agents, or create execution tasks even after I approve the plan."
+            : "Let me review the plan before any work starts."}`
           : entry[2] === "ordinary"
             ? `Write the welcome note now on this task; no interview or subtask is needed. ${task}`
             : task,
     revision: `Change the note: invite people to our Sunday meetup instead, and replace ${originalMarker} with ${marker}. Please revise your proposal; I have not accepted it yet.`,
-    acceptance: "Yes, I accept that proposal. Please do it.",
+    acceptance: id === "plan-only-accept"
+      ? "I approve the plan only. Do not start implementation, hire agents, or create execution tasks."
+      : "Yes, I accept that proposal. Please do it.",
     rejection:
       "No, do not proceed. I do not want this work done. Please acknowledge that and stop.",
   };

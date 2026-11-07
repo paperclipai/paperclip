@@ -1,5 +1,20 @@
 # Native workspace finalization ownership and recovery
 
+Online legacy workspace import may preserve an unresolved terminal source while
+unrelated object-backed work continues. This is a file-authority handoff. It
+does not finish the old result, clear its recovery action, stop a provider, or
+start another turn. Keep every descriptor, retained allocation, and finalization
+checkpoint for the recovery owner.
+
+The migration owner must hold the existing per-run physical finalizer advisory
+locks across capture and publication. It must reject a non-null coordinator
+owner, a durable physical copyback owner, a live controller lease, or an active
+adapter control. An expired owner is still an owner. Historical agent PID fields
+remain unchanged; they do not certify that the provider stopped. Recheck the
+exact source proof under publication row locks. A changed source or checkpoint
+keeps local authority. Provider stop verification and any later file export
+remain the recovery owner's separate obligations.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown
@@ -587,3 +602,18 @@ task's queue through current admission checks. Each saved request still advances
 its recovery cursor. Rejected attempts, changed source runs, and updated source evidence remain eligible,
 and the next pass checks current state again. Legacy per-request handling stays
 unchanged. Pending work is awaited before a source is marked checked.
+
+Retained saved-work recovery for a finished run uses the same owner receipt.
+When the receipt names a controller that a restart killed and no automatic proof
+can release it, the recovery worker does not spend an attempt on each recheck.
+It records the exact receipt on the retained recovery action as
+`workspaceOwnerRecovery.state = "operator_required"` and keeps rechecking within
+the bounded recovery window. A task Retry waiting on that saved result reports
+`workspace_owner_stop_required` and does not offer another Retry, because another
+click cannot release the receipt. The board confirms the stop through the same
+`resume-workspace-finalization` route. The confirmation must name the receipt that
+is still on the run. It clears only that receipt and returns the existing recovery
+to the worker (a spent budget gets one new generation). It accepts no result and
+starts no agent turn. The waiting Retry then continues through its normal path.
+If the recovery window ends first, the board handoff names the same confirmation
+instead of advising another Retry.

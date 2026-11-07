@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import type { SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
 
 type Source = { companyId: string; issueId: string; runId: string; controller: string; supervisor?: string };
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -24,8 +25,14 @@ export async function hasArchivedLegacyNativeController(db: Db, input: Source & 
 }
 
 export async function archiveFailedLegacyNativeController(db: Db, input: Source & {
-  storage: StorageService; writersStopped: true; signal: AbortSignal;
+  storage: StorageService; writersStopped?: true; onlineOwner?: SettledControllerArchiveOwner; signal: AbortSignal;
 }) {
+  if (input.onlineOwner ? input.writersStopped || input.onlineOwner.kind !== "settled_controller_archive"
+    || input.onlineOwner.companyId !== input.companyId || input.onlineOwner.issueId !== input.issueId
+    || input.onlineOwner.runId !== input.runId || input.onlineOwner.controllerDigest !== sha256(input.controller)
+    || input.onlineOwner.supervisorDigest !== (input.supervisor === undefined ? null : sha256(input.supervisor)) : !input.writersStopped) {
+    throw new Error("native_controller_archive_authority_invalid");
+  }
   if (await hasArchivedLegacyNativeController(db, input)) return;
   const descriptor = legacyNativeControllerArchive(input);
   const root = await mkdtemp(join(tmpdir(), "pc-legacy-controller-archive-"));
@@ -34,7 +41,7 @@ export async function archiveFailedLegacyNativeController(db: Db, input: Source 
     await writeFile(join(root, "control-plane-state.json"), input.controller, { mode: 0o600 });
     if (input.supervisor !== undefined) await writeFile(join(root, "supervisor.json"), input.supervisor, { mode: 0o600 });
     await persistNativeHarnessBackup({ db, storage: input.storage, root, scopeDigest: descriptor.scopeDigest, signal: input.signal,
-      owner: { kind: "offline_migration", writersStopped: input.writersStopped, terminalFailureOnly: true,
+      owner: input.onlineOwner ?? { kind: "offline_migration", writersStopped: true, terminalFailureOnly: true,
         companyId: input.companyId, issueId: input.issueId, runId: input.runId } });
   } finally { await removeNativeHarnessBackup(root); }
 }

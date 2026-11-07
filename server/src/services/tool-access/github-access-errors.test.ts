@@ -39,6 +39,11 @@ describe("GitHub tool access failures", () => {
       expect(text).toMatch(/until GitHub access is repaired/);
       expect(text).toContain("https://github.com/new");
       expect(text).toContain("Refresh access");
+      expect(text).toContain("Add More Repos on GitHub");
+      expect(text).toMatch(/personal account/i);
+      expect(text).toMatch(/organization argument/i);
+      expect(text).toMatch(/does not.*personal account/i);
+      expect(text).not.toMatch(/replace.*token|Administration|classic token/i);
     }
     const other = githubAccessDeniedInstructions("mcp.github:create_issue", "managed");
     expect(other).toMatch(/Do not retry/);

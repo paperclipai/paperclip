@@ -85,6 +85,78 @@ const failedSessionCleanupOwners = new Map<
   Promise<void>,
   NativeSessionCleanupDomain
 >();
+
+type NativeSessionCleanupSettledListener = (scope: {
+  companyId: string;
+  issueIds: string[];
+}) => void;
+const cleanupSettledListeners = new Set<NativeSessionCleanupSettledListener>();
+
+function cleanupDomainScope(domain: NativeSessionCleanupDomain): {
+  companyId: string;
+  issueIds: string[];
+} {
+  const [companyId] = JSON.parse(domain.key) as string[];
+  const issueIds = domain.resources.flatMap((resource) => {
+    const [kind, id] = JSON.parse(resource) as string[];
+    return kind === "issue" && typeof id === "string" ? [id] : [];
+  });
+  return { companyId: companyId ?? "", issueIds };
+}
+
+/** A retained cleanup owner or quarantine entry was released. Observers can
+ * re-evaluate work that waited on it; this grants no execution authority. */
+function announceCleanupSettled(domain: NativeSessionCleanupDomain): void {
+  const scope = cleanupDomainScope(domain);
+  for (const listener of cleanupSettledListeners) {
+    try {
+      listener(structuredClone(scope));
+    } catch {
+      // Observers cannot change cleanup ownership.
+    }
+  }
+}
+
+/** Subscribe to cleanup releases. Returns the unsubscribe function. */
+export function onNativeSessionCleanupSettled(
+  listener: NativeSessionCleanupSettledListener,
+): () => void {
+  cleanupSettledListeners.add(listener);
+  return () => cleanupSettledListeners.delete(listener);
+}
+
+/**
+ * Read-only view of the in-process admission gate for one task. "pending":
+ * a retained close or bounded automatic close recovery still owns the task's
+ * provider resources, and admission would be refused now. "operator_required":
+ * the close cannot settle automatically. Never grants or retires authority.
+ */
+export function nativeSessionCleanupBlock(input: {
+  companyId: string;
+  issueId: string;
+}): "operator_required" | "pending" | null {
+  const issueResource = JSON.stringify(["issue", input.issueId]);
+  const matches = (domain: NativeSessionCleanupDomain) =>
+    domain.resources.includes(issueResource) &&
+    cleanupDomainScope(domain).companyId === input.companyId;
+  let block: "operator_required" | "pending" | null = null;
+  for (const entry of quarantinedSessionCleanups) {
+    if (!matches(entry.domain)) continue;
+    // An entry whose bounded automatic close budget is spent has no further
+    // scheduled attempt. Waiting would never end, so it needs the same
+    // stopped-process recovery as an unrecoverable close.
+    const automaticRecoveryExhausted =
+      !entry.attempt && !entry.recovery && !entry.timer &&
+      entry.automaticAttempts >= MAX_QUARANTINED_SESSION_AUTOMATIC_CLOSE_ATTEMPTS;
+    if (entry.operatorRecoveryRequired || automaticRecoveryExhausted)
+      return "operator_required";
+    block = "pending";
+  }
+  for (const domain of failedSessionCleanupOwners.values()) {
+    if (matches(domain)) block = "pending";
+  }
+  return block;
+}
 const FAILED_SESSION_CLOSE_RETRY_MS = 1_000;
 const MAX_FAILED_SESSION_CLOSE_RETRIES = 3;
 const MAX_QUARANTINED_SESSION_CLOSE_RETRIES = 3;
@@ -154,7 +226,10 @@ export function completeRetainedNativeSessionCleanup(
   ) {
     throw new NativeSessionCleanupQuarantinedError();
   }
-  for (const entry of matches) quarantinedSessionCleanups.delete(entry);
+  for (const entry of matches) {
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+  }
   return matches.length;
 }
 
@@ -182,6 +257,7 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = null;
     quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
   }
   return true;
 }
@@ -205,6 +281,7 @@ export function completeTerminatedLocalNativeSessionCleanup(binding: {
   for (const entry of matches) {
     if (entry.timer) clearTimeout(entry.timer);
     quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
   }
   return true;
 }
@@ -524,11 +601,11 @@ function retainUnadmittedSessionCleanup(
         return;
       } catch (error) {
         if (error instanceof NativeSessionCloseUnrecoverableError) {
-          quarantineSessionCleanup(session, cleanupDomain, true);
+          quarantineSessionCleanup(session, cleanupDomain, true, error);
           throw error;
         }
         if (retryCount >= MAX_FAILED_SESSION_CLOSE_RETRIES) {
-          quarantineSessionCleanup(session, cleanupDomain);
+          quarantineSessionCleanup(session, cleanupDomain, false, error);
           throw error;
         }
         retryCount += 1;
@@ -679,19 +756,93 @@ function retainFailedSessionCleanupOwner(
 ): void {
   failedSessionCleanupOwners.set(cleanup, cleanupDomain);
   void cleanup
-    .finally(() => failedSessionCleanupOwners.delete(cleanup))
+    .finally(() => {
+      failedSessionCleanupOwners.delete(cleanup);
+      announceCleanupSettled(cleanupDomain);
+    })
     .catch(() => undefined);
+}
+
+export interface NativeSessionCleanupQuarantine {
+  companyId: string;
+  runId: string;
+  issueId: string;
+  sessionId: string;
+  operatorRecoveryRequired: boolean;
+  /** Bounded error name/code/message of the close failure that caused it. */
+  cause: string;
+  /** Bounded settlement facts of an unrecoverable close, when it reported them. */
+  settlement: Record<string, unknown> | null;
+}
+type NativeSessionCleanupQuarantineListener = (
+  quarantine: NativeSessionCleanupQuarantine,
+) => void;
+const cleanupQuarantineListeners = new Set<NativeSessionCleanupQuarantineListener>();
+
+/** Observe every cleanup quarantine when it is created or escalates to
+ * operator recovery, with its cause. Observation grants no authority. */
+export function onNativeSessionCleanupQuarantined(
+  listener: NativeSessionCleanupQuarantineListener,
+): () => void {
+  cleanupQuarantineListeners.add(listener);
+  return () => cleanupQuarantineListeners.delete(listener);
+}
+
+function boundedSettlement(cause: unknown): Record<string, unknown> | null {
+  if (!(cause instanceof NativeSessionCloseUnrecoverableError) || !cause.settlement) return null;
+  try {
+    const text = JSON.stringify(cause.settlement);
+    return text.length <= 4_000 ? (JSON.parse(text) as Record<string, unknown>) : { truncated: true };
+  } catch {
+    return { unreadable: true };
+  }
+}
+
+function announceCleanupQuarantine(
+  session: NativeSession,
+  operatorRecoveryRequired: boolean,
+  cause: unknown,
+): void {
+  if (cleanupQuarantineListeners.size === 0) return;
+  let identity: ReturnType<NativeSession["identity"]> | null = null;
+  try {
+    identity = session.identity();
+  } catch {
+    // Observation must not fail quarantine.
+  }
+  const error = cause instanceof Error ? cause : null;
+  const code = error && "code" in error && typeof error.code === "string" ? error.code : null;
+  const quarantine: NativeSessionCleanupQuarantine = {
+    companyId: identity?.companyId ?? "",
+    runId: identity?.runId ?? "",
+    issueId: identity?.issueId ?? "",
+    sessionId: identity?.sessionId ?? "",
+    operatorRecoveryRequired,
+    cause: [error?.name, code, error?.message ?? (cause === undefined ? null : String(cause))]
+      .filter((part): part is string => Boolean(part)).join(": ").slice(0, 1_000) || "unknown",
+    settlement: boundedSettlement(cause),
+  };
+  for (const listener of cleanupQuarantineListeners) {
+    try {
+      listener(structuredClone(quarantine));
+    } catch {
+      // Observers cannot change cleanup ownership.
+    }
+  }
 }
 
 function quarantineSessionCleanup(
   session: NativeSession,
   cleanupDomain: NativeSessionCleanupDomain,
   operatorRecoveryRequired = false,
+  cause?: unknown,
 ): void {
   const existing = [...quarantinedSessionCleanups].find(
     (entry) => entry.session === session,
   );
   if (existing) {
+    if (operatorRecoveryRequired && !existing.operatorRecoveryRequired)
+      announceCleanupQuarantine(session, true, cause);
     if (operatorRecoveryRequired) {
       existing.operatorRecoveryRequired = true;
       if (existing.timer) clearTimeout(existing.timer);
@@ -710,6 +861,7 @@ function quarantineSessionCleanup(
     operatorRecoveryRequired,
   };
   quarantinedSessionCleanups.add(cleanup);
+  announceCleanupQuarantine(session, operatorRecoveryRequired, cause);
   if (operatorRecoveryRequired) return;
   startQuarantinedSessionCleanupRecovery(
     cleanup,
@@ -752,8 +904,11 @@ function startQuarantinedSessionCleanupRecovery(
       try {
         await attempt;
         quarantinedSessionCleanups.delete(cleanup);
+        announceCleanupSettled(cleanup.domain);
       } catch (error) {
         if (error instanceof NativeSessionCloseUnrecoverableError) {
+          if (!cleanup.operatorRecoveryRequired)
+            announceCleanupQuarantine(cleanup.session, true, error);
           cleanup.operatorRecoveryRequired = true;
         }
         // Retain the quarantine after this finite, sequential retry batch.
@@ -768,6 +923,7 @@ function startQuarantinedSessionCleanupRecovery(
   void recovery
     .finally(() => {
       failedSessionCleanupOwners.delete(recovery);
+      announceCleanupSettled(cleanup.domain);
       if (cleanup.recovery === recovery) {
         cleanup.recovery = null;
         cleanup.recoveryMaxAttempts = null;
@@ -1159,6 +1315,12 @@ async function consumeTurn(
           typeof failure.message === "string" ? failure.message : undefined,
           readProviderFailure(failure.providerFailure),
         );
+        if ((receipt.disposition === "committed" || receipt.disposition === "duplicate") && !providerFailure.recoverable && failure.code === "provider_exited"
+          && failure.expected === false && failure.completedByExitedProcess === false
+          && failure.previousTurnCompleted === false && failure.provider === input.provider.kind
+          && event.runId === input.binding.runId && event.normalizedSessionId === session.identity().sessionId) {
+          throw providerFailure;
+        }
       }
       const request =
         payload.request &&
@@ -2396,11 +2558,11 @@ export async function executeNativeSession(
             return;
           } catch (error) {
             if (error instanceof NativeSessionCloseUnrecoverableError) {
-              quarantineSessionCleanup(session, cleanupDomain, true);
+              quarantineSessionCleanup(session, cleanupDomain, true, error);
               throw error;
             }
             if (retryCount >= MAX_FAILED_SESSION_CLOSE_RETRIES) {
-              quarantineSessionCleanup(session, cleanupDomain);
+              quarantineSessionCleanup(session, cleanupDomain, false, error);
               throw error;
             }
             retryCount += 1;
@@ -2860,11 +3022,15 @@ export async function executeNativeSession(
             // Retain the older consumer's permanent-model classification while
             // preserving structured provider metadata. A provider explicitly
             // permitting retry must not become permanent merely from its text.
+            // A driver's closed provider-failure category also marks a model
+            // rejection, without putting provider text in the failure message.
+            const providerFailure = readProviderFailure(failure.providerFailure);
             const modelRejected =
               !recoverable &&
-              /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
-                message,
-              );
+              (providerFailure?.category === "model_unavailable" ||
+                /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
+                  message,
+                ));
             throw new NativeProviderTerminalFailure(
               typeof failure.code === "string"
                 ? failure.code
@@ -2873,7 +3039,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
-              readProviderFailure(failure.providerFailure),
+              providerFailure,
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

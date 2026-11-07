@@ -48,8 +48,14 @@
  * entry: await `pluginsReady`, require the plugin `ready`, declaring the
  * entry's driver, and running a worker; else archive the entry's row and
  * re-ensure it on the worker's `ready`. Each entry owns one row (see
- * `managed-plugin-environments.ts`). Plugin entries never touch the instance
- * default.
+ * `managed-plugin-environments.ts`).
+ *
+ * Instance default: boot fills an unset, local or deleted default once, under
+ * a lock (`fillUnsetInstanceDefault`), and never changes a set one. A plugin
+ * entry with `instanceDefault` fills first, right after its ensure; the
+ * managed sandbox (under `enableManagedSandboxOnly`) fills after all plugin
+ * entries. So a new instance gets the plugin environment, and an existing
+ * instance, whose default is already set, keeps its default.
  */
 
 import type { Db } from "@paperclipai/db";
@@ -57,7 +63,7 @@ import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";
-import { instanceSettingsService } from "./instance-settings.js";
+import { fillUnsetInstanceDefault, type FillInstanceDefaultResult } from "./managed-instance-default.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
 import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -143,14 +149,11 @@ export interface ApplyManagedEnvironmentsOptions {
     ReturnType<typeof environmentService>,
     | "ensureManagedSandboxEnvironment"
     | "archiveManagedSandboxEnvironment"
-    | "getById"
-    | "update"
-    | "findManagedSandboxEnvironment"
     | "ensureManagedPluginEnvironment"
     | "archiveManagedPluginEnvironment"
   >;
-  /** Test seam: overrides the instance-settings service built from `db`. */
-  instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
+  /** Test seam: overrides the locked fill of an unset instance default (`fillUnsetInstanceDefault`). */
+  fillInstanceDefault?: (environmentId: string) => Promise<FillInstanceDefaultResult>;
   /** Test seam: overrides the sandbox-provider plugin driver lookup. */
   resolveSandboxProviderDriver?: (input: {
     db: Db;
@@ -249,43 +252,10 @@ export async function applyManagedEnvironments(
 ): Promise<ApplyManagedEnvironmentsResult | null> {
   if (!managedConfig) return null;
 
-  const settings = opts.instanceSettings ?? instanceSettingsService(db);
+  const fillInstanceDefault = opts.fillInstanceDefault
+    ?? ((environmentId: string) => fillUnsetInstanceDefault(db, environmentId));
   const environments = opts.environments ?? environmentService(db);
   const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
-
-  // Mode-off default cleanup runs BEFORE any ensure, and regardless of
-  // whether the document still declares environments or the provider is
-  // available: a reconciliation-stamped default must not outlive the mode
-  // through the paths that skip per-entry reconciliation entirely — the
-  // declaration was removed, the provider is down, or the row was
-  // archived. Only a default that points at the managed row AND carries
-  // the `managedDefaultStamped` marker reverts; tenant-chosen defaults
-  // (no marker) are untouched.
-  if (!managedSandboxOnlyDeclared) {
-    try {
-      const managedRow = await environments.findManagedSandboxEnvironment(undefined, {
-        includeArchived: true,
-      });
-      if (
-        managedRow &&
-        managedRow.metadata?.managedDefaultStamped === true &&
-        ((await settings.get()).defaultEnvironmentId ?? null) === managedRow.id
-      ) {
-        await settings.update({ defaultEnvironmentId: null });
-        const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedRow.metadata ?? {};
-        await environments.update(managedRow.id, { metadata: remainingMetadata });
-        logger.info(
-          { environmentId: managedRow.id },
-          "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
-        );
-      }
-    } catch (err) {
-      logger.error(
-        { err },
-        "failed to revert the stamped managed sandbox instance default (degraded: stale default until the next boot)",
-      );
-    }
-  }
 
   const pluginSpecs = managedConfig.pluginEnvironments;
   if (managedConfig.environments.length === 0 && pluginSpecs.length === 0) return null;
@@ -330,59 +300,70 @@ export async function applyManagedEnvironments(
   const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
 
   /**
-   * Point the instance default at the managed sandbox row when no
-   * deliberate choice stands in the way: an unset default, a default on
-   * the (hidden-under-this-mode) local row, or a dangling reference all
-   * move to the managed environment, so pickers and run selection agree
-   * that "the default" is the platform sandbox. A tenant-chosen custom
-   * environment (ssh, their own sandbox) is never overridden.
+   * Under `enableManagedSandboxOnly`, point the instance default at the
+   * managed sandbox row when nothing deliberate is set: an unset default, the
+   * (hidden-under-this-mode) local row, or a dangling reference. A set default
+   * (any other environment, whoever chose it) is never changed, and nothing
+   * reverts the filled default later: it is an ordinary set value from then
+   * on. The write is one locked transaction (`fillUnsetInstanceDefault`), so
+   * overlapping boots and admin writes cannot overwrite each other.
    *
-   * Gated symmetrically on the document declaring
-   * `enableManagedSandboxOnly`:
+   * Runs once, after the plugin entries: a plugin entry with
+   * `instanceDefault` fills an unset default first (see
+   * `fillPluginInstanceDefault`), so on a new instance it wins, and on an
+   * existing one (whose default is already set) neither fill changes it.
    *
-   * - Declared: stamp the managed row as the default, so pickers and run
-   *   selection agree the platform sandbox is "the default". The stamp is
-   *   recorded as `managedDefaultStamped` in the row's platform-owned
-   *   metadata (which boot reconciliation preserves and the client write
-   *   floor protects), so a stamped default is distinguishable from one
-   *   the tenant chose deliberately.
-   * - Not declared: local execution is a legitimate default again, so a
-   *   default THIS reconciliation stamped earlier (points at the managed
-   *   row AND carries the stamp marker) reverts to unset — otherwise
-   *   turning the mode off would keep routing default-following runs
-   *   into the sandbox off a stale stamp. A default the tenant selected
-   *   themselves — the managed row without the marker, or any custom
-   *   environment — is untouched in both directions.
-   *
-   * Idempotent and best-effort — a failure degrades to the run-time
-   * policy, which refuses local under managed-sandbox-only regardless.
+   * Best-effort: a failure degrades to the run-time policy, which refuses
+   * local under managed-sandbox-only regardless.
    */
-  const ensureManagedInstanceDefault = async (managedEnvironment: {
-    id: string;
-    metadata: Record<string, unknown> | null;
-  }): Promise<void> => {
+  const ensureManagedInstanceDefault = async (managedEnvironment: { id: string }): Promise<void> => {
     if (!managedSandboxOnlyDeclared) return;
     try {
-      const current = (await settings.get()).defaultEnvironmentId ?? null;
-      if (current === managedEnvironment.id) return;
-      if (current !== null) {
-        const currentEnvironment = await environments.getById(current);
-        if (currentEnvironment && currentEnvironment.driver !== "local") return;
-      }
-      // Marker first: a crash between the two writes must never leave a
-      // stamped default that the revert path cannot attribute.
-      await environments.update(managedEnvironment.id, {
-        metadata: { ...(managedEnvironment.metadata ?? {}), managedDefaultStamped: true },
-      });
-      await settings.update({ defaultEnvironmentId: managedEnvironment.id });
+      const { filled, previousDefaultEnvironmentId } = await fillInstanceDefault(managedEnvironment.id);
+      if (!filled) return;
       logger.info(
-        { environmentId: managedEnvironment.id, previousDefaultEnvironmentId: current },
+        { environmentId: managedEnvironment.id, previousDefaultEnvironmentId },
         "instance default environment set to the managed sandbox environment",
       );
     } catch (err) {
       logger.error(
         { err, environmentId: managedEnvironment.id },
         "failed to reconcile the instance default environment with the managed sandbox environment",
+      );
+    }
+  };
+
+  /**
+   * A plugin entry with `instanceDefault` fills the instance default with its
+   * row right after a successful boot ensure, through the same locked fill:
+   * only an unset, local or deleted default is replaced, and a set default
+   * (an existing instance's managed sandbox, an admin's choice) never is.
+   * Like an admin's write, the fill declines while active agents following
+   * the default lack the plugin's setup; the sandbox fill then runs as usual.
+   * Recovery after boot never fills. Best-effort, like the sandbox fill.
+   */
+  const fillPluginInstanceDefault = async (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+    environmentId: string,
+  ): Promise<void> => {
+    if (!spec.instanceDefault) return;
+    try {
+      const { filled, previousDefaultEnvironmentId, declined } = await fillInstanceDefault(environmentId);
+      if (declined) {
+        logger.warn(
+          { environmentId, name: spec.name, previousDefaultEnvironmentId, declined },
+          "kept the instance default: agents that follow it need setup for the managed plugin environment first",
+        );
+      }
+      if (!filled) return;
+      logger.info(
+        { environmentId, name: spec.name, previousDefaultEnvironmentId },
+        "instance default environment set to the managed plugin environment",
+      );
+    } catch (err) {
+      logger.error(
+        { err, environmentId, name: spec.name },
+        "failed to fill the instance default with the managed plugin environment",
       );
     }
   };
@@ -470,6 +451,7 @@ export async function applyManagedEnvironments(
   let unchanged = 0;
   let skipped = 0;
   const outcomes: ManagedEnvironmentReconciliationOutcome[] = [];
+  let sandboxDefaultCandidate: string | null = null;
   for (const spec of managedConfig.environments) {
     try {
       const resolved = await resolveDriver({ db, driverKey: spec.provider });
@@ -534,7 +516,8 @@ export async function applyManagedEnvironments(
         stockStatus: reconciliation.stockStatus,
         updateAvailable: reconciliation.updateAvailable,
       });
-      await ensureManagedInstanceDefault(reconciliation.environment);
+      // Filled after the plugin entries (see `ensureManagedInstanceDefault`).
+      sandboxDefaultCandidate = reconciliation.environment.id;
       const logContext = {
         environmentId: reconciliation.environment.id,
         name: reconciliation.environment.name,
@@ -700,6 +683,7 @@ export async function applyManagedEnvironments(
         { ...logBase, environmentId: result.environment.id, action: result.action },
         "managed plugin environment reconciled",
       );
+      await fillPluginInstanceDefault(spec, result.environment.id);
     } catch (err) {
       failed += 1;
       if (recoverable && !isPermanentConfigRejection(err)) {
@@ -731,6 +715,9 @@ export async function applyManagedEnvironments(
       }
     }
   }
+
+
+  if (sandboxDefaultCandidate) await ensureManagedInstanceDefault({ id: sandboxDefaultCandidate });
 
   return {
     ensured,
