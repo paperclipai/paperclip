@@ -1,3 +1,8 @@
+import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sync.js";
+import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
+import { startMcpRevocationIndexSync } from "./services/public-mcp/revocation-index-sync.js";
+import { startMcpIngressHandoffExpiry } from "./services/public-mcp/ingress-handoff-expiry.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
@@ -154,6 +159,7 @@ import { primaryAgentRoutes } from "./routes/primary-agent.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { ephemeralEnrollmentRoutes } from "./routes/ephemeral-enrollment.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
@@ -440,6 +446,7 @@ export async function createApp(
     };
     databaseBackupService?: InstanceDatabaseBackupService;
     prepareIdleDatabaseBackup?: () => Promise<boolean>;
+    idleDeadlineOwners?: IdleDeadlineOwners;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -793,6 +800,7 @@ export async function createApp(
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,
+      retryPendingEnvironmentCleanup: input => connectionIntentHeartbeat.sweepPendingCleanupLeases({ environmentRetry: input }),
       recoverMissingPluginWorker: recoverManagedBundledPluginWorker
         ? {
             pluginKeys: managedBundledPluginKeys,
@@ -838,7 +846,9 @@ export async function createApp(
   api.use(primaryAgentRoutes(db));
   api.use(workspacePreferenceRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup));
+  api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup, opts.idleDeadlineOwners,
+    input => resourceLifecycleDelivery.prepareForIdleSleep(input)));
+  api.use(ephemeralEnrollmentRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -1225,6 +1235,10 @@ export async function createApp(
     nextRunAt: () => agentLifecycle.nextRunAt(),
   });
   agentLifecycle.setWake(agentLifecycleDelivery.wake);
+  const clientMirror = startMcpClientMirrorSync(db, deliveryWork, mcpConfig?.origin,{authorizationOrigin:mcpConfig?.authorizationOrigin});
+  const unregisterMcpOwners = registerIdleMcpOwners(db, { config: mcpConfig, personal: publicMcpEvents, dot: dotMcpEvents, clientMirrorInstanceId:clientMirror.instanceId });
+  startMcpRevocationIndexSync(db, deliveryWork);
+  startMcpIngressHandoffExpiry(db, deliveryWork);
   publicMcpEvents?.start(deliveryWork);
   dotMcpEvents?.start(deliveryWork);
   if (publicMcpOAuth) grokDispatcher.start(deliveryWork);
@@ -1348,6 +1362,9 @@ export async function createApp(
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
   app.locals.bundledPluginsStartup = trackIdleWork(bundledPluginsStartup);
+  // Manifest ids the managed auto-install list resolves to; the managed
+  // environments bootstrap checks plugin entries against them.
+  app.locals.managedBundledPluginKeys = managedBundledPluginKeys;
   void bundledPluginsStartup.then(() => { lifecyclePluginsReady = true; resourceLifecycleDelivery.wake(); agentLifecycleDelivery.wake(); }).catch(() => logger.warn("Agent lifecycle recovery failed; retrying."));
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
@@ -1357,29 +1374,31 @@ export async function createApp(
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
       await agentLifecycle.stop();
+      unregisterMcpOwners();
       await publicMcpEvents?.stop();
       await dotMcpEvents?.stop();
       jobCoordinator.stop();
-      resourceLifecycleDelivery.dispose();
-      importSpoolCleanup.unsubscribe();
-      await deliveryWork.stop();
-      devWatcher?.close();
-      viteHtmlRenderer?.dispose();
-      void viteDevServer?.close().catch(() => undefined);
-      viteHmrServer?.close();
-      hostServiceCleanup.disposeAll();
-      hostServiceCleanup.teardown();
-      await stopMuseMaintenance();
-      await emailChannels.shutdown();
-      await chatChannels.shutdown();
-      // End the avatar worker pool, if a request ever started one, so no
-      // render outlives the HTTP teardown.
-      await agentAvatars.close();
-      // Cancel every live setup-token login session and AWAIT the cancellation,
-      // so each direct child stops and the server releases each lease before the
-      // caller stops the database and the provider. A lease release that
-      // fails stays a durable record for the startup reaper.
-      await setupTokenLoginService?.shutdown();
+      await finishServiceShutdown(() => resourceLifecycleDelivery.dispose(), async () => {
+        importSpoolCleanup.unsubscribe();
+        await deliveryWork.stop();
+        devWatcher?.close();
+        viteHtmlRenderer?.dispose();
+        void viteDevServer?.close().catch(() => undefined);
+        viteHmrServer?.close();
+        hostServiceCleanup.disposeAll();
+        hostServiceCleanup.teardown();
+        await stopMuseMaintenance();
+        await emailChannels.shutdown();
+        await chatChannels.shutdown();
+        // End the avatar worker pool, if a request ever started one, so no
+        // render outlives the HTTP teardown.
+        await agentAvatars.close();
+        // Cancel every live setup-token login session and AWAIT the cancellation,
+        // so each direct child stops and the server releases each lease before the
+        // caller stops the database and the provider. A lease release that
+        // fails stays a durable record for the startup reaper.
+        await setupTokenLoginService?.shutdown();
+      });
     });
     return appServicesShutdown;
   };

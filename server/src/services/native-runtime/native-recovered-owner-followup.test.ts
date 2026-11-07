@@ -4,10 +4,10 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations,
+  agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunnerCheckpoints, nativeRunResults,
 } from "@paperclipai/db";
 import { DurablePrpControlPlane, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -15,9 +15,10 @@ import { startRecoveryPostgres, recoveryPostgresSupport } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { createNativeControllerRecovery } from "./native-controller-recovery.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import {
   buildNativeExecutionWithCheckpoint, findNativeSessionResumeRun, nativeToolContractFingerprintForTarget,
@@ -25,7 +26,7 @@ import {
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const toolDefinitions = vi.hoisted(() => vi.fn());
-vi.mock("../../runtime-api.js", () => ({ resolveLocalRuntimeApiUrl: () => "http://127.0.0.1:43219" }));
+vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: () => "http://127.0.0.1:43219" }));
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
     readonly binding = {};
@@ -38,7 +39,7 @@ vi.mock("./current-wake-comments.js", async importOriginal => ({
   resolveCurrentWakeCommentsBinding: async () => null,
   assertCurrentWakeCommentsRead: async () => undefined,
 }));
-import { createRunnerdBackend } from "./native-session-executor.js";
+import { buildNativeHarnessBackupManifest, createRunnerdBackend, resolveNativeHarnessPersistenceProfile, scopedRunnerdStateRoot } from "./native-session-executor.js";
 
 // Durable-root admission is the boundary under test. Reaching the run's tool
 // authority proves admission passed; no provider or runner process starts.
@@ -89,7 +90,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * suspended Runner receipt or failover backup ever reached the controller.
    * Only the database controller checkpoint and recovery pointer survive. */
   async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled",
-    options: { controller?: { bootId: string; pid: number; processStartedAt: Date } } = {}) {
+    options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
     const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -97,7 +98,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const native = await prepareNativeHeartbeatRun({ db, run: row, issue: issueFields(issueId), environmentLeaseId: randomUUID() });
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
     const executionFor = (currentRunId: string) => buildNativeExecutionInput({
-      companyId, agentId, runId: currentRunId, provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5",
+      companyId, agentId, runId: currentRunId, provider: options.provider ?? "acpx", acpxAgent: "claude",
+      model: options.provider === "codex" ? "gpt-6.1-sol"
+        : options.provider === "opencode" ? "openrouter/deepseek/deepseek-v4.1-flash-1017" : "claude-opus-5-5",
       issue: { id: issueId, identifier: "ROF-1", title: "Continue after recovery", description: null, workMode: "standard" },
       taskPrompt: "Continue the conversation.",
       workspace: { id: workspaceId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
@@ -177,15 +180,22 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...current.runnerProfileJson, nativeExecutionInput: execution,
       nativeToolContractFingerprint: nativeToolContractFingerprintForTarget("remote", execution.provider.kind),
       sessionCheckpoint: admission.checkpoint } }).where(eq(heartbeatRuns.id, runId));
-    const logs: string[] = [];
-    const start = (outcome: "created" | "replacement" = "created") => createRunnerdBackend({
+    const logs: string[] = [], environmentId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${runId}`;
+    const remoteExecute = vi.fn(async (_request: unknown): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> => {
+      throw new Error("admission must not reach the sandbox");
+    });
+    const start = (outcome: "created" | "replacement" | "resumed" = "created") => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
-      runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: randomUUID(),
-        leaseId: randomUUID(), remoteCwd: "/workspace", reusableLeaseConfigured: true,
-        runner: { execute: vi.fn(async () => { throw new Error("admission must not reach the sandbox"); }) },
-        sandboxLeaseAcquisition: { outcome, providerLeaseId: `sandbox-${runId}` } } as never,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId,
+        leaseId, remoteCwd: "/workspace", reusableLeaseConfigured: true,
+        runner: { execute: remoteExecute },
+        sandboxLeaseAcquisition: { outcome, providerLeaseId } } as never,
     }).then(() => "constructed", (error: Error) => error.message);
-    return { runId, logs, start, selectedRunId: selected?.id ?? null };
+    // A local Runner keeps its controller root on this host between turns.
+    const startLocal = () => createRunnerdBackend({
+      db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
+    }).then(() => "constructed", (error: Error) => error.message);
+    return { runId, logs, start, startLocal, native: next, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
   }
 
   async function quarantined() {
@@ -207,6 +217,264 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       return JSON.parse(await readFile(join(parent, name, "control-plane", "control-plane-state.json"), "utf8")).identity.runId as string;
     }));
   }
+
+  async function seedSuccessorCheckpoint(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>) {
+    const pending = await admitFollowUp(prior), runId = pending.runId, execution = prior.executionFor(runId);
+    const identity = { ...prior.identity, runId, turnId: `turn-${runId}`, itemId: `item-${runId}` };
+    const owner = { companyId, issueId: prior.issueId, runId, authorityRunId: runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.update(heartbeatRuns).set({ runnerInstanceId: identity.runnerInstanceId }).where(eq(heartbeatRuns.id, runId));
+    await db.update(nativeRunFinalizations).set({ controllerBootId: owner.bootId, controllerGeneration: 1,
+      controllerPid: 2_147_483_000, controllerProcessStartedAt: new Date(Date.now() - 60_000), leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, runId));
+    const scratch = await mkdtemp(join(tmpdir(), "native-successor-checkpoint-"));
+    const controller = new DurablePrpControlPlane({ stateDirectory: scratch, identity,
+      expectedRunnerVersion: "recovered-owner-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      controller.persistRunAttachTemplate({ provider: execution.provider, normalizedSessionId: identity.normalizedSessionId });
+      for (const type of ["run.prepare", "session.open", "turn.start", "runner.suspend"]) {
+        Object.assign(controller.queueCommand(type), { status: "completed", result: { status: "completed" } });
+      }
+      controller.store.state.committedEvents.push({ sourceSeq: 2, sourceEventId: `terminal-${runId}`, eventType: "run.terminal",
+        priority: 0, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
+      controller.store.state.ackedSourceSeq = 2;
+      controller.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+      await controller.flushCheckpoint();
+    } finally {
+      await controller.stop();
+      await rm(scratch, { recursive: true, force: true });
+    }
+    const [prepared] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const snapshot: PersistedNativeSession = { backendKind: "runner", sessionId: prior.native.normalizedSessionId,
+      providerSessionId: "provider-session-before-recovery", activeTurnId: null, pendingRuntimeRequests: [],
+      identity: { companyId, agentId, issueId: prior.issueId, runId, sessionId: prior.native.normalizedSessionId } };
+    const [result] = await db.insert(nativeRunResults).values({ companyId, issueId: prior.issueId, runId,
+      completionContractId: prepared.completionContractId!, serverFingerprint: runId, schemaStatus: "accepted",
+      resultJson: {}, canonicalSha256: runId }).returning();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), runnerProfileJson: {
+      ...prepared.runnerProfileJson, nativeExecutionInput: execution, sessionCheckpoint: snapshot,
+      nativeControllerRecovery: createNativeControllerRecovery(snapshot,
+        { configDigest: `sha256:${"b".repeat(64)}`, processConfigDigest: null },
+        { runId, runnerInstanceId: identity.runnerInstanceId, normalizedSessionId: identity.normalizedSessionId }),
+    } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    return { runId, execution, identity };
+  }
+
+  async function staleProjection(provider: "codex" | "acpx" = "codex", external = false) {
+    const prior = await seedRecoveredPriorRun("settled", { provider });
+    const latest = await seedSuccessorCheckpoint(prior), followUp = await admitFollowUp(prior);
+    expect(followUp.selectedRunId).toBe(latest.runId);
+    const root = scopedRunnerdStateRoot(latest.execution), backupRoot = join(root, "failover-backups", "current");
+    const oldCheckpoint = await loadNativeRunnerCheckpoint(db, { companyId, issueId: prior.issueId, runId: prior.runId });
+    expect(oldCheckpoint).not.toBeNull();
+    oldCheckpoint!.restoreSessionDirectory(root);
+    const path = join(root, "control-plane", "control-plane-state.json");
+    if (external) await writeFile(path, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: prior.identity }));
+    const originalBytes = await readFile(path, "utf8");
+    const providerFiles = new Map<string, string>();
+    for (const directory of resolveNativeHarnessPersistenceProfile(latest.execution).directories) {
+      await mkdir(join(backupRoot, directory.name), { recursive: true });
+      if (directory.name !== "runner") {
+        const file = join(backupRoot, directory.name, "retained-conversation.txt"), bytes = `saved conversation for ${latest.runId}`;
+        await writeFile(file, bytes);
+        providerFiles.set(file, bytes);
+      }
+    }
+    const runnerBytes = JSON.stringify({ schema: "paperclip.runner.durable.state.v1", ...latest.identity,
+      lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null });
+    await writeFile(join(backupRoot, "runner", "runner-state.json"), runnerBytes);
+    const manifestBytes = JSON.stringify(buildNativeHarnessBackupManifest({ backupRoot, execution: latest.execution,
+      runnerInstanceId: latest.identity.runnerInstanceId, sourceProviderLeaseId: `sandbox-${latest.runId}`,
+      providerSessionIdentity: { providerSessionId: "provider-session-before-recovery", providerBackendSessionId: null,
+        providerSessionIdentity: null } }));
+    await writeFile(join(backupRoot, "manifest.json"), manifestBytes);
+    const assertBackup = async () => {
+      expect(await readFile(join(backupRoot, "manifest.json"), "utf8")).toBe(manifestBytes);
+      expect(await readFile(join(backupRoot, "runner", "runner-state.json"), "utf8")).toBe(runnerBytes);
+      for (const [file, bytes] of providerFiles) expect(await readFile(file, "utf8")).toBe(bytes);
+    };
+    return { prior, latest, followUp, root, path, backupRoot, originalBytes, assertBackup };
+  }
+
+  it.each([
+    { provider: "codex" as const, external: false }, { provider: "acpx" as const, external: false },
+    { provider: "codex" as const, external: true }, { provider: "acpx" as const, external: true },
+  ])("keeps the newest $provider checkpoint paired with its suspended backup (external=$external)", async ({ provider, external }) => {
+    const fixture = await staleProjection(provider, external);
+    const { prior, latest, followUp, root, path } = fixture;
+    expect(await followUp.start()).toBe(ADMITTED);
+    expect(JSON.parse(await readFile(path, "utf8")).identity).toEqual(latest.identity);
+    await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+    const [archive] = await readdir(join(root, "continuity-breaks"));
+    expect(await readFile(join(root, "continuity-breaks", archive!, "control-plane", "control-plane-state.json"), "utf8"))
+      .toBe(fixture.originalBytes);
+    expect(await readdir(join(root, "continuity-breaks", archive!))).toEqual(["control-plane"]);
+    expect(await quarantined()).toEqual([]);
+    expect(followUp.logs.join("")).not.toContain("starting a new runner for this conversation");
+  }, 60_000);
+
+  it("rehydrates a same-source external marker before reading the suspended resumed sandbox", async () => {
+    const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
+    await writeFile(path, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: latest.identity }));
+    await db.insert(environments).values({ id: followUp.environmentId, name: `retained-${followUp.environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId: followUp.environmentId,
+      issueId: fixture.prior.issueId, heartbeatRunId: latest.runId, provider: "daytona", providerLeaseId: followUp.providerLeaseId,
+      status: "released", metadata: { remoteCwd: "/workspace" } });
+    const runnerState = { schema: "paperclip.runner.durable.state.v1", ...latest.identity, lifecycle: "suspended", outbox: [],
+      pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null };
+    followUp.remoteExecute.mockResolvedValueOnce({ exitCode: 0, timedOut: false,
+      stdout: Buffer.from(JSON.stringify(runnerState)).toString("base64"), stderr: "" });
+    expect(await followUp.start("resumed")).toBe(ADMITTED);
+    expect(JSON.parse(await readFile(path, "utf8")).identity).toEqual(latest.identity);
+    expect(JSON.parse(await readFile(join(root, "plugin-runner-state.json"), "utf8"))).toMatchObject(latest.identity);
+    expect(followUp.remoteExecute).toHaveBeenCalledOnce();
+    await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([]);
+    expect(await quarantined()).toEqual([]);
+  }, 60_000);
+
+  it("preserves a same-source marker with a different turn identity before any remote read", async () => {
+    const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
+    const marker = JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1",
+      identity: { ...latest.identity, itemId: "foreign-item" } });
+    await writeFile(path, marker);
+    expect(await followUp.start("resumed")).toBe("native_runner_checkpoint_projection_held:prior_identity");
+    expect(await readFile(path, "utf8")).toBe(marker);
+    expect(followUp.remoteExecute).not.toHaveBeenCalled();
+    await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([]);
+  }, 60_000);
+
+  it.each(["codex", "opencode"] as const)("rehydrates the current %s run marker from its own checkpoint instead of an earlier turn", async provider => {
+    const prior = await seedRecoveredPriorRun("settled", { provider }), followUp = await admitFollowUp(prior);
+    const identity = { runId: followUp.runId, runnerInstanceId: followUp.native.runnerInstanceId,
+      environmentLeaseId: followUp.native.environmentLeaseId, normalizedSessionId: followUp.native.normalizedSessionId,
+      turnId: followUp.native.turnId, itemId: followUp.native.itemId };
+    const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId));
+    const owner = { companyId, issueId: prior.issueId, runId: followUp.runId, authorityRunId: followUp.runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.update(nativeRunFinalizations).set({ controllerBootId: owner.bootId, controllerGeneration: 1,
+      leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, followUp.runId));
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity,
+      expectedRunnerVersion: "current-marker-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      const commands = [controller.queueCommand("run.prepare"), controller.queueCommand("session.open")];
+      controller.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+      await controller.flushCheckpoint();
+      const path = join(root, "control-plane", "control-plane-state.json");
+      expect(JSON.parse(await readFile(path, "utf8")).schema).toBe("paperclip.runner.external-control-plane-state.v1");
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
+        schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "suspended" }));
+      expect(await followUp.start()).toBe(ADMITTED);
+      const restored = JSON.parse(await readFile(path, "utf8"));
+      expect(restored.identity).toEqual(identity);
+      expect(restored.commands.map((command: { commandId: string }) => command.commandId)).toEqual(commands.map(command => command.commandId));
+      expect(await archivedOwners(root)).toEqual([]);
+      expect(await quarantined()).toEqual([]);
+    } finally { await controller.stop(); }
+  }, 60_000);
+
+  it("never substitutes an older checkpoint when the current run marker has no checkpoint", async () => {
+    const prior = await seedRecoveredPriorRun(), followUp = await admitFollowUp(prior);
+    const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId)), path = join(root, "control-plane", "control-plane-state.json");
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    const marker = JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: {
+      runId: followUp.runId, runnerInstanceId: followUp.native.runnerInstanceId, environmentLeaseId: followUp.native.environmentLeaseId,
+      normalizedSessionId: followUp.native.normalizedSessionId, turnId: followUp.native.turnId, itemId: followUp.native.itemId,
+    } });
+    await writeFile(path, marker);
+    expect(await followUp.start()).toBe("native_runner_checkpoint_missing");
+    expect(await readFile(path, "utf8")).toBe(marker);
+    expect(await archivedOwners(root)).toEqual([]);
+  }, 60_000);
+
+  it.each(["unsettled journal", "old owner held", "selected owner held", "foreign scope", "selected parts missing", "selected parts tampered"] as const)(
+    "preserves the stale projection and newer backup with %s", async scenario => {
+      const fixture = await staleProjection(), { prior, latest, followUp, path, root } = fixture;
+      if (scenario === "unsettled journal") {
+        const state = JSON.parse(fixture.originalBytes);
+        state.commands[0].status = "pending";
+        await writeFile(path, JSON.stringify(state));
+      }
+      if (scenario === "old owner held" || scenario === "selected owner held") {
+        await db.update(nativeRunFinalizations).set({ leaseOwner: "another-owner", leaseExpiresAt: new Date(Date.now() + 60_000) })
+          .where(eq(nativeRunFinalizations.runId, scenario === "old owner held" ? prior.runId : latest.runId));
+      }
+      if (scenario === "foreign scope") {
+        const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, prior.runId));
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...row.runnerProfileJson, nativeExecutionInput: {
+          ...prior.executionFor(prior.runId), binding: { ...prior.executionFor(prior.runId).binding, executionWorkspaceId: randomUUID() },
+        } } }).where(eq(heartbeatRuns.id, prior.runId));
+      }
+      if (scenario === "selected parts missing") {
+        await db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, latest.runId));
+      }
+      if (scenario === "selected parts tampered") {
+        await db.update(nativeRunnerCheckpoints).set({ material: { tampered: true } }).where(eq(nativeRunnerCheckpoints.runId, latest.runId));
+      }
+      const before = await readFile(path, "utf8");
+      expect(await followUp.start()).not.toBe(ADMITTED);
+      expect(await readFile(path, "utf8")).toBe(before);
+      await fixture.assertBackup();
+      expect(await archivedOwners(root)).toEqual([]);
+      expect(await quarantined()).toEqual([]);
+    }, 60_000);
+
+  it("never replaces a newer local projection with the earlier selected checkpoint", async () => {
+    const fixture = await staleProjection();
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(heartbeatRuns.id, fixture.prior.runId));
+    const before = await readFile(fixture.path, "utf8");
+    expect(await fixture.followUp.start()).toBe("native_controller_recovery_missing_evidence:newer_progress_barrier");
+    expect(await readFile(fixture.path, "utf8")).toBe(before);
+    await fixture.assertBackup();
+    expect(await archivedOwners(fixture.root)).toEqual([]);
+  }, 60_000);
+
+  it.each([false, true])("does not overwrite a current owner while waiting for its coordinator lock (external=%s)", async external => {
+    const fixture = await staleProjection("codex", external);
+    let release!: () => void, locked!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const blocker = db.transaction(async tx => {
+      await lockSourceRecoveryCoordinators(tx, companyId, [fixture.latest.runId]);
+      locked();
+      await hold;
+    });
+    await acquired;
+    const pending = fixture.followUp.start();
+    try {
+      let waiting = false;
+      for (let attempt = 0; attempt < 200 && !waiting; attempt++) {
+        const rows = await db.execute<{ waiting: boolean }>(sql`select exists (
+          select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'
+          and query like '%native_run_finalizations%' and query like '%for update%'
+        ) as waiting`);
+        waiting = rows[0]?.waiting === true;
+        if (!waiting) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      const state = JSON.parse(fixture.originalBytes);
+      state.identity.runId = fixture.followUp.runId;
+      await writeFile(fixture.path, JSON.stringify(state));
+      const currentBytes = await readFile(fixture.path, "utf8");
+      release();
+      await blocker;
+      expect(await pending).toBe("native_runner_checkpoint_projection_held:journal_changed");
+      expect(await readFile(fixture.path, "utf8")).toBe(currentBytes);
+      await fixture.assertBackup();
+      expect(await archivedOwners(fixture.root)).toEqual([]);
+    } finally {
+      release();
+      await blocker;
+      await pending;
+    }
+  }, 60_000);
 
   it.each(["created", "replacement"] as const)(
     "admits a fresh runner authority when the recovered owner is provably finished: %s sandbox", async outcome => {
@@ -401,6 +669,166 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await followUp.start()).toBe(stranded("quarantine_runner_lifecycle_not_suspended"));
     expect(await quarantined()).toHaveLength(2);
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  /** Learn the scope key from a held attempt and restore its root as the
+   * live session root, as it stands after the prior turn finished. */
+  async function restoreHeldRoot(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
+    followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
+    const [copy] = await quarantined();
+    const root = join(stateDirectory, copy!.split(".")[0]!);
+    await rename(join(stateDirectory, "quarantine", copy!), root);
+    await rm(join(stateDirectory, "quarantine"), { recursive: true, force: true });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    return root;
+  }
+
+  // A continued turn's transport leaves these in the controller root: the
+  // runtime context it wrote before launch, and the settled epoch it archived
+  // when it rotated authority from the turn before it (S49: the third turn of
+  // an ephemeral-lease task could never retire the second turn's owner).
+  it("retires a finished owner whose continued turn left runtime context and an archived authority epoch", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await writeFile(join(root, "runtime-context.json"), "{}\n", { mode: 0o600 });
+    const epoch = join(root, "authority-epochs", "epoch-0123456789abcdef01234567");
+    await mkdir(join(epoch, "control-plane"), { recursive: true, mode: 0o700 });
+    await cp(join(root, "control-plane", "control-plane-state.json"), join(epoch, "control-plane", "control-plane-state.json"));
+    await writeFile(join(epoch, "runner-state.json"), "{}\n", { mode: 0o600 });
+    await mkdir(join(root, "diagnostics"), { mode: 0o700 });
+    // The launch preparation saved for the retired identity.
+    const preparation = JSON.stringify({ schema: "paperclip.runner.launch-preparation-store.v1", entries: [] });
+    await writeFile(join(root, "launch-preparation.json"), preparation, { mode: 0o600 });
+    expect(await followUp.start()).toBe(ADMITTED);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+    // Archived epochs belong to the retired lineage; launch inputs stay.
+    const [archive] = await readdir(join(root, "continuity-breaks"));
+    expect(existsSync(join(root, "continuity-breaks", archive!, "authority-epochs", "epoch-0123456789abcdef01234567"))).toBe(true);
+    expect(existsSync(join(root, "authority-epochs"))).toBe(false);
+    expect(await readFile(join(root, "continuity-breaks", archive!, "launch-preparation.json"), "utf8")).toBe(preparation);
+    expect(existsSync(join(root, "launch-preparation.json"))).toBe(false);
+    expect(existsSync(join(root, "runtime-context.json"))).toBe(true);
+    expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
+  }, 60_000);
+
+  it("keeps a finished owner held by an unclassified root entry and names it", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await writeFile(join(root, "unrecognized-state"), "{}\n");
+    expect(await followUp.start()).toBe(stranded("unexpected_root_entry(unrecognized-state)"));
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  it("keeps a finished owner held by a provider checkpoint and names it as held", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = await restoreHeldRoot(prior, followUp);
+    await mkdir(join(root, "cursor-cloud"), { mode: 0o700 });
+    await writeFile(join(root, "unrecognized-state"), "{}\n");
+    expect(await followUp.start()).toBe(stranded("held_root_entry(cursor-cloud)"));
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+  }, 60_000);
+
+  /** A spawned process that stands in for the prior local Runner. */
+  async function runnerProcess() {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+    await new Promise(resolve => child.once("spawn", resolve));
+    const startedAt = await readProcessStartedAt(child.pid!);
+    expect(startedAt).toBeTruthy();
+    return { child, pid: child.pid!, processStartedAt: new Date(startedAt!) };
+  }
+
+  async function stoppedRunnerProcess() {
+    const runner = await runnerProcess();
+    const exited = new Promise(resolve => runner.child.once("exit", resolve));
+    runner.child.kill("SIGKILL");
+    await exited;
+    return runner;
+  }
+
+  /** The state a local per-turn Runner leaves when its result was accepted but
+   * its suspend command never finished: the controller journal holds a pending
+   * runner.suspend and the Runner's own receipt is still `ready`. */
+  async function seedUnsuspendedLocalOwner(runner: { pid: number; processStartedAt: Date }) {
+    const prior = await seedRecoveredPriorRun("pending-command");
+    await db.update(heartbeatRuns).set({ processPid: runner.pid, processGroupId: runner.pid, processStartedAt: runner.processStartedAt })
+      .where(eq(heartbeatRuns.id, prior.runId));
+    const followUp = await admitFollowUp(prior);
+    // Learn the scope key from a held attempt, then keep its root in place.
+    expect(await followUp.start()).toMatch(/^runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate/);
+    const [copy] = await quarantined();
+    const root = join(stateDirectory, copy!.split(".")[0]!);
+    await rename(join(stateDirectory, "quarantine", copy!), root);
+    await rm(join(stateDirectory, "quarantine"), { recursive: true, force: true });
+    await mkdir(join(root, "runner"), { recursive: true });
+    await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
+    return { prior, followUp, root };
+  }
+
+  it("retires a finished local owner whose Runner stopped before it proved suspension", async () => {
+    const { prior, followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    expect(await followUp.startLocal()).toBe(ADMITTED);
+    expect(await quarantined()).toEqual([]);
+    expect(existsSync(join(root, "runner"))).toBe(false);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+    expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
+  }, 60_000);
+
+  it("keeps a finished local owner held while its recorded Runner process is alive", async () => {
+    const runner = await runnerProcess();
+    try {
+      const { followUp } = await seedUnsuspendedLocalOwner(runner);
+      expect(await followUp.startLocal()).toBe(stranded("runner_process_alive"));
+      expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+    } finally {
+      runner.child.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it.each(["no identity", "no process group"] as const)("keeps a finished local owner held with %s", async scenario => {
+    const { prior, followUp } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    await db.update(heartbeatRuns).set(scenario === "no identity"
+      ? { processPid: null, processGroupId: null, processStartedAt: null } : { processGroupId: null })
+      .where(eq(heartbeatRuns.id, prior.runId));
+    expect(await followUp.startLocal()).toBe(stranded("runner_process_identity_missing"));
+  }, 60_000);
+
+  it("retires a finished local owner from its saved stop receipt after settlement cleared the process fields", async () => {
+    const runner = await stoppedRunnerProcess();
+    const { prior, followUp, root } = await seedUnsuspendedLocalOwner(runner);
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: prior.runId, seq: 900, eventType: "native.local_process_stopped",
+      stream: "system", payload: { processPid: runner.pid, processGroupId: runner.pid, processStartedAt: runner.processStartedAt.toISOString() } });
+    await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+      .where(eq(heartbeatRuns.id, prior.runId));
+    expect(await followUp.startLocal()).toBe(ADMITTED);
+    expect(await archivedOwners(root)).toEqual([prior.runId]);
+  }, 60_000);
+
+  it("keeps a stopped local owner held while a provider process from its run events is alive", async () => {
+    const provider = await runnerProcess();
+    try {
+      const { prior, followUp } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+      await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: prior.runId, seq: 901, eventType: "provider.event",
+        stream: "system", payload: { prpEvent: { payload: { processId: provider.pid,
+          processStartedAt: provider.processStartedAt.toISOString() } } } });
+      expect(await followUp.startLocal()).toBe(stranded("provider_process_alive"));
+    } finally {
+      provider.child.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("keeps a stopped local owner held by an unfinished non-lifecycle command", async () => {
+    const { followUp, root } = await seedUnsuspendedLocalOwner(await stoppedRunnerProcess());
+    const path = join(root, "control-plane", "control-plane-state.json");
+    const state = JSON.parse(await readFile(path, "utf8"));
+    state.commands.find((command: { type: string }) => command.type === "turn.start").status = "pending";
+    await writeFile(path, JSON.stringify(state));
+    expect(await followUp.startLocal()).toBe(stranded("journal_commands_unsettled(turn.start.pending)"));
   }, 60_000);
 
   it.each(["uncommitted result", "committed without result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",

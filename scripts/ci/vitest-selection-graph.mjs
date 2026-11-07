@@ -313,6 +313,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     const selected = [...new Set([...raw, ...inputRelated, ...retained].map(relative))].sort();
     return {
       project,
+      isolated: owner.config.isolate !== false,
       inventory: inventory.map(relative).sort(),
       selected,
       related: raw.map(relative).sort(),

@@ -4,6 +4,7 @@ import { join, posix } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import tar from "tar-stream";
+import { readNativeHarnessBackupSourceInput } from "./native-harness-backup-source.js";
 
 export const MAX_NATIVE_HARNESS_BYTES = 4 * 1024 * 1024 * 1024;
 export const MAX_NATIVE_HARNESS_OBJECT_BYTES = MAX_NATIVE_HARNESS_BYTES + 768 * 1024 * 1024;
@@ -43,9 +44,11 @@ const boundedArchive = (limit = MAX_NATIVE_HARNESS_OBJECT_BYTES) => {
   } });
 };
 
-export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal, maxArchiveBytes = MAX_NATIVE_HARNESS_OBJECT_BYTES) {
+export async function captureNativeHarnessArchive(root: string, target: string, signal?: AbortSignal, maxArchiveBytes = MAX_NATIVE_HARNESS_OBJECT_BYTES,
+  excludeRootEntries: readonly string[] = []) {
+  if (excludeRootEntries.some(entry => entry !== "provider-artifacts")) throw fail();
   if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes <= 0 || maxArchiveBytes > MAX_NATIVE_HARNESS_OBJECT_BYTES) throw fail();
-  if (!(await lstat(root)).isDirectory()) throw fail();
+  if (!(await readNativeHarnessBackupSourceInput(() => lstat(root))).isDirectory()) throw fail();
   const archive = tar.pack();
   let outputFailure: unknown;
   const output = pipeline(archive, boundedArchive(maxArchiveBytes), createWriteStream(target, { flags: "wx", mode: 0o600 }), { signal });
@@ -53,11 +56,12 @@ export async function captureNativeHarnessArchive(root: string, target: string, 
   let count = 0, bytes = 0;
   const links = new Map<string, string>();
   const visit = async (relative: string): Promise<void> => {
-    for (const name of (await readdir(join(root, relative))).sort()) {
+    for (const name of (await readNativeHarnessBackupSourceInput(() => readdir(join(root, relative)))).sort()) {
+      if (!relative && excludeRootEntries.includes(name)) continue;
       signal?.throwIfAborted();
       const entry = relative ? `${relative}/${name}` : name;
       if (!safeName(entry) || ++count > MAX_NATIVE_HARNESS_ENTRIES) throw fail();
-      const file = join(root, entry), stat = await lstat(file);
+      const file = join(root, entry), stat = await readNativeHarnessBackupSourceInput(() => lstat(file));
       if (stat.isDirectory()) {
         await new Promise<void>((resolve, reject) => archive.entry({ name: entry, type: "directory", mode: stat.mode & 0o777 },
           error => error ? reject(error) : resolve()));
@@ -65,17 +69,17 @@ export async function captureNativeHarnessArchive(root: string, target: string, 
       } else if (stat.isFile()) {
         bytes += stat.size;
         if (bytes > MAX_NATIVE_HARNESS_BYTES) throw fail();
-        const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const handle = await readNativeHarnessBackupSourceInput(() => open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK));
         try {
-          const before = await handle.stat();
+          const before = await readNativeHarnessBackupSourceInput(() => handle.stat());
           if (!before.isFile() || before.ino !== stat.ino || before.dev !== stat.dev || before.size !== stat.size) throw fail();
           const stream = archive.entry({ name: entry, size: stat.size, type: "file", mode: stat.mode & 0o777 });
           await pipeline(handle.createReadStream({ autoClose: false }), stream, { signal });
-          const after = await handle.stat();
+          const after = await readNativeHarnessBackupSourceInput(() => handle.stat());
           if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw fail();
         } finally { await handle.close(); }
       } else if (stat.isSymbolicLink()) {
-        const linkname = await readlink(file);
+        const linkname = await readNativeHarnessBackupSourceInput(() => readlink(file));
         if (!safeLink(entry, linkname)) throw fail();
         links.set(entry, linkname);
         await new Promise<void>((resolve, reject) => archive.entry({ name: entry, type: "symlink", linkname },

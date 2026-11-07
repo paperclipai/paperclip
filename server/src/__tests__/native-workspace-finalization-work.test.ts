@@ -415,4 +415,37 @@ describe("workspace finalization scheduled lifecycle", () => {
     await vi.advanceTimersByTimeAsync(Math.max(0, failed.nextAttemptAt!.getTime() - Date.now())); await flush();
     expect(await successful(binding.runId)).toHaveLength(1); await quiet();
   });
+  it("names the last redacted copy-back cause on the run and coordinator after retries stop", async () => {
+    const binding = await seed(); await complete(binding);
+    const cause = "remote_workspace_operation_failed: operation=archive_helper transport=sandbox_lease_inactive";
+    // The last attempt timed out; the server-built timeout text must also reach the run.
+    const timeout = "remote_workspace_operation_timed_out: capture (configured timeout 300000ms)";
+    const causes = [cause, "remote_workspace_operation_failed: /home/SYNTHETIC/private", timeout];
+    const attempt = vi.fn(async (input: Parameters<typeof attemptNativeWorkspaceFinalization>[0]) => {
+      const [operation] = await db.insert(workspaceOperations).values({ companyId, issueId: binding.issueId,
+        heartbeatRunId: input.runId, phase: "workspace_finalize", status: "failed", exitCode: 1,
+        stderrExcerpt: "workspace_sync_out_failed\n",
+        metadata: { workspaceSync: { code: "workspace_sync_out_failed", cause: causes[attempt.mock.calls.length - 1] } } }).returning();
+      return { kind: "completed", operation } as const;
+    });
+    const service = nativeWorkspaceFinalizationWork(db, { attempt, onWorkspaceSettled: settled });
+    for (let index = 0; index < 3; index++) {
+      const [entry] = await service.load({ companyId, runId: binding.runId });
+      if (!entry) break;
+      await vi.advanceTimersByTimeAsync(Math.max(0, entry.dueAt - Date.now()));
+      await service.check(entry);
+      const [coordinatorRow] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, binding.runId));
+      // A cause outside the fixed grammar never reaches the run.
+      expect(coordinatorRow.failureDetail?.failureCause ?? null).toBe([cause, null, timeout][index]);
+    }
+    expect(attempt).toHaveBeenCalledTimes(3);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, binding.runId));
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_workspace_sync_out_retry_exhausted",
+      resultJson: expect.objectContaining({ failureCause: timeout }) });
+    expect(run.error).toContain(`Last cause: ${timeout}`);
+    expect(JSON.stringify(run)).not.toContain("SYNTHETIC");
+    const [exhausted] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, binding.runId));
+    expect(exhausted).toMatchObject({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_retry_exhausted",
+      failureDetail: expect.objectContaining({ failureCause: timeout }) });
+  });
 });

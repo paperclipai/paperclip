@@ -9,6 +9,7 @@ import {
   buildNativeRunnerArguments,
   buildNativeRunnerPreparePayload,
   resolvePaperclipRunnerBinary,
+  assertPaperclipRunnerBinaryConfiguration,
   resolveRemotePaperclipRunnerBinary,
 } from "./native-codex-runner.js";
 
@@ -224,4 +225,13 @@ describe("buildNativeRunnerPreparePayload", () => {
       },
     });
   });
+});
+
+it("validates only local Runner configuration without requiring or probing an artifact", () => {
+  expect(() => assertPaperclipRunnerBinaryConfiguration("relative-runnerd")).toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+  vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-controller-runnerd");
+  expect(() => assertPaperclipRunnerBinaryConfiguration()).toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+  expect(() => resolvePaperclipRunnerBinary()).toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+  expect(() => assertPaperclipRunnerBinaryConfiguration("")).not.toThrow();
+  expect(() => assertPaperclipRunnerBinaryConfiguration(join(tmpdir(), "not-present-configuration-only-runnerd"))).not.toThrow();
 });

@@ -20,13 +20,22 @@ import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { runChatCompletionUpdate } from "./completion-update-flow.js";
 import { CHAT_FEATURE_SUITE } from "./chat-feature-cases.js";
 import { runChatFeatureFlow } from "./chat-feature-flow.js";
+import { needsChatCompletionProof, verifyChatCompletion, type ChatCompletionEvidence } from "./chat-completion-proof.js";
 
-/** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
+export function retryChatCompletionObservation(error: unknown) {
+  return !(error instanceof Error && error.message.startsWith("Chat completion proof:"));
+}
+
+/** Keep the ordinary-turn bound. Required completion delivery is separately proved real work. */
 export function assertChatFlowRunCount(input: {
-  suiteId: string; task: Parameters<typeof matchesRunCount>[0]; runs: ChatRun[];
+  suiteId: string; task: Parameters<typeof matchesRunCount>[0] & { id?: string }; runs: ChatRun[];
+  profileId?: string; environmentId?: string; completionEvidence?: ChatCompletionEvidence;
   hiringEvidence?: HiringTemplateEvidence; hiringApiState?: unknown;
 }) {
-  expect(matchesRunCount(input.task, input.runs.length), "Declared total provider-run bounds").toBe(true);
+  const completion = needsChatCompletionProof(input.suiteId, input.task.id, input.profileId, input.environmentId)
+    ? verifyChatCompletion(input.runs, input.completionEvidence) : undefined;
+  expect(matchesRunCount(input.task, completion?.totalProviderRuns ?? input.runs.length),
+    completion ? "Declared total provider-run bounds with one proved completion turn" : "Declared total provider-run bounds").toBe(true);
   if (input.suiteId !== "hiring-templates") return;
   const accounting = gradeHiringTemplateTurns({
     evidence: input.hiringEvidence ? { ...input.hiringEvidence, runs: input.runs } : undefined,
@@ -299,6 +308,7 @@ export async function collectChatRunEvidence(
   api: Pick<RunnerApi, "get">,
   run: ChatRun,
   allowAdmissionWait = false,
+  includeWorkspaceOperations = false,
 ) {
   const admissionEvents = allowAdmissionWait ? await collectRunEvents((afterSeq, limit) =>
     api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
@@ -309,17 +319,24 @@ export async function collectChatRunEvidence(
     run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   const reassignedBeforeStart = isReassignedUnstartedWake(run);
+  const terminalBeforeStart = run.status === "cancelled" && run.errorCode === "issue_terminal_status" &&
+    run.startedAt === null && run.logStore === null && run.logRef === null;
   return {
     runId: run.id,
     ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
     ...(admissionWait ? { logOmissionReason: "pre_dispatch_execution_wait" } : {}),
     ...(reassignedBeforeStart ? { logOmissionReason: "assignee_changed_before_start" } : {}),
+    ...(terminalBeforeStart ? { logOmissionReason: "issue_terminal_before_start" } : {}),
     log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted || admissionWait || reassignedBeforeStart
+      || terminalBeforeStart
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: admissionEvents ?? await collectRunEvents((afterSeq, limit) =>
       api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
     ),
+    ...(includeWorkspaceOperations ? {
+      workspaceOperations: await api.get<Array<Record<string, unknown>>>(`/api/heartbeat-runs/${run.id}/workspace-operations`),
+    } : {}),
   };
 }
 
@@ -390,6 +407,9 @@ export async function runChatFlow(input: ChatFlowInput) {
   const marker = execution.task.buildVisibleMarker(nonce);
   const draftMarker = chatMarker("DRAFT", nonce);
   const caseId = execution.task.id;
+  const completionAccounting = needsChatCompletionProof(execution.suite.id, caseId, execution.profile.id, execution.environment.id);
+  let completionChildId: string | undefined;
+  let completionEvidence: ChatCompletionEvidence | undefined;
   const stopCase = ["stop-new-resume", "stop-startup-new-resume"].includes(caseId);
   const interruptionCase = ["followup-while-running", "revise-while-running"].includes(caseId);
   const expectedStops = new Map<string, string>();
@@ -429,12 +449,13 @@ export async function runChatFlow(input: ChatFlowInput) {
       response: await api.get(`/api/issues/${issue!.id}/recovery-actions?inspectSourceRunId=${stoppedForSessionReset}&inspectSourceActionId=${wait.recoveryActionId}`),
     }))),
   });
-  const idle = async (minimumProviderRuns: number) => {
+  const idle = async (minimumProviderRuns: number, requireCompletion = false) => {
     const inconsistentIdle = createChatIdleFailureDetector(minimumProviderRuns);
     await pollUntil({
       label: "chat turn settles to waiting",
       deadlineAt: Date.now() + 240_000,
       intervalMs: 1000,
+      retryOnError: retryChatCompletionObservation,
       load: async () => {
         const resolved = await api.get<ChatIssue | null>(chatPath);
         if (resolved) issue = resolved;
@@ -462,7 +483,38 @@ export async function runChatFlow(input: ChatFlowInput) {
           if (admissionReady) verifyChatAdmissionWaitCoverage({ runs, runEvidence: proof.runEvidence, comments: proof.comments,
             issue: issue!, companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: proof.sources });
         }
+        let completionReady = !requireCompletion;
+        if (requireCompletion && providerRuns().length >= minimumProviderRuns
+            && runs.every(run => run.status === "succeeded")) {
+          const notifications = runs.filter(run => run.contextSnapshot?.wakeReason === "chat_task_completed");
+          expect(notifications, "one required completion delivery").toHaveLength(1);
+          expect(completionChildId, "the existing delegated task must be retained").toBeTruthy();
+          const [source, child, finalTasks, sourceComments] = await Promise.all([
+            api.get<ChatCompletionEvidence["issue"]>(chatPath),
+            api.get<ChatCompletionEvidence["child"]>(`/api/issues/${completionChildId}`), tasks(),
+            api.get<ChatCompletionEvidence["comments"]>(`/api/issues/${issue!.id}/comments?order=asc`),
+          ]);
+          const replies = sourceComments.filter(comment => comment.createdByRunId === notifications[0]!.id);
+          const renderedLinks = (await Promise.all(replies.map(async reply => {
+            const hrefs = await page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}] a[href]`)
+              .evaluateAll(elements => elements.map(element => element.getAttribute("href")!));
+            return hrefs.map(href => ({ commentId: reply.id, href }));
+          }))).flat();
+          // Wait for the real reply to render inside this existing idle deadline.
+          // Never extend the scenario or retry a provider to obtain the proof.
+          if (replies.length && renderedLinks.some(link => link.href.includes("/issues/"))) {
+            const companyPrefix = f.company.issuePrefix;
+            if (!companyPrefix) throw new Error("Chat completion proof: company_prefix_missing");
+            completionEvidence = { companyId: f.company.id, agentId: f.agent.id,
+              companyPrefix, baseURL: api.baseURL, issue: source, child,
+              tasks: finalTasks, comments: sourceComments, renderedLinks,
+              runEvidence: [await collectChatRunEvidence(api, notifications[0]!, false, true)] };
+            verifyChatCompletion(runs, completionEvidence);
+            completionReady = true;
+          }
+        }
         return {
+          completionReady,
           admissionReady,
           resolved: Boolean(resolved),
           status: resolved?.status,
@@ -477,6 +529,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       reject: (state) => state.failure ?? inconsistentIdle(state),
       accept: (state) =>
         !state.failure &&
+        state.completionReady &&
         state.admissionReady &&
         state.resolved &&
         state.providerRunCount >= minimumProviderRuns &&
@@ -939,6 +992,7 @@ export async function runChatFlow(input: ChatFlowInput) {
       const children = await tasks();
       expect(children).toHaveLength(1);
       const child = children[0]!;
+      if (completionAccounting) completionChildId = child.id;
       await pollUntil({
         label: `execution task ${child.id} completes`,
         deadlineAt: Date.now() + 240_000,
@@ -1083,7 +1137,7 @@ export async function runChatFlow(input: ChatFlowInput) {
         projects,
       });
     }
-    await idle(minimumRunCount(execution.task));
+    await idle(minimumRunCount(execution.task), completionAccounting);
     if (execution.suite.id === "hiring-templates") {
       // Refresh the whole consistent evidence generation for the final guard.
       hiringEvidence = await refreshHiringEvidence!();
@@ -1096,11 +1150,13 @@ export async function runChatFlow(input: ChatFlowInput) {
     if (admissionAccounting) admissionWaits = verifyChatAdmissionWaitCoverage({ runs, runEvidence: admissionRunEvidence!, comments: finalComments!, issue: issue!,
       companyId: f.company.id, agentId: f.agent.id, stoppedRunId: stoppedForSessionReset, recoverySources: admissionWaitSources });
     assertChatFlowRunCount({ suiteId: execution.suite.id, task: execution.task,
+      profileId: execution.profile.id, environmentId: execution.environment.id, completionEvidence,
       // Hiring must account for every actual company run, including unexpected resets.
-      runs: execution.suite.id === "hiring-templates" ? runs : providerRuns(),
+      runs: execution.suite.id === "hiring-templates" || completionAccounting ? runs : providerRuns(),
       hiringEvidence, hiringApiState: execution.suite.id === "hiring-templates"
         ? hiringEvidence!.turnApiState : undefined,
     });
+    if (completionAccounting) await input.evidence("chat-completion-proof.json", verifyChatCompletion(runs, completionEvidence));
     for (const run of providerRuns()) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
       expect(run.status).toBe(

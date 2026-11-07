@@ -77,6 +77,18 @@ describe("native status authority", () => {
     });
   });
 
+  it("preserves the task status after a context compaction run", () => {
+    for (const priorIssueStatus of ["in_progress", "in_review", "blocked", "todo"] as const) {
+      expect(arbitrate({
+        contextCompactionRun: true,
+        priorIssueStatus,
+        assessment: assessment({ reportedDisposition: "yielded", objectiveSatisfied: false, allCriteriaSatisfied: false }),
+      })).toMatchObject({
+        statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "context_compaction_status_preserved", effects: [],
+      });
+    }
+  });
+
   it("keeps workspace repair ahead of an accepted case handoff", () => {
     expect(arbitrate({ caseHandoffAuthorized: true, workspaceFinalizeStatus: "failed" })).toMatchObject({
       statusAction: "preserve", reasonCode: "finalization_failed_claim_preserved",

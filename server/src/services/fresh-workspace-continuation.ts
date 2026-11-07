@@ -1,26 +1,171 @@
-import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { lstat, realpath } from "node:fs/promises";
+import path from "node:path";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { z } from "zod";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
   | { mode: "reuse_current_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
+  | { mode: "resume_stopped_native_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
+  | { mode: "reuse_issue_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
   | { mode: "fresh_isolated_workspace"; retryIntentId: string; sourceRunId: string; retainedSourceIds: string[] };
-const freshReadinessSchema = z.object({
+const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
   mode: z.literal("fresh_isolated_workspace"), retryIntentId: z.string().uuid(),
   sourceRunId: z.string().uuid(), retainedSourceIds: z.array(z.string().uuid()),
-});
+}), z.object({
+  mode: z.literal("reuse_issue_workspace"), retryIntentId: z.string().uuid(),
+  sourceRunId: z.string().uuid(), workspaceId: z.string().uuid(), cwd: z.string().min(1),
+})]);
+
+const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
+const terminalRunStatuses = ["failed", "cancelled", "timed_out", "succeeded", "interrupted"];
+const reusableWorkspaceStatuses = ["active", "idle", "in_review"];
+// Admission can hold the issue lock. All holds share one probe per workspace,
+// and that probe has one short wall-clock budget, including scheduler queueing.
+const RETAINED_WORKSPACE_GIT_BUDGET_MS = 5_000;
+const processStartedAt = new Date(Date.now() - process.uptime() * 1_000);
+
+/** Why another writer may still hold the workspace, or null. The successor's
+ * own claims do not count. A restart orphan is ignored only when all of these
+ * hold: the stopped source owns it, it started before that source settled, and
+ * it started before this server process, so this process cannot be running it.
+ * Operations with no run, of another run, or from this process still block. */
+export async function workspaceHasOtherWriter(db: Db, input: {
+  companyId: string; workspaceId: string; successorRunId: string;
+  stoppedSource?: { id: string; finishedAt: Date | null } | null;
+}) {
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.executionWorkspaceId, input.workspaceId),
+    or(isNull(environmentLeases.heartbeatRunId), ne(environmentLeases.heartbeatRunId, input.successorRunId)),
+    or(isNull(environmentLeases.releasedAt), inArray(environmentLeases.status, ["active", "pending_cleanup"]),
+      eq(environmentLeases.cleanupStatus, "failed")),
+  )).limit(1);
+  const source = input.stoppedSource?.finishedAt ? input.stoppedSource : null;
+  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId),
+    eq(workspaceOperations.status, "running"),
+    or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.successorRunId)),
+    // coalesce keeps an operation with no run: NULL = id must not hide it.
+    source ? sql`not coalesce(${workspaceOperations.heartbeatRunId} = ${source.id}
+      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz
+      and ${workspaceOperations.startedAt} < ${processStartedAt.toISOString()}::timestamptz, false)` : undefined,
+  )).limit(1);
+  return lease ? "lease_held" as const : operation ? "operation_running" as const : null;
+}
+
+/** A task-owned Git workspace must read cleanly from its own root. A broken
+ * worktree link must not resolve to an enclosing repository. */
+export async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSelect, real: string) {
+  const marker = await lstat(path.join(real, ".git")).catch(() => null);
+  if (!marker && workspace.providerType !== "git_worktree") return true;
+  const signal = AbortSignal.timeout(RETAINED_WORKSPACE_GIT_BUDGET_MS);
+  const scan = (args: string[], operation: string) => workspaceGitOperationScheduler.run({
+    workspacePath: real, args, operation, cacheTtlMs: 0, bypassSingleFlight: true, signal,
+    timeoutMs: RETAINED_WORKSPACE_GIT_BUDGET_MS, fairnessKeys: [`company:${workspace.companyId}`, `workspace:${workspace.id}`],
+  });
+  try {
+    const root = (await scan(["rev-parse", "--show-toplevel"], "retry.retained_workspace_root")).stdout.trim();
+    if (!root || await realpath(root).catch(() => null) !== real) return false;
+    await scan(["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=no"], "retry.retained_workspace_status");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a workspace row is the task's own local directory, outside remote
+ * storage authority and not closed. Shared by reuse and the prior-files hint. */
+export function isTaskOwnedLocalWorkspace(workspace: typeof executionWorkspaces.$inferSelect, issueId: string) {
+  return Boolean(workspace.cwd) && workspace.sourceIssueId === issueId && workspace.mode !== "shared_workspace" &&
+    reusableWorkspaceStatuses.includes(workspace.status) && ["local_fs", "git_worktree"].includes(workspace.providerType) &&
+    (workspace.metadata?.remoteWorkspace ?? null) === null;
+}
+
+/** A recovery generation that is scheduled or running may still export or
+ * repair the source tree. A settled projection is only status text. */
+/** Workspace-export failures and restore repairs keep their own repair path;
+ * their directory is neither reused nor offered as a recovery source. */
+export function sourceNeedsWorkspaceRepair(cause: string | null, resultJson: Record<string, unknown> | null) {
+  return Boolean((cause && workspaceExportCauses.includes(cause)) || resultJson?.workspaceRestoreFailure ||
+    hasRequiredWorkspaceRecovery(resultJson));
+}
+
+export function recoveryGenerationSettled(evidence: Record<string, unknown> | null, sourceRunId: string) {
+  if (evidence?.systemRecovery === undefined) return true;
+  const recovery = readSystemRecovery(evidence);
+  return Boolean(recovery && recovery.sourceRunId === sourceRunId && ["complete", "exhausted"].includes(recovery.state));
+}
+
+/** R2: a Retry that would otherwise start a fresh attempt keeps the task's own
+ * local workspace when that is provably safe, so uncommitted files and Git
+ * history stay with the task. Admission has already proven that the source
+ * executor stopped. This adds the workspace facts: it is the one local
+ * directory the source used, still bound to and owned by this task, with no
+ * other lease, running operation, unsettled recovery generation, export
+ * obligation or remote owner, and its Git state can still be read. Otherwise
+ * the caller keeps the fresh isolated attempt and the directory stays untouched.
+ * Pass one `gitProbes` map when checking several holds for the same run. */
+export async function retainedIssueWorkspaceForRetry(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; successorRunId: string; cause: string | null;
+  source: Pick<typeof heartbeatRuns.$inferSelect, "id" | "resultJson" | "status" | "finishedAt" | "controllerLeaseExpiresAt">;
+  evidence: Record<string, unknown> | null; gitProbes?: Map<string, Promise<boolean>>;
+}): Promise<{ id: string; cwd: string } | null> {
+  const keepFresh = (reason: string) => {
+    logger.info({ companyId: input.companyId, issueId: input.issueId, sourceRunId: input.source.id,
+      successorRunId: input.successorRunId, reason }, "Retry keeps a fresh attempt; the task workspace is not reusable");
+    return null;
+  };
+  if (!recoveryGenerationSettled(input.evidence, input.source.id)) return keepFresh("recovery_generation_unsettled");
+  if (!terminalRunStatuses.includes(input.source.status) || !input.source.finishedAt ||
+      adapterExecutionControls.has(input.source.id) ||
+      (input.source.controllerLeaseExpiresAt && input.source.controllerLeaseExpiresAt > new Date())) return keepFresh("source_not_settled");
+  if (sourceNeedsWorkspaceRepair(input.cause, input.source.resultJson)) return keepFresh("workspace_repair_required");
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.source.id),
+  ));
+  if (!leases.length || leases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
+      lease.cleanupStatus === "failed" || !lease.executionWorkspaceId)) return keepFresh("source_lease_not_local_released");
+  const sourceWorkspaceIds = new Set(leases.map(lease => lease.executionWorkspaceId));
+  const [bound] = await db.select({ workspace: executionWorkspaces }).from(issues).innerJoin(executionWorkspaces, and(
+    eq(executionWorkspaces.companyId, issues.companyId), eq(executionWorkspaces.id, issues.executionWorkspaceId),
+  )).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId),
+    eq(issues.assigneeAgentId, input.agentId))).limit(1);
+  const workspace = bound?.workspace;
+  if (!workspace?.cwd || sourceWorkspaceIds.size !== 1 || !sourceWorkspaceIds.has(workspace.id))
+    return keepFresh("binding_not_source_workspace");
+  if (!isTaskOwnedLocalWorkspace(workspace, input.issueId)) return keepFresh("workspace_not_task_owned_local");
+  const writer = await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: workspace.id,
+    successorRunId: input.successorRunId, stoppedSource: input.source });
+  if (writer) return keepFresh(writer);
+  // The directory must still be the recorded one, not a replacement link.
+  const stat = await lstat(workspace.cwd).catch(() => null);
+  const real = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(workspace.cwd).catch(() => null) : null;
+  if (!real) return keepFresh("directory_missing");
+  let probe = input.gitProbes?.get(real);
+  if (!probe) {
+    probe = readableOwnGitRoot(workspace, real);
+    input.gitProbes?.set(real, probe);
+  }
+  if (!await probe) return keepFresh("git_unreadable");
+  return { id: workspace.id, cwd: workspace.cwd };
+}
 
 /** This chooses a strategy, never establishes termination or effect safety.
  * Admission verifies those independently before it can persist this receipt. */
@@ -108,15 +253,73 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
   return operation ? null : workspace;
 }
 
+async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbeatRuns.$inferSelect,
+  input: { runId: string; issueId: string; retryIntentId: string }) {
+  if (source.runtimeMode !== "native" || source.status !== "failed" ||
+      source.errorCode !== "native_session_cleanup_quarantined" || !source.nativeSessionId || !source.runnerInstanceId) return null;
+  const [proof] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, source.companyId), eq(heartbeatRunEvents.runId, source.id),
+    eq(heartbeatRunEvents.agentId, source.agentId), eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified"),
+    isNull(heartbeatRunEvents.sourceEventId),
+    sql`${heartbeatRunEvents.payload}->>'successorRunId' = ${input.runId}`,
+    sql`${heartbeatRunEvents.payload}->>'taskRetryRequestId' = ${input.retryIntentId}`,
+  )).limit(1);
+  if (!proof) return null;
+  const parsed = z.object({ schema: z.literal("paperclip.stopped_native_conversation.v1"),
+    runId: z.literal(source.id), nativeSessionId: z.literal(source.nativeSessionId), runnerInstanceId: z.literal(source.runnerInstanceId),
+    executionWorkspaceId: z.string().uuid(), workspaceCwd: z.string().min(1),
+  }).safeParse(proof.payload);
+  if (!parsed.success) throw new Error("Verified native continuation workspace is unavailable");
+  if (parsed.data.executionWorkspaceId === source.id) return null;
+  const [bound] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd }).from(issues).innerJoin(executionWorkspaces, and(
+    eq(executionWorkspaces.companyId, issues.companyId), eq(executionWorkspaces.id, issues.executionWorkspaceId),
+  )).where(and(eq(issues.companyId, source.companyId), eq(issues.id, input.issueId),
+    eq(issues.assigneeAgentId, source.agentId), eq(executionWorkspaces.id, parsed.data.executionWorkspaceId),
+    eq(executionWorkspaces.cwd, parsed.data.workspaceCwd), eq(executionWorkspaces.status, "active"),
+    eq(executionWorkspaces.providerType, "local_fs"),
+    or(isNull(executionWorkspaces.sourceIssueId), eq(executionWorkspaces.sourceIssueId, input.issueId)),
+  )).limit(1);
+  if (!bound) throw new Error("Verified native continuation workspace binding changed");
+  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.executionWorkspaceId, bound.id),
+    eq(workspaceOperations.status, "running"), or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.runId)),
+  )).limit(1);
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, source.companyId), eq(environmentLeases.executionWorkspaceId, bound.id),
+    or(isNull(environmentLeases.heartbeatRunId), ne(environmentLeases.heartbeatRunId, input.runId)),
+    or(isNull(environmentLeases.releasedAt), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
+  )).limit(1);
+  if (operation || lease) throw new Error("Verified native continuation workspace cleanup is pending");
+  return { mode: "resume_stopped_native_workspace" as const, retryIntentId: input.retryIntentId,
+    sourceRunId: source.id, workspaceId: bound.id, cwd: parsed.data.workspaceCwd };
+}
+
 /** Preparation trusts the committed admission receipt, not a raw wake payload. */
 export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot">): Promise<ContinuationReadiness | null> {
+  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot" | "runtimeMode" | "runnerProfileJson">): Promise<ContinuationReadiness | null> {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return null;
+  const admittedInput = run.runnerProfileJson?.nativeExecutionInput;
+  if (run.runtimeMode === "native" && admittedInput !== undefined) {
+    const admitted = parseNativeExecutionInput(admittedInput);
+    if (admitted.binding.companyId !== run.companyId || admitted.binding.runId !== run.id
+      || admitted.binding.agentId !== run.agentId || admitted.binding.issueId !== issueId) {
+      throw new Error("native_execution_workspace_admission_binding_mismatch");
+    }
+    if (!nativeExecutionUsesTaskWorkspace(admitted)) return null;
+    if (!z.string().uuid().safeParse(admitted.binding.executionWorkspaceId).success) {
+      throw new Error("native_execution_workspace_admission_missing");
+    }
+    const [workspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, admitted.binding.executionWorkspaceId),
+    )).limit(1);
+    if (workspace) return null;
+    if (admitted.binding.executionWorkspaceId !== run.id) throw new Error("native_execution_workspace_admission_missing");
+  }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
-    sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,mode}' = 'fresh_isolated_workspace'`,
+    sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,mode}' in ('fresh_isolated_workspace', 'reuse_issue_workspace')`,
     // Historical sibling holds also record the continuation, but only the
     // recovery generation owns its committed fresh attempt. Select that proof.
     sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,freshAttemptRunId}' = ${run.id}`,
@@ -151,6 +354,8 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     )).limit(1);
     if (!source) throw new Error("Fresh retry source changed");
     if (intent.strategy !== "fresh_isolated_workspace") {
+      const stoppedWorkspace = await stoppedNativeContinuationWorkspace(db, source, { runId: run.id, issueId, retryIntentId: wake.id });
+      if (stoppedWorkspace) return stoppedWorkspace;
       const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);
       if (preservationReceiptId) return { mode: "resume_preserved_workspace", preservationReceiptId };
       const [bound] = await db.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata }).from(issues)
@@ -185,6 +390,34 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
       if (workspace?.cwd) {
         const readiness: ContinuationReadiness = { mode: "reuse_current_workspace", retryIntentId: wake.id,
           sourceRunId: source.id, workspaceId: workspace.id, cwd: workspace.cwd };
+        await db.transaction(async tx => {
+          const changed = await tx.update(agentWakeupRequests).set({
+            payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,
+          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.runId, run.id),
+            sql`${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' = 'evaluate'`)).returning({ id: agentWakeupRequests.id });
+          if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
+            actorType: "system", actorId: "task-recovery", action: "issue.retry_workspace_reused",
+            entityType: "issue", entityId: issueId, runId: run.id, details: readiness });
+        });
+        return readiness;
+      }
+      // R2: a Retry whose source has no admitted fresh receipt (for example a
+      // blocked recovery without a generation) also keeps a safe task workspace.
+      // Every hold recorded for the source must permit the reuse.
+      const holds = await db.select({ cause: issueRecoveryActions.cause, evidence: issueRecoveryActions.evidence })
+        .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, run.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId), sql`${issueRecoveryActions.evidence}->>'runId' = ${source.id}`));
+      let retained: { id: string; cwd: string } | null = null;
+      const gitProbes = new Map<string, Promise<boolean>>();
+      for (const hold of holds.length ? holds : [{ cause: null, evidence: null }]) {
+        const checked = await retainedIssueWorkspaceForRetry(db, { companyId: run.companyId, issueId,
+          agentId: run.agentId, successorRunId: run.id, cause: hold.cause, source, evidence: hold.evidence, gitProbes });
+        if (!checked || (retained && retained.id !== checked.id)) { retained = null; break; }
+        retained = checked;
+      }
+      if (retained) {
+        const readiness: ContinuationReadiness = { mode: "reuse_issue_workspace", retryIntentId: wake.id,
+          sourceRunId: source.id, workspaceId: retained.id, cwd: retained.cwd };
         await db.transaction(async tx => {
           const changed = await tx.update(agentWakeupRequests).set({
             payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,

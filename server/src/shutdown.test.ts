@@ -474,8 +474,6 @@ describe("createPreDrainShutdownBudget", () => {
 
       const startedAt = Date.now();
       await vi.advanceTimersByTimeAsync(1_000);
-      // Steps that start at the deadline get a zero bound. Timers clamp zero
-      // to one millisecond, so the clock can move a few milliseconds more.
       await vi.runAllTimersAsync();
       await expect(shutdown).resolves.toEqual({ interrupted: 1 });
       expect(drain).toHaveBeenCalledOnce();

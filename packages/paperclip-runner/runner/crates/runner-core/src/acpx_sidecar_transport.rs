@@ -76,6 +76,11 @@ pub struct AcpxSidecarEvent {
     pub payload: Value,
 }
 
+pub(crate) struct AcpxTurnStartFailure {
+    pub error: LocalRunnerError,
+    pub resume_required: bool,
+}
+
 pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
@@ -86,12 +91,15 @@ pub struct AcpxSidecarTransport {
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
+    abandoned_observation: Option<u64>,
 }
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
 // Reopen/recovery uses the same path. Ordinary sidecar requests retain their bound.
+// A cold Claude session.open exceeded 30 s on a loaded host; it shares Pi's
+// 60 s bound, matching the controller's cold admission budget.
 fn session_open_timeout(agent: &str, ordinary: Duration) -> Duration {
-    if agent == "pi" {
+    if agent == "pi" || agent == "claude" {
         Duration::from_secs(60)
     } else {
         ordinary
@@ -387,6 +395,7 @@ impl AcpxSidecarTransport {
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
             poisoned: false,
+            abandoned_observation: None,
         })
     }
 
@@ -402,11 +411,46 @@ impl AcpxSidecarTransport {
         self.process.id()
     }
 
+    pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
+        self.buffered_events.iter()
+    }
+
     pub fn request(
         &mut self,
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<Value, LocalRunnerError> {
+        match self.request_outcome(command, params)? {
+            CommandOutcome::Success(value) => Ok(value),
+            CommandOutcome::Rejected { error, .. } => Err(error),
+        }
+    }
+
+    pub(crate) fn request_turn_start(
+        &mut self,
+        params: Value,
+    ) -> Result<Value, AcpxTurnStartFailure> {
+        match self.request_outcome(GeneratedAcpxSidecarCommand::TurnStart, params) {
+            Ok(CommandOutcome::Success(value)) => Ok(value),
+            Ok(CommandOutcome::Rejected {
+                error,
+                resume_required,
+            }) => Err(AcpxTurnStartFailure {
+                error,
+                resume_required,
+            }),
+            Err(error) => Err(AcpxTurnStartFailure {
+                error,
+                resume_required: false,
+            }),
+        }
+    }
+
+    fn request_outcome(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+    ) -> Result<CommandOutcome, LocalRunnerError> {
         if self.poisoned {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar transport is unavailable after a protocol failure",
@@ -414,8 +458,7 @@ impl AcpxSidecarTransport {
         }
         let result = self.request_inner(command, params);
         match result {
-            Ok(CommandOutcome::Success(value)) => Ok(value),
-            Ok(CommandOutcome::Rejected(error)) => Err(error),
+            Ok(outcome) => Ok(outcome),
             Err(error) => {
                 self.poison();
                 Err(error)
@@ -450,6 +493,11 @@ impl AcpxSidecarTransport {
         result
     }
 
+    pub(crate) fn defer_polled_event(&mut self, event: AcpxSidecarEvent) {
+        // poll_event already validated its sequence and freed its FIFO slot.
+        self.buffered_events.push_front(event);
+    }
+
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
         self.poisoned = true;
         self.process.terminate_group().map(|_| ())
@@ -460,6 +508,86 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<CommandOutcome, LocalRunnerError> {
+        let request_id = self.send_request(command, params)?;
+        self.receive_response(
+            command,
+            request_id,
+            Instant::now() + self.command_timeout(command),
+        )?
+        .ok_or_else(|| self.request_timeout_error(command))
+    }
+
+    /// A park observation may expire without revoking a healthy provider.
+    /// Retain one ID so its late reply cannot masquerade as an ordinary reply.
+    pub(crate) fn observe(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        deadline: Instant,
+    ) -> Result<Option<Value>, LocalRunnerError> {
+        if self.poisoned {
+            return Err(LocalRunnerError::invalid(
+                "ACPX sidecar transport is unavailable",
+            ));
+        }
+        if !matches!(
+            command,
+            GeneratedAcpxSidecarCommand::SessionGoalGet
+                | GeneratedAcpxSidecarCommand::SessionSnapshot
+        ) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX observation must be read-only",
+            ));
+        }
+        if self.abandoned_observation.is_some() || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        let result = self
+            .send_request(command, json!({}))
+            .and_then(|request_id| {
+                let result = self.receive_response(command, request_id, deadline)?;
+                if result.is_none() {
+                    self.abandoned_observation = Some(request_id);
+                }
+                Ok(result)
+            });
+        match result {
+            Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
+            Ok(Some(CommandOutcome::Rejected { .. })) => Ok(None),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn observed_event_sequence(&self) -> u64 {
+        self.last_event_sequence
+    }
+
+    /// Ordinary turn admission drains an expired read before replacing its sidecar.
+    pub(crate) fn settle_observation(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(request_id) = self.abandoned_observation.take() else {
+            return Ok(());
+        };
+        let command = GeneratedAcpxSidecarCommand::SessionSnapshot;
+        match self.receive_response(command, request_id, Instant::now() + self.request_timeout) {
+            Ok(Some(_)) => Ok(()),
+            result => {
+                self.poison();
+                Err(match result {
+                    Err(error) => error,
+                    _ => self.request_timeout_error(command),
+                })
+            }
+        }
+    }
+
+    fn send_request(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+    ) -> Result<u64, LocalRunnerError> {
         if !params.is_object() {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar command params must be an object",
@@ -493,19 +621,30 @@ impl AcpxSidecarTransport {
         })?;
         self.next_request_id = request_id + 1;
 
-        let timeout = self.command_timeout(command);
-        let deadline = Instant::now() + timeout;
+        Ok(request_id)
+    }
+
+    fn receive_response(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        request_id: u64,
+        deadline: Instant,
+    ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             }
             let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Err(self.request_timeout_error(command));
+                return Ok(None);
             };
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => self.buffer_event(event)?,
                 ParsedFrame::Response(response) => {
+                    if self.abandoned_observation == Some(response.id) {
+                        self.abandoned_observation = None;
+                        continue;
+                    }
                     if response.id != request_id {
                         return Err(LocalRunnerError::invalid(format!(
                             "ACPX sidecar response id mismatch: expected {request_id}, received {}",
@@ -513,20 +652,23 @@ impl AcpxSidecarTransport {
                         )));
                     }
                     if response.ok {
-                        return Ok(CommandOutcome::Success(
+                        return Ok(Some(CommandOutcome::Success(
                             response.result.unwrap_or_else(|| json!({})),
-                        ));
+                        )));
                     }
                     let error = response.error.expect("failed response has validated error");
                     let provider_failure = error.provider_failure.clone();
-                    return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
+                    let resume_required = command == GeneratedAcpxSidecarCommand::TurnStart
+                        && error.retryable
+                        && error.code == "SESSION_RESUME_REQUIRED";
+                    return Ok(Some(CommandOutcome::Rejected { error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    ).with_provider_failure(provider_failure)));
+                    ).with_provider_failure(provider_failure), resume_required }));
                 }
             }
         }
@@ -536,18 +678,32 @@ impl AcpxSidecarTransport {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<AcpxSidecarEvent>, LocalRunnerError> {
-        let Some(line) = self.receive_stdout_line(timeout, "event.poll")? else {
-            return Ok(None);
-        };
-        match parse_frame(&line)? {
-            ParsedFrame::Event(event) => {
-                self.validate_event_sequence(event.sequence)?;
-                Ok(Some(event))
+        let deadline = Instant::now() + timeout;
+        loop {
+            let Some(line) = self.receive_stdout_line(
+                deadline.saturating_duration_since(Instant::now()),
+                "event.poll",
+            )?
+            else {
+                return Ok(None);
+            };
+            match parse_frame(&line)? {
+                ParsedFrame::Event(event) => {
+                    self.validate_event_sequence(event.sequence)?;
+                    return Ok(Some(event));
+                }
+                ParsedFrame::Response(response)
+                    if self.abandoned_observation == Some(response.id) =>
+                {
+                    self.abandoned_observation = None;
+                }
+                ParsedFrame::Response(response) => {
+                    return Err(LocalRunnerError::invalid(format!(
+                        "ACPX sidecar emitted response {} without a pending request",
+                        response.id
+                    )))
+                }
             }
-            ParsedFrame::Response(response) => Err(LocalRunnerError::invalid(format!(
-                "ACPX sidecar emitted response {} without a pending request",
-                response.id
-            ))),
         }
     }
 
@@ -705,7 +861,10 @@ impl AcpxSidecarTransport {
 
 enum CommandOutcome {
     Success(Value),
-    Rejected(LocalRunnerError),
+    Rejected {
+        error: LocalRunnerError,
+        resume_required: bool,
+    },
 }
 
 enum ParsedFrame {
@@ -1037,6 +1196,30 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(unix)]
+    fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {
+        let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
+            command: "/bin/sh".into(),
+            args: vec!["-c".to_owned(), "read request; sleep 10".to_owned()],
+            verified_launch: None,
+            request_timeout: Duration::from_millis(30),
+            shutdown_grace: Duration::from_millis(20),
+        })
+        .unwrap();
+        let failure = transport
+            .request_turn_start(json!({"turnId":"turn-1"}))
+            .unwrap_err();
+        assert!(!failure.resume_required);
+        assert!(failure.error.to_string().contains("timed out"));
+        let reuse = transport
+            .request_turn_start(json!({"turnId":"turn-2"}))
+            .unwrap_err();
+        assert!(!reuse.resume_required);
+        assert!(reuse.error.to_string().contains("unavailable"));
+        transport.shutdown().unwrap();
+    }
+
+    #[test]
     fn pi_credentials_require_a_bounded_binding_without_process_control_variables() {
         assert!(pi_credential_environment_keys(None).unwrap().is_empty());
         for name in [
@@ -1086,13 +1269,15 @@ mod tests {
     }
 
     #[test]
-    fn only_pi_cold_open_gets_the_longer_admission_budget() {
+    fn only_pi_and_claude_cold_open_get_the_longer_admission_budget() {
         let ordinary = Duration::from_secs(30);
-        assert_eq!(
-            session_open_timeout("pi", ordinary),
-            Duration::from_secs(60)
-        );
-        for agent in ["claude", "codex", "grok", "cursor", "copilot"] {
+        for agent in ["pi", "claude"] {
+            assert_eq!(
+                session_open_timeout(agent, ordinary),
+                Duration::from_secs(60)
+            );
+        }
+        for agent in ["codex", "grok", "cursor", "copilot"] {
             assert_eq!(session_open_timeout(agent, ordinary), ordinary);
         }
     }
@@ -1395,3 +1580,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_park_observation.rs"]
+mod park_observation_tests;

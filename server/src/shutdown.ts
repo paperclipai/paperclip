@@ -7,15 +7,6 @@ type ShutdownLogger = {
   error(obj: object, msg: string): void;
 };
 
-/**
- * Time budget shared by every shutdown step that runs before the graceful
- * heartbeat run drain. Hosted stacks and `docker/docker-compose.yml` give the
- * process 90 seconds between SIGTERM and SIGKILL. The drain itself can use
- * about 30 seconds of workspace settlement plus the child process grace, and
- * the bounded teardown after it needs time too. A slow step before the drain
- * must not use that window, otherwise SIGKILL leaves the runs `running` and the
- * next boot reaps them as `process_lost`.
- */
 export const PRE_DRAIN_SHUTDOWN_BUDGET_MS = 20_000;
 
 export type ShutdownStepResult<T> =
@@ -23,13 +14,6 @@ export type ShutdownStepResult<T> =
   | { outcome: "timed_out"; durationMs: number }
   | { outcome: "failed"; error: unknown; durationMs: number };
 
-/**
- * Runs one shutdown step for at most `timeoutMs` and logs how long it took. A
- * step that times out keeps running in the background, but the shutdown does
- * not wait for it. A step that rejects is logged and does not stop the
- * shutdown. The log lines show which step held the shutdown when a container
- * stops without a run drain.
- */
 export async function runBoundedShutdownStep<T>(input: {
   step: string;
   signal: "SIGINT" | "SIGTERM";
@@ -72,11 +56,6 @@ export async function runBoundedShutdownStep<T>(input: {
   }
 }
 
-/**
- * Shares one deadline between the shutdown steps that run before the graceful
- * heartbeat run drain. Each step gets only the time that is left, so the steps
- * together cannot hold the drain longer than `budgetMs`.
- */
 export function createPreDrainShutdownBudget(input: {
   signal: "SIGINT" | "SIGTERM";
   budgetMs?: number;

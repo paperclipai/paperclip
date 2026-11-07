@@ -1133,7 +1133,7 @@ describe("agent routes adapter validation", () => {
       expect.objectContaining({
         adapterConfig: expect.objectContaining({
           provider: "codex",
-          model: "gpt-5.6-sol",
+          model: "gpt-6.1-sol",
           codexPermissionMode: "never",
           lifecycleMode: "per_turn",
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
@@ -1426,7 +1426,7 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
-        adapterConfig: expect.objectContaining({ model: "gpt-5.6-sol" }),
+        adapterConfig: expect.objectContaining({ model: "gpt-6.1-sol" }),
       }),
       expect.any(Object),
     );
