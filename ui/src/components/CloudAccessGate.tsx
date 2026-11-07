@@ -132,16 +132,17 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
         if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Set());
         denied.add(sessionUserId);
       },
-      () => {
+      (startedSnapshot) => {
         const denied = deniedBootstrapAccounts.get(queryClient);
         if (!sessionUserId || !denied?.has(sessionUserId)) return;
         const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
         if (current?.user.id !== sessionUserId) return;
-        if (current.boardBootstrap?.userId === sessionUserId && current.boardBootstrap.boardAccess.userId === sessionUserId) {
+        if (current.boardBootstrap === startedSnapshot && current.boardBootstrap?.userId === sessionUserId && current.boardBootstrap.boardAccess.userId === sessionUserId) {
           markBootstrapSnapshotApplied(queryClient, [...queryKeys.access.currentBoardAccess, sessionUserId], current.boardBootstrap);
         }
         denied.delete(sessionUserId);
       },
+      () => queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session)?.boardBootstrap,
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: retryWhileTransient,

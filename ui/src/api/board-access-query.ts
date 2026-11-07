@@ -9,7 +9,8 @@ export function boardAccessQueryOptions(
   updatedAt: number,
   onAccountChanged: () => void,
   onAccessDenied?: () => void,
-  onAccessVerified?: () => void,
+  onAccessVerified?: (snapshot: unknown) => void,
+  captureAccessSnapshot?: () => unknown,
 ) {
   const initialData = userId && bootstrap?.userId === userId && bootstrap.boardAccess.userId === userId
     ? bootstrap.boardAccess
@@ -19,6 +20,7 @@ export function boardAccessQueryOptions(
     initialData,
     initialDataUpdatedAt: initialData ? updatedAt : undefined,
     queryFn: async (): Promise<BoardBootstrap["boardAccess"]> => {
+      const snapshot = captureAccessSnapshot?.();
       // Path-only request coalescing must not join reads from two accounts.
       detachInflightGet("/cli-auth/me");
       let access: Awaited<ReturnType<typeof accessApi.getCurrentBoardAccess>>;
@@ -33,7 +35,7 @@ export function boardAccessQueryOptions(
         onAccountChanged();
         throw new ApiError("The signed-in account changed. Checking your session again.", 401, { code: "session_changed" });
       }
-      onAccessVerified?.();
+      onAccessVerified?.(snapshot);
       return { userId: access.userId, isInstanceAdmin: access.isInstanceAdmin, companyIds: access.companyIds };
     },
   };

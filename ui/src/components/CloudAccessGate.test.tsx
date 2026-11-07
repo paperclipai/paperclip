@@ -215,6 +215,34 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.textContent).toContain("No organization access");
   });
 
+  it("honors a newer revoked snapshot before a delayed access success", async () => {
+    const session = responses["/api/auth/get-session"] as object;
+    let accessCalls = 0;
+    let finishRetry!: (response: Response) => void;
+    const retry = new Promise<Response>(resolve => { finishRetry = resolve; });
+    fetchMock.mockImplementation(async (path: string) => {
+      if (path === "/api/auth/get-session") return Response.json(callsTo(path) === 1 ? session : { ...session, boardBootstrap: {
+        userId: "user", companies: [], boardAccess: { userId: "user", isInstanceAdmin: false, companyIds: ["company"] },
+      } });
+      if (path === "/api/cli-auth/me") return ++accessCalls === 1 ? Response.json({ error: "Unauthorized" }, { status: 401 }) : retry;
+      return Response.json(responses[path]);
+    });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Unable to load Paperclip");
+    flushSync(() => container.querySelector("button")!.click());
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, { ...session, boardBootstrap: {
+      userId: "user", companies: [], boardAccess: { userId: "user", isInstanceAdmin: false, companyIds: [] },
+    } });
+    await flushReact();
+    finishRetry(Response.json({ userId: "user", isInstanceAdmin: false, companyIds: ["company"] }));
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("No organization access");
+  });
+
   it.each(["401", "success"])("ignores a late %s from the previous account after an account change", async outcome => {
     await render();
     let rejectOld!: (response: Response) => void;
