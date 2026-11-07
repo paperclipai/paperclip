@@ -42,7 +42,7 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
-import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 
 function cursorProviderIdentity(mode: unknown) {
   return {
@@ -62,6 +62,36 @@ function cursorProviderIdentity(mode: unknown) {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it("offers another restart continuation when a later restart loses the continuation turn itself", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-two-restarts", normalizedSessionId: "session-two-restarts", workingDirectory: WORKSPACE,
+    });
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    expect(nativeRestartInterruptedTurnId({ ...await session.snapshot(), semanticResult: null })).toBe("turn-1");
+    // The first restart's continuation is accepted, then a second restart
+    // loses it before any result.
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    const snapshot = await session.snapshot();
+    // The lost continuation re-arms the marker exactly like the first loss.
+    expect(snapshot.dispositionOnlyRecoveryConsumed).toBe(false);
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null })).toBe("turn-2");
+    // A checkpoint whose consumed marker names that continuation is also
+    // continuable (it can be persisted before the terminal is mapped).
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-2" })).toBe("turn-2");
+    // A lost turn that is not the consumed continuation keeps the one-shot rule.
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-other" })).toBeNull();
+    await session.close({ reason: "fixture complete" });
+  });
+
   it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {
     const identity = cursorProviderIdentity(mode);
     const first = new FakeCodexTransport("thread-1", "provider-session-1", identity);
