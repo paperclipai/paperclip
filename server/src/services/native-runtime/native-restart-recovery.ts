@@ -183,15 +183,17 @@ type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?
  */
 export function lastRecoveryClaimResume(
   recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
-): { watermark: number; attempt: number } | null {
+): { watermark: number; attempt: number; launchesRunner: boolean } | null {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
     const watermark = entry?.progressWatermarkSeq;
     const attempt = entry?.progressAttempt;
+    // A reattachment adopts a runner that had already started its provider.
+    const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
     return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
       && typeof attempt === "number" && Number.isSafeInteger(attempt)
-      ? { watermark, attempt } : null;
+      ? { watermark, attempt, launchesRunner } : null;
   }
   return null;
 }
@@ -230,7 +232,8 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
 /**
  * Whether this restart claim keeps the provider attempt instead of charging
  * one. Both cases are judged from the previous claim's recorded position:
- * - That resume never started: no runner was requested and no runner event was
+ * - That resume launched a new runner (not a reattachment) and never started:
+ *   no runner was requested and no runner event was
  *   recorded before the controller died (for example in a K6 crash loop). It
  *   used no provider work, so this claim replaces it and carries its charge:
  *   the attempt ends at the attempt that resume was to run as, never above it.
@@ -250,7 +253,9 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
   const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
   if (previous === null) return false;
-  if (!await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+  // Only a claim that launches a new runner can be unstarted. A reattachment
+  // adopted provider work that had already started, so only progress counts.
+  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
     return input.coordinator.attempt >= previous.attempt;
   if (previous.attempt !== input.coordinator.attempt) return false;
   const watermark = previous.watermark;

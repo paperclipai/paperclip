@@ -2756,6 +2756,23 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(await resumeThenCrash(fixture)).toMatchObject({ disposition: { kind: "resume_dead_runner" }, attempt: 3 });
   });
 
+  it("does not treat a reattachment with no later events as an unstarted resume", async () => {
+    const fixture = await seedInterruptedCheckpoint("REATTACH-NO-EVENTS");
+    await resumeThenCrash(fixture);
+    await appendRunEvents(fixture, [...restoreNoise(1), { eventType: "turn.failed", turnId: "continuation-1" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 3 });
+    // That claim was a reattachment to a runner whose provider had already
+    // started. The controller then died before recording anything else, and the
+    // adopted runner died too.
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text, 'disposition'],
+        '"reattach_existing_runner"'::jsonb)`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const { disposition } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
   it("charges the owed attempt once when an unstarted first resume is replaced", async () => {
     const fixture = await seedInterruptedCheckpoint("UNSTARTED-FIRST-RESUME");
     // The first restart charges, but the controller dies before the executor
