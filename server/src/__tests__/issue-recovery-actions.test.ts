@@ -991,6 +991,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1053,6 +1054,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
     try {
@@ -1113,6 +1115,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         error: "adapter connection refused", errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     };
     const editorDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
@@ -1176,6 +1179,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
     try {
@@ -1270,6 +1274,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1323,6 +1328,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1362,6 +1368,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1397,6 +1404,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1432,6 +1440,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1469,6 +1478,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1502,6 +1512,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1537,6 +1548,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1574,6 +1586,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1607,6 +1620,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1654,6 +1668,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1690,6 +1705,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1729,6 +1745,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1772,6 +1789,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1807,6 +1825,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1847,6 +1866,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       } as const,
     });
 
@@ -1889,6 +1909,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           errorCode: "adapter_failed",
           contextSnapshot: { retryReason: "issue_continuation_needed" },
           livenessState: "needs_followup",
+          ...LATEST_RUN_TIMES,
         } as const,
       });
     } finally {
