@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { copilotDeathArguments } from "./copilot-provider-death.js";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,12 +12,17 @@ import { REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS, bindRemoteNativeFixture, validatePi
 
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "../../packages/paperclip-runner/src/drivers/acpx/pi-closure-pins.js";
 import { createRemoteNativeBootstrap } from "./remote-native-bootstrap.js";
+import { kimiFaultRuntimeContract } from "./kimi-provider-fault-contract.js";
 
 const hash = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const bootId = "12345678-1234-1234-1234-123456789abc";
 const authority = { companyId: "company", environmentId: "environment", runId: "run", leaseId: "lease", sandboxId: "sandbox", image: `registry/image@sha256:${"a".repeat(64)}` };
 const binding = { ...authority, remoteCwd: "/workspace" };
 const root = { pid: 21, ppid: 1, startTicks: "100", bootId };
+function kimiWorker(overrides: Record<string, unknown> = {}) {
+  return { schema: "paperclip.kimi11.remote-fault-diagnostic.v1", qualification: false, status: "FAIL", stage: "inspect_before", failingGuard: "parent_bootstrap", errno: null,
+    signalAttempted: false, signalDispatched: false, receipt: null, externalModelCalls: 0, ...overrides };
+}
 function snapshot(): RemoteNativeSnapshot {
   return { binding, observedAtMs: 1000, observedMonotonicNs: "10000", receivedAtMs: 1000, complete: true, workspace: { "existing.txt": hash("original") },
     targets: { "result.txt": { absent: true, sha256: null, parent: { dev: "1", ino: "2" }, mutationCount: 0, complete: true } },
@@ -67,6 +73,10 @@ describe("remote process exit during proc reads", () => {
 });
 
 describe("remote native lease admission", () => {
+  it("keeps the actual observer installation command below the native Linux argv string bound", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options), install = h.calls.find(call => call.request.op === "install");
+    expect(install).toBeDefined(); expect(Buffer.byteLength(install!.command)).toBeLessThan(131072); await fixture.close();
+  });
   it.each(["companyId", "environmentId", "heartbeatRunId", "providerLeaseId", "provider", "status"])("rejects wrong %s before executing any remote command", async key => {
     const h = harness(); h.setLease({ ...h.lease(), [key]: "foreign" });
     await expect(bindRemoteNativeFixture(h.options)).rejects.toThrow("lease_scope"); expect(h.executeCommand).not.toHaveBeenCalled();
@@ -246,6 +256,40 @@ describe("remote native lease admission", () => {
     if (type === "bad-file") end.targets["result.txt"] = { ...end.targets["result.txt"], absent: false, sha256: hash("missing") };
     h.resolveTerminal(end); await expect(f.finish()).rejects.toThrow();
   });
+  it("retains bounded incomplete retirement diagnostics while rejecting the receipt", async () => {
+    const h = harness(), retain = vi.fn(async () => {});
+    const f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    const end: any = { ...structuredClone(h.current), complete: false, incompleteReasons: ["workspace_directory_added"], processes: { ...h.current.processes, live: [] }, files: {} };
+    h.resolveTerminal(end);
+    await expect(f.finish()).rejects.toThrow("terminal_evidence_incomplete");
+    expect(retain).toHaveBeenCalledExactlyOnceWith({ failureCodes: [], actionPublished: true, setupPublished: true, complete: false, watcherComplete: true, targetMutationCount: 0, workspaceMutationCount: 0, processRootCaptured: true, liveProcessCount: 0, incompleteReasons: ["workspace_directory_added"] });
+    await expect(f.readFile("result.txt")).rejects.toThrow();
+  });
+  it("rejects arbitrary diagnostic text before retaining terminal metadata", async () => {
+    const h = harness(), retain = vi.fn(async () => {});
+    const f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    h.resolveTerminal({ ...structuredClone(h.current), incompleteReasons: ["untrusted provider content"], processes: { ...h.current.processes, live: [] }, files: {} } as any);
+    await expect(f.finish()).rejects.toThrow("incomplete_reasons_shape");
+    expect(retain).not.toHaveBeenCalled();
+  });
+  it("reports only closed terminal failure reasons without weakening retirement proof", async () => {
+    const h = harness(), retain = vi.fn(async () => {}), f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    const end = { ...structuredClone(h.current), complete: false,
+      processes: { ...h.current.processes, live: [] }, files: {},
+      failureCodes: ["process_pid_reused", "secret-provider-payload", "process_pid_reused", { arbitrary: "payload" }] };
+    h.resolveTerminal(end);
+    const error = await f.finish().catch(error => error);
+    expect(error.message).toContain("terminal_evidence_incomplete:published=true,complete=false");
+    expect(error.message).toContain(":process_pid_reused");
+    expect(error.message).not.toContain("secret-provider-payload");
+    expect(error.message).not.toContain("arbitrary");
+    expect(retain).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ failureCodes: ["process_pid_reused"] }));
+    expect(JSON.stringify(retain.mock.calls)).not.toContain("secret-provider-payload");
+    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "wait", code: "terminal_evidence_incomplete" }]);
+  });
   it("retains a validated incomplete terminal receipt without raw file or RPC content", async () => {
     const h = harness(), f = await bindRemoteNativeFixture(h.options);
     await f.publishAction("action.txt", "task");
@@ -253,7 +297,7 @@ describe("remote native lease admission", () => {
       processes: { ...h.current.processes, live: [] }, files: { "private.txt": "PRIVATE RPC CONTENT" }, untrustedDump: "PRIVATE RPC CONTENT" };
     h.resolveTerminal(end);
     const error = await f.finish().catch(error => error);
-    expect(error.message).toBe("remote_native_fixture:terminal_evidence_incomplete");
+    expect(error.message).toContain("remote_native_fixture:terminal_evidence_incomplete");
     const retained = remoteNativeIncompleteTerminalEvidence(error)!;
     expect(retained.complete).toBe(false); expect(retained.watcher.complete).toBe(false);
     expect(retained.processes.liveCount).toBe(0);
@@ -345,6 +389,61 @@ describe("remote native lease admission", () => {
   });
 });
 
+describe("closed bootstrap timeout diagnostics", () => {
+  it("reports the unchanged 10s initial lease-readmission deadline without remote work", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(); h.apiGet.mockImplementation(() => new Promise<never>(() => {}));
+      let settled = false;
+      const outcome = bindRemoteNativeFixture(h.options).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(9999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "lease-readmission", code: "rpc_deadline" }]);
+      expect(h.get).not.toHaveBeenCalled(); expect(h.executeCommand).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("reports the unchanged 12s runtime-ready deadline without installing or publishing", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(); h.override(request => request.op === "runtime-ready" ? new Promise<never>(() => {}) : undefined);
+      let settled = false;
+      const outcome = bindRemoteNativeFixture(h.options).catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(11999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "runtime-ready", code: "rpc_deadline" }]);
+      expect(h.calls.map(call => call.request.op)).toEqual(["runtime-ready"]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps a timed-out Kimi fault signal-unknown and consumes its one-shot capability", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000_000);
+    try {
+      const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+      await fixture.publishAction("action.txt", "action");
+      h.override(request => request.op === "kimi-provider-death" ? new Promise<never>(() => {}) : undefined);
+      let settled = false;
+      const outcome = fixture.terminateKimiProvider!("workspace-id").catch(error => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(11999); expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1); const error = await outcome;
+      expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+      expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "kimi-provider-death", code: "rpc_deadline",
+        fault: { stage: "worker_response", code: "invalid_response", signalDispatched: null } }]);
+      await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow("kimi_fault_admission");
+      expect(h.calls.filter(call => call.request.op === "kimi-provider-death")).toHaveLength(1);
+      await fixture.close(); h.rejectTerminal(new Error("late synthetic rejection")); await Promise.resolve();
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps an SDK rejection distinct from a deadline without retaining its private text", async () => {
+    const h = harness(); h.executeCommand.mockRejectedValueOnce(new Error("PRIVATE SDK rejection"));
+    const error = await bindRemoteNativeFixture(h.options).catch(error => error);
+    expect(error.message).toBe("remote_native_fixture:remote_command_failed_or_deadline");
+    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "runtime-ready", code: "transport_failure" }]);
+    expect(JSON.stringify(remoteNativeFixtureDiagnostics(error))).not.toContain("PRIVATE");
+    expect(h.executeCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("cell deadline and cleanup bounds", () => {
   it("expires finish with 15s reserved, bounds SDK/socket/observer clocks, and handles late SDK failure", async () => {
     vi.useFakeTimers(); vi.setSystemTime(1_000_000);
@@ -392,10 +491,15 @@ describe("cell deadline and cleanup bounds", () => {
 });
 
 describe("independent filesystem and process observations", () => {
-  it("retains transient create/delete events and detects same-path parent replacement", async () => {
+  // This real filesystem probe qualifies the Linux Daytona observer.
+  it.runIf(process.platform === "linux")("retains transient create/delete events and detects same-path parent replacement", async () => {
     const dir = await mkdtemp(join(tmpdir(), "remote-watch-")); const watcher = createRemoteTargetWatch(dir, "denied.txt");
     try {
-      await writeFile(join(dir, "denied.txt"), "forbidden"); await rm(join(dir, "denied.txt"));
+      await writeFile(join(dir, "denied.txt"), "forbidden");
+      // macOS coalesces a create/remove pair before delivering fs.watch. Wait
+      // for the real create observation, then prove it survives removal.
+      await vi.waitFor(() => expect(watcher.snapshot().mutationCount).toBeGreaterThan(0));
+      await rm(join(dir, "denied.txt"));
       await vi.waitFor(() => expect(watcher.snapshot().mutationCount).toBeGreaterThan(0));
       expect(watcher.snapshot().complete).toBe(true);
       await rename(dir, `${dir}-old`); await writeFile(dir, "replacement");
@@ -437,6 +541,7 @@ describe("actual generated observer state machine", () => {
     const missing = () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); };
     const fds = new Map<number, string>(); let nextFd = 50, runtimeInode = 4n;
     const symbolicLinks = new Set<string>(), directoryInodes = new Map<string, bigint>();
+    const processExecutables = new Map<string, { path: string; dev: bigint; ino: bigint }>();
     const directories = new Set(["/tmp", "/workspace", "/workspace/.paperclip-runtime", "/workspace/.paperclip-runtime/paperclip-runner", "/workspace/.paperclip-runtime/paperclip-runner/sessions"]);
     if (!deferStartup) directories.add(config.root);
     const listeners = new Map<string, (socket: any) => void>();
@@ -462,7 +567,8 @@ describe("actual generated observer state machine", () => {
         if (!directory && !files.has(path) && !symbolicLinks.has(path)) return missing();
         return { dev: 1n, ino: directoryInodes.get(path) ?? (path === config.root ? 2n : path === "/workspace/.paperclip-runtime/paperclip-runner" ? runtimeInode : 3n), mtimeNs: 4n, ctimeNs: 5n, isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => symbolicLinks.has(path), size: files.get(path)?.length ?? 0 };
       },
-      realpathSync: (path: string) => path,
+      realpathSync: (path: string) => processExecutables.get(path)?.path ?? (/^\/proc\/\d+\/exe$/u.test(path) ? proc.get(Number(path.split("/")[2]))?.argv[0] : path),
+      statSync(path: string) { const identity = processExecutables.get(path); if (!identity) return missing(); return identity; },
       readdirSync(path: string) { if (path === "/proc") return [...proc.keys()].map(String); if (path.startsWith("/workspace/.paperclip-runtime/paperclip-runner")) throw new Error("excluded runtime must not be traversed"); return [...new Set([...files.keys(), ...directories, ...symbolicLinks].filter(p => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/")).map(p => p.slice(path.length + 1)))]; },
       watch(path: string, options: unknown, callback?: (_kind: string, name: string | null) => void) {
         const entry = { path, callback: (callback ?? options) as (_kind: string, name: string | null) => void, closed: false }; watches.push(entry);
@@ -492,8 +598,8 @@ describe("actual generated observer state machine", () => {
     const net = { createServer(fn: (socket: any) => void) { handlers.push(fn); return server; } };
     const faultSpawn = vi.fn(() => ({ status: 0, stdout: JSON.stringify(piFaultReceipt()) }));
     const context = {
-      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
-      process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn() },
+      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn((_node: string, argv: string[]) => { const child = Object.assign(new EventEmitter(), { argv, stdin: { end: vi.fn() }, pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
+      process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn(), kill: vi.fn() },
       Buffer, __filename: `${config.root}/observer.cjs`,
       setInterval(fn: () => void) { intervals.push(fn); return 1; }, clearInterval: vi.fn(),
       setTimeout(fn: () => void, ms: number) { timers.push({ fn, ms }); return { unref() {} }; },
@@ -504,7 +610,7 @@ describe("actual generated observer state machine", () => {
       const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
       handlers[0]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ op, nonce: config.nonce, ...args }) + "\n")); return replies;
     }
-    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, directoryInodes, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
+    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, directoryInodes, processExecutables, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
   }
   it("keeps existing watched directory notifications complete without losing nested mutations", async () => {
     const o = await observerHarness(true);
@@ -533,6 +639,53 @@ describe("actual generated observer state machine", () => {
     for (const w of o.watches) if (w.path === "/workspace") w.callback("change", variant === "unknown" ? null : "existing");
     const reply = o.request("snapshot")[0];
     expect(reply.ok && reply.result.complete).toBe(false);
+  });
+  it("enforces Kimi observer authority before the exact one-shot native-child fault", async () => {
+    const o = await observerHarness(), contract = kimiFaultRuntimeContract("linux-x64"); o.request("snapshot");
+    const request = { runtimeEnvironmentLeaseId: "workspace-id", contract, bootstrapTemplate: "reviewed bootstrap", guardTemplate: "reviewed guard" };
+    o.faultSpawn.mockReturnValue({ status: 0, stdout: JSON.stringify(kimiWorker({ status: "PASS", stage: "complete", failingGuard: null, signalAttempted: true, signalDispatched: true, receipt: piFaultReceipt() })) });
+    expect(o.request("kimi-provider-death", request)[0]).toEqual({ ok: false, error: "observer_evidence_incomplete", diagnostic: { stage: "observer_admission", code: "observer_authority", signalDispatched: false } }); expect(o.faultSpawn).not.toHaveBeenCalled();
+    o.request("publish", { path: "action.txt", text: "Use the native read tool" });
+    expect(o.request("kimi-provider-death", { ...request, runtimeEnvironmentLeaseId: "foreign" })[0].ok).toBe(false);
+    expect(o.faultSpawn).not.toHaveBeenCalled();
+    expect(o.request("kimi-provider-death", request)[0].ok).toBe(true);
+    const [program, args, options] = o.faultSpawn.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    expect(program).toBe("/usr/bin/python3"); expect(args.slice(0, 2)).toEqual(["-I", "-c"]);
+    expect(args[2]).toContain("signal.pidfd_send_signal"); expect(Buffer.from(args[3]!, "base64").toString()).toContain("kimi_provider_identity_or_signal_failed");
+    expect(JSON.parse(Buffer.from(args[4]!, "base64").toString())).toEqual({ root, binding, runtimeEnvironmentLeaseId: "workspace-id", runnerdSha256: hash("runnerd"), closureSha256: contract.closureSha256, nodeSha256: contract.nodeSha256, guardLoaderSha256: contract.guardLoaderSha256, bootstrapTemplate: request.bootstrapTemplate, guardTemplate: request.guardTemplate });
+    expect(options.env).toEqual({ PATH: "/usr/bin:/bin" }); expect(o.context.process.kill).not.toHaveBeenCalled();
+    expect(o.request("kimi-provider-death", request)[0].ok).toBe(false); expect(o.faultSpawn).toHaveBeenCalledOnce();
+  });
+  it("records no signal before a rejected observer nonce without executing the worker", async () => {
+    const o = await observerHarness(); o.request("snapshot"); o.request("publish", { path: "action.txt", text: "action" });
+    expect(o.request("kimi-provider-death", { nonce: "foreign" })[0]).toEqual({ ok: false, error: "observer_evidence_incomplete", diagnostic: { stage: "observer_admission", code: "observer_authority", signalDispatched: false } }); expect(o.faultSpawn).not.toHaveBeenCalled(); expect(o.context.process.kill).not.toHaveBeenCalled();
+  });
+  it.each([false, null, true])("retains a closed failed worker acknowledgement %s without retry", async signalDispatched => {
+    const o = await observerHarness(); o.request("snapshot"); o.request("publish", { path: "action.txt", text: "action" });
+    o.faultSpawn.mockReturnValue({ status: 1, stdout: JSON.stringify(kimiWorker({ stage: signalDispatched === false ? "inspect_before" : signalDispatched === null ? "signal" : "receipt", failingGuard: signalDispatched === false ? "parent_bootstrap" : null, signalAttempted: signalDispatched !== false, signalDispatched })) });
+    const reply = o.request("kimi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id", contract: kimiFaultRuntimeContract("linux-x64"), bootstrapTemplate: "reviewed", guardTemplate: "reviewed" })[0];
+    expect(reply).toEqual({ ok: false, error: "observer_evidence_incomplete", diagnostic: { stage: signalDispatched === false ? "inspect_before" : signalDispatched === null ? "signal" : "receipt", code: signalDispatched === false ? "parent_bootstrap" : "worker_failure", signalDispatched } });
+    expect(JSON.stringify(reply)).not.toContain("private");
+    expect(o.request("kimi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id" })[0].ok).toBe(false); expect(o.faultSpawn).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { status: null, signal: "SIGKILL", stdout: "" },
+    { status: 1, stdout: "private exception text" },
+    { status: 1, stdout: "null" },
+    { status: 1, stdout: JSON.stringify(kimiWorker({ status: "PASS", stage: "complete", failingGuard: null, signalAttempted: true, signalDispatched: true })) },
+    { status: 0, stdout: JSON.stringify(kimiWorker()) },
+    { status: 1, stdout: JSON.stringify(kimiWorker({ signalAttempted: true })) },
+    { status: null, signal: "SIGKILL", stdout: JSON.stringify(kimiWorker({ status: "PASS", stage: "complete", failingGuard: null, signalAttempted: true, signalDispatched: true })) },
+    { status: 1, stdout: JSON.stringify(kimiWorker({ stage: "private_stage", failingGuard: "private_path" })) },
+    { status: 0, stdout: JSON.stringify(kimiWorker({ status: "PASS", stage: "complete", failingGuard: null })) },
+    { status: 1, stdout: JSON.stringify(kimiWorker({ stage: "terminate", signalAttempted: true, signalDispatched: true })) },
+    { status: 1, stdout: JSON.stringify(kimiWorker({ private: "secret/path" })) },
+    { status: 1, error: new Error("private spawn error"), stdout: JSON.stringify(kimiWorker()) },
+    { status: 1, signal: "SIGKILL", stdout: JSON.stringify(kimiWorker()) },
+  ])("keeps an unproven worker outcome unknown", async outcome => {
+    const o = await observerHarness(); o.request("snapshot"); o.request("publish", { path: "action.txt", text: "action" }); o.faultSpawn.mockReturnValue(outcome as never);
+    const reply = o.request("kimi-provider-death", { runtimeEnvironmentLeaseId: "workspace-id", contract: kimiFaultRuntimeContract("linux-x64"), bootstrapTemplate: "reviewed", guardTemplate: "reviewed" })[0];
+    expect(reply.ok).toBe(false); expect(reply.diagnostic.signalDispatched).toBeNull(); expect(JSON.stringify(reply)).not.toContain("private"); expect(o.context.process.kill).not.toHaveBeenCalled();
   });
   it("executes the actual observer fault phase once with a closed environment and exact identity", async () => {
     for (const published of [false, true]) {
@@ -733,6 +886,25 @@ describe("actual generated observer state machine", () => {
     o.proc.set(1, { ppid: 0, group: 1, ticks: "1", argv: ["/sbin/init"] });
     expect(o.request("snapshot")[0].result.processes.captured).toBe(true);
   });
+  it.each(["valid", "wrong-inode", "foreign-executable", "ambiguous", "wrong-arguments"])("dispatches generated provider death only for verified descriptor ownership: %s", async variant => {
+    const o = await observerHarness();
+    o.request("snapshot"); o.request("publish", { path: "action.txt", text: "do task" });
+    const executable = "/tmp/paperclip-acpx-native-owned/distribution/copilot";
+    o.proc.set(22, { ppid: 21, group: 21, ticks: "200", argv: ["/node"] });
+    o.proc.set(23, { ppid: 22, group: 21, ticks: "300", argv: ["/proc/self/fd/7", ...copilotDeathArguments] });
+    o.processExecutables.set("/proc/23/exe", { path: executable, dev: 1n, ino: 40n });
+    o.processExecutables.set("/proc/23/fd/7", { path: executable, dev: 1n, ino: 40n });
+    if (variant === "wrong-inode") o.processExecutables.get("/proc/23/fd/7")!.ino = 41n;
+    if (variant === "foreign-executable") { o.processExecutables.get("/proc/23/exe")!.path = "/usr/bin/copilot"; o.processExecutables.get("/proc/23/fd/7")!.path = "/usr/bin/copilot"; }
+    if (variant === "wrong-arguments") o.proc.get(23)!.argv.push("--allow-all");
+    if (variant === "ambiguous") o.proc.set(24, { ppid: 22, group: 21, ticks: "400", argv: [executable, ...copilotDeathArguments] });
+    const replies = o.request("provider-death");
+    if (variant === "valid") {
+      expect(replies[0]).toMatchObject({ ok: true, result: { schema: "paperclip.e2e.copilot-owned-provider-death.v1", signal: "SIGKILL", child: { pid: 23 } } });
+      expect(o.context.process.kill).toHaveBeenCalledExactlyOnceWith(23, "SIGKILL");
+      expect(o.request("provider-death")[0].ok).toBe(false);
+    } else { expect(replies[0].ok).toBe(false); expect(o.context.process.kill).not.toHaveBeenCalled(); }
+  });
   it("arms exact remote root then seals drained no-live proof and retained bytes", async () => {
     const o = await observerHarness(); expect(o.request("snapshot")[0].result.processes.captured).toBe(true);
     const wait = o.request("wait"); expect(wait).toHaveLength(0);
@@ -770,6 +942,25 @@ describe("actual generated observer state machine", () => {
     o.handlers[1]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ nonce: config.clientNonce, pid: 23 }) + "\n"));
     expect(o.children).toHaveLength(0); expect(socket.destroy).toHaveBeenCalled();
     expect(o.request("snapshot")[0].result.attached.failure).toBe("client_rejected");
+  });
+  it("releases a gated remote child once, through the owned controller after publication", async () => {
+    const o = await observerHarness(); o.request("snapshot");
+    const config = { marker: "result.txt", markerText: "settled", delayMs: 100, clientNonce: "test-gated-client", waitForFinishAttempt: true };
+    const fixture = o.request("attached", config)[0].result;
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    o.request("publish", { path: o.config.actionFile, text: "exact action" });
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    o.proc.set(23, { ppid: 21, group: 21, ticks: "300", argv: ["/node", fixture.clientScript, fixture.clientSocket, config.clientNonce] });
+    const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
+    o.handlers[1]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ nonce: config.clientNonce, pid: 23 }) + "\n"));
+    expect(o.children).toHaveLength(1); expect(o.files.has("/workspace/result.txt")).toBe(false);
+    expect(() => new Script(o.children[0].argv[1])).not.toThrow();
+    expect(o.request("release-attached")[0]).toMatchObject({ ok: true, result: { releasedAtMs: expect.any(Number) } });
+    expect(o.children[0].stdin.end).toHaveBeenCalledExactlyOnceWith("release\n");
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    expect(replies).toHaveLength(0);
+    o.children[0].exitCode = 0; o.children[0].emit("exit", 0, null);
+    expect(replies).toEqual([{ code: 0 }]); expect(o.files.get("/workspace/result.txt")?.toString()).toBe("settled");
   });
   it("scopes actual runtime symlinks/state churn out while retaining sentinel and sibling coverage", async () => {
     const o = await observerHarness();
@@ -850,5 +1041,68 @@ describe("exact Pi-child fault capability", () => {
     await expect(fixture.terminatePiProvider!("workspace-id")).rejects.toThrow();
     expect(h.calls.filter(call => call.request.op === "pi-provider-death")).toHaveLength(1);
     await fixture.close();
+  });
+});
+
+describe("exact Kimi-child fault capability", () => {
+  it.each(["parent_descriptor_changed", "parent_descriptor_shape", "parent_memfd_required", "parent_memfd_seals"])("retains the reviewed memfd guard %s", async code => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options); await fixture.publishAction("action.txt", "action");
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, diagnostic: { stage: "inspect_before", code, signalDispatched: false } }) } : undefined);
+    const error = await fixture.terminateKimiProvider!("workspace-id").catch(error => error);
+    expect(remoteNativeFixtureDiagnostics(error)[0]?.fault).toEqual({ stage: "inspect_before", code, signalDispatched: false }); await fixture.close();
+  });
+  it.each([false, null, true])("propagates a validated worker signal acknowledgement %s through the public diagnostic projector", async signalDispatched => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options); await fixture.publishAction("action.txt", "action");
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, error: "observer_evidence_incomplete", diagnostic: { stage: signalDispatched === false ? "inspect_before" : signalDispatched === null ? "signal" : "receipt", code: signalDispatched === false ? "native_guard_bytes" : "worker_failure", signalDispatched } }) } : undefined);
+    const error = await fixture.terminateKimiProvider!("workspace-id").catch(error => error);
+    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "kimi-provider-death", code: "kimi_provider_identity_or_signal_failed", fault: { stage: signalDispatched === false ? "inspect_before" : signalDispatched === null ? "signal" : "receipt", code: signalDispatched === false ? "native_guard_bytes" : "worker_failure", signalDispatched } }]); await fixture.close();
+  });
+  it("keeps a transport exception signal-unknown without leaking SDK text", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options); await fixture.publishAction("action.txt", "action");
+    h.override(request => { if (request.op === "kimi-provider-death") throw new Error("private SDK credential/path"); return undefined; });
+    const error = await fixture.terminateKimiProvider!("workspace-id").catch(error => error), diagnostics = remoteNativeFixtureDiagnostics(error);
+    expect(diagnostics).toEqual([{ phase: "kimi-provider-death", code: "transport_failure", fault: { stage: "worker_response", code: "invalid_response", signalDispatched: null } }]); expect(JSON.stringify(diagnostics)).not.toContain("private"); await fixture.close();
+  });
+  it.each([
+    { exitCode: 1, result: "private stderr" },
+    { exitCode: 0, result: "not json" },
+    { exitCode: 0, result: JSON.stringify({ ok: false, diagnostic: { stage: "private", code: "private", signalDispatched: false } }) },
+  ])("does not infer no signal from an untyped RPC failure", async response => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options); await fixture.publishAction("action.txt", "action"); h.override(request => request.op === "kimi-provider-death" ? response : undefined);
+    const error = await fixture.terminateKimiProvider!("workspace-id").catch(error => error), diagnostics = remoteNativeFixtureDiagnostics(error);
+    expect(diagnostics).toHaveLength(1); expect(diagnostics[0]?.fault).toEqual({ stage: "worker_response", code: "invalid_response", signalDispatched: null }); expect(JSON.stringify(diagnostics)).not.toContain("private"); await fixture.close();
+  });
+  it("requires publication and consumes uncertain one-shot delivery without a worker-loss fallback", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    await fixture.publishAction("action.txt", "Use the native read tool");
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: false, error: "kimi_provider_identity_or_signal_failed" }) } : undefined);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    const calls = h.calls.filter(call => call.request.op === "kimi-provider-death");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.request.contract).toEqual(kimiFaultRuntimeContract("linux-x64"));
+    expect(calls[0]!.request.bootstrapTemplate).toContain("/__paperclip_kimi_fault_snapshot__/distribution");
+    expect(calls[0]!.request.guardTemplate).toContain("const digests={};");
+    expect(h.calls.some(call => call.request.op === "inject-loss")).toBe(false);
+    await fixture.close();
+  });
+  it("returns the bound native-child receipt once and rejects a foreign lease", async () => {
+    const h = harness(), fixture = await bindRemoteNativeFixture(h.options);
+    await fixture.publishAction("action.txt", "Use the native read tool");
+    const parent = { pid: 22, ppid: 21, startTicks: "101", bootId }, target = { pid: 23, ppid: 22, startTicks: "102", bootId };
+    const receipt = { schema: "paperclip.e2e.kimi-provider-death.v1", binding, runtimeEnvironmentLeaseId: "workspace-id", target, ancestry: [target, parent, root],
+      ...kimiFaultRuntimeContract("linux-x64"), entrypointSha256: hash("entry"), guardSha256: hash("guard"), bootstrapSha256: hash("bootstrap"),
+      entrypointAttribution: "pinned_native_bootstrap_parent", originalChildArgvAvailable: false, observedChildTitle: "kimi-code", signalled: true, signal: "SIGKILL", targetKind: "kimi_native_child", workerSignalled: false };
+    h.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: receipt }) } : undefined);
+    expect(await fixture.terminateKimiProvider!("workspace-id")).toEqual(receipt);
+    await expect(fixture.terminateKimiProvider!("workspace-id")).rejects.toThrow();
+    expect(h.calls.filter(call => call.request.op === "kimi-provider-death")).toHaveLength(1);
+    await fixture.close();
+    const foreign = harness(), other = await bindRemoteNativeFixture(foreign.options);
+    await other.publishAction("action.txt", "Use the native read tool");
+    foreign.override(request => request.op === "kimi-provider-death" ? { exitCode: 0, result: JSON.stringify({ ok: true, result: receipt }) } : undefined);
+    await expect(other.terminateKimiProvider!("foreign-lease")).rejects.toThrow("receipt_identity");
+    await other.close();
   });
 });

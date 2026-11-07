@@ -1116,7 +1116,7 @@ Rules:
 
 ### Conversational confirmation answers
 
-To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: `human_only`, independent-review restrictions, named addressees, and governed-action controls still apply. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
+To record a user's conversational answer, an eligible agent responding on this task may POST `/api/issues/{issueId}/interactions/{interactionId}/resolve-from-comment` with `{ "commentId": "<latest-user-message-id>", "decision": "accept" }` (or `"reject"` and `reason`). Native runners use `call_api`. Checkbox acceptance must include explicit `selectedOptionIds`; defaults alone are not consent. The result is `{ interaction, deduplicated }`, with the user message retained in `interaction.result.commentId` and the activity audit. Resolver attribution remains the responding agent/run. This does not widen permissions: independent-review restrictions, named addressees, and governed-action controls still apply. A `human_only` card accepts this relay only when its creator requested `human_only` itself and the comment's author is the user the run or conversation serves; company-capped, governed-action and quality-review cards still require the human to use the card. Only confirmation and checkbox cards are supported, not forms, secret/tool approvals, or connection authorizations.
 
 Read current cards and comments before interpreting the reply. Resolve the specific proposal before performing the approved work. Ask for clarification when a reply is ambiguous among multiple proposals or checkbox choices; do not approve all of them. Requested revisions are not acceptance. If the write is interrupted, retry the same card/message/decision: matching retries return `deduplicated: true` without another wake. Conflicting, stale, deleted, superseded, wrong-user, and previous-session answers fail. Do not ask the user to clear a card after their decision is saved.
 
@@ -1393,6 +1393,8 @@ Terminal states: `done`, `cancelled`
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
+- Agent-created task trees are at most two levels deep (a top-level task and its children). A create or move that would make a grandchild is not rejected: the task is placed under the requested parent's parent, and the response carries `parentAdjusted` (`reason`, `requestedParent`, `effectiveParent`, `applied`). Moving a task that has children is skipped with `reason: "has_children"`. Board users are not limited, and existing deeper trees stay valid.
+- `originIssueId` (read-only, server-set) records the task whose work created this one: the task your run was on, otherwise the chat that handed it off or the requested parent. It is an audit trail, not hierarchy. `originRunId` is the run that created it.
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
@@ -1725,3 +1727,17 @@ per-call write approval, records activity, and dispatches the existing continuat
 An unauthorized approver receives 403; changed tool definitions, assignment,
 identity, or a closed task receive 409; unrelated connections receive 404.
 No credentials or provider authorization URL appear in the card payload.
+
+For sandbox run inspection, see [Run diagnostics from a sandbox](run-diagnostics.md).
+
+**Sandbox task context routes.**
+
+The queue and HTTP/2 callback bridges admit company skill detail and file reads,
+`GET /api/assets/{assetId}/content`, `GET /api/issues/{id}/diagnostics/wakes`,
+and `POST /api/issues/{id}/monitor/check-now`. Use the asset URL embedded in the
+task to read its screenshot. Use the skill files route with a `path` query
+parameter to read a referenced script or instruction file.
+
+Bridge admission does not grant resource access. The controller rechecks company,
+task and skill visibility, and monitor-management permission. Asset mutations,
+skill-file mutations and recovery-action resolution remain restricted.

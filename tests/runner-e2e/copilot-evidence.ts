@@ -60,3 +60,20 @@ export function readCopilotToolEvidence(rows: readonly unknown[], expectedRunId:
 export function copilotOrigin(n: CopilotToolNotice) {
   return { runId: n.runId, sessionId: n.sessionId, turnId: n.turnId, toolCallId: n.toolCallId };
 }
+
+/** A patch notification can omit its path. Bind the pending native edit to the
+ * exact permission carrying that path; never derive a path from display text or
+ * borrow another operation's permission. Durable stream/card checks follow. */
+export function copilotEditOriginForPermission(notices: readonly CopilotToolNotice[], target: string, expectedToolCallId?: string): CopilotToolNotice | undefined {
+  const requests = notices.filter(n => n.stage === "permission_requested" && n.operation === "edit" && n.target === target
+    && (!expectedToolCallId || n.toolCallId === expectedToolCallId));
+  if (!requests.length) return undefined;
+  if (requests.length !== 1) throw new Error("Ambiguous Copilot edit permission target");
+  const request = requests[0]!;
+  const group = notices.filter(n => n.toolCallId === request.toolCallId);
+  if (group.some(n => n.runId !== request.runId || n.sessionId !== request.sessionId || n.turnId !== request.turnId
+    || (n.target !== undefined && n.target !== target) || (n.operation !== undefined && n.operation !== "edit"))) throw new Error("Conflicting Copilot edit permission origin");
+  const pending = group.filter(n => n.stage === "tool" && n.status === "pending" && n.operation === "edit");
+  if (pending.length > 1) throw new Error("Duplicate Copilot pending edit origin");
+  return pending[0];
+}

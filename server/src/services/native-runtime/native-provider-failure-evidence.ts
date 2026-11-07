@@ -19,8 +19,7 @@ async function observePersistedNativeTurnFailure(
       terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
   let execution;
   try { execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput); } catch { return null; }
-  if (execution.provider.kind !== "codex" ||
-      execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
+  if (execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
       execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
       execution.session.normalizedSessionId !== run.nativeSessionId ||
       execution.completionContract.id !== run.completionContractId ||
@@ -63,6 +62,7 @@ export async function readPersistedNativeFailureEvidence(
   return {
     providerFailure: observed?.forTerminal(turnId, terminal) ?? null,
     turnFailure: observed?.unclassifiedTurnFailure(turnId, terminal) ?? null,
+    providerExplanation: observed?.providerFailureForTerminal(turnId, terminal) ?? null,
   };
 }
 

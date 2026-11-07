@@ -1,8 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { ChevronLeft, Ellipsis } from "lucide-react";
 import type { IssueAttachment, IssueWorkMode, RunnerGoalCapability } from "@paperclipai/shared";
+import { composerImageFiles } from "../../support/composerImageFiles";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskChatComposerDock } from "@/components/task-chat/TaskChatComposerDock";
@@ -39,17 +40,23 @@ interface ComposerAddStoryProps {
 }
 
 function ComposerAddStory({ initialMode, goalAvailable, mobile, mobileContext, fullBleedMobileContext }: ComposerAddStoryProps) {
+  const imageUrls = useRef<string[]>([]);
+  useEffect(() => () => {
+    imageUrls.current.forEach(url => URL.revokeObjectURL(url));
+  }, []);
   const [workMode, setWorkMode] = useState(initialMode);
   const [sent, setSent] = useState<string[]>([]);
   const [goal, setGoal] = useState<string | null>(null);
 
   async function attachFile(file: File): Promise<IssueAttachment> {
+    const contentPath = URL.createObjectURL(file);
+    imageUrls.current.push(contentPath);
     return {
       id: crypto.randomUUID(), companyId: "storybook", issueId: "composer-story",
       issueCommentId: null, assetId: crypto.randomUUID(), provider: "storybook",
       objectKey: file.name, contentType: file.type, byteSize: file.size, sha256: "storybook",
       originalFilename: file.name, createdByAgentId: null, createdByUserId: "storybook",
-      createdAt: new Date(), updatedAt: new Date(), contentPath: URL.createObjectURL(file),
+      createdAt: new Date(), updatedAt: new Date(), contentPath,
     };
   }
 
@@ -117,11 +124,12 @@ const meta = {
     docs: { description: { component: "The production task composer. The Add menu opens upward on desktop and as a dialog on mobile for files, supported goals, Plan mode, and Ask mode. Plan and Ask are exclusive; selecting a mode shows a removable chip. Cmd+. cycles standard, Plan, and Ask. Mobile stories include capsule agent avatars and the actual bottom navigation." } },
     paperclip: {
       "capabilities": [
-        "tasks/create"
+        "tasks/create",
+        "tasks/discussion"
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Images and MobileImages show the shared composer thumbnail row with local image uploads; no backend persistence is exercised. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
   args: { initialMode: "standard", goalAvailable: true, mobile: false, mobileContext: false, fullBleedMobileContext: false },
@@ -310,4 +318,23 @@ export const MobileGoalFromAddDialog: Story = {
     await expect(editor).toHaveTextContent("/goal");
     await waitFor(() => expect(editor).toHaveFocus());
   },
+};
+
+export const Images: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const editor = await canvas.findByRole("textbox", { name: "editable markdown" });
+    await userEvent.click(editor);
+    await userEvent.paste("Use these references to update the layout.");
+    const input = canvasElement.querySelector<HTMLInputElement>('input[type="file"]')!;
+    await userEvent.upload(input, await composerImageFiles());
+    await expect(canvas.getByAltText("desktop-reference.jpg")).toBeVisible();
+    await expect(canvas.getByAltText("mobile-reference.jpg")).toBeVisible();
+    await expect(editor).toHaveTextContent("Use these references to update the layout.");
+  },
+};
+export const MobileImages: Story = {
+  ...Images,
+  args: { mobile: true, mobileContext: true },
+  globals: { viewport: { value: "mobile", isRotated: false } },
 };

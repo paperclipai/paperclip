@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_CORE_PROTOCOL_ACTIONS } from "./core.js";
@@ -16,6 +16,7 @@ describe("core Paperclip protocol action contracts", () => {
       const input = { ...action.examples.call.input, interactionKind: "questions", payload };
       if (schema === action.scenario!.descriptor.inputSchema) delete (input as { idempotencyKey?: string }).idempotencyKey;
       expect(ajv.validate(schema, input), JSON.stringify(ajv.errors)).toBe(true);
+      expect(ajv.validate(schema, { ...input, payload: undefined })).toBe(false);
       expect(ajv.validate(schema, { ...input, payload: { version: 1 } })).toBe(false);
       expect(ajv.validate(schema, { ...input, payload: { version: 1, questionSet: { ...payload.questionSet, questions: [{ ...payload.questionSet.questions[0], options: [{ id: "a", label: "A" }] }] } } })).toBe(false);
     }

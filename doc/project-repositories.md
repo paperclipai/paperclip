@@ -51,6 +51,14 @@ New implicit Git workspace defaults record their project-source provenance.
 An untyped checkout binding from an older task is ambiguous and keeps the denial,
 including explicit checkout IDs and inherited parent sources. Admission rechecks
 the current binding rather than inferring a default from the selected checkout ID.
+When the denial is retained, the run stops before the agent starts with a
+`configuration_incomplete` failure (reason `workspace_source_restricted`). The task
+is blocked with a notice that tells the owner to push unpublished work and select a
+new workspace, or to grant access to the restricted task, then retry. Paperclip
+does not report this owner action to Sentry as an unexpected run failure.
+This applies to both isolated-source checks and repository admission for a shared
+project workspace. Neither path replaces the existing workspace or retries the
+same access denial automatically.
 Startup validation of these recorded defaults keeps the task's effective workspace
 strategy. It does not substitute the agent's shared strategy or grant project writes.
 Workspace close and reopen use the recorded isolated source. Both operations
@@ -64,6 +72,14 @@ another person's personal repositories. Managed GitHub grants refresh installati
 access; PAT connections use paginated `/user/repos`. Provider failures are reported
 without exposing provider error bodies or credential material. Successful connections
 remain selectable when another connection fails.
+
+Task repository preparation distinguishes a temporary provider refusal from a
+completed catalog that denies access. Before provider dispatch, known HTTP
+availability failures and exhausted quotas use the existing bounded infrastructure
+retry and provider deadline. Each successor discovers repositories again under the
+same responsible user's current grants. Empty successful catalogs, revoked grants,
+and permission denials remain terminal. A partial catalog can authorize a requested
+repository only when that repository is present.
 
 `ConnectionSetupFlow` owns provider setup in both Apps and project dialogs. Task
 intents retain their existing callback protocol. Standalone dialogs verify the saved

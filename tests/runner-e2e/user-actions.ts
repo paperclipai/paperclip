@@ -1,5 +1,21 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+/** Own a browser event and its initiating action in the same error boundary. */
+export async function withBrowserEvent<T>(observe: () => Promise<T>, action: () => Promise<unknown>): Promise<T> {
+  // Attach both rejection handlers before the action can fail or the event can
+  // time out. A synchronous action failure must own the pending event too.
+  const observed = observe(), initiated = Promise.resolve().then(action);
+  try {
+    const [event] = await Promise.all([observed, initiated]);
+    return event;
+  } catch (error) {
+    // A failed observation must not let a late click mutate owned resources
+    // after normal cleanup has begun. Keep the first failure and settle both.
+    await Promise.allSettled([observed, initiated]);
+    throw error;
+  }
+}
+
 /** Rich editors interpret pasted Markdown; fill inserts literal paragraph text. */
 export async function fillTaskPrompt(editor: Locator, prompt: string): Promise<void> {
   if (!/^ {0,3}(?:`{3,}|~{3,})/m.test(prompt)
@@ -20,6 +36,7 @@ export async function fillTaskPrompt(editor: Locator, prompt: string): Promise<v
 
 export async function createTaskThroughUi(input: {
   page: Page;
+  origin?: string;
   issuePrefix: string;
   agentName: string;
   title: string;
@@ -28,6 +45,7 @@ export async function createTaskThroughUi(input: {
   projectName?: string;
   requireExplicitTitle?: boolean;
   attachments?: readonly string[];
+  beforeDispatch?: () => void | Promise<void>;
 }) {
   // Search's public creation action exposes the explicit title field. Strict
   // native-operation fixtures use it so automatic task naming is not an extra
@@ -41,7 +59,7 @@ export async function createTaskThroughUi(input: {
   let bootstrapError: unknown;
   for (let bootstrapAttempt = 1; bootstrapAttempt <= 3; bootstrapAttempt += 1) {
     try {
-      await input.page.goto(issuesUrl, {
+      await input.page.goto(input.origin ? new URL(issuesUrl, input.origin).href : issuesUrl, {
         waitUntil: "domcontentloaded",
         timeout: 30_000,
       });
@@ -61,9 +79,12 @@ export async function createTaskThroughUi(input: {
   }
   await newTask.click();
   const dialog = input.page.getByRole("dialog", { name: "New task", exact: true });
+  await expect(dialog).toBeVisible();
   const titleInput = dialog.getByRole("textbox", { name: "Task title", exact: true });
-  if (await titleInput.isVisible()) await titleInput.fill(input.title);
-  else if (input.requireExplicitTitle) throw new Error("This title-preservation case requires a visible explicit title input");
+  if (input.requireExplicitTitle) {
+    await expect(titleInput).toBeVisible();
+    await titleInput.fill(input.title);
+  } else if (await titleInput.isVisible()) await titleInput.fill(input.title);
   await fillTaskPrompt(dialog.getByRole("textbox", { name: "editable markdown", exact: true }), input.prompt);
   if (input.workMode !== "standard") {
     await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
@@ -89,20 +110,22 @@ export async function createTaskThroughUi(input: {
     await projectSearch.fill(input.projectName);
     await input.page.getByText(input.projectName, { exact: true }).last().click();
   }
-  const submittedAtMs = Date.now();
   if (input.attachments?.length) {
-    const chooser = input.page.waitForEvent("filechooser");
-    const upload = dialog.getByRole("button", { name: "Upload", exact: true });
-    if (await upload.count()) await upload.click();
-    else {
-      await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
-      await input.page.getByRole("menuitem", { name: /^Files and images/ }).click();
-    }
-    await (await chooser).setFiles([...input.attachments]);
+    const chooser = await withBrowserEvent(() => input.page.waitForEvent("filechooser"), async () => {
+      const upload = dialog.getByRole("button", { name: "Upload", exact: true });
+      if (await upload.count()) await upload.click();
+      else {
+        await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
+        await input.page.getByRole("menuitem", { name: /^Files and images/ }).click();
+      }
+    });
+    await chooser.setFiles([...input.attachments]);
     // Upload finishes as part of task creation; the dialog retains the selected files.
   }
   // The prompt-only composer generates a provisional title which the provider
   // can rename immediately. Bind the fixture to the actual creation response.
+  await input.beforeDispatch?.();
+  const submittedAtMs = Date.now();
   const [response] = await Promise.all([
     input.page.waitForResponse(response => response.request().method() === "POST"
       && /^\/api\/companies\/[^/]+\/issues$/.test(new URL(response.url()).pathname)),

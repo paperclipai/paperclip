@@ -1,3 +1,8 @@
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
+import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import os from "node:os";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -6,10 +11,34 @@ import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recovery-binding.js";
 import { evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { readWorkspaceRecovery } from "../workspace-recovery-receipt.js";
+import { updateSystemRecovery } from "../system-recovery.js";
+import { createSystemRecovery, readSystemRecovery } from "../system-recovery-state.js";
 
 const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const changed = () => conflict("The recorded workspace owner is no longer current. Refresh the task and inspect its run.", { code: "workspace_owner_recovery_stale" });
+const retainedExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
+
+/** The confirmation must name the exact receipt still on the run. A live owner
+ * observable on this host contradicts it, even after its advisory lock dropped. */
+async function assertRecordedOwnerStopped(prior: Record<string, unknown>, recordedOwner: Record<string, unknown>, ownerToken: string) {
+  if (typeof prior.hostname !== "string" || !prior.hostname
+    || !Number.isInteger(prior.pid) || Number(prior.pid) <= 0
+    || typeof prior.processStartedAt !== "string" || !Number.isFinite(Date.parse(prior.processStartedAt))
+    || prior.token !== ownerToken || recordedOwner.token !== ownerToken
+    || prior.hostname !== recordedOwner.hostname || prior.pid !== recordedOwner.pid
+    || prior.processStartedAt !== recordedOwner.processStartedAt
+    || prior.controllerBootId !== recordedOwner.controllerBootId) throw changed();
+  if (prior.hostname === os.hostname()) {
+    const takeover = await evaluateNativeControllerTakeover({ owner: {
+      leaseOwner: ownerToken, leaseExpiresAt: new Date(0),
+      controllerPid: typeof prior.pid === "number" ? prior.pid : null,
+      controllerProcessStartedAt: typeof prior.processStartedAt === "string" ? new Date(prior.processStartedAt) : null,
+    }, now: new Date() });
+    if (!takeover.allowed) throw conflict("The previous workspace controller is still active or its stop cannot be verified.");
+  }
+}
 
 /** Board-only admission after deployment-platform verification. A missing DB
  * lock or an expired lease alone never proves physical copyback has stopped. */
@@ -24,13 +53,14 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
   const admitted = await input.db.transaction(async tx => {
     // Share the physical copyback lock. Do not wait behind an active exporter
     // and then apply a confirmation that described an earlier owner.
-    const locks = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`native-workspace-finalization:${input.companyId}:${input.runId}`}, 0)) as acquired`);
-    if (locks[0]?.acquired !== true) throw conflict("Workspace copyback is still active. Wait for it to stop before confirming recovery.");
+    if (!await tryLockNativeWorkspaceFinalization(tx as unknown as Db, input)) throw conflict("Workspace copyback is still active. Wait for it to stop before confirming recovery.");
     // Match the status arbiter's coordinator -> issue -> run lock order.
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId))).for("update");
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.id, input.runId))).for("update");
     const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId))).for("update");
+    if (issue && run && action && readWorkspaceRecovery(action.evidence))
+      return confirmRetainedCopybackOwnerStop(tx as unknown as Db, { ...input, confirmation, run, coordinator, action });
     if (!issue || !run || !coordinator || !action || action.evidence?.runId !== run.id
       || action.cause !== "native_workspace_finalization_owner_unverified" || action.ownerType !== "board"
       || action.kind !== "active_run_watchdog" || !["active", "escalated"].includes(action.status)
@@ -45,26 +75,14 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
     const receipt = { runId: run.id, resultId: result.id, status: "queued" as const };
     if (run.runnerProfileJson?.[OWNER_KEY] == null && record(stop.owner).token === input.ownerToken
       && stop.resultId === result.id) return { receipt, publication: null };
-    if (typeof prior.hostname !== "string" || !prior.hostname
-      || !Number.isInteger(prior.pid) || Number(prior.pid) <= 0
-      || typeof prior.processStartedAt !== "string" || !Number.isFinite(Date.parse(prior.processStartedAt))
-      || prior.token !== input.ownerToken || recordedOwner.token !== input.ownerToken
-      || prior.hostname !== recordedOwner.hostname || prior.pid !== recordedOwner.pid
-      || prior.processStartedAt !== recordedOwner.processStartedAt
-      || prior.controllerBootId !== recordedOwner.controllerBootId) throw changed();
-    // Reject a confirmation contradicted by a locally observable live owner,
-    // even if that owner's advisory connection has already disconnected.
-    if (prior.hostname === os.hostname()) {
-      const takeover = await evaluateNativeControllerTakeover({ owner: {
-        leaseOwner: input.ownerToken, leaseExpiresAt: new Date(0),
-        controllerPid: typeof prior.pid === "number" ? prior.pid : null,
-        controllerProcessStartedAt: typeof prior.processStartedAt === "string" ? new Date(prior.processStartedAt) : null,
-      }, now: new Date() });
-      if (!takeover.allowed) throw conflict("The previous workspace controller is still active or its stop cannot be verified.");
-    }
+    await assertRecordedOwnerStopped(prior, recordedOwner, input.ownerToken);
     const now = new Date();
     const proof = { owner: prior, resultId: result.id, actorId: input.actorId,
       stopEvidence: confirmation.stopEvidence, confirmedAt: now.toISOString() };
+    await notifyNativeResultCommit(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
     await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - ${OWNER_KEY}`, updatedAt: now,
     }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.id),
@@ -84,4 +102,63 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
   });
   if (admitted.publication) publishActivity(admitted.publication.publication);
   return admitted.receipt;
+}
+
+/**
+ * Retained saved-work recovery for a finished run (RC-50). A restart killed its
+ * copyback owner, so recovery and Retry wait on a receipt nothing can release.
+ * The board confirmation clears that exact receipt and returns the existing
+ * recovery to the system worker. It accepts no result, starts no agent turn and
+ * leaves the task status to the normal recovery and Retry paths.
+ */
+async function confirmRetainedCopybackOwnerStop(tx: Db, input: {
+  companyId: string; issueId: string; ownerToken: string; actorId: string;
+  confirmation: { stopEvidence: string };
+  run: typeof heartbeatRuns.$inferSelect;
+  coordinator: typeof nativeRunFinalizations.$inferSelect | undefined;
+  action: typeof issueRecoveryActions.$inferSelect;
+}) {
+  const { run, coordinator, action } = input;
+  const hold = record(action.evidence?.workspaceOwnerRecovery);
+  const stop = record(action.evidence?.workspaceOwnerStop);
+  const receipt = { runId: run.id, resultId: coordinator?.resultId ?? null, status: "queued" as const };
+  if (action.evidence?.runId !== run.id || !retainedExportCauses.includes(action.cause)
+    || action.kind !== "active_run_watchdog" || !["active", "escalated"].includes(action.status)
+    || !["failed", "interrupted", "timed_out", "cancelled", "succeeded"].includes(run.status)
+    || (coordinator?.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt.getTime() > Date.now()))) throw changed();
+  if (run.runnerProfileJson?.[OWNER_KEY] == null && record(stop.owner).token === input.ownerToken)
+    return { receipt, publication: null };
+  if (hold.state !== "operator_required") throw changed();
+  const prior = record(run.runnerProfileJson?.[OWNER_KEY]);
+  await assertRecordedOwnerStopped(prior, record(hold.owner), input.ownerToken);
+  const current = readSystemRecovery(action.evidence);
+  if (!current || current.sourceRunId !== run.id || current.state === "complete") throw changed();
+  const now = new Date();
+  // Return the same recovery to the worker now. A spent budget gets one new
+  // generation, as a deliberate recovery request would; saved receipts carry over.
+  const next = current.state === "exhausted"
+    ? { ...createSystemRecovery(run.id, current.intentId), revision: current.revision + 1,
+      preservationOperationIds: current.preservationOperationIds, providerCooldownAt: current.providerCooldownAt,
+      nextAttemptAt: current.providerCooldownAt }
+    : { ...current, revision: current.revision + 1, nextAttemptAt: Math.max(now.getTime(), current.providerCooldownAt ?? 0) };
+  const source = { companyId: input.companyId, issueId: input.issueId, runId: run.id, actionId: action.id };
+  if (!await updateSystemRecovery(tx, source, current, next)) throw changed();
+  const proof = { owner: prior, resultId: receipt.resultId, actorId: input.actorId,
+    stopEvidence: input.confirmation.stopEvidence, confirmedAt: now.toISOString() };
+  const cleared = await tx.update(heartbeatRuns).set({
+    runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - ${OWNER_KEY}`, updatedAt: now,
+  }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.id),
+    sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${input.ownerToken}`)).returning({ id: heartbeatRuns.id });
+  if (!cleared.length) throw changed();
+  await tx.update(issueRecoveryActions).set({
+    evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({ workspaceOwnerStop: proof,
+      workspaceOwnerRecovery: { ...hold, state: "resuming" } })}::jsonb`,
+    updatedAt: now,
+  }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, action.id)));
+  const publication = await persistActivity(tx, { companyId: input.companyId,
+    actorType: "user", actorId: input.actorId, action: "issue.workspace_owner_stop_confirmed",
+    entityType: "issue", entityId: input.issueId, runId: run.id,
+    details: { recoveryActionId: action.id, ...proof },
+  });
+  return { receipt, publication };
 }
