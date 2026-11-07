@@ -46,7 +46,6 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
   const environment = nativeRestartFixture();
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
-    // A host can retire the released Runner, or the Runner and its provider can exit abruptly while parked.
     (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const)))])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
@@ -140,8 +139,6 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
     const state = async (taskId: string = taskA) => JSON.parse(await readFile(join(runnerRoot(taskId), "runner-state.json"), "utf8"));
-    // Mirrors the Launcher: a stopped Runner's state is restorable once it
-    // suspended itself or exited idle at a settled cut.
     const hostRestorable = (live: Record<string, unknown>) => live.lifecycle === "suspended" || isSettledReadyRunnerState(live);
     const sameSource = (a: DurableRecoveryIdentity, b: DurableRecoveryIdentity) => Object.entries(a).every(([key, value]) => b[key as keyof DurableRecoveryIdentity] === value);
     const task = async (raw: unknown, authorityRunId: string, taskId: string): Promise<unknown> => {
@@ -278,7 +275,6 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
           await handles.get(taskA)!.completion;
           expect((await state()).lifecycle).toBe("suspended");
         } else {
-          // Kill the parked Runner and its provider process groups without any suspension.
           const providerPids: number[] = harness === "codex" ? [Number(await readFile(providerPidFile, "utf8"))]
             : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); });
           const nativePid = handles.get(taskA)!.child.pid!;
@@ -294,7 +290,6 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
           await waitForCondition("owned providers no longer exist", () => providerPids.every(pid => {
             try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
           }));
-          // The journal still holds the settled cut it was parked at.
           expect(isSettledReadyRunnerState(await state())).toBe(true);
         }
         // The existing task runtime records physical stop and state availability.

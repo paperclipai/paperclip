@@ -19,12 +19,6 @@ import { NativeExecutionContext } from "./native-runtime/native-execution-contex
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
-/**
- * A Runner journal that is ready, has every produced event acknowledged, and
- * has finished every received command holds no unresolved operation. Once the
- * host proves the Runner physically stopped, it is the same checkpoint that
- * park or `runner.suspend` would have recorded before exiting.
- */
 export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
   const commands = state.processedCommands;
   return state.schema === "paperclip.runner.durable.state.v1" && state.lifecycle === "ready" &&
@@ -135,7 +129,6 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     || (activeProbe && (runner.sessionId !== probe.sessionId || (launches && operation.projectIds.length > 0))))) {
     throw new Error("Plugin-provided Runner execution identity mismatch");
   }
-  // Set once the host has attested that the resumeFrom source stopped with its session state retained.
   let stoppedSourceCheckpoint = false;
   if (runner && resumeFrom && !sourceRecovery) {
     const inspectCheckpoint = operation.kind === "read_state";
@@ -410,7 +403,6 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (stoppedSourceCheckpoint && parsed.kind === "state" && isSettledReadyRunnerState(parsed.state)) {
-      // The stopped source can never act again, so its settled idle cut is a suspension.
       parsed.state = { ...parsed.state, lifecycle: "suspended" };
     }
     if (sourceRecovery && (operation.kind === "prepare" || operation.kind === "submit")) {
