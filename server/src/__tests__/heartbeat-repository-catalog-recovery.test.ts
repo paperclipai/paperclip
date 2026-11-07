@@ -1,3 +1,7 @@
+import express from "express";
+import request from "supertest";
+import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
+import { errorHandler } from "../middleware/error-handler.js";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -111,8 +115,53 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
       return { exitCode: 0, signal: null, timedOut: false };
     });
-    return { companyId, agentId, issueId, workspaceId, repositoryId, grant, provider, retryAt, recover: () => { available = true; } };
+    return { companyId, agentId, issueId, workspaceId, repositoryId, userId, applicationId: application.id, grant, provider, retryAt, recover: () => { available = true; } };
   }
+
+  it("keeps the direct repository request HTTP contract outside bootstrap recovery", async () => {
+    const f = await fixture(503);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
+        memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }], isInstanceAdmin: false };
+      next();
+    });
+    app.use("/api", taskWorkspaceRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).post(`/api/issues/${f.issueId}/workspace/repositories`)
+      .send({ repository: { kind: "catalog", id: "201" }, requestKey: "direct-repository-request" });
+    expect(response.status).toBe(403);
+    expect(response.body.error).toBe("Repository access is no longer available; refresh the repository catalog");
+    expect(f.provider).toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(0);
+  });
+
+  it.each([true, false])("accepts a partial catalog only when the required repository is present (%s)", async present => {
+    const f = await fixture(503);
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.applicationId,
+      name: "Healthy GitHub", uid: randomUUID(), enabled: true, status: "active", transport: "mcp_remote",
+      authKind: "api_key", credentialPolicy: "per_user", config: { sourceTemplateKey: "github" } }).returning();
+    const { secret } = await writeConnectionCredential(db, { companyId: f.companyId, connectionName: connection.name,
+      configPath: "credentials.authorization", label: "Healthy fixture", value: "synthetic-healthy-token",
+      ownerUserId: f.userId, actor: { userId: f.userId } });
+    await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: connection.id, kind: "user",
+      subjectUserId: f.userId, credentialSecretRefs: [{ configPath: "credentials.authorization", secretId: secret.id, versionSelector: "latest" }] });
+    await syncConnectionCredentialBindings(db, connection);
+    f.provider.mockImplementation(async (url, init) => {
+      expect(new URL(String(url)).hostname).toBe("api.github.com");
+      if (new Headers(init?.headers).get("authorization") === "Bearer synthetic-healthy-token") {
+        return Response.json([{ id: present ? 201 : 202, full_name: present ? "catalog-fixture/repository" : "catalog-fixture/other", private: true }]);
+      }
+      return new Response(null, { status: 503 });
+    });
+    const discovered = toolAccessService(db).listProjectRepositories(f.companyId, f.userId, false, { requiredRepositoryIds: ["201"] });
+    if (present) expect(await discovered).toMatchObject({ failedConnectionCount: 1, repositories: [expect.objectContaining({ id: "201" })] });
+    else await expect(discovered).rejects.toMatchObject({ code: "repository_catalog_unavailable" });
+    expect(f.provider).toHaveBeenCalledTimes(2);
+    expect(execute).not.toHaveBeenCalled();
+  });
 
   it("does not retry a genuine catalog permission denial or start provider work", async () => {
     const f = await fixture(403, true);

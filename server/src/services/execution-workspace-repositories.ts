@@ -161,7 +161,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       localTrusted = userId === "local-board";
       if (!userId) throw forbidden("Repository access requires a responsible user");
     }
-    const available = await catalog(input.companyId, userId, localTrusted, parsed.repository.kind === "catalog" ? [parsed.repository.id] : []);
+    const available = await catalog(input.companyId, userId, localTrusted);
     const requestedRef = parsed.ref ?? "HEAD";
     const receipt = await measureRunTransaction(db, "workspace", async tx => {
       const [issue] = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), await issueReadSqlCondition(tx, input.actor))).for("no key update"));
