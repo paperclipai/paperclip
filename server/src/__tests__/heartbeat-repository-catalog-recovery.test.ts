@@ -137,6 +137,9 @@ describe.skipIf(!recoveryPostgresSupport.supported)("repository catalog bootstra
     const failed = await heartbeat.getRun(run!.id);
     expect(failed!.resultJson?.executionRecovery).not.toEqual(expect.objectContaining({ kind: "bootstrap", providerWorkStarted: false }));
     expect(failed!.resultJson?.retryNotBefore).toBeUndefined();
+    for (const retry of await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))) {
+      await heartbeat.cancelRun(retry.id, "Fixture cleanup", { expectedStatus: "scheduled_retry" });
+    }
   });
 
   it("preserves an operator Stop before the automatic successor becomes due", async () => {
