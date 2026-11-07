@@ -4,6 +4,13 @@ The release captain's checklist for every lane. The mechanics live in
 [`RELEASING.md`](RELEASING.md); the user-facing channel guide is
 [`CHANNELS.md`](CHANNELS.md).
 
+Before a **manual** beta or stable promotion (and before any coordinated,
+high-risk, or hotfix release), complete the governance readiness checklist in
+[`releases/readiness-checklist.md`](releases/readiness-checklist.md) and follow
+the sign-off/handoff sequence in [`releases/README.md`](releases/README.md).
+Draft notes from [`releases/release-notes-template.md`](releases/release-notes-template.md)
+so rollback owner and monitoring verification are recorded.
+
 ## Canary (automatic, every `master` push)
 
 - [ ] the push's `Release` run is green (verify + publish)
@@ -30,6 +37,9 @@ To force a nightly: dispatch `release.yml` with `channel: nightly`
 
 Happy path:
 
+- [ ] readiness checklist complete
+      ([`releases/readiness-checklist.md`](releases/readiness-checklist.md))
+      with go decision and named rollback / verification owners
 - [ ] pick the nightly to promote (empty `source_version` selects the newest)
 - [ ] dispatch `release.yml` with `channel: beta`
 - [ ] approve the `npm-beta` environment gate
@@ -53,6 +63,12 @@ Fix path (cherry-picked candidate):
 
 ## Stable (manual promotion)
 
+- [ ] readiness checklist complete
+      ([`releases/readiness-checklist.md`](releases/readiness-checklist.md))
+      with go decision and named rollback / verification owners
+- [ ] release notes follow
+      [`releases/release-notes-template.md`](releases/release-notes-template.md)
+      (rollback owner + monitoring verification filled or linked)
 - [ ] pick the beta to promote; its source commit is `source_ref`
 - [ ] the beta has soaked ≥ 3 days with no open beta-blocker issues
 - [ ] the beta's notes PR (`releases/beta/v<beta-version>.md`) is merged on
