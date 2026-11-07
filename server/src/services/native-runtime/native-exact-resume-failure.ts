@@ -15,6 +15,8 @@ const FAILURE_DETAIL_MAX_CHARS = 2_000;
 /** Leaves the refusal readable however long the original message is. */
 const REFUSAL_MAX_CHARS = 480;
 const REFUSAL_SEPARATOR = "; exact checkpoint resume refused: ";
+/** Restart-recovery waits that keep the interrupted provider attempt. */
+const RECOVERY_WAIT_DISPOSITIONS: ReadonlySet<unknown> = new Set(["blocked", "awaiting_evidence"]);
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -29,7 +31,10 @@ function record(value: unknown): Record<string, unknown> {
  * provider attempt was claimed: the executor increments `attempt` when it
  * claims, and it records its own failures for that attempt. A retryable entry
  * with a checkpoint was an exact-checkpoint resume, because a bootstrap retry
- * has no checkpoint and an ambiguous state is never retryable.
+ * has no checkpoint and an ambiguous state is never retryable. Restart
+ * recovery can record waits for the same attempt after that entry (for
+ * example a held remote retry); those are skipped. Any other entry, or any
+ * entry for a later provider attempt, ends the search without a cause.
  */
 export function interruptedExactResumeCause(coordinator: {
   phase: string;
@@ -39,7 +44,11 @@ export function interruptedExactResumeCause(coordinator: {
 } | null | undefined): InterruptedExactResume | null {
   if (!coordinator || coordinator.phase !== "observed" || coordinator.resultId !== null || coordinator.attempt < 1) return null;
   const history = Array.isArray(coordinator.recoveryHistory) ? coordinator.recoveryHistory : [];
-  const entry = record(history.at(-1));
+  let entry: Record<string, unknown> = {};
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    entry = record(history[index]);
+    if (!RECOVERY_WAIT_DISPOSITIONS.has(entry.disposition) || entry.providerAttempt !== coordinator.attempt) break;
+  }
   if (
     entry.disposition !== "retryable_failure" ||
     entry.providerAttempt !== coordinator.attempt ||

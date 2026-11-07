@@ -40,6 +40,23 @@ describe("interruptedExactResumeCause", () => {
     expect(interruptedExactResumeCause(coordinator)).toBeNull();
   });
 
+  it("finds the interruption behind restart-recovery waits for the same attempt", () => {
+    const blocked = { at: "2099-01-01T00:01:00.000Z", disposition: "blocked", reason: "native_retry_admission_ineligible", providerAttempt: 1 };
+    const awaiting = { at: "2099-01-01T00:02:00.000Z", disposition: "awaiting_evidence", reason: "current_controller_preparing", providerAttempt: 1 };
+    expect(interruptedExactResumeCause({ ...claimed, recoveryHistory: [interruption, blocked, awaiting] })).toEqual({
+      originalFailureCode: "native_session_interrupted",
+      originalMessage: "PRP command turn.start failed: classification=session_resume_required",
+      interruptedAttempt: 1,
+    });
+  });
+
+  it.each([
+    ["a wait for a later provider attempt", { disposition: "blocked", reason: "held", providerAttempt: 2 }],
+    ["a later recovery entry that is not a wait", { disposition: "resume_dead_runner", reason: "restart", providerAttempt: 1 }],
+  ])("does not reach past %s", (_name, later) => {
+    expect(interruptedExactResumeCause({ ...claimed, recoveryHistory: [interruption, later] })).toBeNull();
+  });
+
   it("returns the whole original message so it can be masked before any cut", () => {
     const cause = interruptedExactResumeCause({ ...claimed, recoveryHistory: [{ ...interruption, stderrTail: "x".repeat(4_096) }] });
     expect(cause?.originalMessage).toHaveLength(4_096);
