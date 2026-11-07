@@ -29,6 +29,19 @@ describe("paperclip-board skill web UI guidance", () => {
     expect(section).toContain("/{prefix}/search");
   });
 
+  it("keeps the overlay promise to the shortcut and describes the sidebar Search item as full search", () => {
+    // The classic sidebar Search item is a link to the full search page, not the overlay.
+    expect(read("ui/src/components/Sidebar.tsx")).toMatch(/<SidebarNavItem to="\/search" label="Search"/);
+    expect(section).toMatch(/sidebar \*\*Search\*\* item[^\n]*opens the full search page/);
+    expect(section).not.toMatch(/search icon[^\n]*opens over the current page/i);
+  });
+
+  it("does not claim operators narrow the quick-search results", () => {
+    // The palette sends only the parsed free text; operators apply after the full-search handoff.
+    expect(palette).toMatch(/issuesApi\.list\(selectedCompanyId!, \{ q: quickSearchQuery, limit: 10/);
+    expect(section).toContain("they do not narrow the quick-search results");
+  });
+
   it("tells the agent it cannot operate the person's browser", () => {
     expect(section).toMatch(/cannot press keys, focus fields, or open the palette/);
   });

@@ -562,8 +562,9 @@ curl -sS -X PUT "$PAPERCLIP_API_URL/api/issues/{boardIssueId}/documents/decision
 
 When someone asks how to find, search for, or jump to tasks, projects, or agents themselves (for example "how do I quickly find X without leaving what I'm doing?"), tell them about quick search before or alongside listing results here:
 
-- **Quick search:** press **Cmd+K** (macOS) or **Ctrl+K** (Windows/Linux) on any board page, or click the search icon at the top of the sidebar. It opens over the current page, so they do not lose their place; Esc closes it.
-- Type words to match tasks, projects, and agents. Search operators narrow the results, for example `status:backlog`, `status:todo`, `assignee:me`, `project:"Launch"`, `label:bug`, `priority:high`, or `updated:>7d`.
+- **Quick search:** press **Cmd+K** (macOS) or **Ctrl+K** (Windows/Linux) on any board page. It opens over the current page, so they do not lose their place; Esc closes it.
+- The sidebar **Search** item is different: it opens the full search page, so they leave their current page.
+- Type words to match tasks, projects, and agents. They can also type operators such as `status:backlog`, `status:todo`, `assignee:me`, `project:"Launch"`, `label:bug`, `priority:high`, or `updated:>7d`. These filters take effect on the full search page; they do not narrow the quick-search results.
 - Choose **Search all** (or press Cmd/Ctrl+Enter) to open the full search page (`/{prefix}/search`). It keeps the typed text and operators as filters and adds comments, documents, and artifacts.
 - Results only include what that person is allowed to see.
 
