@@ -476,6 +476,12 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    /**
+     * Server startup sets this. Lifecycle workers then wait until startup
+     * calls `app.locals.reconcileAgentLifecycleOnStartup()` after heartbeat run
+     * recovery. Without it, lifecycle workers start as soon as plugins are ready.
+     */
+    agentLifecycleAwaitsStartupReconcile?: boolean;
   },
 ) {
   const app = express();
@@ -567,7 +573,10 @@ export async function createApp(
   app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
-  const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
+  // With server startup, lifecycle workers wait for this boot's run recovery,
+  // so stop proof reads recovered runs.
+  let lifecycleRunRecoveryReady = opts.agentLifecycleAwaitsStartupReconcile !== true;
+  const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && lifecycleRunRecoveryReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
@@ -1366,6 +1375,16 @@ export async function createApp(
   // environments bootstrap checks plugin entries against them.
   app.locals.managedBundledPluginKeys = managedBundledPluginKeys;
   void bundledPluginsStartup.then(() => { lifecyclePluginsReady = true; resourceLifecycleDelivery.wake(); agentLifecycleDelivery.wake(); }).catch(() => logger.warn("Agent lifecycle recovery failed; retrying."));
+  // Server startup calls this once, after heartbeat run recovery. It reclaims
+  // pause and resume operations that the previous process left, then lets
+  // lifecycle workers run.
+  app.locals.reconcileAgentLifecycleOnStartup = async () => {
+    await bundledPluginsStartup;
+    await agentLifecycle.recover();
+    lifecycleRunRecoveryReady = true;
+    await agentLifecycle.sweep();
+    agentLifecycleDelivery.wake();
+  };
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
   // instead of starting a second teardown.

@@ -300,6 +300,16 @@ The worker renews that lease during external calls.
 Each result must match the current revision and lease owner.
 Shutdown waits for active work.
 
+At server startup, lifecycle workers wait until heartbeat run recovery is registered.
+Then the host clears the lease and the retry backoff of each `pausing` or
+`resuming` operation that the previous process left. The holds, the plugin
+completion records, and the rest of the operation do not change. The new process
+continues the operation at once, and stop checks read the recovered runs.
+
+A resume during `pausing` that removes the last hold also clears the retry
+backoff of the pause operation. The worker then completes the change to `ready`
+without a wait for the backoff. A resume does not remove a budget or company hold.
+
 The agent API returns `lifecycleState`, `lifecycleVersion`, and `lifecycleError`.
 A board user can retry through `POST /api/agents/:id/lifecycle/retry`.
 The route applies the existing company access checks.
