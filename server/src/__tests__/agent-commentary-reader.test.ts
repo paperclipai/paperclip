@@ -128,8 +128,11 @@ describe("agent commentary browsing", () => {
     for (const filters of ["limit=101", "offset=-1", "kind=other", "agentId=bad-id"]) {
       expect((await request(app).get(`${url}?${filters}`)).status).toBe(400);
     }
+    // Agents read only their own commentary unless granted commentary:view.
     actor = { type: "agent", companyId, agentId: firstAgentId };
     expect((await request(app).get(url)).status).toBe(403);
+    expect((await request(app).get(`${url}/${firstId}`)).status).toBe(200);
+    actor = { type: "agent", companyId, agentId: secondAgentId };
     expect((await request(app).get(`${url}/${firstId}`)).status).toBe(403);
     actor = { type: "board", source: "session", userId: "viewer", companyIds: [companyId] };
     const denied = await request(app).get(url).expect(403);
