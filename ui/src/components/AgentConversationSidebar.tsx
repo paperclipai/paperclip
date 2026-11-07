@@ -77,7 +77,7 @@ export function AgentConversationSidebar({ agents, existingChatAgentIds, availab
           aria-current={activeId === agent.id ? "page" : undefined}
           title={`${agent.name}${agent.title ? ` · ${agent.title}` : ""}`}
           onClick={event => { if (onSelect) { event.preventDefault(); onSelect(agent); } }}
-          className={cn("agent-contact-row flex min-w-0 items-center gap-3 rounded-md px-2.5 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", renderAgentAction && hasUnread && "pr-12", activeId === agent.id ? "bg-accent text-accent-foreground" : "group-hover/agent-pin:bg-accent/60 group-focus-within/agent-pin:bg-accent/60")}>
+          className={cn("agent-contact-row flex min-w-0 items-center gap-3 rounded-md px-2.5 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", renderAgentAction && hasUnread && "pr-12 group-has-[.agent-chat-menu]/agent-pin:pr-21", activeId === agent.id ? "bg-accent text-accent-foreground" : "group-hover/agent-pin:bg-accent/60 group-focus-within/agent-pin:bg-accent/60")}>
           <AgentAvatar agent={agent} size={40} />
           <span className="agent-pin-text flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-sm font-medium">{agent.name}</span>
