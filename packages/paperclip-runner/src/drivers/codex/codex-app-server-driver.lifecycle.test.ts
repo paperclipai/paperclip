@@ -311,6 +311,17 @@ describe("Codex app-server Codex driver", () => {
     expect(transport.calls[0]?.method).toBe("initialize");
   });
 
+  it("names the local app-server process in session.started for the control plane's stop proof", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, {
+      processInfo: () => ({ pid: process.pid, processGroupId: null, startedAt: "2026-08-18T18:00:00.000Z", exited: false, exitCode: null, signal: null }),
+    });
+    const session = await makeDriver([transport]).openSession({ runId: "run-identity", normalizedSessionId: "normalized-identity", workingDirectory: WORKSPACE });
+    const started = await session.events()[Symbol.asyncIterator]().next();
+    expect(started.value).toMatchObject({ eventType: "session.started",
+      payload: { processId: process.pid, processGroupId: null, processStartedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) } });
+  });
+
   it("persists process ownership after a lazy transport launches during session open", async () => {
     const transport = new FakeCodexTransport();
     Object.assign(transport, {
