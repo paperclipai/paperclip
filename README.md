@@ -3,6 +3,10 @@
 </p>
 
 <p align="center">
+  <a href="README.md">English</a> | <a href="README.zh.md">中文版</a>
+</p>
+
+<p align="center">
   <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
   <a href="https://docs.paperclip.ing"><strong>Docs</strong></a> &middot;
   <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
