@@ -727,7 +727,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
-async function hasNativeExecutionStartEvidence(
+export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
   const [executionEvent] = await tx
