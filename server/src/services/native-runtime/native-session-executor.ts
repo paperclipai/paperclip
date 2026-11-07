@@ -9831,6 +9831,7 @@ async function executePaperclipNativeSessionWithinScope(
               leaseExpiresAt: sql`clock_timestamp() + ${executionLeaseTtlMs} * interval '1 millisecond'`,
               controllerBootId: controller.bootId,
               controllerPid: controller.pid,
+              controllerHostHash: controller.hostHash ?? null,
               controllerProcessStartedAt: controller.processStartedAt,
               controllerGeneration: nextControllerGeneration,
               failureCode: null,
