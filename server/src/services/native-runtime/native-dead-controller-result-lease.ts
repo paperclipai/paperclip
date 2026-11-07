@@ -67,13 +67,15 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
       await notifyLiveRunRecovery(tx, { companyId: row.companyId, runId: row.runId, agentId: row.agentId });
       await notifyNativeResultCommit(tx, { companyId: row.companyId, runId: row.runId, issueId: row.issueId });
       await notifyNativeFinalizationWork(tx, { companyId: row.companyId, runId: row.runId });
-      // Compare-and-set on the exact dead owner, so a lease renewed or taken
-      // over since the scan is never cut short.
+      // Compare-and-set on the exact dead owner, so a lease taken over since
+      // the scan is never cut short. Each lease owner token is unique; the
+      // stored expiry is not compared because Postgres keeps microseconds that
+      // a JavaScript Date drops.
       return tx.update(nativeRunFinalizations).set({ leaseExpiresAt: input.now, updatedAt: input.now })
         .where(and(
           eq(nativeRunFinalizations.runId, row.runId),
           eq(nativeRunFinalizations.leaseOwner, row.leaseOwner!),
-          eq(nativeRunFinalizations.leaseExpiresAt, row.leaseExpiresAt!),
+          gt(nativeRunFinalizations.leaseExpiresAt, input.now),
           eq(nativeRunFinalizations.controllerBootId, row.controllerBootId!),
           row.controllerPid === null ? isNull(nativeRunFinalizations.controllerPid)
             : eq(nativeRunFinalizations.controllerPid, row.controllerPid),

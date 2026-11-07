@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { authUsers, budgetReservations, companyMemberships, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
@@ -359,6 +359,18 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
     expect(await f.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.nativeIssueId, f.issueId))).toHaveLength(1);
+  }, 90_000);
+
+  it("releases a dead controller's lease whose expiry Postgres stored with microsecond precision", async () => {
+    // The controller writes its lease with SQL time arithmetic, so the stored
+    // expiry carries microseconds that a JavaScript Date cannot round-trip.
+    const f = await seedAcceptedResult("ACCEPTED-THEN-SIGKILL-MICROS", (runner) => `${runner}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
+    await f.db.update(nativeRunFinalizations).set({
+      leaseExpiresAt: sql`date_trunc('second', now()) + interval '20 minutes 0.123456 seconds'`,
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase }).toEqual({ status: "succeeded", phase: "committed" });
   }, 90_000);
 
   it("keeps the accepted result leased while its earlier-boot controller process is still alive", async () => {
