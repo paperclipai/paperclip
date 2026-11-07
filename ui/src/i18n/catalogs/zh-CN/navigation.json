@@ -103,7 +103,10 @@
     "expand": "展开 {{name}}",
     "collapse": "收起 {{name}}",
     "pin": "固定{{label}}",
-    "unpin": "取消固定{{label}}"
+    "unpin": "取消固定{{label}}",
+    "pinned": "已固定",
+    "reorderPinned": "调整已固定的{{label}}顺序",
+    "dragToReorder": "拖动以调整{{label}}顺序"
   },
   "recent": {
     "title": "最近任务",

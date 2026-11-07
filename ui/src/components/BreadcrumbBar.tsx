@@ -56,7 +56,7 @@ function GlobalToolbar({
   );
 }
 
-export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
   const { t: translateShell } = useTranslation("shell");
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
@@ -70,6 +70,18 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
+  const propertiesToggle = showPropertiesToggle ? (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="ml-5 size-9 shrink-0 text-muted-foreground"
+      onClick={toggleTaskPanel}
+      aria-label={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
+      title={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
+    >
+      {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+    </Button>
+  ) : null;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -222,6 +234,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
         ) : null}
         {globalToolbarSlots}
+        {propertiesToggle}
       </div>
     );
   }
@@ -237,18 +250,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       {menuButton}
       {breadcrumbTrail}
       {globalToolbarSlots}
-      {taskDetailLayout ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-5 size-9 shrink-0 text-muted-foreground"
-          onClick={toggleTaskPanel}
-          aria-label={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
-          title={taskPanelOpen ? translateShell("shell:hide_properties") : translateShell("shell:show_properties")}
-        >
-          {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-        </Button>
-      ) : null}
+      {propertiesToggle}
     </div>
   );
 }

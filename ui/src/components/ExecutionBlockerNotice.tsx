@@ -48,6 +48,9 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   }
   if (step && presentation?.state === "working") return <div role="status" aria-label="Task status"
     className={cn("text-sm text-muted-foreground", className)}>{`${step}…`}</div>;
+  // A task that has not started yet names the admission hold it waits for.
+  if (!optimistic && presentation?.state === "working" && presentation.retryWait) return <div role="status"
+    aria-label="Task status" className={cn("text-sm text-muted-foreground", className)}>{presentation.retryWait.message}</div>;
   if (optimistic || !presentation || presentation.responsibility !== "system" ||
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   return (

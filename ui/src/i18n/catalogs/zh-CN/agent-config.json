@@ -1448,5 +1448,8 @@
   "chatWithAgent": "与 {{name}} 聊天",
   "chatWithThisAgent": "与此智能体聊天",
   "unreadMessagesFromAgent_one": "来自 {{name}} 的 {{count}} 条未读消息",
-  "unreadMessagesFromAgent_other": "来自 {{name}} 的 {{count}} 条未读消息"
+  "unreadMessagesFromAgent_other": "来自 {{name}} 的 {{count}} 条未读消息",
+  "chatContacts": "聊天联系人",
+  "searchChats": "搜索聊天",
+  "createNewAgent": "创建新智能体"
 }

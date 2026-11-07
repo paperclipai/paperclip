@@ -3,6 +3,7 @@ import { t as translateAgentPage, useTranslation } from "@/i18n";
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
@@ -192,6 +193,7 @@ export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
   const { t: translateAgentPage } = useTranslation("agents");
+  const agentChatPins = useAgentChatPins();
   const [query, setQuery] = useState("");
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
@@ -383,16 +385,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       </>
     ) : null;
     return (
+      <div key={agent.id} className="agent-pin-row agent-roster-pin-row group/agent-pin relative">
       <EntityRow
-        key={agent.id}
         title={agent.name}
         titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
-        titleClassName="flex-1"
+        titleClassName="agent-pin-text flex-1"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
         subtitle={`${getAgentRoleLabel(agent.role)}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="agent-roster-identity group py-3"
+        className="agent-roster-identity group py-3 group-hover/agent-pin:bg-accent/50 group-focus-within/agent-pin:bg-accent/50"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={translateAgentPage("agents:invalid_reporting_chain")} />
         ) : (
@@ -409,6 +411,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           </div>
         )}
       />
+      <AgentChatPin agent={agent} pins={agentChatPins} />
+      </div>
     );
   };
 

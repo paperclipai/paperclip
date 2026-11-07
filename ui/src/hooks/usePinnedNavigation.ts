@@ -1,5 +1,5 @@
 import { t, useTranslation } from "@/i18n";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
 const UPDATED = "paperclip:pinned-navigation-updated";
 const EMPTY = "[]";
@@ -29,19 +29,34 @@ export function usePinnedNavigation(userId: string | null | undefined) {
     return () => { window.removeEventListener("storage", storage); window.removeEventListener(UPDATED, updated); };
   }, [key]);
   const snapshot = useSyncExternalStore(subscribe, () => read(key), () => EMPTY);
+  const pins = useMemo(() => parse(snapshot), [snapshot]);
 
-  function toggle(to: string) {
+  function save(next: string[]) {
     if (!key) return;
-    const current = parse(read(key));
-    const next = current.includes(to) ? current.filter(entry => entry !== to) : [...current, to];
     try {
       localStorage.setItem(key, JSON.stringify(next));
       setFailure(null);
       window.dispatchEvent(new CustomEvent(UPDATED, { detail: key }));
     } catch {
-      setFailure({ key, get "message"() { return t("display:copy_8a3624718a06"); } });
+      setFailure({ key, get message() { return t("display:copy_8a3624718a06"); } });
     }
   }
 
-  return { pins: parse(snapshot), toggle, canPin: !!key, error: failure?.key === key ? failure.message : null };
+  function toggle(to: string) {
+    if (!key) return;
+    const current = parse(read(key));
+    save(current.includes(to) ? current.filter(entry => entry !== to) : [...current, to]);
+  }
+
+  function reorder(visibleOrder: string[]) {
+    if (!key) return;
+    const current = parse(read(key));
+    const currentKeys = new Set(current);
+    const ordered = [...new Set(visibleOrder)].filter(entry => currentKeys.has(entry));
+    const visible = new Set(ordered);
+    let index = 0;
+    save(current.map(entry => visible.has(entry) ? ordered[index++] : entry));
+  }
+
+  return { pins, toggle, reorder, canPin: !!key, error: failure?.key === key ? failure.message : null };
 }

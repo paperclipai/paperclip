@@ -103,7 +103,10 @@
     "expand": "Expand {{name}}",
     "collapse": "Collapse {{name}}",
     "pin": "Pin {{label}}",
-    "unpin": "Unpin {{label}}"
+    "unpin": "Unpin {{label}}",
+    "pinned": "Pinned",
+    "reorderPinned": "Reorder pinned {{label}}",
+    "dragToReorder": "Drag to reorder {{label}}"
   },
   "recent": {
     "title": "Recent Tasks",

@@ -491,6 +491,8 @@ and the user need not certify infrastructure state in a reconciliation form.
 
 Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
 
+A new task whose first assignment wake is refused by a temporary budget hold (completed runs awaiting accounting, a native run recovering its accounting, or a hold awaiting reconciliation) stays `todo`. Stranded-work recovery does not move a task with no run to `blocked` for such a hold. The task shows the hold it waits for, and the assigned-task liveness sweep admits it once the hold clears, through normal admission and with one run. A reached hard stop or blocked unpriced usage remains a board decision. Removed assignees and cancelled tasks still do not wake.
+
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
@@ -1720,6 +1722,19 @@ has no recorded process is recovered when that lease expires instead. The
 expired lease proves that the earlier owner is gone, and no provider work
 started. A live lease, a lease of the current boot, a dispatched adapter, or a
 recorded process keeps the five-minute guard.
+
+A native run can accept its result and then lose its server to a hard kill
+before finalization. Its result stays leased to the controller of the earlier
+boot, which cannot release the lease the way a graceful drain does. Startup
+native recovery releases that lease at once when the lease belongs to a
+different boot and its recorded controller process has exited or its PID now
+names another process. Only the executor's lease carries that controller
+identity; a finalizer or cleanup lease is never released this way and expires
+on its own short lease. The stored result is then
+finalized without another
+provider turn, and saved follow-up messages are reconsidered. A live owner, an
+owner without a recorded process, a lease of the current boot, and a remote
+workspace keep the lease until it expires. Lease age alone is never proof.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 

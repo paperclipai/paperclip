@@ -1448,5 +1448,8 @@
   "chatWithAgent": "Chat with {{name}}",
   "chatWithThisAgent": "Chat with this agent",
   "unreadMessagesFromAgent_one": "{{count}} unread message from {{name}}",
-  "unreadMessagesFromAgent_other": "{{count}} unread messages from {{name}}"
+  "unreadMessagesFromAgent_other": "{{count}} unread messages from {{name}}",
+  "chatContacts": "Chat contacts",
+  "searchChats": "Search chats",
+  "createNewAgent": "Create a new agent"
 }

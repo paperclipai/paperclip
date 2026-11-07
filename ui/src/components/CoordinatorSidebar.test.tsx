@@ -4,17 +4,19 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
-import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
+import { AgentChatPin } from "./AgentChatPin";
+import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false }));
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
@@ -25,6 +27,7 @@ vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimenta
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => vi.fn(),
   useLocation: () => ({ pathname: fixture.pathname, search: "" }),
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
   NavLink: ({ to, children, className, state: _state, end: _end, ...props }: {
@@ -47,13 +50,23 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false;
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 });
 
 describe("Coordinator task creation", () => {
+  it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
+    fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
+      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
+    }));
+    await renderSidebar();
+    const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(20);
+    expect(region.textContent).not.toContain("Recents");
+    expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
+  });
   it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
@@ -81,6 +94,32 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+
+  it("localizes contact search, unread counts, creation and agent pins after a language switch", async () => {
+    const agent = { id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent;
+    const toggle = vi.fn();
+    const pins = { keys: new Set<string>(), toggle, canPin: true, error: null };
+    await act(async () => root.render(<TooltipProvider><AgentConversationSidebar agents={[agent]}
+      unreadMessageCounts={new Map([[agent.id, 2]])} onCreateAgent={vi.fn()}
+      renderAgentAction={item => <AgentChatPin agent={item} pins={pins} />} /></TooltipProvider>));
+    try {
+      await act(async () => { await i18n.changeLanguage("zh-CN"); });
+      expect(container.querySelector("h2")?.textContent).toBe("聊天联系人");
+      expect(container.querySelector('input[aria-label="搜索聊天"]')?.getAttribute("placeholder")).toBe("搜索聊天");
+      expect(container.querySelector('[aria-label="来自 CTO 的 2 条未读消息"]')).not.toBeNull();
+      expect(container.textContent).toContain("创建新智能体");
+      const pin = container.querySelector<HTMLButtonElement>('button[aria-label="固定CTO"]');
+      expect(pin).not.toBeNull();
+      await act(async () => pin!.click());
+      expect(toggle).toHaveBeenCalledWith("agent-chat:company:cto");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('input[aria-label="Search chats"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="Pin CTO"]')).not.toBeNull();
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("localizes nested More destinations and pin actions when switching", async () => {
     await renderSidebar();
     try {
@@ -90,6 +129,9 @@ describe("Coordinator pinned pages", () => {
       expect(document.querySelector('button[aria-label="固定项目"]')).not.toBeNull();
       expect(document.querySelector('a[href="/routines"]')?.textContent).toContain("例行任务");
       await click("固定项目");
+      expect(container.querySelector(".design-sidebar-pins")?.textContent).toContain("已固定");
+      expect(container.querySelector('button[aria-label="取消固定项目"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="调整已固定的项目顺序"]')?.getAttribute("title")).toBe("拖动以调整项目顺序");
       expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("项目");
       await act(async () => { await i18n.changeLanguage("en"); });
       expect(container.querySelector('a[href="/projects"]')?.textContent).toBe("Projects");
@@ -98,6 +140,33 @@ describe("Coordinator pinned pages", () => {
     }
   });
 
+  it("builds hundreds of agent pins with input reads proportional to list size", () => {
+    const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
+    const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
+    let reads = 0;
+    function bounded<T>(items: T[]) {
+      return new Proxy(items, { get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * agents.length) throw new Error("Pin construction scans growing lists repeatedly");
+        return Reflect.get(target, property, receiver);
+      } });
+    }
+    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), []);
+    expect(items.map(item => item.key)).toEqual(pins);
+    expect(reads).toBeLessThanOrEqual(4 * agents.length);
+    expect(items[0].to).toBe("/chats/agent-499");
+  });
+  it("keeps mixed pins in stored order and prevents native link dragging", async () => {
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(saved));
+    await renderSidebar();
+    const links = [...container.querySelectorAll<HTMLAnchorElement>(".design-sidebar-pins a")];
+    expect(links.map(link => link.textContent)).toEqual(["CTO", "Artifacts", "Dashboard"]);
+    expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:reviewer")!)).toEqual(saved);
+    const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
+    act(() => links[1].dispatchEvent(nativeDrag));
+    expect(nativeDrag.defaultPrevented).toBe(true);
+  });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
     fixture.enableCases = enabled;
     await renderSidebar();
@@ -121,7 +190,7 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it.each([false, true])("keeps pins above More without a separate section, restores and unpins when collapsed is %s", async collapsed => {
+  it.each([false, true])("restores and unpins pages in the Pinned section when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
     expect(pinnedPage("/projects")).toBeNull();
@@ -131,9 +200,9 @@ describe("Coordinator pinned pages", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(pinnedPage("/projects")?.textContent).toBe("Projects");
     expect(navigation().querySelector('[aria-label="Pinned pages"]')).toBeNull();
-    expect(navigation().querySelector('[data-slot="sidebar-group-label"]')).toBeNull();
+    if (!collapsed) expect(navigation().querySelector('[data-slot="sidebar-group-label"]')?.textContent).toBe("Pinned");
     const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
-    expect(pinnedPage("/projects")!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(more.compareDocumentPosition(pinnedPage("/projects")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderSidebar();

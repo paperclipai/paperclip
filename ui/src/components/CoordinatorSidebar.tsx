@@ -1,8 +1,8 @@
 import { useTranslation } from "@/i18n";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug } from "lucide-react";
-import type { Project } from "@paperclipai/shared";
+import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
+import type { Agent, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -25,6 +25,22 @@ import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { StatusIcon } from "./StatusIcon";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { AgentAvatar } from "./AgentAvatar";
+import { agentChatPinKey } from "./AgentChatPin";
+import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
+
+export function buildPinnedNavigationItems(pins: readonly string[], agents: readonly Agent[], destinations: readonly { to: string; label: string; icon: LucideIcon }[]): PinnedNavigationItem[] {
+  const keys = new Set(pins);
+  const items = new Map<string, PinnedNavigationItem>(destinations.map(item => [item.to, { key: item.to, to: item.to, label: item.label, icon: <item.icon className="size-4" /> }]));
+  for (const agent of agents) {
+    const key = agentChatPinKey(agent.companyId, agent.id);
+    if (keys.has(key)) items.set(key, { key, to: `/chats/${encodeURIComponent(agentRouteRef(agent))}`, label: agent.name, icon: <AgentAvatar agent={agent} size={20} /> });
+  }
+  return pins.flatMap(key => {
+    const item = items.get(key);
+    return item ? [item] : [];
+  });
+}
 
 function ProjectRecent({ project }: { project: Project }) {
   const { t } = useTranslation("navigation");
@@ -50,11 +66,35 @@ function ProjectRecent({ project }: { project: Project }) {
   </div>;
 }
 
+function RecentNavigationList({ children }: { children: ReactNode }) {
+  const { t } = useTranslation("navigation");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const handleScroll = useScrollbarWhileScrolling();
+  useLayoutEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const measure = () => {
+      viewport.dataset.overflowTop = String(viewport.scrollTop > 1);
+      viewport.dataset.overflowBottom = String(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop > 1);
+    };
+    measure();
+    viewport.addEventListener("scroll", measure, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(viewport);
+    if (contentRef.current) observer?.observe(contentRef.current);
+    return () => { viewport.removeEventListener("scroll", measure); observer?.disconnect(); };
+  }, []);
+  return <div ref={scrollRef} className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleScroll} role="region" aria-label={t("coordinator.recents")} tabIndex={0}>
+    <div ref={contentRef} className="design-sidebar-recent-content">{children}</div>
+  </div>;
+}
+
 /** The navigation is a view of the existing records; it never creates a chat
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { t } = useTranslation("navigation");
-  const moreDestinations = [
+  const moreDestinations = useMemo(() => [
     { label: t("labels.search"), to: "/search", icon: Search },
     { label: t("labels.dashboard"), to: "/dashboard", icon: LayoutDashboard },
     { label: t("labels.projects"), to: "/projects", icon: FolderOpen },
@@ -65,7 +105,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     { label: t("labels.connectors"), to: "/apps", icon: Unplug },
     { label: t("labels.audit"), to: "/activity", icon: History },
     { label: t("labels.settings"), to: "/settings", icon: Settings },
-  ] as const;
+  ] as const, [t]);
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
@@ -73,18 +113,17 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const destinations = experimental?.enableCases
+  const destinations = useMemo(() => experimental?.enableCases
     ? [...moreDestinations, { label: t("labels.cases"), to: "/cases", icon: Boxes }]
-    : moreDestinations;
+    : moreDestinations, [experimental?.enableCases, moreDestinations, t]);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const pinnedDestinations = pinnedNavigation.pins.flatMap(to => destinations.filter(item => item.to === to));
+  const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
   const { entries: recentTasks } = useRecentTasks({ companyId, userId });
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;
   const { openNewIssue } = useDialogActions();
   const location = useLocation();
-  const handleRecentScroll = useScrollbarWhileScrolling();
   const attentionCount = useCoordinatorAttentionCount(companyId);
   const { data: projects } = useQuery({ queryKey: queryKeys.projects.list(companyId!), queryFn: () => projectsApi.list(companyId!), enabled: !!companyId });
   // Only project IDs and visit times are kept in memory. Labels and task lists
@@ -106,7 +145,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     });
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
-    return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time).slice(0, 12);
+    return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time);
   }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope]);
   const newTaskButton = <Button type="button" variant="ghost" className="design-sidebar-new-task rounded-lg" aria-label={t("coordinator.newTask")} onClick={() => openNewIssue()}>
     <SquarePen aria-hidden />
@@ -128,10 +167,6 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label={t("labels.inbox")} icon={Inbox} badge={attentionCount} badgeLabel={t("badges.decisions")} />
-          {pinnedDestinations.map(({ label, to, icon }) => <div key={to} className="group/coordinator-pin relative">
-            <SidebarNavItem to={to} label={label} icon={icon} className={cn("design-sidebar-item", !rail && "pr-9")} />
-            {!rail && <button type="button" aria-label={t("coordinator.unpin", { label })} title={t("coordinator.unpin", { label })} onClick={() => pinnedNavigation.toggle(to)} className="absolute right-3 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring group-hover/coordinator-pin:opacity-100 group-focus-within/coordinator-pin:opacity-100 pointer-coarse:opacity-100"><PinOff className="size-3.5" /></button>}
-          </div>)}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label={t("coordinator.morePages")} className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>{t("coordinator.more")}</span></button></FlyoutTrigger>
@@ -154,15 +189,18 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           </FlyoutContent>
         </Flyout>
       </div>
+      {orderedPins.length > 0 && <div className="design-sidebar-pins"><SidebarSection label={t("coordinator.pinned")}>
+        <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />
+      </SidebarSection></div>}
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label={t("coordinator.recents")}>
-        <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label={t("coordinator.recents")} tabIndex={0}>
+        <RecentNavigationList>
         {recents.map(item => item.kind === "task"
           ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
+            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={20} />} />
             : <ProjectRecent key={item.id} project={item.project} />)}
-        </div>
+        </RecentNavigationList>
       </SidebarSection></div>}
       {children}
     </nav>
