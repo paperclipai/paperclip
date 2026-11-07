@@ -60,6 +60,9 @@ export async function settleSupersededNativeWorkspaceFinalizations(db: Db, input
       + `a later finalization attempt (${input.superseding.id}) ${input.superseding.status}.\n`;
     let publication: ActivityPublication | undefined;
     const updated = await db.transaction(async (tx) => {
+      // Register the wake intent before the write so drain and sleep checks see it.
+      await notifyTerminalWorkspaceWork(tx, candidate.executionWorkspaceId
+        ? `workspace:${candidate.executionWorkspaceId}` : `issue:${input.issueId}`);
       const [row] = await tx.update(workspaceOperations).set({
         status: "failed",
         finishedAt: now,
@@ -70,10 +73,8 @@ export async function settleSupersededNativeWorkspaceFinalizations(db: Db, input
         eq(workspaceOperations.id, candidate.id),
         eq(workspaceOperations.companyId, input.companyId),
         eq(workspaceOperations.status, "running"),
-      )).returning({ id: workspaceOperations.id, executionWorkspaceId: workspaceOperations.executionWorkspaceId });
+      )).returning({ id: workspaceOperations.id });
       if (!row) return null;
-      await notifyTerminalWorkspaceWork(tx, row.executionWorkspaceId
-        ? `workspace:${row.executionWorkspaceId}` : `issue:${input.issueId}`);
       const activity = await persistActivity(tx as unknown as Db, {
         companyId: input.companyId, actorType: "system", actorId: "native-workspace-finalizer",
         action: "workspace_operation.reconciled", entityType: "workspace_operation", entityId: candidate.id,
