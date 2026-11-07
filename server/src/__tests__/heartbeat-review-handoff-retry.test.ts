@@ -402,6 +402,54 @@ describeEmbeddedPostgres("review handoff retry after stale blocker clears", () =
     await heartbeat.drainActiveRunExecutions();
   });
 
+  it("does not add a retry while a normal review wake for the stage is deferred", async () => {
+    const { companyId, issueId, reviewerAgentId, stageId } = await seedFixture();
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      source: "assignment",
+      reason: "execution_review_requested",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        mutation: "update",
+        executionStage: { stageId, wakeRole: "reviewer" },
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await reconcileReviewHandoffAfterBlockerClear(db, { issueId, companyId, enqueueWakeup });
+
+    expect(result).toEqual({ action: "skipped", reason: "durable review retry already queued" });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(
+      await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)),
+    ).toHaveLength(1);
+  });
+
+  it("adds a retry when the deferred review wake belongs to another stage", async () => {
+    const { companyId, issueId, reviewerAgentId } = await seedFixture();
+    await db.insert(agentWakeupRequests).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      source: "assignment",
+      reason: "execution_review_requested",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        mutation: "update",
+        executionStage: { stageId: randomUUID(), wakeRole: "reviewer" },
+      },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+
+    await reconcileReviewHandoffAfterBlockerClear(db, { issueId, companyId, enqueueWakeup });
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a lost enqueue race as a coalesced skip", async () => {
     const { companyId, issueId, reviewerAgentId, stageId } = await seedFixture();
 

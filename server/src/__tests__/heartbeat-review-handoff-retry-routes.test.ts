@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -72,6 +72,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import {
   REVIEW_HANDOFF_NO_RECEIPT_REASON,
   REVIEW_HANDOFF_REFUSED_REASON,
+  REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
   buildReviewHandoffRetryIdempotencyKey,
   reconcileReviewHandoffAfterBlockerClear,
 } from "../services/recovery/review-handoff-retry.js";
@@ -329,9 +330,9 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
     }
 
     expect(results.slice(0, 3)).toEqual([
-      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON },
-      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON },
-      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON },
+      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON, retryAt: expect.any(Number) },
+      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON, retryAt: expect.any(Number) },
+      { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON, retryAt: expect.any(Number) },
     ]);
 
     const wakes = await db
@@ -396,14 +397,14 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
       companyId,
       enqueueWakeup: savedAsExecutionWait,
     });
-    expect(first).toEqual({ action: "skipped", reason: REVIEW_HANDOFF_REFUSED_REASON });
+    expect(first).toEqual({ action: "skipped", reason: REVIEW_HANDOFF_REFUSED_REASON, retryAt: expect.any(Number) });
 
     const second = await reconcileReviewHandoffAfterBlockerClear(db, {
       issueId,
       companyId,
       enqueueWakeup: savedAsExecutionWait,
     });
-    expect(second).toEqual({ action: "skipped", reason: REVIEW_HANDOFF_REFUSED_REASON });
+    expect(second).toEqual({ action: "skipped", reason: REVIEW_HANDOFF_REFUSED_REASON, retryAt: expect.any(Number) });
 
     const wakes = await db
       .select()
@@ -443,6 +444,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
     expect(first).toEqual({
       action: "skipped",
       reason: REVIEW_HANDOFF_NO_RECEIPT_REASON,
+      retryAt: expect.any(Number),
     });
 
     const second = await reconcileReviewHandoffAfterBlockerClear(db, {
@@ -453,6 +455,7 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
     expect(second).toEqual({
       action: "skipped",
       reason: REVIEW_HANDOFF_NO_RECEIPT_REASON,
+      retryAt: expect.any(Number),
     });
 
     const recorded = await db
@@ -501,6 +504,56 @@ describeEmbeddedPostgres("review handoff retry routes and refusal sweeps", () =>
         ),
     ).toHaveLength(0);
     await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("registers the retry deadline of a refused handoff and retries at that deadline", async () => {
+    const { companyId, issueId, stageId } = await seedFixture();
+    const recovery = recoveryService(db, { enqueueWakeup: async () => null });
+    const reviewHandoffWakes = () =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            sql`${agentWakeupRequests.idempotencyKey} LIKE 'review-handoff:%'`,
+          ),
+        );
+
+    const firstDeadlines: number[] = [];
+    await recovery.reconcileStrandedAssignedIssues({
+      companyId,
+      issueId,
+      onDeferredDeadline: (at) => firstDeadlines.push(at),
+    });
+    const [refused] = await reviewHandoffWakes();
+    expect(refused).toMatchObject({
+      status: "skipped",
+      idempotencyKey: buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt: 1 }),
+    });
+    expect(firstDeadlines).toEqual([
+      refused.createdAt.getTime() + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+    ]);
+
+    const earlyDeadlines: number[] = [];
+    await recovery.reconcileStrandedAssignedIssues({
+      companyId,
+      issueId,
+      onDeferredDeadline: (at) => earlyDeadlines.push(at),
+    });
+    expect(earlyDeadlines).toEqual([
+      refused.createdAt.getTime() + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+    ]);
+    expect(await reviewHandoffWakes()).toHaveLength(1);
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ createdAt: new Date(Date.now() - REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS - 1_000) })
+      .where(eq(agentWakeupRequests.id, refused.id));
+    await recovery.reconcileStrandedAssignedIssues({ companyId, issueId, onDeferredDeadline: () => undefined });
+    expect((await reviewHandoffWakes()).map((wake) => wake.idempotencyKey).sort()).toEqual(
+      [1, 2].map((attempt) => buildReviewHandoffRetryIdempotencyKey({ issueId, stageId, attempt })),
+    );
   });
 
   it("contains one issue's handoff failure and finishes the stranded sweep", async () => {

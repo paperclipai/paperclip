@@ -186,7 +186,10 @@ import {
   dispositionRepairDelayMs,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
-import { reconcileReviewHandoffAfterBlockerClear } from "./review-handoff-retry.js";
+import {
+  REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+  reconcileReviewHandoffAfterBlockerClear,
+} from "./review-handoff-retry.js";
 import {
   createActiveRunWatchdog,
   WatchdogDecisionApplicationError,
@@ -5193,6 +5196,7 @@ export function recoveryService(
                   companyId: issue.companyId,
                   enqueueWakeup: deps.enqueueWakeup,
                   treeControlSvc,
+                  deferRefusedRetry: true,
                 },
               );
             } catch (err) {
@@ -5200,6 +5204,12 @@ export function recoveryService(
                 { err, issueId: issue.id },
                 "failed to reconcile review handoff for stranded review participant",
               );
+              opts?.onDeferredDeadline?.(
+                Date.now() + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+              );
+            }
+            if (handoffResult?.retryAt !== undefined) {
+              opts?.onDeferredDeadline?.(handoffResult.retryAt);
             }
             if (handoffResult?.action === "enqueued") {
               result.reviewParticipantRequeued += 1;

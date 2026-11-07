@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -13,6 +13,7 @@ import { getExecutionBlocker } from "../execution-blocker.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 
 export const DEFAULT_MAX_REVIEW_HANDOFF_ATTEMPTS = 3;
 const REVIEW_HANDOFF_RETRY_IDEMPOTENCY_PREFIX = "review-handoff:";
@@ -21,6 +22,7 @@ export const EXECUTION_APPROVAL_REQUESTED_REASON = "execution_approval_requested
 const REVIEW_HANDOFF_RETRY_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_review_handoff_retry_idempotency_uq";
 const REVIEW_HANDOFF_EXHAUSTED_CAUSE = "execution_recovery_budget_exhausted";
+export const REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS = 30_000;
 
 function buildReviewHandoffRetryFingerprint(input: {
   issueId: string;
@@ -191,11 +193,12 @@ async function hasActiveReviewRun(
   return Boolean(activeRun);
 }
 
-async function hasQueuedReviewRetry(
+async function hasQueuedReviewWake(
   db: Db,
   companyId: string,
   issueId: string,
   stageId: string,
+  reviewerAgentId: string,
 ): Promise<boolean> {
   const keyPrefix = buildReviewHandoffRetryIdempotencyKeyPrefix({ issueId, stageId });
   const [queuedWake] = await db
@@ -204,7 +207,14 @@ async function hasQueuedReviewRetry(
     .where(
       and(
         eq(agentWakeupRequests.companyId, companyId),
-        sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+        or(
+          sql`${agentWakeupRequests.idempotencyKey} LIKE ${`${keyPrefix}%`}`,
+          and(
+            eq(agentWakeupRequests.agentId, reviewerAgentId),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            sql`${agentWakeupRequests.payload}->'executionStage'->>'stageId' = ${stageId}`,
+          ),
+        ),
         inArray(agentWakeupRequests.status, [
           "queued",
           "deferred_issue_execution",
@@ -220,7 +230,7 @@ async function getReviewHandoffAttemptLedger(
   companyId: string,
   issueId: string,
   stageId: string,
-): Promise<{ lastAttempt: number; used: number }> {
+): Promise<{ lastAttempt: number; used: number; lastRefusedAt: Date | null }> {
   const keyPrefix = buildReviewHandoffRetryIdempotencyKeyPrefix({ issueId, stageId });
   const [[closedEscalation], rows] = await Promise.all([
     db
@@ -238,7 +248,11 @@ async function getReviewHandoffAttemptLedger(
       .orderBy(desc(issueRecoveryActions.resolvedAt))
       .limit(1),
     db
-      .select({ payload: agentWakeupRequests.payload, createdAt: agentWakeupRequests.createdAt })
+      .select({
+        payload: agentWakeupRequests.payload,
+        status: agentWakeupRequests.status,
+        createdAt: agentWakeupRequests.createdAt,
+      })
       .from(agentWakeupRequests)
       .where(
         and(
@@ -260,40 +274,53 @@ async function getReviewHandoffAttemptLedger(
       attemptsBeforeBudget = attempt;
     }
   }
-  return { lastAttempt, used: lastAttempt - attemptsBeforeBudget };
+  let lastRefusedAt: Date | null = null;
+  for (const row of rows) {
+    const payload = row.payload as Record<string, unknown> | null;
+    if (row.status !== SKIPPED_WAKE_STATUS) continue;
+    if (Number(payload?.reviewHandoffAttempt ?? 0) !== lastAttempt) continue;
+    if (!lastRefusedAt || row.createdAt > lastRefusedAt) lastRefusedAt = row.createdAt;
+  }
+  return { lastAttempt, used: lastAttempt - attemptsBeforeBudget, lastRefusedAt };
 }
 
 async function recordRefusedReviewHandoffAttempt(
   db: Db,
   input: {
     companyId: string;
+    issueId: string;
     agentId: string;
     idempotencyKey: string;
     reason: string;
     payload: Record<string, unknown>;
   },
-): Promise<void> {
-  await db.insert(agentWakeupRequests).values({
-    companyId: input.companyId,
-    agentId: input.agentId,
-    source: "automation",
-    triggerDetail: "system",
-    reason: input.reason,
-    status: SKIPPED_WAKE_STATUS,
-    payload: input.payload,
-    requestedByActorType: "system",
-    idempotencyKey: input.idempotencyKey,
-    finishedAt: new Date(),
+): Promise<Date> {
+  return db.transaction(async (tx) => {
+    const [recorded] = await tx.insert(agentWakeupRequests).values({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: input.reason,
+      status: SKIPPED_WAKE_STATUS,
+      payload: input.payload,
+      requestedByActorType: "system",
+      idempotencyKey: input.idempotencyKey,
+      finishedAt: new Date(),
+    }).returning({ createdAt: agentWakeupRequests.createdAt });
+    // The refused attempt leaves an obligation: recovery must register its retry deadline.
+    await notifyIssueRecovery(tx, { companyId: input.companyId, issueId: input.issueId });
+    return recorded.createdAt;
   });
 }
 
-async function getReviewHandoffWakeReceiptStatuses(
+async function getReviewHandoffWakeReceipts(
   db: Db,
   companyId: string,
   idempotencyKey: string,
-): Promise<string[]> {
-  const rows = await db
-    .select({ status: agentWakeupRequests.status })
+): Promise<Array<{ status: string; createdAt: Date }>> {
+  return db
+    .select({ status: agentWakeupRequests.status, createdAt: agentWakeupRequests.createdAt })
     .from(agentWakeupRequests)
     .where(
       and(
@@ -301,7 +328,6 @@ async function getReviewHandoffWakeReceiptStatuses(
         eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
       ),
     );
-  return rows.map((row) => row.status);
 }
 
 type ReviewHandoffRetryDecision =
@@ -503,6 +529,7 @@ type ReviewHandoffReconciliationResult = {
   reason?: string;
   wake?: ReviewHandoffWake;
   recoveryActionId?: string;
+  retryAt?: number;
 };
 
 export const REVIEW_HANDOFF_COALESCED_REASON =
@@ -511,6 +538,8 @@ export const REVIEW_HANDOFF_REFUSED_REASON =
   "wake refused; this attempt is recorded and counts toward the retry budget";
 export const REVIEW_HANDOFF_NO_RECEIPT_REASON =
   "wake persisted no receipt for this attempt";
+export const REVIEW_HANDOFF_REFUSED_RETRY_PENDING_REASON =
+  "previous attempt was refused; the next attempt waits for its retry deadline";
 const SKIPPED_WAKE_STATUS = "skipped";
 
 export async function reconcileReviewHandoffAfterBlockerClear(
@@ -520,6 +549,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     companyId: string;
     enqueueWakeup: ReviewHandoffEnqueueWakeup;
     treeControlSvc?: Parameters<typeof isAutomaticRecoverySuppressedByPauseHold>[3];
+    deferRefusedRetry?: boolean;
   },
 ): Promise<ReviewHandoffReconciliationResult> {
   const [issue] = await db
@@ -552,7 +582,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
   const [blockerCheck, hasActive, hasQueued, ledger] = await Promise.all([
     hasValidReviewBlocker(db, issue, input.treeControlSvc),
     hasActiveReviewRun(db, issue.companyId, issue.id, target.reviewerAgentId),
-    hasQueuedReviewRetry(db, issue.companyId, issue.id, target.stageId),
+    hasQueuedReviewWake(db, issue.companyId, issue.id, target.stageId, target.reviewerAgentId),
     getReviewHandoffAttemptLedger(db, issue.companyId, issue.id, target.stageId),
   ]);
 
@@ -589,6 +619,13 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     return { action: "skipped", reason: decision.reason };
   }
 
+  if (input.deferRefusedRetry && ledger.lastRefusedAt) {
+    const retryAt = ledger.lastRefusedAt.getTime() + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS;
+    if (Date.now() < retryAt) {
+      return { action: "skipped", reason: REVIEW_HANDOFF_REFUSED_RETRY_PENDING_REASON, retryAt };
+    }
+  }
+
   let wake: ReviewHandoffWake = null;
   try {
     wake = await input.enqueueWakeup(decision.targetAgentId, {
@@ -607,6 +644,7 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     }
     await recordRefusedReviewHandoffAttempt(db, {
       companyId: issue.companyId,
+      issueId: issue.id,
       agentId: decision.targetAgentId,
       idempotencyKey: decision.idempotencyKey,
       reason: decision.reason,
@@ -615,23 +653,36 @@ export async function reconcileReviewHandoffAfterBlockerClear(
     throw error;
   }
 
-  const receiptStatuses = await getReviewHandoffWakeReceiptStatuses(
+  const receipts = await getReviewHandoffWakeReceipts(
     db,
     issue.companyId,
     decision.idempotencyKey,
   );
-  if (receiptStatuses.some((status) => status !== SKIPPED_WAKE_STATUS)) {
+  if (receipts.some((receipt) => receipt.status !== SKIPPED_WAKE_STATUS)) {
     return { action: "enqueued", wake };
   }
-  if (receiptStatuses.length > 0) {
-    return { action: "skipped", reason: REVIEW_HANDOFF_REFUSED_REASON };
+  if (receipts.length > 0) {
+    await db.transaction((tx) =>
+      notifyIssueRecovery(tx, { companyId: issue.companyId, issueId: issue.id }),
+    );
+    const refusedAt = Math.max(...receipts.map((receipt) => receipt.createdAt.getTime()));
+    return {
+      action: "skipped",
+      reason: REVIEW_HANDOFF_REFUSED_REASON,
+      retryAt: refusedAt + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+    };
   }
-  await recordRefusedReviewHandoffAttempt(db, {
+  const refusedAt = await recordRefusedReviewHandoffAttempt(db, {
     companyId: issue.companyId,
+    issueId: issue.id,
     agentId: decision.targetAgentId,
     idempotencyKey: decision.idempotencyKey,
     reason: decision.reason,
     payload: decision.payload,
   });
-  return { action: "skipped", reason: REVIEW_HANDOFF_NO_RECEIPT_REASON };
+  return {
+    action: "skipped",
+    reason: REVIEW_HANDOFF_NO_RECEIPT_REASON,
+    retryAt: refusedAt.getTime() + REVIEW_HANDOFF_REFUSED_RETRY_DELAY_MS,
+  };
 }
