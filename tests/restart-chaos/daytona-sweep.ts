@@ -96,6 +96,17 @@ export function unattributedLeaks(result: DaytonaSweepResult, attributed: Readon
 }
 
 
+/**
+ * Mirrors server/src/services/environment-cleanup-state.ts ENVIRONMENT_CLEANUP_RETRY_MS
+ * (a unit test keeps them equal). A pending_cleanup lease is retried after this
+ * backoff, counted from its last update, by a timed cleanup wake.
+ */
+export const PENDING_CLEANUP_RETRY_MS = 5 * 60_000;
+/** Slack for that timed sweep to run and the provider delete to land. */
+const CLEANUP_SWEEP_SLACK_MS = 90_000;
+/** R6 waits this long for leases and sandboxes to settle before calling them leaks. */
+export const R6_SETTLE_MS = Math.min(8 * 60_000, PENDING_CLEANUP_RETRY_MS + CLEANUP_SWEEP_SLACK_MS);
+
 /** The only Daytona operation the harness may perform. */
 export interface ReadOnlyDaytona { list(query: { labels: Record<string, string> }): AsyncIterable<DaytonaSandboxRow> }
 
@@ -152,8 +163,8 @@ export class DaytonaWaveSweeper {
     return selectWaveSandboxes(rows, wave);
   }
 
-  /** Reconcile, retrying for `settleMs` so normal per-turn teardown can finish. */
-  async sweep(settleMs = 120_000): Promise<DaytonaSweepResult> {
+  /** Reconcile, retrying for `settleMs` so normal per-turn and pending-cleanup teardown can finish. */
+  async sweep(settleMs = R6_SETTLE_MS): Promise<DaytonaSweepResult> {
     const deadline = Date.now() + settleMs;
     for (;;) {
       const result: DaytonaSweepResult = { companyId: this.input.companyId, environmentId: this.input.environmentId,
@@ -177,13 +188,21 @@ export class DaytonaWaveSweeper {
    * reusable leases). Then list, read-only, what is still not destroyed or
    * archived, for the report. No sandbox is changed by the harness itself.
    */
-  async cleanUp(settleMs = 90_000): Promise<{ environmentDeleted: boolean; remainingSandboxes: string[]; errors: string[] }> {
+  async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<{ environmentDeleted: boolean; environmentDeleteBlocked: string | null;
+    remainingSandboxes: string[]; errors: string[] }> {
     const errors: string[] = [];
     let environmentDeleted = false;
+    let environmentDeleteBlocked: string | null = null;
     try {
-      await deleteDaytonaEnvironment(this.input.api, this.input.environmentId);
+      // 409 while a sandbox cleanup is pending is correct product behaviour:
+      // deleteDaytonaEnvironment keeps retrying until the window closes.
+      await deleteDaytonaEnvironment(this.input.api, this.input.environmentId, Date.now() + deleteWindowMs);
       environmentDeleted = true;
-    } catch (error) { errors.push(`environment delete: ${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/returned 409\b/.test(message)) environmentDeleteBlocked = message;
+      else errors.push(`environment delete: ${message}`);
+    }
     let remainingSandboxes: string[] = [];
     // Provider teardown is asynchronous; give it a bounded settle before reporting.
     const deadline = Date.now() + settleMs;
@@ -200,6 +219,6 @@ export class DaytonaWaveSweeper {
       if (!remainingSandboxes.length || Date.now() >= deadline) break;
       await delay(10_000);
     }
-    return { environmentDeleted, remainingSandboxes, errors };
+    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, errors };
   }
 }
