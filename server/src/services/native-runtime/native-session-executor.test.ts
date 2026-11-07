@@ -15502,7 +15502,7 @@ describe("runnerd provider runtime wiring", () => {
         .toBe("Retained provider checkpoint");
       expect(existsSync(join(root, "runner"))).toBe(false);
     } else {
-      const failure = await replacement.catch((error: unknown) => error as Error);
+      const failure = await replacement.then(() => new Error("replacement unexpectedly succeeded"), (error: unknown) => error as Error);
       expect(failure.message).toMatch(/^runner_continuity_break_archive_failed: /);
       if (mode === "failed") {
         expect(failure.message).toContain("exit=1 timedOut=false");
