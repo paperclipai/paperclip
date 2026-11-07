@@ -32,7 +32,7 @@ import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-stora
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { nativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
 import { nativeSha256 } from "./canonical.js";
-import { nativeControllerEvidenceDescriptor } from "./native-controller-archive.js";
+import { nativeControllerEvidenceDescriptor, NATIVE_CONTROLLER_WEB_LIMITS, type NativeControllerHistoryManifestEntry } from "./native-controller-archive.js";
 
 vi.mock("../../build-commit.js", () => ({ readBuildCommit: () => "a".repeat(40) }));
 
@@ -43,7 +43,7 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
   afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await db.delete(agentTaskSessions); for (const root of roots.splice(0)) await removeRuntimeAssetTree(root); });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
-  async function fixture(kind: "unversioned" | "repository" | "package" | "deleted" | "none" = "unversioned", managedWorkspace = false) {
+  async function fixture(kind: "unversioned" | "repository" | "package" | "deleted" | "none" | "many-web-files" = "unversioned", managedWorkspace = false) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "61".repeat(32));
     const mount = await realpath(await mkdtemp(join(tmpdir(), "native-harness-original-"))); roots.push(mount);
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
@@ -71,7 +71,16 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     await db.insert(agents).values({ id: agentId, companyId, name: "Retained source" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Retain prior failure", status: "blocked" });
     const runtimeContext = nativeRuntimeContextFixture();
-    if (kind !== "none") {
+    if (kind === "many-web-files") {
+      runtimeContext.skills = [];
+      for (const [name, count] of [["first", 462], ["second", 462], ["third", 3]] as const) {
+        const bundle = await materializeAsset(Array.from({ length: count }, (_, index) => ({
+          path: `file-${index}.md`, content: Buffer.from(`${name}-${index}\n`.padEnd(20_000, "x")), mode: 0o444,
+        })));
+        runtimeContext.skills.push({ key: name, runtimeName: name, versionId: null, bundle });
+      }
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+    } else if (kind !== "none") {
       let versionId: string | null = null;
       const files: CompanySkillVersionFileInventoryEntry[] = kind === "deleted"
         ? [{ path: "SKILL.md", kind: "skill", content: "# Historical acceptance skill\n\n".padEnd(281, "x") }]
@@ -122,7 +131,9 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     if (kind !== "none") {
       if (kind === "unversioned") await preserveRuntimeSkillAssets(db, { companyId, runId }, storage);
       await mkdir(join(scopedRunnerdStateRoot(execution), "codex-home/skills"), { recursive: true, mode: 0o700 });
-      await cp(runtimeContext.skills[0]!.bundle.rootPath, join(scopedRunnerdStateRoot(execution), "codex-home/skills/retained"), { recursive: true });
+      for (const skill of runtimeContext.skills) {
+        await cp(skill.bundle.rootPath, join(scopedRunnerdStateRoot(execution), "codex-home/skills", skill.runtimeName), { recursive: true });
+      }
     }
     const input = { companyId, selectedSessionId: selection!.id, scopeDigest, source, storage, signal: AbortSignal.timeout(60_000) };
     return { input, runId, issueId, agentId, leaseId, execution, witness, storage, mount, sourceRoot: scopedRunnerdStateRoot(execution) };
@@ -230,6 +241,94 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       .where(eq(environmentLeases.id, f.leaseId));
     return { ...f, input: { ...f.input, mode: "web_evidence" as const } };
   }
+
+  it("preserves all 927 local WEB skill files and validates their archive on a cold replacement", async () => {
+    const f = await controllerFixture(true, "many-web-files");
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    const metadata = { ...lease!.metadata }; delete metadata.remoteExecutionTermination;
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.leaseId));
+    const originalLeases = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId));
+    const result = await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, mode: "web_evidence" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const receipt = run!.runnerProfileJson!.nativeHarnessFilesystemIndependence as {
+      web: { entries: Array<{ path: string; type: string }> }; controller: { archive: { id: string } };
+    };
+    expect(receipt.web.entries.length).toBeGreaterThan(927);
+    const [archive] = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, receipt.controller.archive.id));
+    const target = join(f.mount, "cold-many-web-files");
+    expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
+      scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
+    if (!("runtimeContext" in f.execution)) throw new Error("fixture runtime context missing");
+    let files = 0;
+    for (const skill of f.execution.runtimeContext.skills) {
+      const manifest = JSON.parse(await readFile(join(f.mount, "instances/default/runtime-context-assets/manifests", `${skill.bundle.digest}.json`), "utf8"));
+      for (const file of manifest.files as Array<{ path: string; sha256: string }>) {
+        const relative = join("codex-home/skills", skill.runtimeName, file.path);
+        const original = await readFile(join(f.sourceRoot, relative));
+        const restored = join(target, "current/web-home", relative);
+        expect(await readFile(restored)).toEqual(original);
+        expect(createHash("sha256").update(original).digest("hex")).toBe(file.sha256);
+        expect((await lstat(restored)).mode & 0o777).toBe(0o444);
+        files++;
+      }
+    }
+    expect(files).toBe(927);
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId))).toEqual(originalLeases);
+    vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-many-web-files"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-many-web-files/state")); vi.stubEnv("RAILWAY_VOLUME_ID", "");
+    vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("database validation must not read storage"));
+    expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
+    expect(result.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
+  }, 60_000);
+
+  function webDescriptor(entries: NativeControllerHistoryManifestEntry[]) {
+    return nativeControllerEvidenceDescriptor({ companyId: "company", issueId: "issue", runId: "run", controllerDigest: null,
+      supervisorDigest: null, purpose: "filesystem_independence", web: { bindingDigest: "a".repeat(64), entries } });
+  }
+
+  it("keeps the existing 128-entry WEB manifest bytes unchanged", () => {
+    const entries: NativeControllerHistoryManifestEntry[] = [{ path: "web-home", mode: 0o700, type: "directory" },
+      ...Array.from({ length: 127 }, (_, index) => ({ path: `web-home/entry-${index}`, mode: 0o700, type: "directory" as const }))];
+    const descriptor = webDescriptor(entries);
+    const manifest = JSON.stringify({ schema: "paperclip.legacy-controller-archive.v1", companyId: "company", issueId: "issue",
+      runId: "run", reason: "original_volume_source_evidence", files: {}, web: { entries, bindingDigest: "a".repeat(64), controllerAbsent: true } });
+    expect(descriptor.manifest).toBe(manifest);
+    expect(descriptor.manifestSha256).toBe(`sha256:${createHash("sha256").update(manifest).digest("hex")}`);
+  });
+
+  it.each(["entry-count", "metadata-bytes", "path-bytes", "file-bytes", "total-bytes"])("refuses a WEB manifest beyond its %s bound", control => {
+    const entries: NativeControllerHistoryManifestEntry[] = [{ path: "web-home", mode: 0o700, type: "directory" }];
+    if (control === "entry-count") entries.push(...Array.from({ length: NATIVE_CONTROLLER_WEB_LIMITS.entries }, (_, index) => ({
+      path: `web-home/entry-${index}`, mode: 0o700, type: "directory" as const,
+    })));
+    if (control === "metadata-bytes") entries.push(...Array.from({ length: 1_050 }, (_, index) => ({
+      path: `web-home/${index}-${"x".repeat(3_990)}`, mode: 0o700, type: "directory" as const,
+    })));
+    if (control === "path-bytes") entries.push({ path: `web-home/${"x".repeat(NATIVE_CONTROLLER_WEB_LIMITS.pathBytes)}`, mode: 0o700, type: "directory" });
+    if (control === "file-bytes") entries.push({ path: "web-home/oversized", mode: 0o600, type: "file", size: 16 * 1024 * 1024 + 1, sha256: "b".repeat(64) });
+    if (control === "total-bytes") entries.push(...Array.from({ length: 5 }, (_, index) => ({ path: `web-home/file-${index}`,
+      mode: 0o600, type: "file" as const, size: 16 * 1024 * 1024, sha256: "b".repeat(64) })));
+    expect(() => webDescriptor(entries)).toThrow("native_controller_archive_authority_invalid");
+  });
+
+  it.each(["entry-count", "file-bytes"])("retains oversized WEB filesystem evidence without publication for %s", async control => {
+    const f = await webFixture(), directory = join(f.sourceRoot, "codex-home/oversized");
+    await mkdir(directory, { mode: 0o700 });
+    if (control === "entry-count") {
+      for (let offset = 0; offset <= NATIVE_CONTROLLER_WEB_LIMITS.entries; offset += 32) {
+        await Promise.all(Array.from({ length: Math.min(32, NATIVE_CONTROLLER_WEB_LIMITS.entries + 1 - offset) }, (_, index) =>
+          writeFile(join(directory, `entry-${offset + index}`), "", { mode: 0o600 })));
+      }
+    } else {
+      const file = join(directory, "oversized"); await writeFile(file, "", { mode: 0o600 });
+      await truncate(file, 16 * 1024 * 1024 + 1);
+    }
+    await expect(preserveNativeHarnessFilesystemIndependence(db, f.input)).rejects.toThrow("unverified");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run!.runnerProfileJson!.nativeHarnessFilesystemIndependence).toBeUndefined();
+    expect(await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.runId, f.runId))).toEqual([]);
+    expect(await readFile(f.controllerPath, "utf8")).toBe(f.raw);
+  });
 
   it("preserves a genuinely absent controller with its supervisor and 267 durable checkpoint parts", async () => {
     const f = await webFixture(267);
