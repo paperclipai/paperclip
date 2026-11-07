@@ -539,6 +539,57 @@ describe("ArchLead Operations plugin", () => {
     expect(crossCompany).toMatchObject({ status: 200, body: { records: [] } });
   });
 
+  it("strictly filters entities by company scope and excludes records from other scopes", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.lead,
+      scopeKind: "company",
+      scopeId: COMPANY_ID,
+      companyId: COMPANY_ID,
+      externalId: "target-lead",
+      title: "Target Lead",
+      data: { name: "Target Contact" },
+    });
+
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.lead,
+      scopeKind: "company",
+      scopeId: OTHER_COMPANY_ID,
+      companyId: OTHER_COMPANY_ID,
+      externalId: "other-lead",
+      title: "Other Lead",
+      data: { name: "Other Contact" },
+    });
+
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.lead,
+      scopeKind: "instance",
+      externalId: "instance-lead",
+      title: "Instance Lead",
+      data: { name: "Instance Contact" },
+    });
+
+    const listRes = await plugin.definition.onApiRequest?.({
+      ...apiInput("list-records", null),
+      query: { entityType: ENTITY_TYPES.lead },
+    });
+    expect(listRes).toMatchObject({
+      status: 200,
+      body: {
+        records: [expect.objectContaining({ externalId: "target-lead", scopeId: COMPANY_ID })],
+      },
+    });
+    expect((listRes?.body as any).records).toHaveLength(1);
+
+    const overview = await harness.getData<{ leads: Array<{ externalId: string }> }>("overview", {
+      companyId: COMPANY_ID,
+    });
+    expect(overview.leads.map((l) => l.externalId)).toEqual(["target-lead"]);
+  });
+
+
   it("converts a won CRM request into a pending client without claiming provisioning", async () => {
     const harness = createTestHarness({ manifest });
     await plugin.definition.setup(harness.ctx);

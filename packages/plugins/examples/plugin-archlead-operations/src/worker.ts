@@ -182,11 +182,14 @@ const plugin = definePlugin({
       }
       const limit = parseLimit(input.query.limit);
       if (limit === null) return { status: 400, body: { error: "limit must be a positive integer" } };
-      const records = entityType
-        ? await ctx.entities.list({ entityType, scopeKind: "company", scopeId: companyId, limit })
+      const rawRecords = entityType
+        ? await ctx.entities.list({ entityType, scopeKind: "company", scopeId: companyId, companyId, limit })
         : (await Promise.all(Object.values(ENTITY_TYPES).map((type) =>
-          ctx.entities.list({ entityType: type, scopeKind: "company", scopeId: companyId, limit }),
+          ctx.entities.list({ entityType: type, scopeKind: "company", scopeId: companyId, companyId, limit }),
         ))).flat();
+      const records = rawRecords.filter(
+        (record) => record.scopeKind === "company" && record.scopeId === companyId,
+      );
       return { status: 200, body: { records } };
     }
 

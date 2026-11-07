@@ -617,4 +617,54 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(all).toHaveLength(1);
     expect(all[0]?.companyId).toBe(companyA);
   });
+
+  it("buildHostServices entities.upsert and entities.list isolate entities between two companies", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    // Company A upserts an entity with scopeKind company and scopeId companyA
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "shared-lead",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    // Company B upserts an entity with the same externalId under companyB
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "shared-lead",
+      title: "Lead B",
+      status: "qualified",
+      data: { name: "Bob" },
+    });
+
+    // Listing for companyA should return only Lead A
+    const listA = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.title).toBe("Lead A");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    // Listing for companyB should return only Lead B
+    const listB = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.title).toBe("Lead B");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
 });

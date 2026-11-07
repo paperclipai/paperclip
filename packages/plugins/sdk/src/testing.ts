@@ -985,6 +985,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           : null;
         const existingId = externalKey ? entityExternalIndex.get(externalKey) : undefined;
         const existing = existingId ? entities.get(existingId) : undefined;
+        const recordCompanyId = (input as any).companyId ?? (input.scopeKind === "company" && input.scopeId ? input.scopeId : null);
         const now = new Date().toISOString();
         const previousExternalKey = existing?.externalId
           ? `${existing.entityType}|${existing.scopeKind}|${existing.scopeId ?? ""}|${existing.externalId}`
@@ -992,6 +993,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const record: PluginEntityRecord = existing
           ? {
             ...existing,
+            companyId: recordCompanyId ?? existing.companyId ?? null,
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId ?? null,
@@ -1003,6 +1005,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           }
           : {
             id: randomUUID(),
+            companyId: recordCompanyId,
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId ?? null,
@@ -1023,6 +1026,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async list(query) {
         let out = [...entities.values()];
         if (query.entityType) out = out.filter((r) => r.entityType === query.entityType);
+        if (query.companyId !== undefined) {
+          out = out.filter((r) => query.companyId === null ? r.companyId === null : r.companyId === query.companyId || (r.scopeKind === "company" && r.scopeId === query.companyId));
+        } else if (query.scopeKind === "company" && query.scopeId) {
+          out = out.filter((r) => r.companyId === query.scopeId || (r.scopeKind === "company" && r.scopeId === query.scopeId));
+        }
         if (query.scopeKind) out = out.filter((r) => r.scopeKind === query.scopeKind);
         if (query.scopeId) out = out.filter((r) => r.scopeId === query.scopeId);
         if (query.externalId) out = out.filter((r) => r.externalId === query.externalId);

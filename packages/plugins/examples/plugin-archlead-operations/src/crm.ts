@@ -49,13 +49,14 @@ export async function findEntity(
     entityType,
     scopeKind: "company",
     scopeId: companyId,
+    companyId,
     externalId,
     limit: 1,
   });
   const record = records[0];
   if (!record) return null;
-  // Defense-in-depth tenant boundary check
-  if (record.scopeKind === "company" && record.scopeId && record.scopeId !== companyId) {
+  // Strictly enforce tenant boundary - reject records that don't belong to this company
+  if (record.scopeKind !== "company" || record.scopeId !== companyId) {
     return null;
   }
   return record;
@@ -74,6 +75,7 @@ export async function upsertEntity(
     entityType,
     scopeKind: "company",
     scopeId: companyId,
+    companyId,
     externalId,
     title,
     status,
@@ -249,13 +251,17 @@ export async function storeSupportTicket(
   ticket: SupportTicketRecord,
   digest: string,
 ): Promise<{ record: PluginEntityRecord; created: boolean }> {
-  const clientRecords = await ctx.entities.list({
+  const rawClientRecords = await ctx.entities.list({
     entityType: ENTITY_TYPES.client,
     scopeKind: "company",
     scopeId: companyId,
+    companyId,
     limit: MAX_RECORDS,
   });
-  const client = clientRecords.find((record) => record.data.email === ticket.email && record.scopeId === companyId);
+  const clientRecords = rawClientRecords.filter(
+    (record) => record.scopeKind === "company" && record.scopeId === companyId,
+  );
+  const client = clientRecords.find((record) => record.data.email === ticket.email);
   const data = {
     ...ticket,
     clientExternalId: client?.externalId ?? null,
@@ -678,11 +684,11 @@ export async function listOverview(
       ? rawOffset
       : 0;
   const [leads, requests, clients, tickets, qualificationRecords, paymentReceipts] = await Promise.all([
-    ctx.entities.list({ entityType: ENTITY_TYPES.lead, scopeKind: "company", scopeId: companyId, limit, offset }),
-    ctx.entities.list({ entityType: ENTITY_TYPES.request, scopeKind: "company", scopeId: companyId, limit, offset }),
-    ctx.entities.list({ entityType: ENTITY_TYPES.client, scopeKind: "company", scopeId: companyId, limit, offset }),
-    ctx.entities.list({ entityType: ENTITY_TYPES.supportTicket, scopeKind: "company", scopeId: companyId, limit, offset }),
-    ctx.entities.list({ entityType: ENTITY_TYPES.qualificationTask, scopeKind: "company", scopeId: companyId, limit: Math.min(limit, 50), offset }),
+    ctx.entities.list({ entityType: ENTITY_TYPES.lead, scopeKind: "company", scopeId: companyId, companyId, limit, offset }),
+    ctx.entities.list({ entityType: ENTITY_TYPES.request, scopeKind: "company", scopeId: companyId, companyId, limit, offset }),
+    ctx.entities.list({ entityType: ENTITY_TYPES.client, scopeKind: "company", scopeId: companyId, companyId, limit, offset }),
+    ctx.entities.list({ entityType: ENTITY_TYPES.supportTicket, scopeKind: "company", scopeId: companyId, companyId, limit, offset }),
+    ctx.entities.list({ entityType: ENTITY_TYPES.qualificationTask, scopeKind: "company", scopeId: companyId, companyId, limit: Math.min(limit, 50), offset }),
     ctx.db.query<PaymentReceipt>(
       `SELECT event_id, provider, provider_resource_id AS resource_id, payment_status, received_at
        FROM ${tableName(ctx.db.namespace)}
@@ -692,44 +698,53 @@ export async function listOverview(
       [companyId],
     ),
   ]);
-  const qualificationTasks = await Promise.all(qualificationRecords.map(async (record) => ({
+  const filterByCompany = (items: PluginEntityRecord[]) =>
+    items.filter((item) => item.scopeKind === "company" && item.scopeId === companyId);
+
+  const scopedLeads = filterByCompany(leads);
+  const scopedRequests = filterByCompany(requests);
+  const scopedClients = filterByCompany(clients);
+  const scopedTickets = filterByCompany(tickets);
+  const scopedQualifications = filterByCompany(qualificationRecords);
+
+  const qualificationTasks = await Promise.all(scopedQualifications.map(async (record) => ({
     ...record,
     ...await qualificationTaskStatus(ctx, companyId, record),
   })));
-  const pipelineValue = requests.reduce((sum, record) => {
+  const pipelineValue = scopedRequests.reduce((sum, record) => {
     const value = typeof record.data.value === "number" && Number.isFinite(record.data.value)
       ? record.data.value
       : 0;
     return sum + value;
   }, 0);
   const attribution: Record<string, number> = {};
-  for (const request of requests) {
+  for (const request of scopedRequests) {
     const source = stringField(request.data.lastTouch ?? request.data.last_touch, 200) ?? "Unknown";
     attribution[source] = (attribution[source] ?? 0) + 1;
   }
 
-  const hasMoreLeads = leads.length >= limit;
-  const hasMoreRequests = requests.length >= limit;
-  const hasMoreClients = clients.length >= limit;
-  const hasMoreTickets = tickets.length >= limit;
-  const hasMoreQualifications = qualificationRecords.length >= Math.min(limit, 50);
+  const hasMoreLeads = scopedLeads.length >= limit;
+  const hasMoreRequests = scopedRequests.length >= limit;
+  const hasMoreClients = scopedClients.length >= limit;
+  const hasMoreTickets = scopedTickets.length >= limit;
+  const hasMoreQualifications = scopedQualifications.length >= Math.min(limit, 50);
 
   return {
     pluginId: PLUGIN_ID,
-    leads,
-    requests,
-    clients,
-    tickets,
+    leads: scopedLeads,
+    requests: scopedRequests,
+    clients: scopedClients,
+    tickets: scopedTickets,
     qualificationTasks,
     pipelineValue,
     attribution,
     paymentReceipts,
     manualOnlyJobs: OPERATIONS_JOBS.map(({ jobKey, displayName }) => ({ jobKey, displayName })),
     totals: {
-      leads: leads.length,
-      requests: requests.length,
-      clients: clients.length,
-      tickets: tickets.length,
+      leads: scopedLeads.length,
+      requests: scopedRequests.length,
+      clients: scopedClients.length,
+      tickets: scopedTickets.length,
       qualificationTasks: qualificationTasks.length,
       isLimited: hasMoreLeads || hasMoreRequests || hasMoreClients || hasMoreTickets || hasMoreQualifications,
     },
