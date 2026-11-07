@@ -60,11 +60,66 @@ with the prior session state, receipt, and backups. The cache is not a new
 execution authority and must not remain active for the fresh provider session.
 
 Live Runner reattachment does not download or replace the launch files.
-Historical sessions that recorded image-rooted paths keep those paths. This
-change cannot reconstruct files that were never saved. A governed fresh-session
+Historical sessions that recorded image-rooted paths keep those paths. A governed fresh-session
 transition can use a new pack after existing effects and receipts are reconciled.
 It must not replay a previous turn or treat a missing result as proof that no
 effect occurred.
+
+## Historical provider-pack code sources
+
+An older session can retain its exact pack manifest while the current server
+image contains a different pack. When neither the staged nor the preinstalled
+pack verifies, the normal uploader resolves the selected historical code from
+`ghcr.io/paperclipai/paperclip`. It uses the manifest's recorded source revision
+and Linux architecture. The full source-SHA image tag is a lookup hint; a tag
+name alone does not prove the code identity.
+
+The resolver verifies the OCI index, selected platform manifest, image config,
+source revision, and dedicated provider-pack transport layer. It then verifies
+the selected canonical pack manifest, compressed layer hashes, tar paths and
+links, and each file layer's plaintext bytes. The final installed pack still
+passes the normal verification against the original selected manifest. The
+OpenCode version alone cannot admit a different proxy or contract. This source
+selection also serves other providers that use the full provider-pack uploader;
+it does not change their compatibility or qualification rules.
+
+The code source is downloaded and verified before the uploader can clear or
+transfer anything to the target. A historical source requires the existing
+qualified archive transport. An unavailable transport leaves the target intact.
+Missing images, changed bytes, invalid source identity, and unsupported packs
+fail closed. The resolver never resets provider state, substitutes the current
+pack, changes the stored launch paths, or starts an old application image.
+
+The temporary cache contains public code and source provenance only. It uses
+private, process-account-owned directories and exact manifest keys. An empty
+host can reconstruct the cache from the registry. A cached source is checked
+again before upload. Imports stream data with a four-GiB code limit and a
+three-minute deadline, allow two active imports, and bound queued distinct
+sources to 32. Import waits and downloads respond to cancellation; one cancelled
+caller does not cancel a shared import still needed by another caller. Inactive
+instances perform no registry reads or cache scans. Each import requires disk
+headroom before writing; completed cached code remains until temporary storage
+is removed.
+
+The normal per-turn startup owns the source wait, including OpenCode starts
+without a warm execution context. Stop, execution-lease loss, and startup
+completion cancel that wait. An existing execution context can cancel it sooner.
+The source deadline applies before Runner admission. It does not increase the
+separate cold-admission or provider-turn time limits.
+
+The resolver uses only an anonymous token scoped to reading this public code
+repository. It does not use database, sandbox, model, or object-store credentials.
+Its cache and registry dependency are separate from the encrypted S3 backup of
+provider conversation state and workspace files.
+
+The Docker publication workflow publishes full source-SHA tags. There is no
+image-deletion workflow in this repository, but this is not a permanent registry
+retention guarantee. GitHub package administrators can
+[delete package versions](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package).
+Historical continuation therefore depends on retaining the corresponding code
+image in GHCR, or retaining a verified source cache. Deleting both keeps the
+session blocked with its original state intact; an S3 provider-state backup alone
+does not reconstruct legacy image-owned executable code.
 
 Artifact cleanup uses the existing bounded checkpoint and backup expiration
 owners. It requires closed work, settled native ownership, and exact stopped
