@@ -634,6 +634,33 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed = false;
         dispositionOnlyRecoveryTurnId = null;
       }
+      // A controller can die after the runner accepted its turn/start but
+      // before it checkpointed the turn or emitted turn.accepted. The provider
+      // then keeps running that turn. Adopt it only when the runner's
+      // authenticated command result for this run's latest turn.start names
+      // the single active turn; any other active turn stays foreign and fails
+      // closed when its notifications arrive.
+      let adoptedAcceptedTurnId: string | null = null;
+      if (
+        !recoveringAutonomousGoal &&
+        recoveredActiveTurnId === null &&
+        !reconcileUncheckpointedDispositionTurn &&
+        snapshot.semanticResult == null
+      ) {
+        const turns = Array.isArray(existingThread.turns)
+          ? existingThread.turns.map(record)
+          : [];
+        const active = turns.filter((turn) => text(turn.status) === "inProgress");
+        const activeTurnId = active.length === 1 ? text(active[0]?.id) : "";
+        if (
+          activeTurnId.length > 0 &&
+          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === activeTurnId) &&
+          transport.controllerAcceptedTurnId?.() === activeTurnId
+        ) {
+          recoveredActiveTurnId = activeTurnId;
+          adoptedAcceptedTurnId = activeTurnId;
+        }
+      }
       if (opened.context.liveConsole)
         opened.context.liveConsole.goals = this.#caps.goals;
       const session = this.#session({
@@ -653,6 +680,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
         dispositionOnlyRecoveryTurnId,
+        adoptedAcceptedTurnId,
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
         lineage: snapshot.lineage,
         sourceSequence: snapshot.lastSourceSequence ?? 0,
@@ -979,6 +1007,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    adoptedAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     sourceSequence: number;
