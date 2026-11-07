@@ -22,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
-import { seedChaosLab, type ChaosLab } from "./seed.js";
+import { chaosLifecycleOverrides, seedChaosLab, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
@@ -181,6 +181,11 @@ async function main() {
     phases: { type: "string", default: "coldwarm,restart" },
     out: { type: "string" },
     report: { type: "string" },
+    // Runner lifecycle for every seeded agent: per_turn, warm, or default (no stored
+    // lifecycle, so the server resolves the product default). Absent keeps the
+    // catalog profile's setting.
+    lifecycle: { type: "string" },
+    "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
     const data = JSON.parse(await readFile(values.report, "utf8")) as { runs: BaselineRun[]; faults: BaselineFault[] };
@@ -193,6 +198,15 @@ async function main() {
   const restarts = Math.max(0, Number(values.restarts));
   const missing = requested.map(adapter => CREDENTIAL_FOR_ADAPTER[adapter]).filter(key => !process.env[key]);
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}; run: set -a; source ~/.secrets; set +a`);
+  const lifecycle = values.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
+    throw new Error("--lifecycle must be per_turn, warm or default");
+  }
+  // default removes the catalog's pinned per_turn so the server resolves the
+  // product default; absent keeps the catalog setting.
+  const adapterConfigOverrides = lifecycle === "warm"
+    ? { lifecycleMode: "warm", idleTimeoutMs: Math.max(1, Number(values["idle-ms"])) }
+    : chaosLifecycleOverrides(lifecycle);
   const waveId = `ttft-${new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15)}`;
   const outDir = path.resolve(values.out ?? path.join(import.meta.dirname, "results", waveId));
   await mkdir(outDir, { recursive: true, mode: 0o700 });
@@ -201,6 +215,7 @@ async function main() {
   const tasks: Array<{ issueId: string; adapter: AdapterId; phase: BaselineRun["phase"] }> = [];
   const faults: BaselineFault[] = [];
   const runPhase = new Map<string, BaselineRun["phase"]>();
+  const agentLifecycles: Record<string, string> = {};
   const timedOutIssues = new Set<string>();
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
@@ -218,9 +233,17 @@ async function main() {
     await supervisor.start();
     const api = new ChaosApi(supervisor.baseUrl);
     const lab = await seedChaosLab({ api, env: "local", adapters: requested, concurrency: requested.length, budgetCents: 3000,
-      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline });
+      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides });
     const adapters = await readyAdapters(api, lab, requested, timeline);
     if (!adapters.length) throw new Error("No agent passed lifecycle verification");
+    // Record what each agent actually stores: "unset" means the server resolves
+    // the product default, so a label alone cannot misdescribe the wave.
+    for (const adapter of adapters) {
+      const agent = await api.get<Json>(`/api/agents/${lab.agents[adapter].id}`, 10_000);
+      const stored = (agent.adapterConfig as Json | undefined)?.lifecycleMode;
+      agentLifecycles[adapter] = typeof stored === "string" ? stored : "unset";
+    }
+    timeline.add("baseline_agent_lifecycles", agentLifecycles);
 
     // Cold then warm, one task per adapter at a time, adapters in parallel.
     if (phases.has("coldwarm")) await Promise.all(adapters.map(async adapter => {
@@ -297,7 +320,7 @@ async function main() {
           phase: runPhase.get(runId) ?? task.phase, events: await allEvents(api, runId) });
       }
     }
-    const data = { waveId, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
+    const data = { waveId, lifecycle: lifecycle ?? "catalog", agentLifecycles, adapters, notReady: requested.filter(adapter => !adapters.includes(adapter)),
       timedOutTasks: timedOutIssues.size, samples, restarts, gitSha: process.env.GIT_SHA ?? null, runs, faults };
     await writeFile(path.join(outDir, "baseline-data.json"), `${JSON.stringify(data)}\n`, { mode: 0o600 });
     await writeFile(path.join(outDir, "baseline-report.md"), report(runs, faults), { mode: 0o600 });

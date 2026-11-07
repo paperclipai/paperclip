@@ -205,7 +205,7 @@ describe("native workspace finalization recovery", () => {
     await db.update(issueRecoveryActions).set({ nextAction: "Start a replacement run" }).where(eq(issueRecoveryActions.id, seed.actionId));
     await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected");
     const [repaired] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId));
-    expect(repaired.nextAction).toContain("workspace-copyback processes have stopped");
+    expect(repaired.nextAction).toContain("confirm that the previous server stopped");
     expect(repaired.attemptCount).toBe(action.attemptCount);
     expect(repaired.evidence?.recoveryBudget).toEqual(action.evidence?.recoveryBudget);
   });
@@ -703,7 +703,8 @@ describe("native workspace finalization recovery", () => {
     expect(work).not.toHaveBeenCalled();
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
     expect(action).toMatchObject({ ownerType: "board", cause: "native_workspace_finalization_owner_unverified", wakePolicy: null, evidence: { runId: seeded.runId, owner } });
-    expect(action.nextAction).toContain("previous controller");
+    expect(action.nextAction).toContain("confirm that the previous server stopped");
+    expect(action.nextAction).not.toMatch(/\bverify\b/i);
     await expect(withNativeWorkspaceFinalizationOwnership({ db, companyId: foreignCompanyId, runId: seeded.runId }, work))
       .rejects.toThrow("native_workspace_finalization_binding_missing");
     const [held] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));

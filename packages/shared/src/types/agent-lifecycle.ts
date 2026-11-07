@@ -13,6 +13,10 @@ export interface AgentLifecycleOperation {
   leaseOwner?: string;
   leaseUntil?: string;
   retryAt?: string;
+  /** Healthy host verification awaits a durable external producer, not a retry timer. */
+  waitingForSignal?: boolean;
+  /** A committed recheck raced an active host attempt; its defer must not park it. */
+  recheckRequested?: boolean;
   /** A failed configuration check waits for configuration repair or an explicit retry. */
   retryRequired?: boolean;
   /** Failed generic host verification tests for this saved configuration. */

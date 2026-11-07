@@ -3,6 +3,7 @@ import { currentProcessStartedAtMs, processExists, resetCurrentProcessStartedAtF
 import * as hotRestart from "./hot-restart.js";
 import {
   currentLocalOwnerStamp,
+  currentDeploymentIdentity,
   currentProcessProbe,
   proveOwnerGone,
   type LocalOwnerStamp,
@@ -166,6 +167,52 @@ describe("proveOwnerGone: local owners", () => {
     expect(own).toMatchObject({ kind: "local", pid: process.pid, generation: 3 });
     expect(read).not.toHaveBeenCalled();
     expect(await proveOwnerGone(own)).toEqual({ verdict: "alive", reason: "current_process" });
+  });
+});
+
+describe("proveOwnerGone: replaced platform deployment", () => {
+  const worker = { provider: "railway" as const, projectId: "project", environmentId: "env", serviceId: "service", deploymentId: "old" };
+  const current = (overrides: Partial<typeof worker> = {}, exclusiveVolume = true) =>
+    probe({ host: "new-container", processSpace: "space-new", deployment: { worker: { ...worker, deploymentId: "new", ...overrides }, exclusiveVolume } });
+
+  it("proves an owner on an earlier deployment of the same volume-backed service gone, on any host", async () => {
+    expect(await proveOwnerGone(stamp({ worker, host: "old-container", processSpace: null }), current()))
+      .toEqual({ verdict: "gone", reason: "deployment_replaced" });
+  });
+
+  it("never treats this process's own boot as replaced", async () => {
+    expect(await proveOwnerGone(stamp({ worker, bootId: "current-boot" }), current()))
+      .toEqual({ verdict: "alive", reason: "current_process" });
+  });
+
+  it("is no proof without an exclusive volume, for the same deployment, or for another service or environment", async () => {
+    const old = stamp({ worker, host: "old-container" });
+    expect((await proveOwnerGone(old, current({}, false))).verdict).toBe("unprovable");
+    expect((await proveOwnerGone(old, current({ deploymentId: "old" }))).verdict).toBe("unprovable");
+    expect((await proveOwnerGone(old, current({ serviceId: "other" }))).verdict).toBe("unprovable");
+    expect((await proveOwnerGone(old, current({ environmentId: "other" }))).verdict).toBe("unprovable");
+    expect((await proveOwnerGone(stamp({ host: "old-container" }), current())).verdict).toBe("unprovable");
+  });
+
+  it("reads the deployment and volume from the Railway environment", () => {
+    const env = { RAILWAY_PROJECT_ID: "p", RAILWAY_ENVIRONMENT_ID: "e", RAILWAY_SERVICE_ID: "s", RAILWAY_DEPLOYMENT_ID: "d" };
+    expect(currentDeploymentIdentity(env)).toEqual({ worker: { provider: "railway", projectId: "p", environmentId: "e",
+      serviceId: "s", deploymentId: "d" }, exclusiveVolume: false, volumeId: null });
+    expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_ID: "v", RAILWAY_VOLUME_MOUNT_PATH: "/data" })?.exclusiveVolume).toBe(true);
+    expect(currentDeploymentIdentity({})).toBeNull();
+    // A half-configured volume is not exclusivity: fall back to other proof.
+    expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_ID: "v" })?.exclusiveVolume).toBe(false);
+    expect(currentDeploymentIdentity({ ...env, RAILWAY_VOLUME_MOUNT_PATH: "/data" })?.exclusiveVolume).toBe(false);
+  });
+
+  it("binds a stamp that recorded its volume to that same volume", async () => {
+    const withVolume = (volumeId: string) => probe({ host: "new-container", deployment: {
+      worker: { ...worker, deploymentId: "new" }, exclusiveVolume: true, volumeId } });
+    expect(await proveOwnerGone(stamp({ worker, volumeId: "vol-a" }), withVolume("vol-a")))
+      .toEqual({ verdict: "gone", reason: "deployment_replaced" });
+    expect((await proveOwnerGone(stamp({ worker, host: "old", volumeId: "vol-a" }), withVolume("vol-b"))).verdict).toBe("unprovable");
+    // A stamp from a deployment that was not volume-exclusive never qualifies.
+    expect((await proveOwnerGone(stamp({ worker, host: "old", exclusiveVolume: false }), withVolume("vol-a"))).verdict).toBe("unprovable");
   });
 });
 
