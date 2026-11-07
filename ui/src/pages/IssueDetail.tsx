@@ -6300,6 +6300,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             key={panelIssue.id}
             {...sharedProps}
             accountScope={taskPanelAccountScope}
+            canDeleteDocuments={Boolean(session?.user?.id)}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
             showSubtasksTab={streamlinedTaskDetailEnabled}
@@ -8932,6 +8933,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     key={`${issue.id}:mobile`}
                     issue={issue}
                     accountScope={taskPanelAccountScope}
+                    canDeleteDocuments={Boolean(session?.user?.id)}
                     childIssues={childIssues}
                     issueLinkState={
                       streamlinedTaskDetailEnabled
