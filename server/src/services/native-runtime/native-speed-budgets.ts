@@ -108,3 +108,22 @@ export function evaluateSpeedBudget(input: {
     ...(input.disposition ? { disposition: input.disposition } : {}),
   };
 }
+
+/** The restart-recovery measurement for one committed runner event, or null
+ * when the event is not a provider event (the baseline's set). */
+export function restartRecoveryMeasurementFor(input: {
+  event: { eventType: string; emittedAt?: string | null };
+  startup: { phase: string; updatedAt: string };
+  committedAtMs: number;
+  disposition: string;
+}): { readyAtMs: number | null; emittedAtMs: number | null; committedAtMs: number; disposition: string } | null {
+  if (!RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has(input.event.eventType)) return null;
+  const emitted = Date.parse(input.event.emittedAt ?? "");
+  const ready = Date.parse(input.startup.updatedAt);
+  return {
+    readyAtMs: input.startup.phase === "ready" && Number.isFinite(ready) ? ready : null,
+    emittedAtMs: Number.isFinite(emitted) ? emitted : null,
+    committedAtMs: input.committedAtMs,
+    disposition: input.disposition,
+  };
+}

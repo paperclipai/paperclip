@@ -5,6 +5,7 @@ import {
   evaluateSpeedBudget,
   LOCAL_SPEED_BUDGETS,
   RESTART_RECOVERY_PROVIDER_EVENT_TYPES,
+  restartRecoveryMeasurementFor,
   SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
   speedBudgetAdapter,
   speedBudgetFor,
@@ -89,8 +90,8 @@ describe("speed budget checks in the native run trace", () => {
   it("checks restart recovery latency once, from ready to the first provider event", async () => {
     const { trace, breaches } = traced({ adapter: "opencode", environment: "local" });
     const late = LOCAL_SPEED_BUDGETS.opencode.restart_recovery.p95Ms + 1_000;
-    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late, disposition: "resume_dead_runner" });
-    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late * 2, disposition: "resume_dead_runner" });
+    trace.checkRestartRecovery({ readyAtMs: 10_000, emittedAtMs: 10_000 + late, committedAtMs: 10_000 + late, disposition: "resume_dead_runner" });
+    trace.checkRestartRecovery({ readyAtMs: 10_000, emittedAtMs: 10_000 + late * 2, committedAtMs: 10_000 + late * 2, disposition: "resume_dead_runner" });
     await trace.finish("ok");
 
     expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery", measuredMs: late,
@@ -102,7 +103,8 @@ describe("speed budget checks in the native run trace", () => {
     await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 1 });
     await trace.record({ name: "runner.session.resume", startedAtMs: 1, endedAtMs: 120_000 });
     await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 120_000 });
-    trace.checkRestartRecovery({ readyAtMs: 0, eventAtMs: LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1, disposition: "resume_dead_runner" });
+    const at = LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1;
+    trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: at, committedAtMs: at, disposition: "resume_dead_runner" });
     await trace.finish("ok");
     expect(breaches().map(breach => breach.metric)).toEqual(["restart_recovery"]);
   });
@@ -110,8 +112,11 @@ describe("speed budget checks in the native run trace", () => {
   it("does not spend the restart-recovery check on an event emitted before ready", async () => {
     const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
     const late = LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1_000;
-    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 9_000, disposition: "reattach_existing_runner" });
-    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late, disposition: "reattach_existing_runner" });
+    // Buffered during the outage, committed after ready.
+    trace.checkRestartRecovery(restartRecoveryMeasurementFor({ event: { eventType: "item.delta", emittedAt: new Date(9_000).toISOString() },
+      startup: { phase: "ready", updatedAt: new Date(10_000).toISOString() }, committedAtMs: 10_500, disposition: "reattach_existing_runner" })!);
+    trace.checkRestartRecovery(restartRecoveryMeasurementFor({ event: { eventType: "item.delta", emittedAt: new Date(10_000 + late - 200).toISOString() },
+      startup: { phase: "ready", updatedAt: new Date(10_000).toISOString() }, committedAtMs: 10_000 + late, disposition: "reattach_existing_runner" })!);
     await trace.finish("ok");
     expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery", measuredMs: late })]);
   });
@@ -128,9 +133,22 @@ describe("speed budget checks in the native run trace", () => {
   });
 
   it("counts only the baseline's provider events as a recovered run's next event", () => {
-    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("item.delta")).toBe(true);
-    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("harness.diagnostic")).toBe(false);
-    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("run.performance.span")).toBe(false);
+    const startup = { phase: "ready", updatedAt: new Date(10_000).toISOString() };
+    const measure = (eventType: string) => restartRecoveryMeasurementFor({ event: { eventType, emittedAt: new Date(11_000).toISOString() },
+      startup, committedAtMs: 12_000, disposition: "resume_dead_runner" });
+    expect(measure("item.delta")).toEqual({ readyAtMs: 10_000, emittedAtMs: 11_000, committedAtMs: 12_000, disposition: "resume_dead_runner" });
+    expect(measure("harness.diagnostic")).toBeNull();
+    expect(measure("run.performance.span")).toBeNull();
+    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("session.resumed")).toBe(true);
+  });
+
+  it("measures to the commit time, so delivery delays after emission count", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    const budget = LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms;
+    // Emitted 1 s after ready, committed 20 s after ready.
+    trace.checkRestartRecovery({ readyAtMs: 0, emittedAtMs: 1_000, committedAtMs: budget + 12_000, disposition: "resume_dead_runner" });
+    await trace.finish("ok");
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery", measuredMs: budget + 12_000 })]);
   });
 
   it("writes nothing for remote runs or without a budget subject", async () => {

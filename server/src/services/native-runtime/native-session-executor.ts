@@ -13,7 +13,7 @@ import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
-import { RESTART_RECOVERY_PROVIDER_EVENT_TYPES, speedBudgetAdapter } from "./native-speed-budgets.js";
+import { restartRecoveryMeasurementFor, speedBudgetAdapter } from "./native-speed-budgets.js";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
   restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
@@ -10271,14 +10271,10 @@ async function executePaperclipNativeSessionWithinScope(
           : Date.now();
         // Restart recovery latency (invariant 8): control plane ready to this
         // recovered run's first committed provider event. Checked once; run log only.
-        if (input.restartRecovery && RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has(event.eventType)) {
-          const startup = getStartupRecoveryState();
-          trace.checkRestartRecovery({
-            readyAtMs: startup.phase === "ready" ? Date.parse(startup.updatedAt) : null,
-            // Commit time, as the baseline measures to the run-log row's
-            // created_at: delivery delays after emission count against recovery.
-            eventAtMs: Date.now(), disposition: input.restartRecovery.kind,
-          });
+        if (input.restartRecovery) {
+          const measurement = restartRecoveryMeasurementFor({ event, startup: getStartupRecoveryState(),
+            committedAtMs: Date.now(), disposition: input.restartRecovery.kind });
+          if (measurement) trace.checkRestartRecovery(measurement);
         }
         if (
           event.eventType === "session.started" &&

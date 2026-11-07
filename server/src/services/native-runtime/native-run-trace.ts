@@ -658,14 +658,16 @@ export function createNativeRunTrace(input: {
   /** Restart recovery latency: control plane ready to the recovered run's
    * next provider event, checked once per run. */
   let recoveryChecked = false;
-  const checkRestartRecovery = (measurement: { readyAtMs: number | null; eventAtMs: number; disposition: string }): void => {
+  const checkRestartRecovery = (measurement: RestartRecoveryMeasurement): void => {
     if (!input.budget || recoveryChecked || measurement.readyAtMs === null) return;
-    // An event emitted before ready (committed late by a surviving runner)
-    // is not the recovered run's next event; it must not use the one check.
-    if (measurement.eventAtMs < measurement.readyAtMs) return;
+    // An event emitted before ready (buffered by a surviving runner and
+    // committed late) is not the recovered run's next event; it must not use
+    // the one check.
+    if (measurement.emittedAtMs !== null && measurement.emittedAtMs < measurement.readyAtMs) return;
+    if (measurement.committedAtMs < measurement.readyAtMs) return;
     recoveryChecked = true;
     reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
-      metric: "restart_recovery", start: null, measuredMs: measurement.eventAtMs - measurement.readyAtMs,
+      metric: "restart_recovery", start: null, measuredMs: measurement.committedAtMs - measurement.readyAtMs,
       disposition: measurement.disposition }));
   };
 
@@ -686,6 +688,16 @@ export function createNativeRunTrace(input: {
 }
 
 export type NativeRunTrace = ReturnType<typeof createNativeRunTrace>;
+
+/** Restart recovery latency: control plane ready to the recovered run's
+ * next provider event. The event is filtered on when it was emitted and
+ * measured to when it was committed (the baseline's run-log `created_at`). */
+export type RestartRecoveryMeasurement = {
+  readyAtMs: number | null;
+  emittedAtMs: number | null;
+  committedAtMs: number;
+  disposition: string;
+};
 
 /** Group already-normalized provider measurements without exporting provider attributes. */
 export async function recordNativeProviderPerformanceSpans(trace: NativeRunTrace, spans: NativeRunHistoricalSpan[]): Promise<void> {
