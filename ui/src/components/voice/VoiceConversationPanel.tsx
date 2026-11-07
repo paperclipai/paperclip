@@ -31,9 +31,11 @@ export function VoiceConversationPanel({ agentName, dependencies, notification, 
   useEffect(() => () => { if (controller.getSnapshot().state !== "idle") void controller.stop(); }, [controller]);
   useEffect(() => { if (accessRevoked) void controller.stop(); }, [controller, accessRevoked]);
   useEffect(() => { if (notification) void controller.notify(notification); else controller.clearPendingNotifications(); }, [controller, notification?.sessionId, notification?.generation, notification?.publicationId, notification?.attempt]);
+  const errorMessage = snapshot.error ? t(snapshot.error.key, snapshot.error.values) : undefined;
+  const errorDetail = snapshot.error?.showCause && snapshot.errorCause instanceof Error ? describeUiError(snapshot.errorCause).body : undefined;
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <VoiceControls {...snapshot} error={snapshot.errorCause instanceof Error ? describeUiError(snapshot.errorCause).body : snapshot.error} agentName={agentName} onStart={() => { void controller.start(); }} onMute={() => { void controller.mute(); }} onEnd={() => { void controller.stop(); }} onResumeAudio={() => { void controller.resumeAudio(); }} onRepeat={() => { void controller.repeat(); }} />
+      <VoiceControls {...snapshot} error={errorDetail ? `${errorMessage} ${errorDetail}` : errorMessage} agentName={agentName} onStart={() => { void controller.start(); }} onMute={() => { void controller.mute(); }} onEnd={() => { void controller.stop(); }} onResumeAudio={() => { void controller.resumeAudio(); }} onRepeat={() => { void controller.repeat(); }} />
       <div className="max-h-64 overflow-y-auto" role="region" aria-label={t("voice_transcript_history_9a63b73")} tabIndex={snapshot.transcript.length ? 0 : undefined}><VoiceTranscript entries={snapshot.transcript} agentName={agentName} /></div>
     </div>
   );

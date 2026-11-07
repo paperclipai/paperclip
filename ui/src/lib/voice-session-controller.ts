@@ -1,4 +1,5 @@
 import { t } from "@/i18n";
+import type { UiMessageDescriptor } from "./localized-ui-error";
 import { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION } from "@paperclipai/shared";
 export { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION } from "@paperclipai/shared";
 import type { VoiceControlState } from "../components/voice/VoiceControls";
@@ -34,7 +35,8 @@ export interface VoiceSessionSnapshot {
   canRepeat?: boolean;
   transcript: readonly VoiceTranscriptEntry[];
   announcement: string;
-  error?: string;
+  /** First-party copy is resolved by the view in its current locale. */
+  error?: UiMessageDescriptor & { showCause?: boolean };
   errorCause?: unknown;
 }
 export interface VoiceSessionDependencies {
@@ -76,6 +78,9 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     notificationTimer = setTimeout(() => { notificationTimer = undefined; flushNotifications(); }, delay);
   }
   const change = (patch: Partial<VoiceSessionSnapshot>) => { snapshot = { ...snapshot, ...("error" in patch ? { errorCause: undefined } : {}), ...patch }; listeners.forEach((listener) => listener()); };
+  function clearError(key: string) {
+    if (snapshot.error?.key === key) change({ error: undefined });
+  }
   async function cleanup() {
     const ownedMedia = media, ownedCredentials = credentials, ownedSessionId = credentials?.sessionId ?? cleanupSessionId;
     const results = await Promise.allSettled([
@@ -96,7 +101,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
       await startup;
       const { closed, cause } = await cleanup();
       change({ state: closed ? "ended" : "cleanup_failed", busy: false, playbackBlocked: false, muted: false,
-        error: closed ? undefined : t("display:copy_1b9c4ba3ce67"), errorCause: cause });
+        error: closed ? undefined : { key: "display:copy_1b9c4ba3ce67", showCause: true }, errorCause: cause });
     })();
     stopping = operation.finally(() => { stopping = undefined; });
     return stopping;
@@ -107,6 +112,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     notifications.clear(); queuedNotifications.clear(); unfinishedAgentSegments.clear(); interruptedAgentSegments.clear(); fallbackSegments.clear(); sequence = 0; hintSentAt = Number.NEGATIVE_INFINITY; hintSending = false; quietAfter = 0; clearNotificationTimer();
     change({ state: "connecting", busy: true, muted: false, canRepeat: false, error: undefined, playbackBlocked: false, transcript: [], announcement: "" });
     let failed = false, recovering = false, creditsRequired = false;
+    let failureCause: unknown;
     const operation = (async () => {
       try {
         credentials = await dependencies.mint();
@@ -145,7 +151,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
           change({ state: snapshot.state === "connecting" ? "listening" : snapshot.state, busy: false, canRepeat: true });
           flushNotifications();
         }
-      } catch (error) { if (error instanceof VoiceSessionStartError) { cleanupSessionId = error.sessionId; recovering = true; creditsRequired = error.reason === "credits_required"; } failed = true; }
+      } catch (error) { failureCause = error; if (error instanceof VoiceSessionStartError) { cleanupSessionId = error.sessionId; recovering = true; creditsRequired = error.reason === "credits_required"; } failed = true; }
     })();
     startup = operation;
     await operation;
@@ -153,7 +159,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     if (failed && epoch === ownedEpoch) {
       // Stop also retires callbacks from media that failed during creation.
       await stop();
-      if (snapshot.state === "ended") change({ state: "failed", error: creditsRequired ? t("display:copy_3983c1d1558e") : recovering ? t("display:copy_6bbc5f9e8ee9") : t("display:copy_93e82d4eb614") });
+      if (snapshot.state === "ended") change({ state: "failed", error: { key: creditsRequired ? "display:copy_3983c1d1558e" : recovering ? "display:copy_6bbc5f9e8ee9" : "display:copy_93e82d4eb614" }, errorCause: failureCause });
     }
   }
   async function mute() {
@@ -161,7 +167,7 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     const owned = media, ownedEpoch = epoch, target = !snapshot.muted;
     change({ busy: true });
     try { await owned.setMicMuted(target); if (epoch === ownedEpoch) change({ muted: target, error: undefined }); }
-    catch { if (epoch === ownedEpoch) change({ get "error"() { return t("display:copy_674fed3c9c84"); } }); }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_674fed3c9c84" }, errorCause: error }); }
     finally { if (epoch === ownedEpoch) change({ busy: false }); }
   }
   function flushNotifications() {
@@ -184,10 +190,11 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     try {
       await media.sendChatMessage(VOICE_RESULT_NOTIFICATION);
       if (epoch !== ownedEpoch) return false;
+      clearError("display:copy_fe00e48cf30a");
       change({ canRepeat: true });
       if (!snapshot.transcript.some((entry) => entry.id === `publication:${input.publicationId}`)) change({ transcript: [...snapshot.transcript, { id: `publication:${input.publicationId}`, source: "application", get "text"() { return t("display:copy_f0ad76b73b37"); }, final: true }] });
       return true;
-    } catch { if (epoch === ownedEpoch) change({ get "error"() { return t("display:copy_fe00e48cf30a"); } }); return false; }
+    } catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_fe00e48cf30a" }, errorCause: error }); return false; }
     finally { if (epoch === ownedEpoch) { hintSending = false; scheduleNotifications(); } }
   }
   function clearPendingNotifications() { queuedNotifications.clear(); clearNotificationTimer(); }
@@ -197,15 +204,15 @@ export function createVoiceSessionController(dependencies: VoiceSessionDependenc
     // A caller-initiated repeat may interrupt speech; background results may not.
     change({ busy: true });
     hintSentAt = Date.now(); hintSending = true;
-    try { await media.sendChatMessage(VOICE_REPEAT_NOTIFICATION); }
-    catch { if (epoch === ownedEpoch) change({ get "error"() { return t("display:copy_0b6904308873"); } }); }
+    try { await media.sendChatMessage(VOICE_REPEAT_NOTIFICATION); if (epoch === ownedEpoch) clearError("display:copy_0b6904308873"); }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_0b6904308873" }, errorCause: error }); }
     finally { if (epoch === ownedEpoch) { hintSending = false; change({ busy: false }); scheduleNotifications(); } }
   }
   async function resumeAudio() {
     if (!media || stopping) return;
     const ownedEpoch = epoch;
-    try { await media.startAudioPlayback(); if (epoch === ownedEpoch) { change({ playbackBlocked: false }); scheduleNotifications(); } }
-    catch (error) { if (epoch === ownedEpoch) change({ get "error"() { return t("display:copy_7ec5e82f3664"); }, errorCause: error }); }
+    try { await media.startAudioPlayback(); if (epoch === ownedEpoch) { clearError("display:copy_7ec5e82f3664"); change({ playbackBlocked: false }); scheduleNotifications(); } }
+    catch (error) { if (epoch === ownedEpoch) change({ error: { key: "display:copy_7ec5e82f3664", showCause: true }, errorCause: error }); }
   }
   return { start, stop, mute, notify, repeat, clearPendingNotifications, resumeAudio, getSnapshot: () => snapshot,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
