@@ -1592,6 +1592,48 @@ describe("Secrets folder view (PAP-14698)", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("points a search that only matches disabled secrets at the status filter", async () => {
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ id: "s1", key: "prod_api_token", name: "prod/api/token" }),
+      makeCompanySecret({ id: "s2", key: "old_client_id", name: "old_client_id", status: "disabled" }),
+    ]);
+    const root = await renderAt("/");
+
+    const input = container.querySelector(
+      'input[aria-label="Search secrets"]',
+    ) as HTMLInputElement;
+    await act(async () => setInputValue(input, "old_client"));
+    await flushReact();
+
+    expect(container.textContent).toContain("No secrets match your search.");
+    expect(container.textContent).toContain("1 secret is hidden by the status filter.");
+    const showAll = [...container.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Show all statuses"),
+    ) as HTMLButtonElement;
+    expect(showAll).toBeDefined();
+    await act(async () => showAll.click());
+    await flushReact();
+
+    const table = container.querySelector('[data-testid="secrets-table-view"]')!;
+    expect(table.textContent).toContain("old_client_id");
+    expect(container.textContent).not.toContain("hidden by the status filter");
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not call a folder holding only disabled secrets empty", async () => {
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ id: "s1", key: "prod_api_token", name: "prod/api/token" }),
+      makeCompanySecret({ id: "s2", key: "old_client_id", name: "old/client_id", status: "disabled" }),
+    ]);
+    const root = await renderAt("/?path=old");
+
+    expect(container.textContent).not.toContain("No secrets in this folder yet.");
+    expect(container.textContent).toContain("1 secret is hidden by the status filter.");
+
+    await act(async () => root.unmount());
+  });
 });
 
 describe("Secrets operator-hidden tabs", () => {
