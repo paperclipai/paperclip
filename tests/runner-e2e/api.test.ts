@@ -83,6 +83,16 @@ it("observes identical native poll results with the actual actor and no traced r
   expect(fetcher.mock.calls[0]![1]).toMatchObject({ method: "GET", redirect: "error", headers: { Cookie: "synthetic-cookie", Origin: "http://127.0.0.1:3100" } });
   expect((fetcher.mock.calls[0]![1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
 });
+it.each([
+  "/api/companies/22222222-2222-4222-8222-222222222222/issues?includeAgentCreatedTasks=true&limit=1000",
+  "/api/companies/22222222-2222-4222-8222-222222222222/activity?limit=1000",
+])("reads the repeated catalog inventory observation %s outside the Playwright trace", async endpoint => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const get = vi.fn(() => { throw new Error("Inventory poll must not enter the Playwright API recorder"); });
+  const fetcher = vi.fn(async () => new Response("[]", { status: 200 })); vi.stubGlobal("fetch", fetcher);
+  await expect(new RunnerApi({ get } as unknown as APIRequestContext).getRunObservation(endpoint)).resolves.toEqual([]);
+  expect(get).not.toHaveBeenCalled(); expect(String((fetcher.mock.calls[0] as unknown[])[0])).toBe(`http://127.0.0.1:3100${endpoint}`);
+});
 it("keeps local-trusted run observations cookie-free and preserves typed HTTP failure without retry", async () => {
   vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
   const api = new RunnerApi({} as APIRequestContext);
@@ -97,6 +107,9 @@ it.each([
   "/api/companies/22222222-2222-4222-8222-222222222222/agents",
   "/api/heartbeat-runs/11111111-1111-4111-8111-111111111111?token=anything",
   "/api/heartbeat-runs/11111111-1111-4111-8111-111111111111/events?afterSeq=0&limit=10&extra=1",
+  "/api/companies/22222222-2222-4222-8222-222222222222/issues?limit=1000",
+  "/api/companies/22222222-2222-4222-8222-222222222222/issues?includeAgentCreatedTasks=true&limit=1000&q=x",
+  "/api/companies/22222222-2222-4222-8222-222222222222/activity?limit=1000&limit=1000",
 ])("rejects non-observation transport target %s before dispatch", async endpoint => {
   vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
   const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
