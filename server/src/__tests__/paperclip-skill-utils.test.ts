@@ -294,6 +294,20 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("tells agents to batch independent human-input questions into one card", async () => {
+    const skillBody = (await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8")).replace(/\s+/g, " ");
+    const referenceBody = (await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8"))
+      .replace(/\s+/g, " ");
+    const humanInput = skillBody.split("**Human input questions.**")[1]?.split("When a saved interaction is answered")[0];
+
+    expect(humanInput).toContain("ask them together in one card");
+    expect(humanInput).toContain("Do not post one card per question");
+    expect(humanInput).toContain("only when it depends on an earlier answer");
+    expect(humanInput).toContain("If the user asks for one question at a time, ask only the next unanswered question");
+    expect(referenceBody).toContain("ask them together in one card");
+    expect(referenceBody).toContain("If the user asks for one question at a time, ask only the next unanswered question");
+  });
+
   it("honors only the current scoped runtime claim without removing legacy disposition", async () => {
     const body = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
     const checkout = body.split("**Step 5 — Checkout.**")[1]?.split("**Step 6")[0];

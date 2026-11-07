@@ -1,3 +1,4 @@
+import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2186,10 +2187,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    const isManualContextCompactionWake = () => Boolean(
+      reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
+      && opts.manualUserWake === true && opts.requestedByActorType === "user"
+      && Boolean(opts.requestedByActorId) && opts.allowRunCoalescing === false
+      && payload?.intent === CONTEXT_COMPACTION_WAKE_REASON
+      && readNonEmptyString(payload.requestId) !== null
+      && readContextCompactionRequest(enrichedContextSnapshot)?.requestId === payload.requestId,
+    );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-      reason === CHAT_COMPLETION_WAKE_REASON,
+      reason === CHAT_COMPLETION_WAKE_REASON || isManualContextCompactionWake(),
     );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
@@ -2720,6 +2729,31 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     );
     if (budgetBlock) {
+      // A user's message refused by a temporary hold (accounting still settling)
+      // is saved as a deferred receipt, not skipped. It is promoted through
+      // normal admission once the run it waits behind ends or the hold clears.
+      if (!executionWaitRequestId && !caseRequest && !durableRequest && issueId && isUuidLike(issueId) &&
+          opts.requestedByActorType === "user" && wakeCommentId &&
+          !(await isBoardOwnedBudgetBlock(db, agent.companyId, budgetBlock))) {
+        const savedIssueId = issueId;
+        const condition = { reason: "budget.blocked", message: `${budgetBlock.reason} Your message is saved.`,
+          scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId };
+        await db.transaction(async tx => {
+          await tx.execute(sql`select id from issues where id = ${savedIssueId} and company_id = ${agent.companyId} for update`);
+          await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId, agentId, source, triggerDetail, reason,
+            payload: withQueuedCommentIdsInWakePayload({
+              ...payload, issueId: savedIssueId, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot, executionWait: condition,
+            }, [...new Set([...queuedCommentIdsFromRunContext(enrichedContextSnapshot), wakeCommentId])]),
+            status: "deferred_issue_execution",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+          });
+        });
+        throw new PersistedExecutionWaitRefusal(budgetBlock.reason, { scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId });
+      }
       const wait = await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
         scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
       });
@@ -3727,6 +3761,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .where(eq(issues.id, issue.id));
               }
             }
+          }
+
+          // Availability is advisory: competing clicks may both read it before
+          // admission. The existing issue lock serializes the run and deferred
+          // receipt checks with the admission below, without another lock owner.
+          if (isManualContextCompactionWake()) {
+            if (activeExecutionRun) {
+              const compacting = isContextCompactionRun(activeExecutionRun.contextSnapshot);
+              throw new ContextCompactionError(compacting ? "already_pending" : "agent_busy",
+                compacting ? "The agent is already compacting its context." : "Available when the agent finishes its current run.");
+            }
+            const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, agentId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]), isNull(agentWakeupRequests.runId),
+              executionWaitRequestId ? ne(agentWakeupRequests.id, executionWaitRequestId) : undefined,
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'intent' = ${CONTEXT_COMPACTION_WAKE_REASON}`,
+              sql`jsonb_typeof(${agentWakeupRequests.payload}->'requestId') = 'string'`,
+              sql`nullif(btrim(${agentWakeupRequests.payload}->>'requestId'), '') is not null`,
+              sql`${agentWakeupRequests.payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'contextCompactionRequestId' = ${agentWakeupRequests.payload}->>'requestId'`,
+            )).limit(1);
+            if (pending) throw new ContextCompactionError("already_pending", "The agent is already compacting its context.");
           }
 
           const dependencyReadiness = await issuesSvc

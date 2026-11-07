@@ -110,7 +110,7 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -129,6 +129,7 @@ export class CodexHarnessSession
         turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
         itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.assertProtocolIntegrity();
       if (transportOwnsQuiescence) {
