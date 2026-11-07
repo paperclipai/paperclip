@@ -431,7 +431,9 @@ describe("remote managed runtime — stable task workspace", () => {
 
   it("serializes concurrent cycles of the same task and fails fast", async () => {
     const workspaceDir = await makeWorkspaceDir();
-    let releaseFirst: (() => void) | null = null;
+    // No initializer: an initialized `null` stays narrowed to `null` across the
+    // awaits and makes the optional call below fail to typecheck (TS2349).
+    let releaseFirst: (() => void) | undefined;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let calls = 0;
     prepareWorkspaceForSshExecution.mockImplementation(async () => {
@@ -494,7 +496,7 @@ describe("remote managed runtime — stable task workspace", () => {
   it("allows a different task of the same agent to prepare concurrently", async () => {
     const workspaceDirA = await makeWorkspaceDir();
     const workspaceDirB = await makeWorkspaceDir();
-    let releaseFirst: (() => void) | null = null;
+    let releaseFirst: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let calls = 0;
     prepareWorkspaceForSshExecution.mockImplementation(async () => {

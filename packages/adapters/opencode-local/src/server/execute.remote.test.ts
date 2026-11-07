@@ -12,6 +12,7 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  prepareAdapterExecutionTargetRuntime,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[], _options?: { onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void> }) => {
     if (args.includes("models")) {
@@ -61,6 +62,7 @@ const {
     },
     stop: async () => {},
   })),
+  prepareAdapterExecutionTargetRuntime: vi.fn(),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -92,9 +94,14 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
     "@paperclipai/adapter-utils/execution-target",
   );
+  prepareAdapterExecutionTargetRuntime.mockImplementation(
+    (input: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>[0]) =>
+      actual.prepareAdapterExecutionTargetRuntime(input),
+  );
   return {
     ...actual,
     startAdapterExecutionTargetPaperclipBridge,
+    prepareAdapterExecutionTargetRuntime,
   };
 });
 
@@ -108,6 +115,13 @@ describe("opencode remote execution", () => {
     const configHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
     cleanupDirs.push(configHome);
     vi.stubEnv("XDG_CONFIG_HOME", configHome);
+    // Isolate the persistent directory-merge lock root: the stable-workspace
+    // tests acquire a real keyed lock, and the machine-global root would both
+    // leak state between tests and contend with stale owners from other runs.
+    const paperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-home-"));
+    cleanupDirs.push(paperclipHome);
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "opencode-remote-test");
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
   });
 
@@ -514,7 +528,7 @@ describe("opencode remote execution — stable task workspace", () => {
         paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
       },
       onLog: async (_stream, chunk) => { logs.push(chunk); },
-    }, 30_000);
+    });
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: stableWorkspace,
     }));
@@ -532,7 +546,7 @@ describe("opencode remote execution — stable task workspace", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: stableWorkspace,
     }));
-  });
+  }, 30_000);
 
   it("falls back to the per-run workspace when no task identity is available", async () => {
     const logs: string[] = [];
@@ -543,12 +557,12 @@ describe("opencode remote execution — stable task workspace", () => {
       config: { command: "opencode", model: "opencode/gpt-5-nano", stableTaskWorkspace: true },
       context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
       onLog: async (_stream, chunk) => { logs.push(chunk); },
-    }, 30_000);
+    });
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: "/remote/workspace/.paperclip-runtime/runs/run-stable/workspace",
     }));
     expect(logs.join("")).toContain("falling back to the per-run workspace");
-  });
+  }, 30_000);
 
   it("resumes a session saved for the stable workspace and matching repo identity", async () => {
     const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-resume-"));
@@ -585,14 +599,14 @@ describe("opencode remote execution — stable task workspace", () => {
           repoRef: "main",
         },
       },
-    }, 30_000);
+    });
     const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
       | [string, string, string[]]
       | undefined;
     expect(runCall?.[2]).toContain("--session");
     expect(runCall?.[2]).toContain("session-stable");
     expect(runCall?.[2].slice(-2)).toEqual(["--dir", stableWorkspace]);
-  });
+  }, 30_000);
 
   it("starts a fresh session when the stable workspace was rebound to another repository", async () => {
     const logs: string[] = [];
@@ -629,14 +643,14 @@ describe("opencode remote execution — stable task workspace", () => {
         },
       },
       onLog: async (_stream, chunk) => { logs.push(chunk); },
-    }, 30_000);
+    });
     const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
       | [string, string, string[]]
       | undefined;
     expect(runCall?.[2]).not.toContain("--session");
     expect(runCall?.[2]).not.toContain("session-stale");
     expect(logs.join("")).toContain("saved for a different workspace");
-  });
+  }, 30_000);
 
   it("uses stable XDG data/state homes for managed connections in the stable workspace", async () => {
     const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-managed-"));
@@ -653,7 +667,7 @@ describe("opencode remote execution — stable task workspace", () => {
         taskId: "task-1",
         paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
       },
-    }, 30_000);
+    });
     const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
       | [string, string, string[], { env: Record<string, string> }]
       | undefined;
@@ -663,5 +677,81 @@ describe("opencode remote execution — stable task workspace", () => {
     expect(runCall?.[3].env.XDG_DATA_HOME).toBe(`${runtimeRoot}/xdg/data`);
     expect(runCall?.[3].env.XDG_STATE_HOME).toBe(`${runtimeRoot}/xdg/state`);
     expect(runCall?.[3].env.XDG_CACHE_HOME).toBe(`${runtimeRoot}/xdg/cache`);
-  });
+  }, 30_000);
+
+  it("falls back to the per-run workspace when the config disables the stable workspace despite the env flag", async () => {
+    const logs: string[] = [];
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-rollback-"));
+    cleanupDirs.push(workspaceDir);
+    vi.stubEnv("PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE", "1");
+    await execute({
+      ...baseOverrides(),
+      config: { command: "opencode", model: "opencode/gpt-5-nano", stableTaskWorkspace: false },
+      context: {
+        taskId: "task-1",
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+      onLog: async (_stream, chunk) => { logs.push(chunk); },
+    });
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/remote/workspace/.paperclip-runtime/runs/run-stable/workspace",
+    }));
+    expect(logs.join("")).not.toContain("Stable task workspace enabled");
+  }, 30_000);
+
+  it("returns a transient retry result when the stable-workspace cycle lock is held by a concurrent run", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-lockwait-"));
+    cleanupDirs.push(workspaceDir);
+    prepareAdapterExecutionTargetRuntime.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("Timed out waiting for the stable task workspace cycle lock"), {
+        code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
+      })));
+    const result = await execute({
+      ...baseOverrides(),
+      config: { command: "opencode", model: "opencode/gpt-5-nano", stableTaskWorkspace: true },
+      context: {
+        taskId: "task-1",
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+    });
+    expect(result.errorCode).toBe("ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT");
+    expect(result.errorMessage).toContain("cycle lock");
+    expect(result.retryNotBefore).toBeTruthy();
+    expect((result.resultJson as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(result.retryNotBefore);
+    expect(result.exitCode).toBe(1);
+    expect(runChildProcess.mock.calls.some((entry) => Array.isArray(entry[2]) && entry[2].includes("run"))).toBe(false);
+  }, 30_000);
+
+  it("releases the remote workspace when remote setup fails after preparation", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "opencode-stable-setupfail-"));
+    cleanupDirs.push(workspaceDir);
+    restoreWorkspaceFromSshExecution.mockClear();
+    runSshCommand.mockRejectedValueOnce(new Error("remote setup failed"));
+    await expect(execute({
+      ...baseOverrides(),
+      config: { command: "opencode", model: "opencode/gpt-5-nano", stableTaskWorkspace: true },
+      context: {
+        taskId: "task-1",
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+    })).rejects.toThrow("remote setup failed");
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: stableWorkspace,
+    }));
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: stableWorkspace,
+    }));
+    // The cycle lock was released with the workspace: the next run of the
+    // same task prepares and restores normally.
+    const result = await execute({
+      ...baseOverrides(),
+      config: { command: "opencode", model: "opencode/gpt-5-nano", stableTaskWorkspace: true },
+      context: {
+        taskId: "task-1",
+        paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" },
+      },
+    });
+    expect(result.sessionParams).toMatchObject({ sessionId: "session_123" });
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(2);
+  }, 60_000);
 });

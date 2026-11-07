@@ -64,6 +64,11 @@ import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/se
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
+
+// Retry delay advertised to the heartbeat scheduler when a concurrent run of
+// the same task holds the stable-workspace cycle lock past the acquire wait.
+const STABLE_TASK_WORKSPACE_LOCK_RETRY_DELAY_MS = 60_000;
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -388,6 +393,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let remoteRuntimeRootDir: string | null = null;
     let stableTaskWorkspaceActive = false;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+    // A setup failure after the remote workspace was prepared leaves the
+    // stable-task cycle lock held. Tear the remote side down before rethrowing
+    // so later wakes of the same task are not blocked. Both steps are
+    // idempotent; the runAttempt finally may repeat them on the normal path.
+    const teardownRemoteWorkspaceOnSetupFailure = async (error: unknown): Promise<never> => {
+      await (paperclipBridge?.stop() ?? Promise.resolve()).catch(() => undefined);
+      await (restoreRemoteWorkspace?.() ?? Promise.resolve()).catch(() => undefined);
+      throw error;
+    };
 
     if (executionTarget?.kind === "remote") {
       localSkillsDir = await buildOpenCodeSkillsDir(config);
@@ -395,9 +409,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // workspace directory persists across runs of the same task so the
       // OpenCode session can be resumed in place. Disabled by default; the
       // legacy per-run workspace remains the rollback path.
+      // An explicit config value wins in both directions so the documented
+      // rollback (stableTaskWorkspace=false) stays effective even when the
+      // environment flag is still set.
       const stableTaskWorkspaceEnabled =
-        config.stableTaskWorkspace === true ||
-        isTruthyEnvFlag(env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE ?? process.env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE);
+        config.stableTaskWorkspace === true
+          ? true
+          : config.stableTaskWorkspace === false
+            ? false
+            : isTruthyEnvFlag(env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE ?? process.env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE);
       const stableTaskWorkspaceIdentity =
         stableTaskWorkspaceEnabled && executionTarget.transport === "ssh" && wakeTaskId && agent?.id && agent?.companyId
           ? { companyId: agent.companyId, agentId: agent.id, issueId: wakeTaskId }
@@ -417,31 +437,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
-      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
-        runId,
-        target: executionTarget,
-        adapterKey: "opencode",
-        timeoutSec,
-        workspaceLocalDir: cwd,
-        ...(stableTaskWorkspaceIdentity ? { taskWorkspace: stableTaskWorkspaceIdentity } : {}),
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: command,
-        onProgress: (line) => onLog("stdout", line),
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        assets: [
-          {
-            key: "skills",
-            localDir: localSkillsDir,
-            followSymlinks: true,
-          },
-          ...(localRuntimeConfigHome
-            ? [{
-              key: "xdgConfig",
-              localDir: localRuntimeConfigHome,
-            }]
-            : []),
-        ],
-      });
+      let preparedExecutionTargetRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>>;
+      try {
+        preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+          runId,
+          target: executionTarget,
+          adapterKey: "opencode",
+          timeoutSec,
+          workspaceLocalDir: cwd,
+          ...(stableTaskWorkspaceIdentity ? { taskWorkspace: stableTaskWorkspaceIdentity } : {}),
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          assets: [
+            {
+              key: "skills",
+              localDir: localSkillsDir,
+              followSymlinks: true,
+            },
+            ...(localRuntimeConfigHome
+              ? [{
+                key: "xdgConfig",
+                localDir: localRuntimeConfigHome,
+              }]
+              : []),
+          ],
+        });
+      } catch (error) {
+        // A concurrent run of the same task holds the stable-workspace cycle
+        // lock. Fail fast, but advertise a bounded transient retry so the
+        // heartbeat scheduler re-runs the wake instead of recording a
+        // terminal setup failure.
+        if ((error as NodeJS.ErrnoException | null)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
+          const retryNotBefore = new Date(Date.now() + STABLE_TASK_WORKSPACE_LOCK_RETRY_DELAY_MS).toISOString();
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+            errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            retryNotBefore,
+            resultJson: { retryNotBefore, transientRetryNotBefore: retryNotBefore },
+            clearSession: false,
+          } satisfies AdapterExecutionResult;
+        }
+        throw error;
+      }
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
       stableTaskWorkspaceActive = preparedExecutionTargetRuntime.taskWorkspaceIdentity != null;
@@ -475,50 +518,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
         stableTaskHomes: stableTaskWorkspaceActive,
       });
-      const remoteHomeDir = config.managedAiConnection
-        ? preparedRuntimeConfig.env.HOME
-        : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
-            cwd,
-            env: preparedRuntimeConfig.env,
-            timeoutSec,
-            graceSec,
-            onLog,
-          });
-      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
-        const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
-        await runAdapterExecutionTargetShellCommand(
+      try {
+        const remoteHomeDir = config.managedAiConnection
+          ? preparedRuntimeConfig.env.HOME
+          : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+            ? preparedExecutionTargetRuntime.runtimeRootDir
+            : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+              cwd,
+              env: preparedRuntimeConfig.env,
+              timeoutSec,
+              graceSec,
+              onLog,
+            });
+        if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+          const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
+          await runAdapterExecutionTargetShellCommand(
+            runId,
+            executionTarget,
+            `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+            { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+          );
+        }
+        await ensureRemoteOpenCodeModelConfiguredAndAvailable({
           runId,
           executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
-          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
-        );
+          command,
+          model,
+          cwd,
+          env: preparedRuntimeConfig.env,
+          timeoutSec,
+          graceSec,
+        });
+      } catch (error) {
+        await teardownRemoteWorkspaceOnSetupFailure(error);
       }
-      await ensureRemoteOpenCodeModelConfiguredAndAvailable({
-        runId,
-        executionTarget,
-        command,
-        model,
-        cwd,
-        env: preparedRuntimeConfig.env,
-        timeoutSec,
-        graceSec,
-      });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
-      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-        runId,
-        target: runtimeExecutionTarget,
-        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
-        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
-        runtimeRootDir: remoteRuntimeRootDir,
-        adapterKey: "opencode",
-        timeoutSec,
-        hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
-        onLog,
-      });
+      try {
+        paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+          runId,
+          target: runtimeExecutionTarget,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
+          runtimeRootDir: remoteRuntimeRootDir,
+          adapterKey: "opencode",
+          timeoutSec,
+          hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
+          onLog,
+        });
+      } catch (error) {
+        await teardownRemoteWorkspaceOnSetupFailure(error);
+      }
       if (paperclipBridge) {
         Object.assign(preparedRuntimeConfig.env, paperclipBridge.env);
         loggedEnv = buildInvocationEnvForLogs(preparedRuntimeConfig.env, {
