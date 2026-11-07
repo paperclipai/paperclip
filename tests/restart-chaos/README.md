@@ -52,7 +52,7 @@ new task or fault starts, the in-flight tasks drain to rest or their deadline,
 and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 `storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
 receipts are in `faults.json`. A replay of a storm task fires the faults that
-crossed it, without a new storm. Only `--triggers time` applies.
+crossed it, without a new storm. `--triggers time,result` may join a storm: a `result` task (C1) also fires its own K1 or K2 (from `--faults`) just after its run accepts a result, the next storm gap runs from its settle, and no triggered fault fires during the drain. Other triggers do not combine with a storm.
 
 ## Daytona (`--env daytona`)
 
