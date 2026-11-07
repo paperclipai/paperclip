@@ -32,6 +32,10 @@ export function buildIndependentTaskWorkspaceSettings(
       : null;
   const next: Record<string, unknown> = {};
   if (mode) next.mode = mode;
+  // Policy fields that name no files carry over with the strategy.
+  if (settings.sharedWorkspaceConcurrency)
+    next.sharedWorkspaceConcurrency = settings.sharedWorkspaceConcurrency;
+  if (settings.networkEgress) next.networkEgress = settings.networkEgress;
   if (settings.environmentId !== undefined)
     next.environmentId = settings.environmentId;
   if (settings.workspaceRuntime)
@@ -51,6 +55,26 @@ export function buildIndependentTaskWorkspaceSettings(
     };
   }
   return Object.keys(next).length > 0 ? next : null;
+}
+
+/**
+ * The issues a task must never share a workspace with: its parent chain, plus
+ * the requested parent's chain when depth placement put the task beside its
+ * requester (recorded as `privacyParentIssueId`).
+ */
+export async function loadTaskLineageIssueIds(
+  db: Pick<Db, "execute">,
+  companyId: string,
+  task: { id: string; parentId: string | null; privacyParentIssueId?: string | null },
+): Promise<string[]> {
+  const ids = new Set([
+    ...(await loadAncestorIssueIds(db, companyId, task.parentId)),
+    ...(task.privacyParentIssueId && task.privacyParentIssueId !== task.parentId
+      ? await loadAncestorIssueIds(db, companyId, task.privacyParentIssueId)
+      : []),
+  ]);
+  ids.delete(task.id);
+  return [...ids];
 }
 
 /** Ids of `parentId` and every ancestor above it (company-scoped). */

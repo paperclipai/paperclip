@@ -648,18 +648,25 @@ the project base (the project workspace or base branch) exactly as a top-level
 task in that project would be. It never starts from the parent's checkout,
 branch, saved snapshot, or unmerged changes. The child keeps the parent's
 company, project, goal, privacy, and workspace strategy (mode, environment,
-runtime, branch template, base ref). It does not keep a pinned existing branch,
-a `reuse_existing` preference, or the workspace id. No route can bind a task to
+runtime, network egress, shared-workspace concurrency, branch template, base
+ref). It does not keep a pinned existing branch, a `reuse_existing` preference,
+or the workspace id. A child in another project takes that project's defaults
+instead of the parent's strategy. No route can bind a task to
 a workspace that an ancestor created or is bound to: an explicit
 `executionWorkspaceId` naming one is dropped at create, and
 `inheritExecutionWorkspaceFromIssueId` copies only the source issue's project and
 strategy. The deprecated internal `executionWorkspaceInheritanceMode` is ignored.
-This keeps a parent and its child from writing into one folder at the same time,
-which made the waking parent wait with `workspace_busy` and crossed sandbox lease
-ownership from the parent into the child.
+This keeps a parent and its child from writing into one realized workspace at
+the same time, which made the waking parent wait with `workspace_busy` and
+crossed sandbox lease ownership from the parent into the child. Project-level
+configuration still applies to the child exactly as to a top-level task: in a
+project configured for `shared_workspace`, every task uses the project's one
+folder under the shared-workspace concurrency policy, and a branch the project
+itself pins applies to every task in the project.
 
 Older releases bound children to the parent's realized workspace by default.
-Such a child moves on its next normal admission: when it starts a new run and no
+Such a child, including one that depth placement put beside its requester
+(recorded as its privacy parent), moves on its next normal admission: when it starts a new run and no
 earlier run of the child is still running, finalizing, or under workspace
 recovery, the server clears the child's binding (keeping its project workspace
 and strategy) and the run realizes the child's own workspace. A running child

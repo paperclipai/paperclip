@@ -9730,9 +9730,11 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
         issueData.executionWorkspaceSettings !== undefined;
-      // The child keeps the parent's workspace strategy, never its files.
+      // The child keeps the parent's workspace strategy, never its files. The
+      // strategy belongs to the parent's project, so it stays behind when the
+      // child targets another project.
       const inheritedPreRealizationWorkspaceSettings =
-        !hasExplicitExecutionWorkspaceOverride
+        !hasExplicitExecutionWorkspaceOverride && childInheritsParentProject
           ? buildIndependentTaskWorkspaceSettings(
               parent.executionWorkspaceSettings,
             )

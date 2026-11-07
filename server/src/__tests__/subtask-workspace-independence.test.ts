@@ -42,6 +42,15 @@ describe("buildIndependentTaskWorkspaceSettings", () => {
       workspaceRuntime: { profile: "agent" },
       workspaceStrategy: { type: "git_worktree", baseRef: "origin/main", branchTemplate: "{{issue.identifier}}" },
     });
+    expect(buildIndependentTaskWorkspaceSettings({
+      mode: "shared_workspace",
+      sharedWorkspaceConcurrency: "serialize",
+      networkEgress: { allowFqdns: ["api.example.com"], allowCidrs: [] },
+    })).toEqual({
+      mode: "shared_workspace",
+      sharedWorkspaceConcurrency: "serialize",
+      networkEgress: { allowFqdns: ["api.example.com"], allowCidrs: [] },
+    });
     expect(buildIndependentTaskWorkspaceSettings({ mode: "reuse_existing" })).toBeNull();
     expect(buildIndependentTaskWorkspaceSettings({ mode: "operator_branch" })).toBeNull();
   });
@@ -60,7 +69,7 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
     await db.delete(activityLog);
     await db.delete(issueRelations);
     await db.update(executionWorkspaces).set({ sourceIssueId: null });
-    await db.update(issues).set({ parentId: null, executionRunId: null });
+    await db.update(issues).set({ parentId: null, privacyParentIssueId: null, executionRunId: null });
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(executionWorkspaces);
@@ -152,6 +161,19 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expectIndependentChild(child, fixture);
     },
   );
+
+  it("createChild into another project does not carry the parent's strategy across the project boundary", async () => {
+    const fixture = await seedParentWithRealizedWorkspace();
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({ id: otherProjectId, companyId: fixture.companyId, name: "Other project", status: "in_progress" });
+    const { issue: child } = await issueService(db).createChild(fixture.parentIssueId, {
+      title: "Cross-project child", status: "todo", priority: "medium", projectId: otherProjectId,
+    } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
+    expect(child.projectId).toBe(otherProjectId);
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.projectWorkspaceId).not.toBe(fixture.projectWorkspaceId);
+    expect(JSON.stringify(child.executionWorkspaceSettings ?? {})).not.toContain("workspaceRuntime");
+  });
 
   it("does not share when inheritExecutionWorkspaceFromIssueId points at the parent", async () => {
     const fixture = await seedParentWithRealizedWorkspace();
@@ -281,6 +303,24 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
         companyId: fixture.companyId, issueId: fixture.childIssueId, runId: admittedRunId,
       })).toBe(false);
+    });
+
+    it("rebinds a task that depth placement put beside the requester whose workspace it shares", async () => {
+      const fixture = await seedOldReleaseChild();
+      // Older releases inherited from the requested parent even when placement
+      // flattened the task beside it; the requester is recorded as privacy parent.
+      const grandparentId = randomUUID();
+      await db.insert(issues).values({ id: grandparentId, companyId: fixture.companyId, projectId: fixture.projectId,
+        title: "Root", status: "in_progress", priority: "medium" });
+      await db.update(issues).set({ parentId: grandparentId }).where(eq(issues.id, fixture.parentIssueId));
+      await db.update(issues).set({ parentId: grandparentId, privacyParentIssueId: fixture.parentIssueId })
+        .where(eq(issues.id, fixture.childIssueId));
+      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+      })).toBe(true);
+      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBeNull();
+      expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
     });
 
     it("lets a running child finish in the shared workspace before rebinding", async () => {

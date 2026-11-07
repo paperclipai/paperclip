@@ -94,6 +94,8 @@ describe("buildSubIssueDefaults", () => {
       projectId: "project-1",
       projectWorkspaceId: "project-workspace-1",
       goalId: "goal-1",
+      // The parent's realized mode carries over; its workspace does not.
+      executionWorkspaceMode: "isolated_workspace",
       assigneeAgentId: "agent-1",
     });
   });

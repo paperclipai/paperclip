@@ -29,7 +29,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
-import { buildIndependentTaskWorkspaceSettings, isAncestorExecutionWorkspace, loadAncestorIssueIds } from "./task-workspace-lineage.js";
+import { buildIndependentTaskWorkspaceSettings, isAncestorExecutionWorkspace, loadTaskLineageIssueIds } from "./task-workspace-lineage.js";
 import { executionWorkspaceRepositoryService, canonicalRepositoryRoot } from "./execution-workspace-repositories.js";
 import { assertSelectedWorkspaceTrust, type TaskWorkspaceCreationTrustContext } from "./task-repository-acquisition.js";
 import { forbidden } from "../errors.js";
@@ -1732,10 +1732,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
    * that wait: the run proceeds on its current binding and nobody is asked to act.
    */
   async function releaseAncestorWorkspaceBindingAtAdmission(input: { companyId: string; issueId: string; runId: string }) {
+    // Cheap unlocked pre-check: most tasks are bound to a workspace they created.
+    const [candidate] = await db.select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId,
+      sourceIssueId: executionWorkspaces.sourceIssueId })
+      .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
+    if (!candidate || (!candidate.parentId && !candidate.privacyParentIssueId) || candidate.sourceIssueId === input.issueId) return false;
     return db.transaction(async tx => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-      if (!task?.executionWorkspaceId || !task.parentId || task.workspacePendingSelection) return false;
-      const ancestorIssueIds = (await loadAncestorIssueIds(tx, input.companyId, task.parentId)).filter(id => id !== task.id);
+      if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+      const ancestorIssueIds = await loadTaskLineageIssueIds(tx, input.companyId, task);
       if (!await isAncestorExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, ancestorIssueIds })) {
         return false;
       }
