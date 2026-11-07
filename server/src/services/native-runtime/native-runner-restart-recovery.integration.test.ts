@@ -230,6 +230,8 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         `fixture_nonce\n${pid}\n${new Date().toISOString()}\n${identity.runnerInstanceId}\n${fingerprint}\n`);
       await expect(fresh.transport.request("turn/start", { input: [{ type: "text", text: "Resume saved work." }] }))
         .rejects.toThrow("classification=session_resume_required");
+      const rejectedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(rejectedCheckpoint).toMatchObject({ lifecycle: "prepared", providerExitUnconfirmed: false, identity: provider.identity });
       await fresh.transport.close();
       await vi.waitFor(() => expect(child.exitCode).not.toBeNull(), { timeout: 5_000 });
       const resumedControl = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
@@ -239,6 +241,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       expect(saved.pendingTerminalDelivery ?? null).toBeNull();
       expect(saved.pendingProviderCleanup ?? null).toBeNull();
       expect(saved.warmTransition ?? null).toBeNull();
+      const suspendedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(suspendedCheckpoint).toMatchObject({ lifecycle: "suspended", providerExitUnconfirmed: false,
+        activeTurnId: null, pendingEvents: [], pendingRuntimeRequests: {}, identity: provider.identity });
       const runner = { execute: async (request: { command: string; args: string[]; timeoutMs?: number }) =>
         new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolveResult => {
           execFile(request.command, request.args, { timeout: request.timeoutMs }, (error, stdout, stderr) => resolveResult({
@@ -256,6 +261,12 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const retried = create(stateDirectory, resume, adopted);
       await retried.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
       await retried.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      await retried.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the bounded retry." }] });
+      await expectCompleted(retried);
+      const calls = (await readFile(journal, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      const turnStarts = calls.filter(call => call.command === "turn.start");
+      expect(turnStarts).toHaveLength(3);
+      expect(new Set(turnStarts.map(call => call.params.turnId)).size).toBe(3);
       expect(launches.mock.calls).toEqual([[undefined], [undefined], [undefined]]);
       expect(retried.evidence().runnerPid).toBeGreaterThan(0);
       expect(retried.evidence().runnerPid).not.toBe(pid);
