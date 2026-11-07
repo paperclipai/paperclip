@@ -162,8 +162,10 @@ import type {
   PrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
+  NativeRunnerSourceReconciliationRequiredError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
   NativeSessionProtocolIntegrityError,
@@ -246,7 +248,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { NATIVE_PROVIDER_SIDE_EFFECT_PENDING, NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
@@ -7623,6 +7625,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "runner_remote_provider_verification_unavailable" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
     sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE ||
+    sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING ||
     sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_UNREAD ||
     sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
@@ -7674,6 +7677,7 @@ export function nativeSessionFailureSourceCode(
   | "native_permission_declined"
   | "native_provider_terminal_failed"
   | typeof NATIVE_PROVIDER_STATE_INCOMPATIBLE
+  | typeof NATIVE_PROVIDER_SIDE_EFFECT_PENDING
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
   | "native_session_cleanup_quarantined"
@@ -7705,6 +7709,7 @@ export function nativeSessionFailureSourceCode(
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
+  if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
     // Failed terminals retain their security meaning across the provider facade.
@@ -7822,6 +7827,9 @@ export function nativeSessionFailureSourceCode(
   }
   return "native_session_interrupted";
 }
+
+const NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION =
+  "The saved provider session has a tool call whose result never reached the runner, so Paperclip did not replace the session or retry it. Reconcile the action: check whether it ran and record the outcome. The task then continues in a fresh provider session in the same workspace. The saved session and workspace are unchanged.";
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
@@ -11382,6 +11390,8 @@ async function executePaperclipNativeSessionWithinScope(
                     ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
+                  : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
+                    ? NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION
                     : recoveryEvidence.recoveryMode === "ambiguous_state"
                       ? "Inspect the original provider failure and durable events; state is ambiguous and a replacement provider session is forbidden."
                       : integrityFailure
@@ -11636,6 +11646,8 @@ async function executePaperclipNativeSessionWithinScope(
                 ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
+              : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
+                ? NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION
                 : recoveryEvidence.recoveryMode === "ambiguous_state"
                   ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
                   : integrityFailure
@@ -15644,7 +15656,13 @@ async function createRunnerdBackendWithinSessionClaim(
         timeoutMs: 30_000,
       });
       if (result.exitCode !== 0 || result.timedOut) {
-        throw new Error("runner_continuity_break_archive_failed");
+        // The local continuity state has not moved yet. Keep the bounded,
+        // redacted remote output: it is the only evidence of why the move
+        // failed and how much of the remote session folder it changed.
+        const output = redactSensitiveText(`${result.stderr ?? ""}\n${result.stdout ?? ""}`).trim().slice(-512);
+        throw new Error(
+          `runner_continuity_break_archive_failed: exit=${result.exitCode} timedOut=${result.timedOut}${output ? ` ${output}` : ""}`,
+        );
       }
     }
     noteNativeRunnerEvidence(archivedAt);
@@ -15702,7 +15720,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!current) throw new Error("native_session_tool_authority_unavailable");
     const attachmentRunId = runnerControlPlane?.store?.state.identity.runId;
     if (attachmentRunId && attachmentRunId !== current.runId) {
-      throw new Error("native_runner_source_semantic_reconciliation_required");
+      throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     }
     return current.execute(call);
   };
