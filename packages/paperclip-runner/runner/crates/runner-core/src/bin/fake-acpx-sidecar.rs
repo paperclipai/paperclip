@@ -99,6 +99,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if command == "turn.start" {
+            if let Some(fault) = args
+                .windows(2)
+                .find(|pair| pair[0] == "--reject-turn-start")
+            {
+                let fault = fault[1].as_str();
+                if fault == "event" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        request["params"]["turnId"].as_str().unwrap(),
+                        json!({"type":"text_delta","text":"Work may have started."}),
+                    )?;
+                    next_sequence += 1;
+                }
+                let code = match fault {
+                    "unknown" | "message-only" => "UNKNOWN",
+                    "lowercase" => "session_resume_required",
+                    _ => "SESSION_RESUME_REQUIRED",
+                };
+                let mut error = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":if fault == "wrong-id" {id + 1} else {id},"ok":false,
+                    "error":{"code":code,"message":"SESSION_RESUME_REQUIRED retryable=true classification=session_resume_required",
+                        "retryable":fault != "permanent"}});
+                if fault == "malformed" {
+                    error["error"]["retryable"] = json!("true");
+                }
+                write_json(&mut stdout, &error)?;
+                continue;
+            }
+        }
         if let Some(journal) = source_journal.as_mut() {
             write_json(journal, &request)?;
             if command == "run.attach" {

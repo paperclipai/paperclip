@@ -63,6 +63,40 @@ function cursorProviderIdentity(mode: unknown) {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it("keeps one disposition request after a restart continuation completes without a result", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-resultless-continuation", normalizedSessionId: "session-resultless-continuation", workingDirectory: WORKSPACE,
+    });
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    // The provider ends the continuation without paperclip_finish, for
+    // example while it says it will wait for a background command.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    const afterContinuation = await session.snapshot();
+    // The continuation borrowed the one-shot marker for crash adoption; it was
+    // not the disposition request, so the allowance is still available.
+    expect(afterContinuation).toMatchObject({ activeTurnId: null, semanticResult: null,
+      dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null });
+    expect(nativeRestartInterruptedTurnId({ ...afterContinuation, semanticResult: null })).toBeNull();
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    await expect(session.startTurn({ message: { role: "user", text: "Report the disposition." } }))
+      .resolves.toMatchObject({ turnId: "turn-3" });
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    // The disposition request itself is the bound: a resultless answer to it
+    // does not re-arm another request.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-3", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    await expect(session.startTurn({ message: { role: "user", text: "Again." } })).rejects.toThrow();
+    await session.close({ reason: "fixture complete" });
+  });
+
   it("offers another restart continuation when a later restart loses the continuation turn itself", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -385,6 +419,68 @@ describe("Codex app-server Codex driver", () => {
       "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
+  });
+
+  describe("a turn accepted for a controller that died before checkpointing it", () => {
+    async function recoverAfterLostAcceptance(acceptedTurnId: string | null) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => acceptedTurnId,
+      });
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+          turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: "run-lost-acceptance",
+        normalizedSessionId: "normalized-lost-acceptance",
+        workingDirectory: WORKSPACE,
+      });
+      // RC-59: the dying controller checkpointed the resumed session, sent
+      // turn/start, and died before checkpointing the accepted turn.
+      const snapshot = await original.snapshot();
+      expect(snapshot.activeTurnId ?? null).toBeNull();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      // The runner releases the turn's start, held until the thread read
+      // bound the recovered turn, then the turn's own terminal.
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the turn when the runner's durable turn.start result names it", async () => {
+      const recovered = await recoverAfterLostAcceptance("turn-1");
+      expect((await recovered.snapshot()).activeTurnId).toBe("turn-1");
+      const events = await collectUntilTerminal(recovered.events());
+      const turnEvents = events.filter(event => event.eventType.startsWith("turn."));
+      expect(turnEvents.map(event => [event.eventType, event.turnId])).toEqual([
+        ["turn.accepted", "turn-1"],
+        ["turn.started", "turn-1"],
+        ["turn.completed", "turn-1"],
+      ]);
+      await expect(recovered.startTurn({ message: { role: "user", text: "Again." } }))
+        .rejects.toThrow();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it.each([
+      ["no accepted turn.start result", null],
+      ["a turn.start result for a different turn", "turn-other"],
+    ])("still fails closed on a foreign active turn with %s", async (_label, acceptedTurnId) => {
+      const recovered = await recoverAfterLostAcceptance(acceptedTurnId);
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await expect(collectUntilTerminal(recovered.events())).resolves.toBeDefined();
+      await expect(recovered.startTurn({ message: { role: "user", text: "Work." } }))
+        .rejects.toThrow("Provider started an unexpected turn.");
+      await recovered.close({ reason: "test complete" });
+    });
   });
 
   it("rejects a recovered provider thread outside the assigned workspace", async () => {

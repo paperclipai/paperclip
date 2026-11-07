@@ -7,12 +7,14 @@ import { readLegacyNativeControllerArchiveDigests, readLegacyNativeControllerArc
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { archiveFailedLegacyNativeController } from "./native-controller-archive.js";
 import type { StorageService } from "../../storage/types.js";
+import { assertOriginalHarnessVolumeSource, type OriginalHarnessVolumeCapability } from "./native-harness-original-volume.js";
 
 export type SettledControllerArchiveOwner = {
   kind: "settled_controller_archive";
   companyId: string; issueId: string; agentId: string; runId: string; sessionId: string;
   selectedSessionId: string; selectedLastRunId: string;
   profileDigest: string; coordinatorDigest: string; controllerDigest: string; supervisorDigest: string | null;
+  filesystemIndependence?: { source: OriginalHarnessVolumeCapability; scopeDigest: string; factsDigest: string };
 };
 const fileDigest = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -31,6 +33,10 @@ export function nativeControllerArchiveCoordinatorDigest(value: {
 
 export async function assertSettledControllerArchiveSource(db: Db, owner: SettledControllerArchiveOwner) {
   function fail(): never { throw new Error("native_controller_archive_source_unsettled"); }
+  if (owner.filesystemIndependence) {
+    await assertOriginalHarnessVolumeSource(owner.filesystemIndependence.source);
+    await (await import("./native-harness-filesystem-independence.js")).assertNativeHarnessFilesystemArchiveSource(db, owner);
+  }
   await db.execute(sql`set local lock_timeout = '1s'`);
   if (!await tryLockNativeWorkspaceFinalization(db, owner)) fail();
   const [task] = await db.select().from(issues).where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("update");
@@ -50,7 +56,9 @@ export async function assertSettledControllerArchiveSource(db: Db, owner: Settle
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, owner.runId),
     eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.nativeIssueId, owner.issueId),
     eq(heartbeatRuns.nativeSessionId, owner.sessionId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
-  if (!selection || !selectedRun || !run?.finishedAt || run.status !== "failed"
+  if (!selection || !selectedRun || !run?.finishedAt
+    || (owner.filesystemIndependence ? !["failed", "succeeded"].includes(run.status)
+      || run.status === "succeeded" && (coordinator.phase !== "committed" || !coordinator.resultId) : run.status !== "failed")
     || nativeControllerArchiveProfileDigest(run.runnerProfileJson) !== owner.profileDigest) fail();
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
     inArray(heartbeatRuns.status, ["queued", "running"]), or(eq(heartbeatRuns.nativeIssueId, owner.issueId),
