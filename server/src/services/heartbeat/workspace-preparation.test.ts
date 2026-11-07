@@ -2075,6 +2075,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const result = await prepareHeartbeatWorkspace(db, input);
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(result.persistedExecutionWorkspace!.id);
     expect(result.persistedExecutionWorkspace!.name).toBe("Realized workspace");
+    expect((await readRun(input.run.id)).contextSnapshot).toMatchObject({ issueId: issue.id, executionWorkspaceId: result.persistedExecutionWorkspace!.id });
     result.activeEnvironmentLease!.lease.metadata!.remoteCwd = "/rebound";
     expect(result.workspaceRestoreSource!.metadata?.remoteCwd).toBe("/original");
   });

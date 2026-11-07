@@ -824,11 +824,17 @@ const support = await getEmbeddedPostgresTestSupport();
         companyId: first.companyId,
         enabled: false,
       });
-      for (const f of [first, second])
+      for (const f of [first, second]) {
         await db
           .update(issues)
           .set({ status: "done", completedAt: new Date() })
           .where(eq(issues.id, f.issueId));
+        // A run that is still queued or running keeps its workspace.
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "cancelled" })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
       const workers = {
         getWorker: (id: string) =>
           ([first.pluginId, second.pluginId] as string[]).includes(id)
