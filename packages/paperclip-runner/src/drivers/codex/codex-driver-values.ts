@@ -1,5 +1,12 @@
+import { resolveClaudeEffort } from "../acpx/claude-effort.js";
+import { resolvePiThinkingLevel } from "../acpx/pi-thinking.js";
+import { isProviderMode } from "../../contracts/provider-mode.js";
 import type { PersistedHarnessProviderIdentity } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../../contracts/completion-result.js";
 import {
   CODEX_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   CODEX_BLOCK_TOOL_NAME,
@@ -29,9 +36,13 @@ export function record(value: unknown): Record<string, unknown> {
  * so the compatibility Codex facade must preserve the item as activity
  * without trying to infer a second result from its text.
  */
-export const RUNNERD_CANONICAL_ITEM = Symbol(
+// Registered by name so dependency-free modules (provider-events) can test
+// it without importing the Codex driver graph.
+export const RUNNERD_CANONICAL_ITEM = Symbol.for(
   "paperclip.runnerd.canonical-item",
 );
+
+export const RUNNERD_RUNTIME_ACTIVITY = Symbol("paperclip.runnerd.runtime-activity");
 
 export function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -74,6 +85,12 @@ export function parseProviderIdentity(
       "ACPX provider identity contains an invalid permission mode",
     );
   }
+  const piThinkingLevel = identity.piThinkingLevel === undefined ? undefined : resolvePiThinkingLevel("pi", identity.piThinkingLevel);
+  const claudeEffort = resolveClaudeEffort("claude", identity.claudeEffort);
+  const mode = identity.mode;
+  if (mode !== undefined && !isProviderMode(mode)) {
+    throw new Error("ACPX provider identity contains an invalid provider mode");
+  }
   const fenceCandidates = identity.providerLifetimeFenceCandidates;
   if (
     !Array.isArray(fenceCandidates) ||
@@ -99,6 +116,9 @@ export function parseProviderIdentity(
     requestedModel: identity.requestedModel as string,
     effectiveModel: identity.effectiveModel as string,
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(mode === undefined ? {} : { mode }),
+    ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
+    ...(claudeEffort === undefined ? {} : { claudeEffort }),
     providerLifetimeFenceCandidates: fenceCandidates as [
       number,
       number,
@@ -127,6 +147,14 @@ export function itemFromParams(
 export function itemText(item: Record<string, unknown>): string {
   for (const key of ["text", "aggregatedOutput", "patch", "delta"]) {
     if (typeof item[key] === "string") return item[key];
+  }
+  // Codex reasoning items carry their provider-written summary parts in
+  // `summary[]`; parts are separated the same way as the live stream.
+  if (item.type === "reasoning" && Array.isArray(item.summary)) {
+    return item.summary
+      .map((part) => typeof part === "string" ? part : text(record(part).text))
+      .filter((part) => part.length > 0)
+      .join("\n\n");
   }
   return "";
 }
@@ -232,8 +260,7 @@ export function differingJsonPaths(
 function finishToolSpec(): Record<string, unknown> {
   return {
     name: CODEX_COMPLETION_TOOL_NAME,
-    description:
-      "Return the one semantic completion result for this task, including an explicit response_wake yield when waiting for the next response.",
+    description: PRP_COMPLETION_TOOL_DESCRIPTION,
     inputSchema: CODEX_RESULT_PROVIDER_INPUT_SCHEMA,
   };
 }
@@ -241,8 +268,7 @@ function finishToolSpec(): Record<string, unknown> {
 function blockToolSpec(): Record<string, unknown> {
   return {
     name: CODEX_BLOCK_TOOL_NAME,
-    description:
-      "Return the one semantic result when the task cannot continue.",
+    description: PRP_BLOCK_TOOL_DESCRIPTION,
     inputSchema: CODEX_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   };
 }

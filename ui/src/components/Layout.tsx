@@ -1,3 +1,9 @@
+import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
+import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useDesignSandbox } from "@/context/DesignSandboxContext";
+import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
+import { BoardDialogs } from "./BoardDialogs";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -14,10 +20,6 @@ import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { AnnouncementWell } from "./AnnouncementWell";
@@ -27,20 +29,22 @@ import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
+import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
+import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 import { useDialogActions } from "../context/DialogContext";
-import { GeneralSettingsProvider } from "../context/GeneralSettingsContext";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useMobileNavVisibility } from "../hooks/useMobileNavVisibility";
+import { useMobileVisualViewport } from "../hooks/useMobileVisualViewport";
 import { healthApi } from "../api/health";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
 import {
@@ -69,6 +73,7 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
 const RESERVED_APP_SUBPATHS = new Set([
   "browse",
   "connections",
+  "assistant-connection",
   "connect",
   "chat",
   "vercel-connect",
@@ -80,6 +85,7 @@ const RESERVED_APP_SUBPATHS = new Set([
 ]);
 
 export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+  const designSandbox = useDesignSandbox();
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -91,7 +97,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     setForceCollapsed,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
-  const { togglePanelVisible } = usePanel();
+  const { togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
@@ -116,12 +122,21 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: classicStreamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const shellRoute = classifyShellRoute(location.pathname, companyPrefix);
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";
   const companyPathSegments = shellRoute.companySegments;
   const isTaskDetailRoute = shellRoute.isTaskDetail;
-  const useStreamlinedTaskDetailShell = streamlinedUiEnabled && isTaskDetailRoute;
+  useLayoutEffect(() => {
+    if (coordinatorWorkspaceEnabled) setPanelVisible(false);
+  }, [coordinatorWorkspaceEnabled, location.pathname, setPanelVisible]);
+  const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
+  // Chat keeps its header beside the agent sidebar, including before an agent is selected.
+  const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
+  const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
@@ -133,12 +148,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       ? companyPathSegments[2]
       : null;
   const onboardingTriggered = useRef(false);
-  const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
-  const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);
+  const mobileViewportRef = useMobileVisualViewport(isMobile);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -170,7 +185,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     [routeSidebarCompanyId, routeSidebarCompanyPrefix],
   );
   // Most contextual routes replace the global navigation inside the same
-  // sidebar shell. Skills, Apps, Agent details, and Routine details are the
+  // sidebar shell. Apps, Agent details, and Routine details are the
   // exceptions in Streamlined UI: their local navigation is a second rail
   // beside the persistent company nav.
   const sharedSecondarySidebar = isCompanySettingsRoute ? (
@@ -205,16 +220,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       />
     )
   ) : null;
-  const secondarySidebar = shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
-  ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "skills" ? (
-    <SkillsContextualSidebar />
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
   const keepsPrimarySidebar = streamlinedUiEnabled && hasSecondarySidebar && (
-    shellRoute.builtInContextualSurface === "skills"
+    isAgentChatRoute
     || shellRoute.builtInContextualSurface === "agent"
     || shellRoute.builtInContextualSurface === "routine"
     || isAppsRoute
@@ -234,17 +247,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
     refetchIntervalInBackground: false,
   });
-  const keyboardShortcutsEnabled = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.keyboardShortcuts === true;
 
   useLayoutEffect(() => {
     setForceCollapsed(!streamlinedUiEnabled && hasSecondarySidebar);
@@ -453,7 +461,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   useCompanyPageMemory();
 
   useKeyboardShortcuts({
-    enabled: keyboardShortcutsEnabled,
     onNewIssue: () => openNewIssue(),
     onSearch: openSearch,
     onToggleSidebar: toggleSidebar,
@@ -461,15 +468,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     onShowShortcuts: () => setShortcutsOpen(true),
     onGoToInbox: () => navigate("/inbox"),
   });
-
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      return;
-    }
-    lastMainScrollTop.current = 0;
-    setMobileNavVisible(true);
-  }, [isMobile]);
 
   // Swipe gesture to open/close sidebar on mobile
   useEffect(() => {
@@ -515,39 +513,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       document.removeEventListener("touchend", onTouchEnd);
     };
   }, [isMobile, sidebarOpen, setSidebarOpen]);
-
-  const updateMobileNavVisibility = useCallback((currentTop: number) => {
-    const delta = currentTop - lastMainScrollTop.current;
-
-    if (currentTop <= 24) {
-      setMobileNavVisible(true);
-    } else if (delta > 8) {
-      setMobileNavVisible(false);
-    } else if (delta < -8) {
-      setMobileNavVisible(true);
-    }
-
-    lastMainScrollTop.current = currentTop;
-  }, []);
-
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      lastMainScrollTop.current = 0;
-      return;
-    }
-
-    const onScroll = () => {
-      updateMobileNavVisibility(window.scrollY || document.documentElement.scrollTop || 0);
-    };
-
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-    };
-  }, [isMobile, updateMobileNavVisibility]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -617,11 +582,15 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
+    <CoordinatorPresentation.Provider value={coordinatorWorkspaceEnabled}>
+    <CoordinatorChatReferencesProvider enabled={coordinatorWorkspaceEnabled}>
     <ChatSetupSidebarProvider>
-    <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
+      ref={mobileViewportRef}
+      data-mobile={isMobile ? "true" : undefined}
       className={cn(
-        "bg-background text-foreground pt-(--sz-safe-top)",
+        "paperclip-app-shell bg-background text-foreground pt-(--sz-safe-top)",
+        coordinatorWorkspaceEnabled && "coordinator-workspace",
         // overflow-x-clip on mobile keeps a stray wide descendant from making the
         // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
         // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -637,7 +606,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
+      <div className={cn("app-main-row min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
@@ -671,43 +640,53 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
         ) : (
           <SidebarShell
             open={sidebarOpen}
-            collapsed={replacesPrimarySidebar ? false : collapsed}
-            peeking={replacesPrimarySidebar ? false : peeking}
+            collapsed={designSandbox || replacesPrimarySidebar ? false : collapsed}
+            peeking={designSandbox || replacesPrimarySidebar ? false : peeking}
             resizable
+            storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : coordinatorWorkspaceEnabled ? "paperclip.coordinator.sidebar-width" : undefined}
             onPanelMouseEnter={replacesPrimarySidebar ? undefined : handlePanelPointerEnter}
             onPanelMouseLeave={replacesPrimarySidebar ? undefined : handlePanelPointerLeave}
             onPanelFocusCapture={!replacesPrimarySidebar && collapsed ? handlePanelFocus : undefined}
             onPanelBlurCapture={!replacesPrimarySidebar && collapsed ? handlePanelBlur : undefined}
           >
-            <div className="flex flex-1 min-h-0">
-              {replacesPrimarySidebar ? (
-                <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
-              ) : (
-                <Sidebar>{sidebarSections}</Sidebar>
-              )}
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-              forceExpanded={replacesPrimarySidebar}
-            />
+            {designSandbox ? <DesignSandboxSidebar /> : <>
+              <div className="flex flex-1 min-h-0">
+                {replacesPrimarySidebar ? (
+                  <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+                ) : (
+                  <Sidebar>{sidebarSections}</Sidebar>
+                )}
+              </div>
+              {/* Dock optional announcements in the sidebar column so they never
+                  cover the task thread or composer. While the sidebar is a rail
+                  the card waits until the sidebar is expanded again. */}
+              {sidebarOpen && (replacesPrimarySidebar || !collapsed) ? (
+                <AnnouncementWell health={health} placement="sidebar" />
+              ) : null}
+              <SidebarAccountMenu
+                deploymentMode={health?.deploymentMode}
+                forceExpanded={replacesPrimarySidebar}
+              />
+            </>}
           </SidebarShell>
         )}
 
-        {!isMobile && showsAdjacentSecondarySidebar && !keepsPrimarySidebar ? (
+        {!isMobile && !isAgentChatRoute && ((showsAdjacentSecondarySidebar && !keepsPrimarySidebar) || (designSandbox && replacesPrimarySidebar)) ? (
           <SecondarySidebar className="w-60 shrink-0">
             {secondarySidebar}
           </SecondarySidebar>
         ) : null}
 
-        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
+        <div className={cn("app-content-column flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
           <div
             className={cn(
-              !isMobile && useStreamlinedTaskDetailShell && "hidden",
+              "app-breadcrumb",
+              !isMobile && useInsetTaskDetailHeader && "hidden",
               isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar />
+            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">
                 <CompanySettingsNav />
@@ -715,16 +694,17 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             ) : null}
           </div>
           <div className={cn(
+            "app-content-row",
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
-            {!isMobile && keepsPrimarySidebar ? (
-              <SecondarySidebar className="w-60 shrink-0 bg-background">
+            {!isMobile && (keepsPrimarySidebar || isAgentChatRoute) ? (
+              <SecondarySidebar className={cn(isAgentChatRoute ? "w-70" : "w-60", "shrink-0 bg-background")}>
                 {secondarySidebar}
               </SecondarySidebar>
             ) : null}
             <div className={cn(!isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}>
-              {!isMobile && useStreamlinedTaskDetailShell ? (
+              {!isMobile && useInsetTaskDetailHeader ? (
                 <>
                   <StandaloneBrowserControls mobile={false} />
                   <BreadcrumbBar taskDetailLayout />
@@ -743,8 +723,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 isMobile
                   ? ({
                       "--tc-composer-bottom": mobileNavVisible
-                        ? "var(--sz-calc-14)"
+                        ? "var(--tc-composer-visible-nav-offset)"
                         : "var(--tc-composer-hidden-nav-offset)",
+                      "--mobile-nav-motion-duration": mobileNavVisible
+                        ? "var(--motion-mobile-nav-enter)"
+                        : "var(--motion-mobile-nav-exit)",
+                      "--mobile-nav-motion-ease": mobileNavVisible
+                        ? "var(--motion-ease-out-expo)"
+                        : "var(--motion-ease-standard)",
                     } as CSSProperties)
                   : undefined
               }
@@ -758,8 +744,8 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? isTaskDetailRoute && !mobileNavVisible
-                    ? "overflow-visible pb-(--tc-composer-hidden-nav-offset)"
+                  ? isTaskDetailRoute
+                    ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
                     : "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
@@ -782,16 +768,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <BoardDialogs />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
-      <AnnouncementWell health={health} />
+      {isMobile ? <AnnouncementWell health={health} placement="floating" /> : null}
       <PluginAppShellOverlays localTrusted={health?.deploymentMode === "local_trusted"} />
       </div>
-    </GeneralSettingsProvider>
     </ChatSetupSidebarProvider>
+    </CoordinatorChatReferencesProvider>
+    </CoordinatorPresentation.Provider>
   );
 }

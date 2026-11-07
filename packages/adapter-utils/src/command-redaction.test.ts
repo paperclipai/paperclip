@@ -1,10 +1,63 @@
 import { describe, expect, it } from "vitest";
+
+describe("explicit diagnostic credential forms", () => {
+  it("masks suffixed CLI options and encoded JSON headers with whitespace", () => {
+    const jwt = `${Buffer.from(' {"alg":"HS256","typ":"JWT"}').toString("base64url")}.abcdefghijk.abcdefghijkl`;
+    expect(redactCommandText("tool --api-key-prod sensitivevalue --token-policy readable"))
+      .not.toContain("sensitivevalue");
+    expect(redactCommandText(`provider ${jwt}`)).not.toContain(jwt);
+    expect(redactCommandText("plan.security.credentials.md")).toBe("plan.security.credentials.md");
+  });
+});
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  collectDiagnosticEnvironmentSecrets,
+  looksLikeCredentialJwt,
   redactDiagnosticText,
+  redactCommandText,
 } from "./command-redaction.js";
 
+describe("looksLikeCredentialJwt", () => {
+  it("recognizes encoded headers even with short payloads and signatures", () => {
+    const header = Buffer.from('{"alg":"HS256"}').toString("base64url");
+    expect(looksLikeCredentialJwt(`${header}.e30.c2ln`)).toBe(true);
+  });
+
+  it("recognizes direct-encryption JWTs with an empty encrypted-key segment", () => {
+    const header = Buffer.from('{"alg":"dir","enc":"A256GCM"}').toString("base64url");
+    expect(looksLikeCredentialJwt(`${header}..abcdefghijk.abcdefghijkl.abcdefghijk`)).toBe(true);
+  });
+
+  it.each([
+    "eyJ..signature",
+    "eyJ.key..ciphertext.tag",
+    "eyJ.key.iv..tag",
+    "eyJ.key.iv.ciphertext.",
+  ])("rejects empty segments outside the JWE encrypted key: %s", (input) => {
+    expect(looksLikeCredentialJwt(input)).toBe(false);
+  });
+
+  it.each([
+    "api.openai.com",
+    "agents.staging.example.com",
+    "deployment.credentials.example.md",
+    "paperclip.native-model-envelope.v3",
+  ])("rejects public dotted identifiers: %s", (input) => {
+    expect(looksLikeCredentialJwt(input)).toBe(false);
+  });
+});
+
 describe("redactDiagnosticText", () => {
+  it("preserves credential metadata and dotted identifiers", () => {
+    for (const text of [
+      '"tokenBudget":4000 --token-budget 4000 SECRET_STORAGE=vault',
+      '{"credentialHandling":"harness","authorizationRequired":true}',
+      "executor.customTools.integrations.list deployment.credentials.example.md api.openai.com",
+      "Use a private key and secret manager with credential handling.",
+      "Use bearer tokens and bearer authentication.",
+    ]) expect(redactDiagnosticText(text)).toBe(text);
+  });
+
   it("redacts a JSON secret field value", () => {
     const input = '{"token":"opaque-value","status":"error"}';
     const output = redactDiagnosticText(input);
@@ -91,5 +144,87 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+});
+
+describe("redactCommandText on long runs", () => {
+  const jwt =
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactCommandText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("keeps redacting options, assignments, and tokens inside dash-separated runs", () => {
+    const cases = [
+      ["x--token flag-secret", `x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["--x--token flag-secret", `--x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      [
+        "a-b--api-key=assigned-secret --password 'quoted-secret'",
+        `a-b--api-key=${REDACTED_COMMAND_TEXT_VALUE} --password '${REDACTED_COMMAND_TEXT_VALUE}'`,
+      ],
+      ["prefix-MY_API_KEY=env-secret", `prefix-MY_API_KEY=${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`--${jwt}`, `--${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`session=${jwt}`, `session=${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["my-token is here", "my-token is here"],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactCommandText(input)).toBe(expected);
+    }
+  });
+
+  it("scans long letter/digit and dash-separated runs in linear time", () => {
+    const base64Url = Buffer.from(Array.from({ length: 90_000 }, (_, index) => (index * 7919) % 256)).toString("base64url");
+    for (const run of ["a".repeat(120_000), "a-".repeat(60_000), "a--".repeat(40_000), base64Url]) {
+      expect(redactWithinTimeBudget(`${run} --token run-secret`)).toBe(`${run} --token ${REDACTED_COMMAND_TEXT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}--token run-secret`)).toBe(`${run}--token ${REDACTED_COMMAND_TEXT_VALUE}`);
+    }
+  });
+});
+
+
+describe("diagnostic environment secret selection", () => {
+  it("does not infer secrets from ordinary configuration values", () => {
+    expect(collectDiagnosticEnvironmentSecrets({
+      FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe", REGION: "us-east-1",
+      NODE_ENV: "production", HOME: "/home/operator", PORT: "3100", MAX_TOKENS: "4096",
+      PUBLIC_KEY_PATH: "/workspace/key.pem", KEYBOARD_LAYOUT: "us",
+      SORT_KEY: "created_at", CACHE_KEY: "cache-v1", ROUTING_KEY: "jobs",
+      PARTITION_KEY: "tenant_id", IDEMPOTENCY_KEY: "operation-123", PUBLIC_KEY: "public-material",
+    })).toEqual([]);
+  });
+
+  it.each(["API_KEY", "KEY", "ACCESS_TOKEN", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID",
+    "CLIENT_SECRET", "PASSWORD", "AUTHORIZATION", "PRIVATE_KEY", "API_KEY_PRODUCTION", "AWS_BEARER_TOKEN_BEDROCK"])(
+    "keeps short credentials private under %s", key => {
+      expect(collectDiagnosticEnvironmentSecrets({ [key]: "1" })).toEqual(["1"]);
+    },
+  );
+
+  it("recognizes credential content and declared bindings under arbitrary names", () => {
+    const jwt = `${Buffer.from('{"alg":"HS256"}').toString("base64url")}.e30.c2ln`;
+    const pem = "-----BEGIN PRIVATE KEY-----\nprivate-canary\n-----END PRIVATE KEY-----";
+    const key = "sk-fixturecredential12345";
+    const selected = collectDiagnosticEnvironmentSecrets({ A: jwt, B: pem, C: key, D: "safe", FEATURE_FLAG: "false" }, ["D"]);
+    expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
+  });
+
+  it("keeps unknown opaque values private without declarations", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "opaque-host-secret" })).toEqual(["opaque-host-secret"]);
+  });
+
+  it("does not exempt credentials on ordinary-setting names", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ SORT_KEY: "opaque-secret", FEATURE_FLAG: "1" }, ["SORT_KEY", "FEATURE_FLAG"]))
+      .toEqual(["opaque-secret", "1"]);
+  });
+
+  it("extracts encoded URL passwords and deduplicates selected values", () => {
+    const url = "postgres://user:private%20password@db.test/database";
+    expect(new Set(collectDiagnosticEnvironmentSecrets({ DATABASE_URL: url, PASSWORD: "private password" })))
+      .toEqual(new Set([url, "private%20password", "private password"]));
   });
 });

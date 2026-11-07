@@ -8,6 +8,8 @@ import {
   agents,
   companies,
   companySkills,
+  projects,
+  projectWorkspaces,
   createDb,
   toolApplications,
   toolConnectionInstalls,
@@ -22,6 +24,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { companySkillService } from "../services/company-skills.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
@@ -110,9 +113,10 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Terminal status precedes trailing writes; drain them before truncating the fixture.
+    await heartbeatService(db).drainActiveRunExecutions();
     capturedRuns.length = 0;
     await instanceSettingsService(db).updateExperimental({ enableBetaSkills: false });
-    await new Promise((resolve) => setTimeout(resolve, 100));
     await db.execute(sql.raw(`
       TRUNCATE TABLE
         "activity_log",
@@ -142,6 +146,51 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       await fs.rm(paperclipHome, { recursive: true, force: true });
     }
     await tempDb?.cleanup();
+  });
+
+  it.each(["local_path", "catalog"] as const)("snapshots changed installed %s files for new executions and keeps resume versions", async (sourceType) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Local skill snapshots', issuePrefix: 'LSK' });
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-local-snapshot-'));
+    cleanupDirs.add(directory);
+    const [project] = await db.insert(projects).values({ companyId, name: 'Approved local workspace' }).returning();
+    await db.insert(projectWorkspaces).values({ companyId, projectId: project!.id, name: 'Local skill workspace', sourceType: 'local_path', cwd: directory, isPrimary: true });
+    await fs.mkdir(path.join(directory, 'references'));
+    await fs.writeFile(path.join(directory, 'SKILL.md'), '---\nname: local-snapshot\ndescription: Read the installed reference.\n---\nRead references/marker.txt.\n');
+    await fs.writeFile(path.join(directory, 'references/marker.txt'), 'v1\n');
+    const skills = companySkillService(db);
+    const imported = await skills.importFromSource(companyId, directory);
+    const key = imported.imported[0]!.key;
+    if (sourceType === "catalog") {
+      await db.update(companySkills).set({ sourceType }).where(eq(companySkills.key, key));
+      const result = await skillInstallationMaintenance(db).installations({ id: imported.imported[0]!.id, apply: true, writersStopped: true });
+      expect(result.results[0]!.status).toBe("converted");
+    }
+    const selected = { snapshotLatest: true, onlyKeys: new Set([key]) };
+    const [first] = await skills.listRuntimeSkillEntries(companyId, selected);
+    expect(first!.versionId).toBeTruthy();
+    expect(await fs.readFile(path.join(first!.source, 'references/marker.txt'), 'utf8')).toBe('v1\n');
+
+    // A reference-only change must be discovered even when SKILL.md is unchanged.
+    await fs.writeFile(path.join(directory, 'references/marker.txt'), 'v2\n');
+    if (sourceType === "local_path") await skills.importFromSource(companyId, directory);
+    else {
+      const [beforeUpdate] = await skills.listRuntimeSkillEntries(companyId, selected);
+      expect(beforeUpdate!.versionId).toBe(first!.versionId);
+      const saved = (await skills.getVersion(companyId, imported.imported[0]!.id, first!.versionId!))!;
+      await skills.createVersion(companyId, imported.imported[0]!.id, {}, null, {
+        fileInventory: saved.fileInventory.map(file => file.path === "references/marker.txt" ? { ...file, content: "v2\n" } : file),
+      });
+    }
+    const [latest] = await skills.listRuntimeSkillEntries(companyId, selected);
+    expect(latest!.versionId).not.toBe(first!.versionId);
+    expect(await fs.readFile(path.join(latest!.source, 'references/marker.txt'), 'utf8')).toBe('v2\n');
+    const [unchanged] = await skills.listRuntimeSkillEntries(companyId, selected);
+    expect(unchanged!.versionId).toBe(latest!.versionId);
+
+    const [resumed] = await skills.listRuntimeSkillEntries(companyId, { ...selected, versionSelections: new Map([[key, first!.versionId!]]) });
+    expect(resumed!.versionId).toBe(first!.versionId);
+    expect(await fs.readFile(path.join(resumed!.source, 'references/marker.txt'), 'utf8')).toBe('v1\n');
   });
 
   it("materializes different pinned skill versions for different agents at runtime", async () => {
@@ -292,7 +341,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       ?.skills.find((entry) => entry.key === skillKey);
     expect(defaultSkill).toMatchObject({
       key: skillKey,
-      versionId: null,
+      versionId: versionTwo.id,
       currentVersionId: versionTwo.id,
       sourceStatus: "available",
     });

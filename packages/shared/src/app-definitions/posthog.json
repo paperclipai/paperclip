@@ -241,7 +241,8 @@
           "type": "password",
           "required": true,
           "placeholder": "phx_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Analytics objects, feature flags, experiments, error triage and other enabled product actions. readonly/feature/tool filters remain enforced. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

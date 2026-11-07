@@ -1,3 +1,4 @@
+import { parseIdleCapabilities, type IdleCapabilities } from "./idle-incoming-wake-capability.js";
 import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -231,7 +232,7 @@ function decodeJsonPart(part: string, label: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function publicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
+export function cloudRuntimePublicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
   const raw = nonEmpty(env.PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS);
   if (!raw) throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is not configured");
   let parsed: unknown;
@@ -276,7 +277,7 @@ function verifyClaims(input: {
   ) {
     throw new Error("Cloud runtime identity protected header is invalid");
   }
-  const key = publicKeyForKid(input.env, header.kid);
+  const key = cloudRuntimePublicKeyForKid(input.env, header.kid);
   const signature = Buffer.from(encodedSignature, "base64url");
   const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
   if (!verify(null, signingInput, key, signature)) {
@@ -446,11 +447,15 @@ export const CLOUD_CONTROL_HEADER = "x-paperclip-cloud-control";
 export const CLOUD_CONTROL_AUDIENCE = "paperclip-cloud-control/v1";
 export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
 export const CLOUD_CONTROL_ACTIONS = [
+  "ephemeral-enrollment:prepare",
   "task-drain:read",
   "task-drain:start",
   "task-drain:stop",
   "lifecycle:read",
   "lifecycle:unarchive-primary",
+  "connector-events:wake",
+  "mcp-device:mint",
+  "mcp-dot:principal",
 ] as const;
 export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
 
@@ -490,6 +495,7 @@ export type CloudControlClaims = {
   sub: string;
   action: CloudControlAction;
   requestId: string;
+  idleCapabilities?: IdleCapabilities;
   iat: number;
   exp: number;
 };
@@ -523,7 +529,7 @@ export function verifyCloudControlAssertion(input: {
   ) {
     throw new Error("Cloud control protected header is invalid");
   }
-  const key = publicKeyForKid(env, header.kid);
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
   const signature = Buffer.from(encodedSignature, "base64url");
   const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
   if (!verify(null, signingInput, key, signature)) {
@@ -570,6 +576,10 @@ export function verifyCloudControlAssertion(input: {
     || payload.exp - payload.iat > CLOUD_CONTROL_MAX_LIFETIME_SECONDS
   ) {
     throw new Error("Cloud control assertion is expired or has an invalid lifetime");
+  }
+  if (payload.idleCapabilities !== undefined) {
+    if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
+    payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
   }
   // Consumed LAST, only after every other check passed: a rejected
   // assertion must not burn its request id, or an attacker could deny a

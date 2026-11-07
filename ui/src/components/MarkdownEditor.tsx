@@ -1,8 +1,10 @@
+import { FILE_DROP_TARGET_ATTRIBUTE } from "../lib/file-drop-target";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   Component,
   type ClipboardEvent,
   type ErrorInfo,
+  type KeyboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -56,6 +58,9 @@ import {
   unescapeAngleBracketEscapes,
 } from "../lib/angle-bracket-markdown";
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
+import { unescapeIntrawordUnderscores } from "../lib/underscore-markdown";
+import { unescapeEqualsSigns } from "../lib/equals-markdown";
+import { restoreTrailingMarkdownSpaces } from "../lib/trailing-markdown-spaces";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -82,6 +87,7 @@ export interface MentionOption {
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
+  ariaLabel?: string;
   placeholder?: string;
   className?: string;
   contentClassName?: string;
@@ -96,8 +102,10 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Capability-aware action commands supplied by the owning composer. */
   actionCommands?: SlashCommandOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on the configured submit shortcut. */
   onSubmit?: () => void;
+  /** Task composers use Enter; document editors retain Cmd/Ctrl+Enter by default. */
+  submitKey?: "enter" | "mod-enter";
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -183,7 +191,10 @@ function prepareMarkdownForEditor(value: string): string {
  * feed agent prompts and must stay in the clean, human-authored form.
  */
 function toStoredMarkdown(markdown: string): string {
-  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown));
+  const withTrailingSpaces = restoreTrailingMarkdownSpaces(markdown);
+  // Unescape underscores and `=` first, on the exporter's exact text: removing `\<`
+  // or `\>` can turn following lines into HTML or blockquotes and move code ranges.
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeEqualsSigns(unescapeIntrawordUnderscores(withTrailingSpaces))));
 }
 
 function escapeRegExp(value: string): string {
@@ -492,7 +503,10 @@ export function computeMentionMenuPosition(
   const desiredLeft = viewport.offsetLeft + anchor.viewportLeft + MENTION_MENU_CARET_GAP;
   const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
 
-  return { top, left };
+  // The menu can grow beyond its estimated width for long task names.
+  // Constrain its actual layout to the space remaining beside the caret.
+  const maxWidth = Math.max(0, viewport.offsetLeft + viewport.width - MENTION_MENU_PADDING - left);
+  return { top, left, maxWidth };
 }
 
 function getMentionMenuSize(optionCount: number): MentionMenuSize {
@@ -506,12 +520,22 @@ function getMentionMenuSize(optionCount: number): MentionMenuSize {
   };
 }
 
+// CodeMirror's editable surface is `.cm-content`, not a `pre` or `code` node.
+// MDXEditor wraps that surface in a hashed `codeMirrorWrapper` class. A paste
+// that starts inside either of those belongs to the nested editor.
+const CODE_LIKE_SELECTOR = [
+  "pre",
+  "code",
+  ".cm-editor",
+  ".cm-content",
+  "[class*='codeMirrorWrapper']",
+  "[class*='codeBlockEditor']",
+].join(",");
+
 function nodeInsideCodeLike(container: HTMLElement, node: Node | null): boolean {
   if (!node || !container.contains(node)) return false;
-  const el = node.nodeType === Node.ELEMENT_NODE
-    ? (node as HTMLElement)
-    : node.parentElement;
-  return Boolean(el?.closest("pre, code"));
+  const el = node instanceof Element ? node : node.parentElement;
+  return Boolean(el?.closest(CODE_LIKE_SELECTOR));
 }
 
 function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
@@ -522,6 +546,17 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
     if (nodeInsideCodeLike(container, node)) return true;
   }
   return false;
+}
+
+function isPasteInsideCodeLikeElement(
+  container: HTMLElement | null,
+  event: { target: EventTarget | null },
+): boolean {
+  if (!container) return false;
+  if (event.target instanceof Node && nodeInsideCodeLike(container, event.target)) return true;
+  const active = typeof document !== "undefined" ? document.activeElement : null;
+  if (active instanceof Node && nodeInsideCodeLike(container, active)) return true;
+  return isSelectionInsideCodeLikeElement(container);
 }
 
 /** The human title of an issue mention — `name` minus its leading identifier. */
@@ -705,6 +740,7 @@ function applyMention(markdown: string, state: MentionState, option: Autocomplet
 export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(function MarkdownEditor({
   value,
   onChange,
+  ariaLabel,
   placeholder,
   className,
   contentClassName,
@@ -716,9 +752,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
+  function isSubmitShortcut(event: KeyboardEvent<HTMLElement>): boolean {
+    return !readOnly
+      && event.key === "Enter"
+      && !event.nativeEvent.isComposing
+      && event.keyCode !== 229
+      && !event.shiftKey
+      && !event.altKey
+      && (submitKey === "enter" || event.metaKey || event.ctrlKey);
+  }
   const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
   const slashCommands = useMemo(
     () => [...actionCommands, ...sharedSlashCommands],
@@ -919,8 +965,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     };
   }, [editorValue, placeholder, richEditorError]);
 
-  // Whether the image plugin should be included (boolean is stable across renders
-  // as long as the handler presence doesn't toggle)
   const hasImageUpload = Boolean(imageUploadHandler);
 
   const plugins = useMemo<RealmPlugin[]>(() => {
@@ -977,11 +1021,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
       markdownShortcutPlugin(),
     ];
-    if (imageHandler) {
-      // The inline image chip keeps only its remove affordance — no settings
-      // dialog, and the X glyph instead of MDXEditor's default trash can.
-      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
-    }
+    all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     return all;
   }, [hasImageUpload]);
 
@@ -1030,7 +1070,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const option = mentionOptionByKey.get(`agent:${parsed.agentId}`);
       applyMentionChipDecoration(link, {
         ...parsed,
-        icon: parsed.icon ?? option?.agentIcon ?? null,
+        appearance: option?.agentAppearance,
       });
     }
   }, [mentionOptionByKey]);
@@ -1275,12 +1315,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!clipboard || !ref.current) return;
     const types = new Set(Array.from(clipboard.types));
     if (types.has("Files") || types.has("text/html")) return;
-    if (isSelectionInsideCodeLikeElement(containerRef.current)) return;
+    if (isPasteInsideCodeLikeElement(containerRef.current, event)) return;
 
     const rawText = clipboard.getData("text/plain");
     if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
+    // Lexical also handles paste on the editable element. Once Markdown is
+    // inserted here, prevent that handler from inserting the plain text again.
+    event.stopPropagation();
     ref.current.insertMarkdown(escapeUnsupportedAngleBrackets(normalizeMarkdown(rawText)));
   }, []);
 
@@ -1333,6 +1376,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         </div>
         <textarea
           ref={fallbackTextareaRef}
+          aria-label={ariaLabel}
           value={value}
           placeholder={placeholder}
           readOnly={readOnly}
@@ -1343,8 +1387,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && isSubmitShortcut(event)) {
               event.preventDefault();
+              event.stopPropagation();
               onSubmit();
             }
           }}
@@ -1360,16 +1405,37 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   return (
     <div
       ref={containerRef}
+      {...(canDropFile && !readOnly ? { [FILE_DROP_TARGET_ATTRIBUTE]: "" } : {})}
       className={cn(
         "relative paperclip-mdxeditor-scope",
         bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
         isDragOver && "ring-1 ring-primary/60 bg-accent/20",
         className,
       )}
+      onInputCapture={(event) => {
+        if (
+          !readOnly
+          && event.target instanceof HTMLElement
+          && event.target.closest('[contenteditable="true"]')
+        ) {
+          // Actual input may be the editor's first change. An intentional clear
+          // must not be mistaken for its programmatic empty mount reset.
+          initialChildOnChangeRef.current = false;
+        }
+      }}
       onKeyDownCapture={(e) => {
-        if (readOnly) return;
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (readOnly || e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter" && (e.shiftKey || e.altKey)) return;
+        if (
+          (e.key === "Backspace" || e.key === "Delete")
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          // Lexical handles deletion on keydown and may suppress DOM input.
+          initialChildOnChangeRef.current = false;
+        }
+        // An explicit Cmd/Ctrl+Enter sends even while autocomplete is open.
+        if (onSubmit && isSubmitShortcut(e) && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1423,6 +1489,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }
         }
+
+        // Leave an unselected slash menu's Enter with the editor.
+        if (
+          onSubmit && isSubmitShortcut(e)
+          && !(mentionActive && filteredMentions.length > 0)
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
+        }
       }}
       onDragEnter={(evt) => {
         if (readOnly) return;
@@ -1470,12 +1548,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       <MarkdownEditorRichErrorBoundary onError={handleRichEditorRenderError}>
         <MDXEditor
           ref={setEditorRef}
+          translation={(key, fallback, interpolations = {}) =>
+            key === "contentArea.editableMarkdown" && ariaLabel
+              ? ariaLabel
+              : Object.entries(interpolations).reduce(
+                  (text, [name, value]) => text.replaceAll(`{{${name}}}`, String(value)),
+                  fallback,
+                )
+          }
           markdown={editorValue}
           iconComponentFor={editorIconFor}
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
-          onChange={(rawNext) => {
+          onChange={(rawNext, initialMarkdownNormalize) => {
             if (readOnly) return;
             // Reverse the editor-only rewrites: blockquotes the exporter escaped
             // as `\>` (so a `>`-prefixed line the user typed survives even when
@@ -1503,6 +1589,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 return;
               }
             }
+            // MDXEditor re-serialises the initial markdown on load (bullet
+            // markers, escapes, blank lines) and flags that emission. It is not
+            // a user edit: forwarding it marks every controlled parent with
+            // dirty tracking as unsaved before any keystroke. `latestValueRef`
+            // stays on the parent's value, so the prop-sync effect does not
+            // push the original back over the editor.
+            if (initialMarkdownNormalize) return;
             // `latestValueRef` is compared against `editorValue`, so it has to
             // hold editor space; storing `next` would make every edit containing
             // an escaped bracket look like a pending prop sync and trigger a
@@ -1534,6 +1627,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
+              maxWidth: mentionMenuPosition.maxWidth,
               touchAction: "pan-y",
               WebkitOverflowScrolling: "touch",
             }}

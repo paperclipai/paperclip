@@ -108,6 +108,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "issue_waiting_for_response"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"
@@ -129,6 +130,7 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  pendingResponse?: "interaction" | "approval" | null;
   /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
@@ -151,6 +153,8 @@ export type QueuedRunFacts = {
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
+  /** Verified from current company-scoped parent/child state immediately before dispatch. */
+  isCompletedOnboardingHandoffWake?: boolean;
 
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
   continuationParkApplies: boolean;
@@ -544,6 +548,12 @@ export function decideQueuedRunStaleness(
     }
   }
 
+  if (facts.pendingResponse) {
+    return { stale: true, errorCode: "issue_waiting_for_response",
+      reason: "Cancelled because the continuation is still waiting for an authorized response",
+      details: { issueId: facts.issueId, pendingResponse: facts.pendingResponse } };
+  }
+
   if (facts.continuationParkApplies && facts.continuationParksExecutor) {
     return {
       stale: true,
@@ -609,7 +619,10 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent || (
+      facts.isCompletedOnboardingHandoffWake === true &&
+      facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"
+    ),
   });
   if (statusOutcome === "terminal") {
     return {

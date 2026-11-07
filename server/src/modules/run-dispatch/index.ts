@@ -13,11 +13,20 @@ export {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
+  AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  RUNNER_REVISION_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
+  CHAT_CONVERSATION_ID_KEY,
+  readWakeChatConversationId,
+  wakeChatConversationsConflict,
   RESOLVED_INTERACTION_CONTINUATION_STATUSES,
   isNonAssigneeWorkspaceBusyRetry,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+  WORKSPACE_BUSY_WAIT_KEY,
+  readWorkspaceBusyWait,
+  workspaceBusyWaitKey,
   extractWakeCommentIds,
   deriveCommentId,
   allowsIssueInteractionWake,
@@ -44,6 +53,9 @@ export type {
 } from "./application/types.js";
 export { RunDispatchApplicationError } from "./application/types.js";
 
+export type { WorkspaceBusyWait } from "./domain/wake-context.js";
+export { wakeWorkspaceBusyWaitersInTx } from "./adapters/workspace-busy-wait.js";
+
 export type RunDispatchDeps = {
   /** Overrides the Postgres adapter; a test builds its module against a fake instead. */
   adapter?: ScheduledRetryReader & RunDispatchWriter;
@@ -63,6 +75,7 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
   });
 
   return {
+    nextScheduledRetryAt: (input: { cutoff: Date | null }) => adapter.nextScheduledRetryAt(input),
     evaluateScheduledRetryGate: createEvaluateScheduledRetryGate({ reader: adapter }),
     promoteScheduledRetry,
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({

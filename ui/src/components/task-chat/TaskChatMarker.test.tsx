@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatThreadView } from "./TaskChatThreadView";
+import { TaskChatPresentationProvider } from "./presentation-mode";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => (
@@ -30,6 +31,66 @@ describe("TaskChatMarker", () => {
     root = null;
     container.remove();
     vi.useRealTimers();
+  });
+
+  it.each(["production", "streamlined"] as const)("renders old failure markers without divider rules in %s mode", (mode) => {
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatPresentationProvider mode={mode}>
+          <TaskChatMarker item={{ id: "old", kind: "marker", variant: "interrupted", label: "Run failed", detail: "Saved diagnostic", runHref: "/agents/coder/runs/old" }} />
+        </TaskChatPresentationProvider>
+      </ThemeProvider>,
+    ));
+    expect(container.querySelector(".border-dashed, .h-px")).toBeNull();
+    expect(container.textContent).toContain("Run failed");
+    expect(container.textContent).toContain("Saved diagnostic");
+  });
+
+  it.each(["production", "streamlined"] as const)("shows only the last adjacent error and retains retry in %s mode", async (mode) => {
+    const retry = vi.fn();
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatPresentationProvider mode={mode}>
+          <TaskChatThreadView scroll={false} onRetryFailedRun={retry} items={[
+            { id: "notice", kind: "message", author: "system", text: "Paperclip retried continuation, but it still has no live execution path." },
+            { id: "failed", kind: "marker", variant: "interrupted", label: "Run failed", collapsible: true, runId: "latest", detail: "Latest failure details" },
+          ]} />
+        </TaskChatPresentationProvider>
+      </ThemeProvider>,
+    ));
+    expect(container.textContent).toContain("Run failed");
+    expect(container.querySelector('[data-testid="task-chat-system-notice"]')).toBeNull();
+    flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]')!.click());
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledWith("latest");
+  });
+
+  it.each(["production", "streamlined"] as const)("keeps the permitted run retry and its pending state on a later recovery notice in %s mode", async (mode) => {
+    const retry = vi.fn();
+    const renderNotice = (pending: boolean) => flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatPresentationProvider mode={mode}>
+          <TaskChatThreadView scroll={false} onRetryFailedRun={retry} retryFailedRunId={pending ? "latest" : null} items={[
+            { id: "failed", kind: "marker", variant: "interrupted", label: "Run failed", collapsible: true, runId: "latest" },
+            { id: "notice", kind: "message", author: "system", text: "Paperclip retried continuation, but it still has no live execution path." },
+          ]} />
+        </TaskChatPresentationProvider>
+      </ThemeProvider>,
+    ));
+    renderNotice(true);
+    expect(container.textContent).not.toContain("Run failed");
+    let button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-no-live-path-try-again"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Trying again...");
+    flushSync(() => button.click());
+    expect(retry).not.toHaveBeenCalled();
+    renderNotice(false);
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-no-live-path-try-again"]')!;
+    expect(button.disabled).toBe(false);
+    flushSync(() => button.click());
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledExactlyOnceWith("latest");
   });
 
   it("renders a failed run as a timestamped disclosure without divider rules", () => {

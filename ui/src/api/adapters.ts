@@ -2,7 +2,7 @@
  * @fileoverview Frontend API client for external adapter management.
  */
 
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 /**
  * The safe scalar login fields the server projects for an adapter that declares
@@ -34,6 +34,10 @@ export interface AcpTargetDescriptor {
 }
 
 export interface AdapterInfo {
+  /** Exact operator-authorized candidates for the requested company and target. */
+  candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
+  supportedRunners?: import("@paperclipai/shared").AgentRunner[];
+  defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -63,7 +67,14 @@ export interface AdapterInstallResult {
 
 export const adaptersApi = {
   /** List all registered adapters (built-in + external). */
-  list: () => api.get<AdapterInfo[]>("/adapters"),
+  list: (context?: { companyId: string; environmentId?: string | null }, options?: RequestOptions) => {
+    const query = new URLSearchParams();
+    if (context) {
+      query.set("companyId", context.companyId);
+      if (context.environmentId) query.set("environmentId", context.environmentId);
+    }
+    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`, options);
+  },
 
   /** Install an external adapter from npm or a local path. */
   install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>

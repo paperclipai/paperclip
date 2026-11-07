@@ -7,6 +7,7 @@ import { completionContracts, heartbeatRuns } from "@paperclipai/db";
 
 import { ensureNativeCompletionContract } from "./completion-contracts.js";
 import { NATIVE_RUNTIME_RESOLVER_VERSION } from "./runtime-mode.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
 
 function record(value: unknown): Record<string, unknown> {
@@ -136,6 +137,11 @@ export async function prepareNativeHeartbeatRun(input: {
           turnId,
           itemId,
           environmentLeaseId,
+          ...(!locked.runnerInstanceId && !locked.nativeSessionId
+            ? { nativePreparationFencingVersion: NATIVE_PREPARATION_FENCING_VERSION }
+            : Object.hasOwn(record(locked.runnerProfileJson), "nativePreparationFencingVersion")
+              ? { nativePreparationFencingVersion: record(locked.runnerProfileJson).nativePreparationFencingVersion }
+              : {}),
           // This server-owned field is never taken from the supplied profile.
           // Retain malformed evidence too so admission can fail closed later.
           ...(Object.hasOwn(

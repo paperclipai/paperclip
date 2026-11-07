@@ -46,6 +46,9 @@ PRs that follow this path are **much** more likely to be accepted, even when the
 
 ## PR Requirements (all PRs)
 
+- Do not submit a PR that moves a code file from less than 1,000 lines of code to more than 1,000 lines of code.
+- Do not submit a PR that includes code comments.
+
 ### Use the PR Template
 
 Every pull request **must** follow the PR template at [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). If you create a PR via the GitHub API or other tooling that bypasses the template, copy its contents into your PR description manually. The template includes required sections: Thinking Path, What Changed, Verification, Risks, Model Used, and a Checklist.
@@ -94,13 +97,26 @@ git push -u origin <descriptive-name>
 git push origin --delete <old-name>
 ```
 
+### Keep Screenshots Out of the Repo
+
+Screenshots, screen recordings, and other review evidence belong in the PR description or a PR comment, not in the repository. Do **not** commit them (for example under `docs/pr-screenshots/`). Committed review images land on `master` permanently and make every clone bigger, even though nobody needs them after the PR merges.
+
+To show a visual change, drag the image into the PR description or a comment on GitHub, which hosts the file for you. If your tooling cannot upload to GitHub, leave the images out and describe what you checked under **Verification**.
+
+Images that are part of the product documentation itself, such as a screenshot embedded in a guide under `doc/`, are fine to commit.
+
 ### Model Used (Required)
 
 Every PR must include a **Model Used** section specifying which AI model produced or assisted with the change. Include the provider, exact model ID/version, context window size, and any relevant capability details (e.g., reasoning mode, tool use). If no AI was used, write "None — human-authored". This applies to all contributors — human and AI alike.
 
 ### Tests Must Pass
 
-All tests must pass before a PR can be merged. Run them locally first and verify CI is green after pushing.
+All required checks must pass before a PR can be merged. Run relevant local checks
+with `pnpm verify`, then require applicable typecheck, build, and test CI checks on
+the final tested revision. Fresh CI can supply broad coverage. Run a full local
+suite when it resolves a remaining local/platform-specific gap or is explicitly
+required for qualification. See `AGENTS.md` and `doc/DEVELOPING.md` for result reuse
+and coverage requirements.
 
 ### Telemetry Changes
 

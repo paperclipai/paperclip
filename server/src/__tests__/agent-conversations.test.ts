@@ -29,9 +29,9 @@ import {
   issues,
 } from "@paperclipai/db";
 import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+  recoveryPostgresSupport as support,
+  startRecoveryPostgres,
+} from "./helpers/recovery-postgres.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { getTaskPlanContext } from "../services/task-plan-context.js";
@@ -51,6 +51,7 @@ import {
   undeliveredConversationComments,
 } from "../services/agent-conversations.js";
 import { classifyIssueGraphLiveness } from "../services/recovery/issue-graph-liveness.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
 import { runningProcesses } from "../adapters/index.js";
 import {
   buildPaperclipTaskMarkdown,
@@ -58,16 +59,15 @@ import {
   heartbeatService,
 } from "../services/heartbeat.js";
 
-const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "persistent agent conversations",
   () => {
-    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+    let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
     let db: ReturnType<typeof createDb>;
     let companyId: string;
     let agentId: string;
     beforeAll(async () => {
-      database = await startEmbeddedPostgresTestDatabase(
+      database = await startRecoveryPostgres(
         "paperclip-agent-conversations-",
       );
       db = createDb(database.connectionString);
@@ -219,6 +219,15 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(resolved.every((response) => response.status === 200)).toBe(true);
       expect(resolved[0].body.id).toBe(resolved[1].body.id);
       expect(resolved[0].body.conversationUserId).toBe(owner);
+      const listPath = `/api/companies/${companyId}/chats`;
+      const owned = await request(app).get(listPath);
+      expect(owned.status).toBe(200);
+      expect(owned.body.map((chat: { id: string }) => chat.id)).toEqual([resolved[0].body.id]);
+      expect((await request(appFor(colleague)).get(listPath)).body).toEqual([]);
+      expect((await request(appFor(randomUUID(), false)).get(listPath)).status).toBe(403);
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
+      expect((await request(app).get(listPath)).status).toBe(200);
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
       expect(
         (
           await request(appFor(colleague)).get(
@@ -281,9 +290,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await instanceSettingsService(db).updateExperimental({
         enableAgentChat: false,
       });
-      expect((await request(app).get(path)).status).toBe(404);
-      expect((await request(app).post(`/api/issues/${chatId}/queued-comments/interrupt`)
-        .send(queuedInterrupt)).status).toBe(404);
+      expect((await request(app).get(path)).status).toBe(200);
       expect(
         (await request(app).get(`/api/issues/${resolved[0].body.id}`)).status,
       ).toBe(200);
@@ -436,9 +443,9 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       const [interaction] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: issue.id, kind: "request_confirmation", status: "rejected",
-        payload: { version: 1, target: { type: "issue_document", key: "plan", documentId: document.id,
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: document.id,
           revisionId: document.latestRevisionId!, revisionNumber: document.latestRevisionNumber } },
-        result: { outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
+        result: { version: 1, outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
       }).returning();
       const input = { db, companyId, issueSummary: { ...issue, workMode: "planning" },
         contextSnapshot: { issueId: issue.id, conversationMode: true, interactionId: interaction!.id,
@@ -459,7 +466,7 @@ const support = await getEmbeddedPostgresTestSupport();
         contextSnapshot: { issueId: issue.id, conversationMode: true } });
       expect(later?.planReviewContext).toBeNull();
       // An unrelated confirmation must not cause old plan context to be replayed.
-      await db.update(issueThreadInteractions).set({ payload: { version: 1 } })
+      await db.update(issueThreadInteractions).set({ payload: { version: 1, prompt: "Proceed?" } })
         .where(eq(issueThreadInteractions.id, interaction!.id));
       expect((await buildPaperclipWakePayload(input))?.planReviewContext).toBeNull();
     });
@@ -588,20 +595,6 @@ const support = await getEmbeddedPostgresTestSupport();
           .where(eq(issues.id, issue.id));
         expect(current.conversationSessionGeneration).toBe(2);
         expect(current.conversationBoundaryCommentId).toBe(commands[2].id);
-        await instanceSettingsService(db).updateExperimental({
-          enableAgentChat: false,
-        });
-        expect(
-          await heartbeat.wakeup(agentId, {
-            contextSnapshot: {
-              issueId: issue.id,
-              wakeCommentId: commands[3].id,
-            },
-          }),
-        ).toBeNull();
-        await instanceSettingsService(db).updateExperimental({
-          enableAgentChat: true,
-        });
       } finally {
         runningProcesses.delete(active.id);
       }
@@ -761,7 +754,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const succeeded = { ...run, contextSnapshot: prepared.context, status: "succeeded" };
       const [interaction] = await db.insert(issueThreadInteractions).values({
         companyId, issueId: chat.id, sourceRunId: run.id, createdByAgentId: agentId,
-        kind: "request_confirmation", status: "answered", payload: { version: 1 },
+        kind: "request_confirmation", status: "answered", payload: { version: 1, prompt: "Proceed?" },
       }).returning();
       expect(await settleConversationTurn(db, succeeded)).toBe(false);
       await db.update(issueThreadInteractions).set({ status: "pending", sourceRunId: null })
@@ -823,8 +816,8 @@ const support = await getEmbeddedPostgresTestSupport();
         blockedByIssueIds: [blocker.id],
       });
       for (const state of [
-        { status: "in_review", conversationState: "waiting" },
-        { status: "blocked", conversationState: "active" },
+        { status: "in_review", conversationState: "waiting" as const },
+        { status: "blocked", conversationState: "active" as const },
       ]) {
         await db.update(issues).set(state).where(eq(issues.id, chat.id));
         for (const reason of ["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"]) {
@@ -883,6 +876,56 @@ const support = await getEmbeddedPostgresTestSupport();
       if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
     });
 
+    it.each(["answered", "new-message", "response-less", "failed", "stale-session", "failed-gap", "missing-gap"])("settles a historical question using completed conversation progress (%s)", async scenario => {
+      const chat = await create();
+      const svc = issueService(db);
+      const first = await svc.addComment(chat.id, "Which color?", { userId: "local-board" });
+      const original = await runFor(chat.id, first.id);
+      const [question] = await db.insert(issueThreadInteractions).values({ companyId, issueId: chat.id,
+        kind: "ask_user_questions", status: "answered", continuationPolicy: "wake_assignee", sourceRunId: original.id,
+        createdByAgentId: agentId, resolvedByUserId: "local-board", payload: { version: 1, questions: [] }, result: { version: 1, answers: [] } }).returning();
+      if (scenario === "failed-gap" || scenario === "missing-gap") {
+        const skipped = await svc.addComment(chat.id, "This request still needs an answer.", { userId: "local-board" });
+        if (scenario === "failed-gap") {
+          const failed = await runFor(chat.id, skipped.id, { conversationSessionGeneration: 0 });
+          await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failed.id));
+        }
+      }
+      const newer = await svc.addComment(chat.id, "What is the capital of France?", { userId: "local-board" });
+      const replyRun = await runFor(chat.id, newer.id, { conversationSessionGeneration: 0 });
+      if (scenario !== "response-less") await svc.addComment(chat.id, "Paris.", { agentId, runId: replyRun.id });
+      await db.update(heartbeatRuns).set({ status: scenario === "failed" ? "failed" : "succeeded",
+        ...(scenario === "stale-session" ? { contextSnapshot: { ...replyRun.contextSnapshot, conversationSessionGeneration: 99 } } : {}) }).where(eq(heartbeatRuns.id, replyRun.id));
+      const answerRun = await runFor(chat.id, first.id, { source: "issue.interaction.respond", interactionId: question.id,
+        interactionKind: "ask_user_questions", interactionStatus: "answered" });
+      const prepared = await prepareConversationTurn(db, answerRun);
+      const preparedContext: Record<string, unknown> = prepared.context;
+      expect(preparedContext.wakeCommentId).toBe(first.id);
+      expect(preparedContext.conversationReplyBoundaryCommentId).toBe(["answered", "new-message"].includes(scenario) ? newer.id : first.id);
+      // A retry reuses the frozen boundary, even if another message has arrived.
+      if (scenario === "new-message") await svc.addComment(chat.id, "New instructions while you answer", { userId: "local-board" });
+      const retry = await prepareConversationTurn(db, { ...answerRun, contextSnapshot: prepared.context });
+      const retryContext: Record<string, unknown> = retry.context;
+      expect(retryContext.conversationReplyBoundaryCommentId).toBe(preparedContext.conversationReplyBoundaryCommentId);
+      await svc.addComment(chat.id, "You chose Blue.", { agentId, runId: answerRun.id });
+      expect(await settleConversationTurn(db, { ...answerRun, status: "succeeded", contextSnapshot: prepared.context })).toBe(true);
+      const [settled] = await db.select().from(issues).where(eq(issues.id, chat.id));
+      expect(settled.conversationState).toBe(scenario === "answered" ? "waiting" : "active");
+      expect(retryContext.conversationReplayThroughCommentId).toBe(preparedContext.conversationReplayThroughCommentId);
+      const replay = await conversationReplay(db, companyId, chat.id, first.id,
+        preparedContext.conversationReplayThroughCommentId as string);
+      if (["answered", "new-message"].includes(scenario)) {
+        expect(replay).toContain("What is the capital of France?");
+        expect(replay).toContain("Paris.");
+      } else {
+        expect(replay).not.toContain("What is the capital of France?");
+        expect(replay).not.toContain("Paris.");
+      }
+      expect(replay).not.toContain("This request still needs an answer.");
+      expect(replay).not.toContain("New instructions while you answer");
+      expect(replay).not.toContain("You chose Blue.");
+    });
+
     it("only parks answered turns and preserves idle across recovery classification", async () => {
       const issue = await create();
       const message = await issueService(db).addComment(
@@ -916,22 +959,6 @@ const support = await getEmbeddedPostgresTestSupport();
           agents: [],
         }),
       ).toEqual([]);
-      await instanceSettingsService(db).updateExperimental({
-        enableAgentChat: false,
-      });
-      await expect(
-        issueService(db).addComment(issue.id, "/new", {
-          userId: "local-board",
-        }),
-      ).rejects.toThrow(/disabled/);
-      expect(
-        isWaitingConversation(
-          (await db.select().from(issues).where(eq(issues.id, issue.id)))[0],
-        ),
-      ).toBe(true);
-      await instanceSettingsService(db).updateExperimental({
-        enableAgentChat: true,
-      });
       const child = await issueService(db).create(companyId, { title: "Execute work", status: "done" });
       await db.update(issues).set({ parentId: issue.id }).where(eq(issues.id, child.id));
       expect(
@@ -970,7 +997,7 @@ describe("chat prompt policy", () => {
 
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
     const prompt = buildPaperclipTaskMarkdown({
-      issue: { id: "chat", title: "Chat", workMode: "planning", conversationAgentId: "agent" },
+      issue: { id: "chat", identifier: null, title: "Chat", workMode: "planning", conversationAgentId: "agent" },
       interaction: { kind: "request_confirmation", status: "rejected" },
       planReview: { status: "rejected", reason: "Add CHAT_REVIEW_MARKER and a validation step." },
       acceptedPlanContinuation: true,
@@ -1014,7 +1041,7 @@ describe("chat prompt policy", () => {
 describe("native conversation finalization", () => {
   it("does not require execution completion or schedule a continuation after a successful chat turn", () => {
     const decision = {
-      policyVersion: "paperclip.native-status-arbiter.v1",
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_progress",
       toStatus: "in_progress",
       reasonCode: "completion_evidence_incomplete",

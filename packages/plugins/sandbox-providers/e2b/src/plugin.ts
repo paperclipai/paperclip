@@ -310,18 +310,15 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     try {
       const sandbox = await connectSandbox(config, params.providerLeaseId);
-      try {
-        await sandbox.setTimeout(config.timeoutMs);
-        const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      // A reconnect failure must preserve the retained allocation and its work.
+      // Explicit release or destroy owns cleanup of an existing sandbox.
+      await sandbox.setTimeout(config.timeoutMs);
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
 
-        return {
-          providerLeaseId: sandbox.sandboxId,
-          metadata: leaseMetadata({ config, sandbox, remoteCwd, resumedLease: true }),
-        };
-      } catch (error) {
-        await sandbox.kill().catch(() => undefined);
-        throw error;
-      }
+      return {
+        providerLeaseId: sandbox.sandboxId,
+        metadata: leaseMetadata({ config, sandbox, remoteCwd, resumedLease: true }),
+      };
     } catch (error) {
       if (error instanceof SandboxNotFoundError) {
         return { providerLeaseId: null, metadata: { expired: true } };

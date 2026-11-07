@@ -58,6 +58,28 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 
+export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
+  return interaction.status === "pending"
+    && interaction.acceptanceBlocker === "workspace_sync_pending";
+}
+
+/** Keep recovery affordances aligned with the server's deferredInteractionCondition. */
+export function isDeferredConversationInteraction(interaction: IssueThreadInteraction): boolean {
+  if (!interaction.dismissedAt || interaction.effectiveResolverPolicySource !== "requested") return false;
+  if (interaction.kind === "connection_intent") return false;
+  const payload = interaction.payload;
+  return !("toolAction" in payload || "secretProposal" in payload || "connectionAuthorization" in payload)
+    && !("target" in payload && payload.target?.type === "issue_document");
+}
+
+/** Poll only while an approval is preparing; retain each surface's idle cadence. */
+export function interactionReadinessRefetchInterval(
+  interactions: IssueThreadInteraction[] | undefined,
+  fallback: number | false = false,
+): number | false {
+  return interactions?.some(isInteractionPreparingApproval) ? 2_000 : fallback;
+}
+
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];

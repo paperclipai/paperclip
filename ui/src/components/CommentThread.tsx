@@ -27,6 +27,7 @@ import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -748,10 +749,17 @@ export function CommentThread({
   composerDisabledReason = null,
   externalReferences,
 }: CommentThreadProps) {
+  const submitKey = useComposerSubmitKey();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
@@ -852,8 +860,12 @@ export function CommentThread({
   }, []);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
@@ -898,6 +910,7 @@ export function CommentThread({
     try {
       await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -1019,6 +1032,7 @@ export function CommentThread({
             placeholder="Leave a comment..."
             mentions={mentions}
             onSubmit={handleSubmit}
+            submitKey={submitKey}
             imageUploadHandler={imageUploadHandler}
             contentClassName="min-h-(--sz-60px) text-sm"
           />
@@ -1051,7 +1065,7 @@ export function CommentThread({
                 noneLabel="No responsible"
                 searchPlaceholder="Search responsible..."
                 emptyMessage="No responsible found."
-                onChange={setReassignTarget}
+                onChange={selectAssignee}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
                   if (!option) return <span className="text-muted-foreground">Responsible</span>;

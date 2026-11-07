@@ -1,6 +1,7 @@
 import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath } from "@paperclipai/shared";
 import type { AdapterExecutionResult } from "./types.js";
 import { classifyWorkspaceRestoreFailure } from "./workspace-restore-merge.js";
+import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnosticCapture } from "./workspace-restore-diagnostics.js";
 
 /** A completed model turn does not imply that required workspace files arrived. */
 export function applyWorkspaceRestoreFailure(result: AdapterExecutionResult): AdapterExecutionResult {
@@ -29,40 +30,44 @@ export async function withWorkspaceRestore(
   execute: () => Promise<AdapterExecutionResult>,
   restore: () => Promise<void>,
 ): Promise<AdapterExecutionResult> {
-  let result: AdapterExecutionResult | undefined;
-  let executionError: unknown;
-  let executionThrew = false;
-  try {
-    result = await execute();
-  } catch (error) {
-    executionError = error;
-    executionThrew = true;
-  }
-  try {
-    await restore();
-  } catch (error) {
-    const code = classifyWorkspaceRestoreFailure(error);
-    // Parse the archive member only. Never expose the unsafe link target.
-    const member = error instanceof Error
-      ? /Daytona syncOut refusing tarball link whose target escapes the extraction dir: (.+?) -> /.exec(error.message)?.[1]
-      : null;
-    const relativePath = safeWorkspaceRestorePath(member);
-    return applyWorkspaceRestoreFailure({
-      ...(result ?? {
-        exitCode: null,
-        signal: null,
-        timedOut: false,
-        errorCode: "adapter_failed",
-        // The server applies its ordinary execution-error redaction to this field.
-        errorMessage: executionError instanceof Error ? executionError.message : "Adapter execution failed.",
-      }),
-      resultJson: {
-        ...result?.resultJson,
-        workspaceRestoreFailure: code,
-        ...(relativePath ? { workspaceRestorePath: relativePath } : {}),
-      },
-    });
-  }
-  if (executionThrew) throw executionError;
-  return result!;
+  return withWorkspaceRestoreDiagnosticCapture(async () => {
+    let result: AdapterExecutionResult | undefined;
+    let executionError: unknown;
+    let executionThrew = false;
+    try {
+      result = await execute();
+    } catch (error) {
+      executionError = error;
+      executionThrew = true;
+    }
+    try {
+      await restore();
+    } catch (error) {
+      const code = classifyWorkspaceRestoreFailure(error);
+      const diagnostic = getWorkspaceRestoreDiagnostic(error);
+      // Parse the archive member only. Never expose the unsafe link target.
+      const member = error instanceof Error
+        ? /Daytona syncOut refusing tarball link whose target escapes the extraction dir: (.+?) -> /.exec(error.message)?.[1]
+        : null;
+      const relativePath = safeWorkspaceRestorePath(member);
+      return applyWorkspaceRestoreFailure({
+        ...(result ?? {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorCode: "adapter_failed",
+          // The server applies its ordinary execution-error redaction to this field.
+          errorMessage: executionError instanceof Error ? executionError.message : "Adapter execution failed.",
+        }),
+        resultJson: {
+          ...result?.resultJson,
+          workspaceRestoreFailure: code,
+          ...(diagnostic ? { workspaceRestoreDiagnostic: diagnostic } : {}),
+          ...(relativePath ? { workspaceRestorePath: relativePath } : {}),
+        },
+      });
+    }
+    if (executionThrew) throw executionError;
+    return result!;
+  });
 }
