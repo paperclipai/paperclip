@@ -1382,9 +1382,16 @@ describe("deterministic remote process-session wrapper shutdown (PAP-5316)", () 
   }
 
   it("T1 exits within a bounded time when its session directory disappears with no message ever sent", async () => {
-    const wrapper = await startWrapperProcess({ outputToStdout: false, terminateGraceMs: 200 });
-    // Let the poll loop run a few cycles before the directory disappears.
-    await delay(150);
+    const wrapper = await startWrapperProcess({
+      outputToStdout: false,
+      terminateGraceMs: 200,
+      command: process.execPath,
+      args: ["-e", "process.stdout.write('ready'); process.stdin.resume();"],
+    });
+    await waitFor(async () => (await wrapper.readEventFiles()).some(
+      (event) => event.type === "data" && event.stream === "stdout"
+        && Buffer.from(event.data ?? "", "base64").toString("utf8") === "ready",
+    ), 4_000);
     await rm(wrapper.sessionDir, { recursive: true, force: true });
     await Promise.race([
       wrapper.exited,

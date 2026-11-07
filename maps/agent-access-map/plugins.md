@@ -145,3 +145,9 @@ Evidence: owned embedded-database grant/route fixtures in
 fixtures in `server/src/__tests__/plugin-worker-manager.test.ts`, and capability
 and scope denials in `packages/plugins/sdk/tests/host-client-factory.test.ts`.
 These are automated fixture checks, not live provider qualification.
+
+Plugin file watching starts automatically only in non-production Vite development.
+Self-hosted static, headless, and production servers require
+`PAPERCLIP_PLUGIN_DEV_WATCH=1`; managed plugin installations never enable it.
+See [local plugin development](../../doc/plugins/LOCAL_PLUGIN_DEVELOPMENT.md#reload-semantics-honestly)
+and [startup policy tests](../../server/src/__tests__/app-plugin-dev-watcher.test.ts).

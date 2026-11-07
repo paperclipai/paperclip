@@ -100,3 +100,9 @@ Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plu
 ### Documentation scope: Plugins, gateways, and tool profiles
 
 Host plugin/gateway/profile lifecycles are mapped. Third-party plugin behaviors and every client transport/provider combination are outside host-wide coverage.
+
+Plugin file watching starts automatically only in non-production Vite development.
+Self-hosted static, headless, and production servers require
+`PAPERCLIP_PLUGIN_DEV_WATCH=1`; managed plugin installations never enable it.
+See [local plugin development](../../doc/plugins/LOCAL_PLUGIN_DEVELOPMENT.md#reload-semantics-honestly)
+and [startup policy tests](../../server/src/__tests__/app-plugin-dev-watcher.test.ts).
