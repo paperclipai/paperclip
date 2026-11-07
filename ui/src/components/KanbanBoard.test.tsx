@@ -189,6 +189,26 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
+  it("keeps both scrollbars and the column headers inside the viewport", () => {
+    const { container } = renderBoard({
+      issues: [...createIssues(30, "todo"), ...createIssues(2, "done")],
+    });
+
+    const board = container.querySelector('[role="region"][aria-label="Task board columns"]');
+    expect(board?.className).toContain("overflow-auto");
+    expect(board?.className).toContain("max-h-(--sz-calc-33)");
+    expect(board?.className).toContain("grid");
+    expect(board?.className).toContain("grid-flow-col");
+    expect(board?.className).toContain("auto-cols-max");
+
+    const headers = Array.from(container.querySelectorAll(".sticky"));
+    expect(headers.length).toBeGreaterThan(0);
+    for (const header of headers) {
+      expect(header.className).toContain("top-0");
+      expect(header.className).toContain("bg-background");
+    }
+  });
+
   it("gives every column a status-hued tone", () => {
     expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
     expect(getKanbanColumnTone("todo").body).toContain("amber");
