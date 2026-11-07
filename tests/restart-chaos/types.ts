@@ -2,6 +2,8 @@
 
 export const FAULT_KINDS = ["K1", "K2", "K4", "K6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
+/** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
+export type TaskFaultKind = FaultKind | "K13";
 
 export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
@@ -39,6 +41,23 @@ export interface WaveOptions {
    * recorded per wave. Absent on plans written before masks existed.
    */
   masks?: string[];
+  /**
+   * K13 restart storm: fire faults drawn from `faults` every 2–4 minutes for
+   * this many minutes, keeping `concurrency` tasks in flight, then drain.
+   */
+  stormMinutes?: number;
+}
+
+export interface StormFault {
+  kind: FaultKind;
+  holdMs: number;
+  /** Wait this long after the previous storm fault settled (or the storm started). */
+  gapMs: number;
+}
+
+export interface StormPlan {
+  durationMs: number;
+  faults: StormFault[];
 }
 
 export interface TaskPlan {
@@ -46,7 +65,7 @@ export interface TaskPlan {
   index: number;
   workload: WorkloadId;
   adapter: AdapterId;
-  fault: FaultKind;
+  fault: TaskFaultKind;
   /** Fire the fault this long after the task's issue is created. */
   fireAfterMs: number;
   /** Outage hold between stop and restart. 0 for K1/K2. */
@@ -78,6 +97,8 @@ export interface WavePlan {
   createdAt: string;
   options: WaveOptions;
   tasks: TaskPlan[];
+  /** K13 only: the seeded storm fault sequence. */
+  storm?: StormPlan;
   /** Present when this wave replays one task of an earlier wave. */
   replayOf?: { waveId: string; taskId: string };
 }
