@@ -653,7 +653,26 @@ describe("plugin Runner release/resume facade", () => {
     const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
     expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
     await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
-    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume"]);
+    // A definite refusal is checked against the exact task before Core may continue elsewhere.
+    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume", "status"]);
+    expect(owner.retiredBeforeClaim()).toBe(false); // stopped, but no saved session state
+  });
+
+  it("records a refused resume as retired only when the exact task stopped with saved session state", async () => {
+    for (const [status, retired] of [
+      [{ kind: "status", taskId: "task", phase: "cancelled", executionStopped: true, sessionStateAvailable: true }, true],
+      [{ kind: "status", taskId: "task", phase: "running", executionStopped: false, sessionStateAvailable: false }, false],
+      [new Error("fixture status reply lost"), false],
+    ] as const) {
+      const task = vi.fn(async (operation: any): Promise<unknown> => {
+        if (operation.kind === "resume") return { kind: "resume", taskId: "task", outcome: "unavailable" };
+        if (status instanceof Error) throw status;
+        return status;
+      });
+      const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+      await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+      expect(owner.retiredBeforeClaim()).toBe(retired);
+    }
   });
 
   it.each(["release", "resume"] as const)("validates exact task and closed %s result", async operation => {

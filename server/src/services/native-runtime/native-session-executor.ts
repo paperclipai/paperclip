@@ -10786,40 +10786,39 @@ async function executePaperclipNativeSessionWithinScope(
     const resolveWake = () => timeController("wake_binding", () => resolveCurrentWakeCommentsBinding(input.db, input.execution.binding));
     const expectedCurrentWakeComments = await (executionContext ? executionContext.wait(resolveWake) : resolveWake());
     let remoteWarmRecoveryPending = remoteWarmRecovery !== undefined;
+    // Reads the current reuse decision, so the unavailable-reuse fallback can rebuild it.
+    const createExecutionBackend = () => createRunnerdBackend({
+      ...input,
+      onDiagnosticLease: ownDiagnosticLease,
+      providerPackAdmissionSource,
+      recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
+      executionContext,
+      onAccountingEvent: producerUsage?.capture,
+      controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? {
+        bootId: controller.bootId,
+        runnerArtifact: restoredController ? { version: restoredController.runnerVersion, digest: restoredController.runnerDigest } : undefined,
+      } : undefined,
+      ...(overlapGitHubPreparation ? { prepareRunnerEnvironment } : {}),
+      // Durable scope and prior-run verification use the controller's
+      // canonical workspace identity. createRunnerdBackend separately
+      // projects remoteCwd into the provider execution boundary.
+      execution: input.execution,
+      runnerInstanceId: effectiveRunnerInstanceId,
+      pluginTaskDescription,
+      retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : undefined,
+      durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
+      remoteWarmRecovery: remoteWarmRecovery ? {
+        ...remoteWarmRecovery,
+        revalidate: async () => {
+          if (remoteWarmRecoveryPending) await remoteWarmRecovery.revalidate(leaseOwner);
+        },
+      } : undefined,
+      trace,
+      toolTrace,
+    });
     let runnerdBackend =
       input.useRunnerd && input.backend === undefined
-        ? await timeController("backend_setup", () => {
-          const create = () => createRunnerdBackend({
-            ...input,
-            onDiagnosticLease: ownDiagnosticLease,
-            providerPackAdmissionSource,
-            recoveryPurpose: claimedStopCleanup ? "stop_cleanup" : "execution",
-            executionContext,
-            onAccountingEvent: producerUsage?.capture,
-            controllerPersistence: input.runnerExecutionTarget?.kind === "remote" ? {
-              bootId: controller.bootId,
-              runnerArtifact: restoredController ? { version: restoredController.runnerVersion, digest: restoredController.runnerDigest } : undefined,
-            } : undefined,
-            ...(overlapGitHubPreparation ? { prepareRunnerEnvironment } : {}),
-            // Durable scope and prior-run verification use the controller's
-            // canonical workspace identity. createRunnerdBackend separately
-            // projects remoteCwd into the provider execution boundary.
-            execution: input.execution,
-            runnerInstanceId: effectiveRunnerInstanceId,
-            pluginTaskDescription,
-            retainedPluginTaskOwner: existingWarmSession ? pluginTaskSessionOwners.get(existingWarmSession) : undefined,
-            durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
-            remoteWarmRecovery: remoteWarmRecovery ? {
-              ...remoteWarmRecovery,
-              revalidate: async () => {
-                if (remoteWarmRecoveryPending) await remoteWarmRecovery.revalidate(leaseOwner);
-              },
-            } : undefined,
-            trace,
-            toolTrace,
-          });
-          return executionContext ? executionContext.wait(create) : create();
-        })
+        ? await timeController("backend_setup", () => executionContext ? executionContext.wait(createExecutionBackend) : createExecutionBackend())
         : null;
     if (remoteWarmRecovery) {
       if (executionContext) await executionContext.wait(() => remoteWarmRecovery.revalidate(leaseOwner));
@@ -10851,7 +10850,7 @@ async function executePaperclipNativeSessionWithinScope(
           durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId, trace, toolTrace });
       }
     }
-    const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
+    const readRemoteCleanupLease = async () => input.runnerExecutionTarget?.kind === "remote" &&
         input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
       ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
           .from(environmentLeases).where(and(
@@ -10859,6 +10858,33 @@ async function executePaperclipNativeSessionWithinScope(
             eq(environmentLeases.id, input.runnerExecutionTarget.leaseId),
           )).then(rows => rows[0])
       : null;
+    let remoteCleanupLease = await readRemoteCleanupLease();
+    // A retained Runner can retire between inspection and claim. A definite
+    // unavailable reply alone never authorizes replacement: the owner must have
+    // seen the exact task stopped with its session saved before local cleanup.
+    // Then repeat the ordinary inspection, which replaces a stopped task, and
+    // continue cold like an owner found stopped at inspection. Checkpoint
+    // admission still proves the suspended session.
+    const continueAfterUnavailableReuse = async (error: unknown) => {
+      const target = input.runnerExecutionTarget;
+      if (!(error instanceof Error) || error.message !== "native_runner_reuse_unavailable" || !existingWarmSession
+        || pluginTaskSessionOwners.get(existingWarmSession)?.retiredBeforeClaim() !== true
+        || remoteWarmRecovery || warmConfigDigest === null || target?.kind !== "remote" || target.transport !== "sandbox"
+        || !target.runnerTask || runnerdBackend === null) return false;
+      const retainedTaskId = target.sandboxLeaseAcquisition?.providerLeaseId;
+      const inspect = () => target.runnerTask!({ kind: "describe" }, executionContext ? { executionContext } : undefined);
+      const description = environmentTaskResultSchema.parse(await (executionContext ? executionContext.wait(inspect) : inspect()));
+      if (description.kind !== "description" || description.taskId === retainedTaskId) return false;
+      // Attachment failure already quarantined the owner; join its checkpoint save.
+      await existingWarmSession.close({ reason: "retained Runner was unavailable for reuse" });
+      existingWarmSession = undefined;
+      pluginTaskDescription = undefined;
+      await finishStartupContextForFallback();
+      persistedWarmSession = loadWarmNativeCheckpoint(input.execution, warmConfigDigest, target.kind);
+      runnerdBackend = await createExecutionBackend();
+      remoteCleanupLease = await readRemoteCleanupLease();
+      return true;
+    };
     nativeSessionExecuteStartedAtMs = Date.now();
     native = await trace.measure(
       "native.session.execute",
@@ -10868,7 +10894,7 @@ async function executePaperclipNativeSessionWithinScope(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
-        const result = await trace.run(runnerSessionStartupScope, () =>
+        const runExecution = () =>
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
             getFreshSessionHandoff: input.getFreshSessionHandoff,
@@ -11248,8 +11274,14 @@ async function executePaperclipNativeSessionWithinScope(
                 );
               }
             },
-          }),
-        );
+          });
+        let result: Awaited<ReturnType<typeof runExecution>>;
+        try {
+          result = await trace.run(runnerSessionStartupScope, runExecution);
+        } catch (error) {
+          if (!await continueAfterUnavailableReuse(error)) throw error;
+          result = await trace.run(runnerSessionStartupScope, runExecution);
+        }
         await trace.end(runnerSessionStartupScope, {
           outcome:
             result.terminal.runTerminalState === "succeeded" ? "ok" : "failed",
