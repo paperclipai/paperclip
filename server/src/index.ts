@@ -15,6 +15,11 @@ import { registerProviderTraceRetentionWork } from "./services/provider-trace-re
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
+import {
+  computeFirstScheduledBackupDelayMs,
+  findInterruptedServerBackups,
+  findLatestServerBackup,
+} from "./services/database-backup-schedule.js";
 import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
 import { approvalQueueSeedingService, registerApprovalQueueSeedingWork } from "./services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService, registerJoinRequestRetentionWork } from "./services/join-request-retention.js";
@@ -1936,6 +1941,49 @@ async function startServerWithDatabaseTeardown(
     await registerDatabaseBackupWork(deliveryWork, {
       intervalMs: backupIntervalMs,
       run: () => runServerDatabaseBackup("scheduled"),
+      resolveFirstRunAt: async () => {
+        let latestBackup: Awaited<ReturnType<typeof findLatestServerBackup>> = null;
+        let interrupted: Awaited<ReturnType<typeof findInterruptedServerBackups>> = { count: 0, newestMtimeMs: null };
+        try {
+          latestBackup = await findLatestServerBackup(config.databaseBackupDir, "paperclip");
+          interrupted = await findInterruptedServerBackups(
+            config.databaseBackupDir,
+            latestBackup?.mtimeMs ?? null,
+            "paperclip",
+          );
+        } catch (err) {
+          logger.warn({ err, backupDir: config.databaseBackupDir }, "Could not read latest database backup; scheduling from startup");
+          return null;
+        }
+        const nowMs = Date.now();
+        const firstBackupDelayMs = computeFirstScheduledBackupDelayMs({
+          latestBackupMtimeMs: latestBackup?.mtimeMs ?? null,
+          nowMs,
+          intervalMs: backupIntervalMs,
+          interruptedCount: interrupted.count,
+          lastInterruptedAtMs: interrupted.newestMtimeMs,
+        });
+        if (interrupted.count > 0) {
+          logger.warn(
+            {
+              interruptedCount: interrupted.count,
+              lastInterruptedAt: new Date(interrupted.newestMtimeMs ?? nowMs).toISOString(),
+            },
+            "Previous automatic database backup attempts died mid-dump; backing off first run",
+          );
+        }
+        logger.info(
+          {
+            latestBackup: latestBackup?.name ?? null,
+            latestBackupAt: latestBackup ? new Date(latestBackup.mtimeMs).toISOString() : null,
+            interruptedCount: interrupted.count,
+            firstRunAt: new Date(nowMs + firstBackupDelayMs).toISOString(),
+            firstRunDelayMinutes: Math.round(firstBackupDelayMs / 60_000),
+          },
+          "Automatic database backup first run scheduled",
+        );
+        return nowMs + firstBackupDelayMs;
+      },
     }).ready;
   }
   
