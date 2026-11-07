@@ -16,6 +16,12 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 ## Configuration Fields
 
+For models with a verified minimum CLI version, the environment test checks
+`codex --version` before the hello probe. A prerelease meets a stable minimum
+when its major, minor, and patch version is higher. For example,
+`0.164.0-alpha.11.1` meets `0.157.0`, while `0.157.0-alpha.1` is below that
+minimum. Malformed or ambiguous version output fails the check.
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
