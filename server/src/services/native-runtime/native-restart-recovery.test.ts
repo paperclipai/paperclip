@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   classifyNativeRunnerRecoveryEvidence,
@@ -267,6 +268,61 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space"],
+    ["an unreadable PID space", "unknown"],
+  ])("never treats a dead or recycled local PID as proof for a controller on %s", async (_name, controllerHostHash) => {
+    for (const probe of [{ isProcessAlive: () => false }, { isProcessAlive: () => true,
+      readProcessStartedAt: async () => new Date("2026-09-04T11:30:00.000Z") }]) {
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash }, now, ...probe }))
+        .resolves.toEqual({ allowed: false, reason: "controller_host_unprovable" });
+    }
+  });
+
+  describe("rows saved before the controller host was recorded", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("keep the local dead-PID proof on a single-host server and flag the fallback", async () => {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "");
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: null }, now,
+        isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead", legacyHostFallback: true });
+    });
+
+    it("are unprovable on an ephemeral server, whatever a local probe says", async () => {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: null }, now,
+        isProcessAlive: () => false })).resolves.toEqual({ allowed: false, reason: "controller_host_unrecorded" });
+    });
+
+    it("stay unprovable on another host in either mode", async () => {
+      for (const mode of ["", "true"]) {
+        vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", mode);
+        await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: "another-host-pid-space" }, now,
+          isProcessAlive: () => false })).resolves.toEqual({ allowed: false, reason: "controller_host_unprovable" });
+      }
+    });
+
+    it("accept a board confirmation that the exact controller stopped", async () => {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: "operator_attested" }, now,
+        isProcessAlive: () => true })).resolves.toEqual({ allowed: true, reason: "operator_attested_controller_stopped" });
+    });
+
+    it("leave receipt owners that never stored a host unchanged", async () => {
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      await expect(evaluateNativeControllerTakeover({ owner: owner(), now, isProcessAlive: () => false }))
+        .resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    });
+  });
+
+  it("proves a controller gone only in its own recorded PID space", async () => {
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: currentProcessSpaceHash() },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    // A row saved before the PID space was recorded keeps the previous local proof for one release.
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: null },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead", legacyHostFallback: true });
   });
 
   it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
