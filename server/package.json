@@ -149,7 +149,7 @@
     "supertest": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.2.2",
+    "vite": "^8.3.5",
     "vitest": "^5.0.3",
     "protobufjs": "7.6.6"
   },
