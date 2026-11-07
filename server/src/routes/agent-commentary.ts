@@ -20,7 +20,7 @@ export function agentCommentaryRoutes(db: Db) {
   async function denyAgentRead(companyId: string): Promise<never> {
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
     throw forbidden("Board access required", company ? {
-      remediation: `Agents read only their own commentary unless granted commentary:view. People with commentary access can read it at /${company.issuePrefix}/activity/commentary.`,
+      remediation: `Agents read only their own commentary unless granted commentary:view. People with commentary access can read it on the Commentary page; give them this link: [Commentary](/${company.issuePrefix}/activity/commentary).`,
     } : undefined);
   }
 
