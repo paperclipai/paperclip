@@ -1,5 +1,5 @@
 import i18n, { type InitOptions, type TOptions } from "i18next";
-import { initReactI18next, useTranslation as useReactI18nextTranslation } from "react-i18next";
+import { initReactI18next } from "react-i18next";
 
 import { DEFAULT_LOCALE, i18nextResources, supportedLocales } from "./locales";
 
@@ -29,5 +29,5 @@ export function t(
   return i18n.t(key, defaultValueOrOptions ?? {});
 }
 
-export const useTranslation = useReactI18nextTranslation;
+export { useTranslation } from "react-i18next";
 export { i18n };
