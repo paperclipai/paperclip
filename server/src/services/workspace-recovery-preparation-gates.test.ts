@@ -362,6 +362,47 @@ describe("automatic retained workspace recovery", () => {
     }
   }, 60_000);
 
+  // RC-50b (wave s14/t05): Retry was accepted while saved-work recovery ran.
+  // Every export attempt failed, the budget was spent, and the Retry still said
+  // "finishing the saved result" with no run. It must name the failure and a
+  // second Retry must start one new recovery that finishes the saved result.
+  it("names a spent saved-work recovery behind an accepted Retry, and the next Retry finishes it", async () => {
+    const f = await acceptedRemoteExport();
+    const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId, status: "running" });
+    const app = boardRecoveryApp();
+    const first = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+    f.runtime.resumeRunLease.mockRejectedValue(new Error("Workspace checkpoint payload mismatch"));
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await recoverRetainedWorkspace(f.input);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, first.requestId!);
+      await makeRetryDue(f.actionId);
+    }
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "exhausted", attempts: 6 });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", payload: { executionWait: { reason: "saved_work_recovery_failed" } } });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true,
+      retryWait: { reason: "saved_work_recovery_failed" } });
+    // The working action: one more Retry starts one new recovery generation.
+    f.runtime.resumeRunLease.mockReset();
+    f.runtime.resumeRunLease.mockImplementation(async () => ({ providerLeaseId: f.providerLeaseId, metadata: { remoteCwd: await realpath(f.remote) } }));
+    const second = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({ state: "scheduled", attempts: 0 });
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    await resumePreservedResultFinalization(db, f.companyId, f.runId);
+    await heartbeatService(db).resumeTaskRetry(f.companyId, second.requestId!);
+    // After a board handoff the Retry continues from the recovered files in
+    // exactly one new run (as in the s12 case), never another wait.
+    const [settled] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, second.requestId!));
+    expect(settled).toMatchObject({ status: "coalesced", runId: expect.any(String), payload: { taskRetry: { strategy: "continue" } } });
+    expect(await db.select({ id: heartbeatRuns.id, previousRunId: sql<string>`${heartbeatRuns.contextSnapshot}->>'previousRunId'` })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued"))))
+      .toEqual([{ id: settled.runId, previousRunId: f.runId }]);
+  }, 60_000);
+
   it("preserves an explicitly requested superseded remote export without applying its result over newer work", async () => {
     const f = await acceptedRemoteExport();
     const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.source.agentId,
