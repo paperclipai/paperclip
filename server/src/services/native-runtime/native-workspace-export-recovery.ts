@@ -10,6 +10,7 @@ import { completionContracts, heartbeatRuns, issues, issueRecoveryActions, nativ
 import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 
 const UNSAFE_EXPORT = "native_workspace_sync_out_unsafe_archive";
@@ -104,10 +105,18 @@ async function recoverCandidate(db: Db, candidate: { runId: string; companyId: s
         await tx.update(nativeRunFinalizations).set({ phase: "result_accepted", failureCode: null, nextAttemptAt: null,
           failureDetail: { workspaceFinalizeAttempt: 0, legacyUnsafeExportOmitted: { resultId: result.id, recoveredAt: now.toISOString() } }, updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, run.id));
-        [updatedRun] = await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,
-          nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
-          resultJson: { ...run.resultJson, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now,
-        }).where(eq(heartbeatRuns.id, run.id)).returning();
+        updatedRun = (await transitionHeartbeatRunStatus(tx, run.id, {
+          toStatus: "running",
+          patch: {
+            finishedAt: null,
+            error: null,
+            errorCode: null,
+            nativePhase: "result_accepted",
+            nativePhaseUpdatedAt: now,
+            resultJson: { ...run.resultJson, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null },
+            updatedAt: now,
+          },
+        }))?.run;
         await notifyStatusCardIssueChange(tx, run.companyId);
         await tx.update(issues).set({ executionRunId: run.id, updatedAt: now }).where(eq(issues.id, issue.id));
         await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,

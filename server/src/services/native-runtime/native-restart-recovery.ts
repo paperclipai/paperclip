@@ -41,6 +41,7 @@ import { isUniqueViolation } from "../../db-errors.js";
 import { logger } from "../../middleware/logger.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
@@ -1413,10 +1414,9 @@ export async function claimNativeRestartRecoveries(input: {
           await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
         }
-        const [updatedRun] = await tx
-          .update(heartbeatRuns)
-          .set({
-            status: "failed",
+        const updatedRun = (await transitionHeartbeatRunStatus(tx, row.run.id, {
+          toStatus: "failed",
+          patch: {
             nativePhase: "terminal_failure",
             nativePhaseUpdatedAt: now,
             executionStatusDeliveryId: randomUUID(),
@@ -1424,9 +1424,8 @@ export async function claimNativeRestartRecoveries(input: {
             errorCode: "native_restart_recovery_blocked",
             error: reason,
             updatedAt: now,
-          })
-          .where(eq(heartbeatRuns.id, row.run.id))
-          .returning();
+          },
+        }))?.run ?? null;
         if (updatedRun && isNewTerminalRunFailure(row.run, updatedRun)) {
           terminalRunToReport = updatedRun;
         }
@@ -1570,10 +1569,9 @@ export async function claimNativeRestartRecoveries(input: {
         await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, row.run);
       }
 
-      await tx
-        .update(heartbeatRuns)
-        .set({
-          status: "running",
+      await transitionHeartbeatRunStatus(tx, row.run.id, {
+        toStatus: "running",
+        patch: {
           finishedAt: null,
           error: null,
           errorCode: null,
@@ -1588,8 +1586,8 @@ export async function claimNativeRestartRecoveries(input: {
                 processStartedAt: null,
               }),
           updatedAt: now,
-        })
-        .where(eq(heartbeatRuns.id, row.run.id));
+        },
+      });
 
       if (releasedRemoteRetry && resumptionAgent) {
         await restoreNativeSessionExecution(tx as unknown as Db, { issue, run: row.run, agentName: resumptionAgent.name, now });
