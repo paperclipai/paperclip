@@ -213,7 +213,7 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     const run = await waitForRun(heartbeat, seeded.runId);
     await heartbeat.waitForRunExecutionDrain(seeded.runId);
     expect(run).toMatchObject({ status: "succeeded" });
-    const context = adapterExecute.mock.calls[0]?.[0]?.context as Record<string, unknown> | undefined;
+    const context = (adapterExecute.mock.calls[0]?.[0] as { context?: Record<string, unknown> } | undefined)?.context;
     expect(context?.executionWorkspaceId).not.toBe(seeded.workspaceId);
     // The child starts from the project base, not the parent's unmerged changes,
     // and the parent's saved restore point was left as it was.
