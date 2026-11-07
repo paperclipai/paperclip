@@ -52,7 +52,7 @@ new task or fault starts, the in-flight tasks drain to rest or their deadline,
 and only launched tasks are graded. Storm tasks show fault `K13` in the ledger;
 `storm_fault`, `storm_started` and `storm_ended` are in the timeline and the
 receipts are in `faults.json`. A replay of a storm task fires the faults that
-crossed it, without a new storm. Only `--triggers time` applies.
+crossed it, without a new storm. `--triggers time,result` may join a storm: a `result` task (C1) also fires its own K1 or K2 (from `--faults`) just after its run accepts a result, the next storm gap runs from its settle, and no triggered fault fires during the drain. Other triggers do not combine with a storm.
 
 ## Daytona (`--env daytona`)
 
@@ -201,5 +201,7 @@ re-arms the task's own triggered faults instead of using their offsets.
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
-- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life.
+- R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.
+- The wave fingerprints the checkout and `packages/paperclip-runner/dist` at start and after every fault. A build, install or branch switch during a wave would make later restarts run different code, so it fails the wave as a harness error (`worktree_changed_mid_wave`). The baseline is taken after the harness's own setup (preflight rebuilds provider entrypoints) and covers the tracked diff, untracked file contents, the runner `dist` and the runnerd binary. Build before the wave, never during it.
+- `faults.json` and `task-faults.json` (each task's launch time and the faults that crossed it) are written after every fault, so `--replay` of a task in an interrupted or wedged wave, or a storm task, re-fires the faults that crossed it at the same offsets.
 - A fault that fails to complete fails the wave as a harness error (exit 2), even when recovery brings the server back.

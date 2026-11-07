@@ -159,6 +159,82 @@ export function suspendedByCleanDrain(coordinator: {
   return false;
 }
 
+/**
+ * A controller restart (a crash, so no drain record) that interrupts a resume
+ * which had already made progress is also not the run's failure. Each claim
+ * records the run's event-log position; the next claim does not charge an
+ * attempt when, after that position, the provider accepted a new turn and then
+ * completed work in it (a tool execution or a non-usage item). A resume that
+ * dies before it completes any work in a new turn still charges, so a crash
+ * loop without progress, a resume that fails each time, and provider failures
+ * stay bounded. Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
+ * controller generations, so a run that makes progress and then crashes the
+ * controller every time is still bounded.
+ */
+export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = 12;
+const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed"] as const;
+
+type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
+
+/**
+ * The watermark of the most recent claim, only while the run is still on the
+ * provider attempt that claim resumed. A normal retry in between starts a new
+ * attempt, so the earlier resume's work no longer counts for it.
+ */
+export function lastRecoveryClaimProgressWatermark(
+  recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
+  currentAttempt: number,
+): number | null {
+  for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const entry = recoveryHistory[index];
+    if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
+    if (entry?.progressAttempt !== currentAttempt) return null;
+    const watermark = entry?.progressWatermarkSeq;
+    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : null;
+  }
+  return null;
+}
+
+async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): Promise<number> {
+  const [row] = await tx
+    .select({ seq: sql<string | number | null>`max(${heartbeatRunEvents.seq})` })
+    .from(heartbeatRunEvents)
+    .where(eq(heartbeatRunEvents.runId, runId));
+  return Number(row?.seq ?? 0);
+}
+
+export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: {
+  runId: string;
+  coordinator: {
+    attempt: number;
+    controllerGeneration: number;
+    recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>;
+  };
+}): Promise<boolean> {
+  if (input.coordinator.attempt <= 0) return false;
+  if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
+  const watermark = lastRecoveryClaimProgressWatermark(input.coordinator.recoveryHistory, input.coordinator.attempt);
+  if (watermark === null) return false;
+  const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
+  const [work] = await tx
+    .select({ seq: heartbeatRunEvents.seq })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.runId, input.runId),
+      gt(heartbeatRunEvents.seq, watermark),
+      inArray(heartbeatRunEvents.eventType, [...RESUME_PROGRESS_EVENT_TYPES]),
+      sql`coalesce(${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind', '') <> 'usage'`,
+      // The inner alias hides the table name, so unqualified outer references
+      // below resolve to the outer completed-work row.
+      sql`exists (select 1 from ${heartbeatRunEvents} as accepted_turn where accepted_turn.run_id = ${input.runId}
+        and accepted_turn.seq > ${watermark} and accepted_turn.seq < ${heartbeatRunEvents.seq}
+        and accepted_turn.event_type = 'turn.accepted'
+        and accepted_turn.payload -> 'prpEvent' ->> 'turnId' = ${workTurnId})`,
+    ))
+    .limit(1);
+  return work !== undefined;
+}
+
 const controllerBootId = randomUUID();
 
 function processIsAlive(pid: number | null | undefined): boolean {
@@ -1184,6 +1260,9 @@ export async function claimNativeRestartRecoveries(input: {
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
+      const resumeKeepsAttempt = cleanDrainSuspension || await previousResumeMadeProgress(tx, {
+        runId: row.run.id, coordinator: row.coordinator,
+      });
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
@@ -1207,7 +1286,7 @@ export async function claimNativeRestartRecoveries(input: {
             ?.runTerminalState === "failed" &&
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
-        resumeChargesAttempt: !cleanDrainSuspension,
+        resumeChargesAttempt: !resumeKeepsAttempt,
       });
       if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
         return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
@@ -1381,6 +1460,11 @@ export async function claimNativeRestartRecoveries(input: {
         recycledProviderPids: providerProcesses.recycledPids,
         stderrTail: row.run.stderrExcerpt,
       });
+      // The next claim credits this resume only for work recorded after here.
+      const progressWatermarkSeq = await nativeRunEventWatermark(tx, row.run.id);
+      const attemptKeptForProgress = resumeKeepsAttempt && !cleanDrainSuspension;
+      // The attempt the executor runs this resume as (see its execution claim).
+      const progressAttempt = nextNativeProviderAttempt(providerAttempt, claimKind, !resumeKeepsAttempt);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const claimed = await tx
         .update(nativeRunFinalizations)
@@ -1403,7 +1487,9 @@ export async function claimNativeRestartRecoveries(input: {
                 ? "resuming_session"
                 : "bootstrap_incomplete",
           recoveryRequestId: input.recoveryRequestId ?? null,
-          recoveryHistory: appendBoundedRecoveryHistory(event),
+          recoveryHistory: appendBoundedRecoveryHistory({
+            ...event, progressWatermarkSeq, progressAttempt, ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
+          }),
           failureCode: null,
           nextAttemptAt: null,
           updatedAt: now,
@@ -1471,7 +1557,7 @@ export async function claimNativeRestartRecoveries(input: {
         providerAttempt,
         restartKind: input.restartKind,
         recoveryRequestId: input.recoveryRequestId ?? null,
-        chargesProviderAttempt: !cleanDrainSuspension,
+        chargesProviderAttempt: !resumeKeepsAttempt,
       };
       if (claimKind === "reattach_remote_runner") {
         return {

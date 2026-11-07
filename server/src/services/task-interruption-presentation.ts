@@ -82,6 +82,8 @@ const retryWaitMessages: Record<string, string> = {
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  // Another click cannot release a copyback owner that stopped without reporting.
+  workspace_owner_stop_required: "Retry is waiting for a board member to confirm that the previous server stopped copying files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
@@ -208,7 +210,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"].includes(reason), retryWait: { reason,
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")

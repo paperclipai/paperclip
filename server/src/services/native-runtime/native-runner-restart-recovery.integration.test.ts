@@ -86,7 +86,7 @@ vi.mock("../../sentry.js", async () => {
     captureRunFailure: mockCaptureRunFailure,
   };
 });
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT, NATIVE_RESTART_RECOVERY_FAILED, nextNativeProviderAttempt, type NativeControllerIdentity } from "./native-restart-recovery.js";
 
 // Exact v5 wire prompt from before the task-monitor upgrade (#15446).
 const historicalPrompt = {
@@ -2604,6 +2604,138 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(dispositions).toEqual([expect.objectContaining(attempt < 3
       ? { kind: "resume_dead_runner", runId: fixture.runId, providerAttempt: attempt }
       : { kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
+  });
+
+  // RC-22b: controller crashes (no drain record) that each interrupted a resume
+  // which had already done work exhausted the three-attempt budget.
+  async function seedInterruptedCheckpoint(label: string) {
+    const fixture = await seedRun(label);
+    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
+      driverKind: "opencode_server",
+      sessionId: fixture.native.normalizedSessionId,
+      identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+      providerSessionId: "interrupted-provider",
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+      terminalTurns: [{ turnId: "interrupted-turn", fingerprint: JSON.stringify({
+        terminalState: "failed", result: null,
+        error: { code: "provider_turn_lost_on_restore", recoverable: true },
+      }) }],
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    // The original execution claimed attempt 1.
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 1, controllerGeneration: 1 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    return fixture;
+  }
+
+  async function appendRunEvents(fixture: Awaited<ReturnType<typeof seedRun>>, events: Array<{
+    eventType: string; turnId?: string; kind?: string;
+  }>) {
+    const [last] = await fixture.db.select({ seq: sql<number>`coalesce(max(${heartbeatRunEvents.seq}), 0)::int` })
+      .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+    let seq = last?.seq ?? 0;
+    for (const event of events) {
+      seq += 1;
+      await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq,
+        eventType: event.eventType, stream: "system", level: "info",
+        payload: { prpEvent: { runId: fixture.runId, eventType: event.eventType, sourceKind: "runner",
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          payload: event.kind ? { kind: event.kind } : {} } } });
+    }
+  }
+
+  // The new controller resumes, the executor applies the claim's charge to the
+  // attempt, and then the controller dies (a crash leaves no drain record).
+  async function resumeThenCrash(fixture: Awaited<ReturnType<typeof seedRun>>) {
+    const [disposition] = await claimNativeRestartRecoveries({
+      db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+    });
+    if (disposition?.kind !== "resume_dead_runner") return { disposition };
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const attempt = nextNativeProviderAttempt(coordinator.attempt, disposition.kind, disposition.chargesProviderAttempt !== false);
+    await fixture.db.update(nativeRunFinalizations).set({
+      attempt, controllerBootId: randomUUID(), controllerPid: 2_000_000_001,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    return { disposition, attempt };
+  }
+
+  // What a resumed turn records on restore before it does any new work.
+  const restoreNoise = (round: number) => [
+    { eventType: "item.completed", kind: "thread_lineage" },
+    { eventType: "turn.failed", turnId: "interrupted-turn" },
+    { eventType: "tool.execution.completed", turnId: "interrupted-turn" },
+    { eventType: "turn.submitted" },
+    { eventType: "turn.accepted", turnId: `continuation-${round}` },
+    { eventType: "item.completed", turnId: `continuation-${round}`, kind: "usage" },
+  ];
+
+  it("keeps recovering a run whose restart resumes each completed work before the next crash", async () => {
+    const fixture = await seedInterruptedCheckpoint("PROGRESS-BETWEEN-CRASHES");
+    const attempts: number[] = [];
+    const charges: boolean[] = [];
+    for (let round = 1; round <= 5; round += 1) {
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      expect(disposition).toMatchObject({ kind: "resume_dead_runner", runId: fixture.runId });
+      charges.push((disposition as { chargesProviderAttempt?: boolean }).chargesProviderAttempt !== false);
+      attempts.push(attempt!);
+      await appendRunEvents(fixture, [...restoreNoise(round),
+        { eventType: "tool.execution.completed", turnId: `continuation-${round}` }]);
+    }
+    // The first restart interrupted the original execution, not a resume.
+    expect(charges).toEqual([true, false, false, false, false]);
+    expect(attempts).toEqual([2, 2, 2, 2, 2]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect((coordinator.recoveryHistory as Array<Record<string, unknown>>).filter(entry => entry.attemptKeptForProgress))
+      .toHaveLength(4);
+  });
+
+  it("does not credit a resume's work to a later provider attempt started by a normal retry", async () => {
+    const fixture = await seedInterruptedCheckpoint("PROGRESS-THEN-RETRY");
+    await resumeThenCrash(fixture);
+    await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: "resumed" },
+      { eventType: "tool.execution.completed", turnId: "resumed" }]);
+    // The resume (attempt 2) did work. A transport failure then started a
+    // normal local retry at attempt 3, which crashed before doing any work.
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const { disposition } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
+  it("still exhausts the budget when restart resumes complete no work between crashes", async () => {
+    const fixture = await seedInterruptedCheckpoint("NO-PROGRESS-BETWEEN-CRASHES");
+    const outcomes: Array<{ kind?: string; attempt?: number; reason?: string }> = [];
+    for (let round = 1; round <= 3; round += 1) {
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      outcomes.push({ kind: disposition?.kind, attempt, reason: (disposition as { reason?: string }).reason });
+      // Restore activity and an accepted turn that fails before any work.
+      await appendRunEvents(fixture, [...restoreNoise(round), { eventType: "turn.failed", turnId: `continuation-${round}` }]);
+    }
+    expect(outcomes).toEqual([
+      expect.objectContaining({ kind: "resume_dead_runner", attempt: 2 }),
+      expect.objectContaining({ kind: "resume_dead_runner", attempt: 3 }),
+      expect.objectContaining({ kind: "blocked", reason: "execution_recovery_budget_exhausted" }),
+    ]);
+  });
+
+  it("bounds a crash loop that makes progress before every crash", async () => {
+    const fixture = await seedInterruptedCheckpoint("PROGRESS-CRASH-LOOP");
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    for (let round = 1; round <= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT + 3; round += 1) {
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      outcomes.push({ kind: disposition?.kind, attempt });
+      if (disposition?.kind !== "resume_dead_runner") break;
+      await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: `loop-${round}` },
+        { eventType: "item.completed", turnId: `loop-${round}`, kind: "assistant_message" }]);
+    }
+    // Generations 2..12 are claimed; credit stops at the generation limit and
+    // the remaining attempt is spent before recovery blocks.
+    expect(outcomes.at(-1)).toEqual({ kind: "blocked", attempt: undefined });
+    expect(outcomes.slice(0, -1).map(outcome => outcome.attempt))
+      .toEqual([2, ...Array(NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT - 2).fill(2), 3]);
   });
 
   it("terminalizes the recorded failed-checkpoint incident atomically instead of resuming it on upgrade", async () => {
