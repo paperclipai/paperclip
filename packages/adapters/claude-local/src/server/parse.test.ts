@@ -147,6 +147,53 @@ describe("detectClaudeLoginRequired", () => {
   });
 });
 
+describe("detectClaudeLoginRequired with auth words in the agent's own output", () => {
+  // An agent that works on authentication code prints test logs full of
+  // "401 Unauthorized". When such a run fails for another reason, that text must
+  // not mark the shared AI connection as needing a new login.
+  const toolOutput =
+    '{"type":"user","message":{"content":[{"type":"tool_result","content":"Expected 200 OK, got 401 Unauthorized"}]}}';
+
+  it("does not classify a max-turns failure with Unauthorized in tool output as login required", () => {
+    const parsed = { is_error: true, subtype: "error_max_turns" };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: toolOutput, stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify a killed run with Unauthorized in tool output as login required", () => {
+    const parsed = { is_error: false, subtype: "success", result: "" };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: toolOutput, stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("does not classify a successful answer that mentions authentication required", () => {
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "Fixed: the endpoint now returns 401 Unauthorized when authentication required headers are missing.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("still classifies Claude's plain-text login prompt when no result was parsed", () => {
+    expect(
+      detectClaudeLoginRequired({ parsed: null, stdout: "Not logged in · Please run /login", stderr: "" })
+        .requiresLogin,
+    ).toBe(true);
+  });
+
+  it("still classifies a failed run whose result is Claude's login prompt", () => {
+    const parsed = { is_error: true, subtype: "success", result: "Invalid API key · Please run /login" };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: toolOutput, stderr: "" }).requiresLogin,
+    ).toBe(true);
+  });
+});
+
 describe("isClaudeModelNotFoundError", () => {
   it("detects model resolution failures from structured and fallback output", () => {
     expect(isClaudeModelNotFoundError({

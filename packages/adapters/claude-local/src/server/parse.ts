@@ -246,11 +246,18 @@ export function detectClaudeLoginRequired(input: {
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
+  const failedResult = parsed !== null && claudeResultIndicatesAuthFailure(parsed);
 
-  // The legacy login-prompt markers keep their broad scope. They match against
-  // every output line, which includes the parsed result, the parsed errors, and
-  // the raw stdout and stderr.
-  const promptLines = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
+  // The login-prompt markers. Claude prints its login prompt on stderr, or in the
+  // terminal fields of a failed run. The raw stdout is the agent's own transcript
+  // (tool output such as a test log full of "401 Unauthorized"), so it only counts
+  // when no result was parsed at all, and then without its JSON event lines. A
+  // successful run's result text is the agent's answer and never counts.
+  const stdoutLines = parsed === null
+    ? input.stdout.split(/\r?\n/).filter((line) => !line.trim().startsWith("{"))
+    : [];
+  const terminalLines = failedResult ? [resultText, ...extractClaudeErrorMessages(parsed)] : [];
+  const promptLines = [...terminalLines, ...stdoutLines, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
