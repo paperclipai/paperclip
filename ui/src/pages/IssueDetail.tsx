@@ -4,7 +4,6 @@ import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hoo
 import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
 import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { bindAccount } from "@/lib/account-scope";
@@ -29,8 +28,6 @@ import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { trackRecentProject } from "@/lib/recent-projects";
-import { Settings as ChatSettings } from "lucide-react";
-import { agentDetailHref } from "./agent-detail-navigation";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
@@ -77,7 +74,7 @@ import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { classifySendFailure } from "../lib/pending-send";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { describeInteractionResolutionFailure, interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import {
@@ -143,7 +140,7 @@ import {
   shouldTrackIssueActiveRun,
 } from "../lib/issueActiveRun";
 import { prefetchIssueThread } from "../lib/issue-thread-queries";
-import { getIssueDetailQueryOptions, seedIssueDetailProjections } from "../lib/issueDetailCache";
+import { getIssueCoreQueryOptions, getIssueDetailQueryOptions } from "../lib/issueDetailCache";
 import {
   beginIssueDetailNavigation,
   recordIssueDetailReadiness,
@@ -261,6 +258,7 @@ import { waitForStoppedRuns } from "../lib/wait-for-stopped-runs";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
+import { isOutdatedPlanConfirmation } from "../components/task-chat/interaction-thread-order";
 import { useTaskArtifactArrival } from "../hooks/useTaskArtifactArrival";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -402,6 +400,7 @@ import {
   workspaceFileRefSchema,
   isUuidLike,
 } from "@paperclipai/shared";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -997,8 +996,7 @@ export function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status} displayStatus={headerSeed.displayStatus}
-                blockerAttention={headerSeed.blockerAttention}
+                {...taskStatusIconProps(headerSeed)}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
               {SHOW_TASK_PRIORITY_UI && (
@@ -3336,12 +3334,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const coreIssueQuery = useQuery({
-    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
-    queryFn: async ({ signal }) => {
-      const core = await issuesApi.getCore(issueId!, { signal });
-      seedIssueDetailProjections(queryClient, core, issueId);
-      return core;
-    },
+    ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
   });
   const { historyExpanded, expandHistory, recent: recentComments, retainComment, acknowledgedComments } = useIssueHistoryWindow(
@@ -4018,9 +4011,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const shouldDeferPanelUntilPlan =
     taskChatShellEnabled &&
     (isOnboardingFirstTask || issue?.workMode === "planning");
+  const hasPendingPlanConfirmation = interactions.some(interaction =>
+    interaction.status === "pending" && interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan");
   const { data: deferredPanelPlanDoc } = useIssuePlanDocument(
-    shouldDeferPanelUntilPlan ? issue?.id : null,
+    shouldDeferPanelUntilPlan || hasPendingPlanConfirmation ? issue?.id : null,
   );
+  const hasPendingInteraction = interactions.some(interaction =>
+    interaction.status === "pending" && !isDeferredConversationInteraction(interaction)
+    && !isOutdatedPlanConfirmation(interaction, deferredPanelPlanDoc));
   const [panelBeforePlanOverrideIssueId, setPanelBeforePlanOverrideIssueId] =
     useState<string | null>(null);
   const panelBeforePlanOverride =
@@ -5273,6 +5272,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Accept failed",
         body: interactionResolutionErrorMessage(err),
@@ -5302,6 +5302,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err) => {
+      if (describeInteractionResolutionFailure(err).kind === "settled") invalidateIssueDetail();
       pushToast({
         title: "Reject failed",
         body: interactionResolutionErrorMessage(err),
@@ -5969,15 +5970,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
   useEffect(() => {
     if (conversationAgent) {
-      setBreadcrumbs([{
-        label: conversationAgent.name,
-        control: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : undefined,
-        controlKey: coordinatorWorkspaceEnabled ? `switch:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}` : undefined,
-        leading: coordinatorWorkspaceEnabled ? undefined : <AgentAvatar agent={conversationAgent} size={24} />,
-        leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
-        trailing: coordinatorWorkspaceEnabled ? undefined : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
-        trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
-      }]);
+      setBreadcrumbs([{ label: "Chat" }]);
       return;
     }
     setBreadcrumbs([
@@ -7586,7 +7579,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState}
+      {...taskStatusIconProps(issue)}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
@@ -8053,6 +8046,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       <IssueMonitorBanner
         key={issue.id}
+        hasActiveRun={hasLiveRuns}
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
@@ -8482,11 +8476,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
                     : activePauseHold ? "Resume the task before retrying."
                     : issue.project?.pausedAt ? "Resume the project before retrying."
-                    : interactions.some(i => i.status === "pending" && !isDeferredConversationInteraction(i)) ? "Respond to the pending question or confirmation before retrying." : null}>
+                    : hasPendingInteraction ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
-                  hasPendingInteraction: interactions.some((interaction) => interaction.status === "pending" && !isDeferredConversationInteraction(interaction)),
+                  hasPendingInteraction,
                   unavailableReason: boardAccess && !canResolveBoardRecoveryAction
                     ? "You don’t have permission to retry this recovery action."
                     : treeControlStateError
@@ -8634,6 +8628,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     hasVisibleMonitorSurface(issue) ? (
                       <IssueMonitorComposerStrip
                         issue={issue}
+                        hasActiveRun={hasLiveRuns}
                         workProducts={workProducts}
                         checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}

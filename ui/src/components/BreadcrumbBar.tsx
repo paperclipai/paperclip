@@ -53,7 +53,7 @@ function GlobalToolbar({
   );
 }
 
-export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
@@ -66,6 +66,18 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
+  const propertiesToggle = showPropertiesToggle ? (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="ml-5 size-9 shrink-0 text-muted-foreground"
+      onClick={toggleTaskPanel}
+      aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
+      title={taskPanelOpen ? "Hide properties" : "Show properties"}
+    >
+      {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+    </Button>
+  ) : null;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -218,6 +230,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
         ) : null}
         {globalToolbarSlots}
+        {propertiesToggle}
       </div>
     );
   }
@@ -233,18 +246,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       {menuButton}
       {breadcrumbTrail}
       {globalToolbarSlots}
-      {taskDetailLayout ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-5 size-9 shrink-0 text-muted-foreground"
-          onClick={toggleTaskPanel}
-          aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-          title={taskPanelOpen ? "Hide properties" : "Show properties"}
-        >
-          {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-        </Button>
-      ) : null}
+      {propertiesToggle}
     </div>
   );
 }

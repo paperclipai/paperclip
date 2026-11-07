@@ -1,6 +1,7 @@
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
@@ -28,6 +29,7 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { AlertTriangle, Bot, MessagesSquare } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -188,6 +190,7 @@ export function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds:
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
+  const agentChatPins = useAgentChatPins();
   const [query, setQuery] = useState("");
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
@@ -381,16 +384,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       </>
     ) : null;
     return (
+      <div key={agent.id} className="agent-pin-row agent-roster-pin-row group/agent-pin relative">
       <EntityRow
-        key={agent.id}
         title={agent.name}
         titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
-        titleClassName="flex-1"
+        titleClassName="agent-pin-text flex-1"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="agent-roster-identity group py-3"
+        className="agent-roster-identity group py-3 group-hover/agent-pin:bg-accent/50 group-focus-within/agent-pin:bg-accent/50"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
@@ -407,6 +410,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           </div>
         )}
       />
+      <AgentChatPin agent={agent} pins={agentChatPins} />
+      </div>
     );
   };
 
@@ -448,14 +453,23 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
           visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
           renderChat={agentChat.enabled ? agent => (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon-sm" aria-label={`Chat with ${agent.name}`} onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}>
-                  <MessagesSquare className="size-4 text-foreground" aria-hidden />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>chat with this agent</TooltipContent>
-            </Tooltip>
+            // Use Radix's standard hover delay, isolated from the app's instant provider.
+            <TooltipPrimitive.Provider skipDelayDuration={0}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/agent-row:opacity-100 focus-visible:opacity-100"
+                    aria-label={`Chat with ${agent.name}`}
+                    onClick={() => navigate(`/chats/${agentRouteRef(agent)}`)}
+                  >
+                    <MessagesSquare className="size-3.5" aria-hidden />
+                    Chat
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>chat with this agent</TooltipContent>
+              </Tooltip>
+            </TooltipPrimitive.Provider>
           ) : undefined} />
       )}
 

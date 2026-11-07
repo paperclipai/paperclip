@@ -236,6 +236,8 @@ export interface RoutineTriggerSecretMaterial {
 }
 
 export interface RoutineDetail extends Routine {
+  /** Actor-specific affordance. The update route remains authoritative. */
+  canChangeResponsibleUser?: boolean;
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;

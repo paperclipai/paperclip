@@ -9,8 +9,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
 use paperclip_runner_core::durable::{
-    capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
-    CursorCloudLaunchProfile, DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    capture_bootstrap_ticket, redact_diagnostic_text, AcpxLaunchProfile, CursorCloudLaunchProfile,
+    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
@@ -115,12 +115,14 @@ fn install_crypto_provider() {
 }
 
 fn build_metadata() -> serde_json::Value {
-    json!({
+    let mut metadata = json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
         "binaryName": "paperclip-runnerd",
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "recoveryIntegrityVersion": 1,
+        "acpxRecoveryIntegrityVersion": 1,
         "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
@@ -131,7 +133,11 @@ fn build_metadata() -> serde_json::Value {
             "maximumVersion": 2
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
-    })
+    });
+    if cfg!(unix) {
+        metadata["privateHostControlVersion"] = json!(1);
+    }
+    metadata
 }
 
 // The publisher seals image installations. Check only path metadata at startup;
@@ -415,6 +421,38 @@ fn durable_connect_url(args: &[String], run_id: &str) -> Result<String, LocalRun
 }
 
 fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(unix)]
+    let host_control = if let Some(fd) = optional_u64(args, "--host-control-fd")? {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::fs::FileTypeExt;
+        if fd != 4
+            || !fs::metadata("/dev/fd/4")
+                .map(|metadata| metadata.file_type().is_socket())
+                .unwrap_or(false)
+        {
+            return Err(LocalRunnerError::invalid(
+                "host control requires an inherited socket at fd 4",
+            ));
+        }
+        // SAFETY: fd 4 was inherited from the trusted host and verified open.
+        // No other Runner owner takes or closes it; HostControl sets CLOEXEC
+        // before any provider can spawn and validates connected AF_UNIX STREAM.
+        let socket = std::os::unix::net::UnixStream::from(unsafe { OwnedFd::from_raw_fd(4) });
+        Some(
+            paperclip_runner_core::host_control::HostControl::new(socket)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    let host_control = if args.iter().any(|arg| arg == "--host-control-fd") {
+        return Err(LocalRunnerError::invalid(
+            "host control is unavailable on this platform",
+        ));
+    } else {
+        None
+    };
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
         .ok_or_else(|| {
@@ -460,6 +498,11 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
     };
+    if host_control.is_some() && !config.connect_url.starts_with("listen://") {
+        return Err(LocalRunnerError::invalid(
+            "host control requires trusted Runner listener mode",
+        ));
+    }
     #[cfg(unix)]
     std::env::set_var(
         paperclip_runner_core::runtime_notifications::CONTEXT_ENV,
@@ -477,8 +520,13 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         }
     }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
-    run_durable_runner(config, ticket, executor)
-        .map_err(|error| LocalRunnerError::invalid(error.to_string()))
+    paperclip_runner_core::durable::run_durable_runner_with_host_control(
+        config,
+        ticket,
+        executor,
+        host_control,
+    )
+    .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
 fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
@@ -521,6 +569,11 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
     }
+    if args.iter().any(|arg| arg == "--source-reconcile") {
+        return Err(LocalRunnerError::invalid(
+            "--source-reconcile is no longer supported; use ordinary durable recovery",
+        ));
+    }
     apply_oom_score_adj(args)?;
     apply_task_memory_cgroup(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
@@ -536,6 +589,11 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     {
         return Err(LocalRunnerError::invalid(
             "ACPX candidate admission requires trusted durable runner startup",
+        ));
+    }
+    if args.iter().any(|arg| arg == "--host-control-fd") {
+        return Err(LocalRunnerError::invalid(
+            "host control requires trusted durable runner startup",
         ));
     }
     run_local_runner(RunnerConfig {
@@ -653,8 +711,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_source_mode_is_rejected_before_any_startup() {
+        let error = run(&[
+            "--listen-port".to_owned(),
+            "1234".to_owned(),
+            "--source-reconcile".to_owned(),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("no longer supported"));
+    }
+
+    #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
+        assert_eq!(metadata["recoveryIntegrityVersion"], 1);
+        assert!(metadata.get("sourceRecoveryVersion").is_none());
+        assert!(metadata.get("codexSourceRecoveryVersion").is_none());
+        assert_eq!(metadata["acpxRecoveryIntegrityVersion"], 1);
+        assert!(metadata.get("acpxSourceRecoveryVersion").is_none());
+        assert!(metadata.get("hostedParkingVersion").is_none());
+        assert!(metadata.get("releaseResumeVersion").is_none());
+        if cfg!(unix) {
+            assert_eq!(metadata["privateHostControlVersion"], 1);
+        } else {
+            assert!(metadata.get("privateHostControlVersion").is_none());
+        }
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
@@ -668,6 +749,20 @@ mod tests {
         assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn host_control_rejects_other_fds_before_bootstrap_or_provider_startup() {
+        let args = vec!["--host-control-fd".to_owned(), "3".to_owned()];
+        assert_eq!(
+            run_durable(&args).unwrap_err().to_string(),
+            "host control requires an inherited socket at fd 4"
+        );
+        assert_eq!(
+            run(&args).unwrap_err().to_string(),
+            "host control requires trusted durable runner startup"
         );
     }
 

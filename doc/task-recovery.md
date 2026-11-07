@@ -13,8 +13,39 @@ covers completed and failed receipts as well as pending ones. Concurrent clicks
 attach to accepted work. A new deliberate click after exhaustion can create a
 new generation; a repeated HTTP request cannot. A click does not renew an
 exhausted generation that already requires an alternative strategy and has no
-fresh attempt. The click binds to that generation and continues in a fresh
-isolated workspace, so it does not repeat the failed step.
+fresh attempt. The click binds to that generation and continues without
+repeating the failed step. A Retry never silently drops the agent's work:
+
+- If the task's own local workspace (a git worktree or isolated directory) is
+  safe to reuse, the Retry continues there with a fresh session. Uncommitted
+  files, Git history and the task branch stay in place. Reuse requires the same
+  one local directory the failed run used, still bound to and owned by this
+  task, not a shared project workspace, and not under remote storage authority.
+  The prior executor must be stopped, its leases released, and the recovery
+  generation settled. No other lease, failed cleanup or running workspace
+  operation may hold the directory. A restart orphan does not count: an
+  operation of the stopped source that started before the source settled and
+  before the current server process started. Operations with no run, of
+  another run, or started in the current process still block reuse. Its Git status must still be readable from
+  that directory itself. Workspace-export failures keep their repair path.
+- Otherwise the Retry continues in a fresh isolated attempt seeded from
+  committed files. The previous directory is retained unmodified. The retried
+  run's continuation context names it in `priorWorkspace`: its path, branch
+  and a bounded list of its uncommitted files, read without Git optional locks.
+  This hint is given only for a task-owned local directory with a settled
+  recovery generation, no pending workspace repair and no other writer. The
+  file list is given only when Git resolves to that directory itself.
+
+Either choice consumes the generation's one alternative attempt. Preparing the
+same attempt again after a restart reuses the directory that attempt already
+created and bound; it does not ask for another fresh directory. A native
+restart re-prepares from its admitted workspace. When that is the task's
+current task directory, it keeps the directory strategy; a task directory is
+never the base of a new git worktree. A git worktree base is always the
+project's checkout or the task's own worktree. If a restart's re-preparation
+still fails before the provider starts, the run settles its native coordinator
+as a terminal failure, so a later Retry is admitted instead of waiting on an
+open recovery claim.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
@@ -137,7 +168,8 @@ Execution containment and file preservation are independent facts:
 - Copyback needs a quiescent writer and a verified destination.
 - A fresh attempt uses a new execution workspace and the separate
   `isolated-workspace-attempts` namespace. It does not modify the original
-  directory or satisfy that source's preservation/cleanup obligation.
+  directory or satisfy that source's preservation/cleanup obligation. It is
+  used only when the task's own workspace cannot safely continue the work.
 
 A missing managed sandbox cannot answer another stop request. Core can request
 a signed absence observation from Cloud under a host-bound server capability.
@@ -253,7 +285,13 @@ Run the focused PostgreSQL/filesystem suites from `server/`:
 ../node_modules/.bin/vitest run --config vitest.config.ts \
   src/services/system-recovery-state.test.ts \
   src/services/task-retry.test.ts \
-  src/services/workspace-recovery.test.ts \
+  src/services/workspace-recovery-retry-copyback.test.ts \
+  src/services/workspace-recovery-preparation.test.ts \
+  src/services/workspace-recovery-preparation-proof.test.ts \
+  src/services/workspace-recovery-preparation-dispatch.test.ts \
+  src/services/workspace-recovery-preparation-gates.test.ts \
+  src/services/workspace-recovery-warm-handoff.test.ts \
+  src/services/workspace-recovery-admission.test.ts \
   src/services/explicit-native-continuation.test.ts \
   src/services/heartbeat/workspace-preparation.test.ts \
   src/services/native-runtime/native-chat-workspace.test.ts

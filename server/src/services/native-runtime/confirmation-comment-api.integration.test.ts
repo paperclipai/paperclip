@@ -51,11 +51,21 @@ describe("confirmation reply through the native API tool", () => {
     const snapshot = await f.snapshot();
     expect(snapshot.activity.filter(row => row.action === "issue.thread_interaction_accepted")).toHaveLength(1);
   });
-  it("denies human-only resolution and foreign-message provenance through the same tool", async () => {
+  it("relays the conversation user's reply to a self-requested human-only card, but not another user's", async () => {
     const { f, card, call, comment } = await seed("standard", "human_only");
-    expect(card).toMatchObject({ requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit" });
-    expect(await f.authority.execute(call)).toMatchObject({ status: 403 });
-    expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id)))[0]).toMatchObject({ status: "pending", result: null });
+    expect(card).toMatchObject({ requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "requested", resolverPolicyProvenance: "explicit" });
+    expect(await f.authority.execute(call)).toMatchObject({ status: 200, data: { interaction: {
+      id: card.id, status: "accepted", result: { commentId: comment.id }, resolvedByAgentId: f.agentId, resolvedByUserId: null } } });
+    const snapshot = await f.snapshot();
+    expect(snapshot.activity.filter(row => row.action === "issue.thread_interaction_accepted"))
+      .toMatchObject([{ details: { resolverPolicy: "human_only", resolution: "relayed_human_decision" } }]);
+
+    const intruder = await seed("standard", "human_only");
+    await server.db.update(issueComments).set({ authorUserId: "somebody-else" }).where(eq(issueComments.id, intruder.comment.id));
+    expect(await intruder.f.authority.execute(intruder.call)).toMatchObject({ status: 403 });
+    expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, intruder.card.id)))[0])
+      .toMatchObject({ status: "pending", result: null });
     const other = await seed();
     const foreignAnswer = { ...other.call, arguments: { ...other.call.arguments, body: { ...other.call.arguments.body, commentId: comment.id } } };
     expect(await other.f.authority.execute(foreignAnswer)).toMatchObject({ status: 422 });

@@ -20,7 +20,7 @@ import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat
 import { lockNativeGovernanceSources, pendingNativeGovernance } from "./native-governance.js";
 import { findSupersededExternalReviewRequests, supersedeExternalReviewRequestsInTransaction } from "./superseded-external-review-requests.js";
 import { normalizePrpResultSignals, type PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
-import { readNativeMonitorDelivery, readNativePreservedMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
+import { readNativeMonitorDelivery, readNativePreservedMonitorWait, readNativeSupersededMonitorWait, type NativeSupersededMonitorWait, type NativeMonitorDelivery, type NativePreservedMonitorWait } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -1627,6 +1627,7 @@ export async function commitNativeStatusDecision(input: {
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
   requirePreservedMonitorWait?: NativePreservedMonitorWait;
+  requireSupersededMonitorWait?: NativeSupersededMonitorWait;
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireReassessmentSource?: {
     phase: string; resultId: string; assessmentId: string; decisionId: string | null; agentId: string;
@@ -1847,6 +1848,22 @@ export async function commitNativeStatusDecision(input: {
       if (!expected || !actual || actual.wakeId !== expected.wakeId ||
           actual.successorRunId !== expected.successorRunId ||
           issue.executionRunId === input.runId || issue.checkoutRunId === input.runId ||
+          input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
+          input.decision.effects.length !== 0) throw new NativeStatusRaceError();
+    }
+    if (reasonCode === "scheduled_monitor_superseded") {
+      const expected = input.requireSupersededMonitorWait;
+      let actual: Awaited<ReturnType<typeof readNativeSupersededMonitorWait>> = null;
+      try {
+        actual = expected ? await readNativeSupersededMonitorWait(tx as unknown as Db, {
+          companyId: input.companyId, issueId: input.issueId, runId: input.runId, agentId: expected.agentId,
+        }, issue, true) : null;
+      } catch (error) {
+        if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!expected || !actual || actual.resultId !== expected.resultId || actual.wakeId !== expected.wakeId ||
+          actual.commentId !== expected.commentId || actual.successorRunId !== expected.successorRunId ||
           input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
           input.decision.effects.length !== 0) throw new NativeStatusRaceError();
     }

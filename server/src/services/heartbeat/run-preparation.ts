@@ -69,7 +69,8 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
-import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
+import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -160,6 +161,13 @@ export class ConfigurationIncompleteFailure extends Error {
     this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
+}
+
+export function classifyManagedProjectAuthFailure(error: unknown, agentId: string): unknown {
+  if (!isAiConnectionIncompatible(error)) return error;
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agentId}/runtime` },
+  });
 }
 
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
@@ -1760,7 +1768,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2107,7 +2120,7 @@ export async function attestReviewedExternalChatRun(input: {
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
           return { denied: "context_mismatch" };
-        try {
+        const authorize = async (): Promise<true | { answeredAtMs: number } | { denied: "question_response_missing" }> => {
           const answer =
             admittedContext.source === "issue.interaction.respond"
               ? await resolveExternalChatQuestionResponse(
@@ -2137,7 +2150,11 @@ export async function attestReviewedExternalChatRun(input: {
             input.contextSnapshot[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY] =
               answer.marker;
           return answer ? { answeredAtMs: answer.answeredAtMs } : true;
+        };
+        try {
+          return await authorize();
         } catch (error) {
+          let authorizationError = error;
           if (
             error instanceof Error &&
             error.message === "paperclip_runner_chat_attachment_binding_denied"
@@ -2182,13 +2199,25 @@ export async function attestReviewedExternalChatRun(input: {
             ) {
               return "pending_delivery";
             }
+            if (
+              admittedIds.every((id) =>
+                links.some((link) => link.commentId === id),
+              ) &&
+              links.every((link) => link.state === "processed")
+            ) {
+              try {
+                return await authorize();
+              } catch (retryError) {
+                authorizationError = retryError;
+              }
+            }
           }
           const denied =
-            error instanceof Error
-              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(error.message)
+            authorizationError instanceof Error
+              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(authorizationError.message)
               : undefined;
           if (denied) return { denied };
-          throw error;
+          throw authorizationError;
         }
       },
     );
@@ -2215,7 +2244,7 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
 }
 
 export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {

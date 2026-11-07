@@ -176,6 +176,52 @@ real PostgreSQL and filesystem operations. Filesystem fault tests exercise the
 actual command with simulated provider transport; they do not establish a live
 Daytona RPC or deployed recovery.
 
+
+### Image generation for OpenAI API-key Codex agents
+
+Codex shows its built-in `image_gen` tool only when it signs in with ChatGPT.
+A Codex agent that uses an OpenAI API key does not get that tool. The runner
+also keeps the provider key out of the agent's shell, so the imagegen skill's
+`scripts/image_gen.py` fallback cannot run.
+
+For these agents, the controller advertises `generate_image`. The tool is
+advertised only when all of these conditions are true:
+
+- The run is a native Codex standard-mode run.
+- The run was admitted on an OpenAI `api_key` connection with no custom routing.
+- The run has a workspace.
+
+Dot, Muse, Grok, native reviews and plugin-owned tasks do not get the tool.
+
+The server reads the key from that same connection on each call. It sends the
+key only to `https://api.openai.com/v1/images/generations` (model
+`gpt-image-2`). The key never enters the provider process, the execution
+command or the tool result.
+
+Every call does these checks again before any spend:
+
+- The live run, task and budget authority.
+- `issue:mutate` permission.
+- The connection grant, audience and agent installation.
+
+A budget hard-stop that pauses the agent refuses the call before OpenAI is
+contacted.
+
+The PNG is saved as a new, create-only file in the workspace root:
+
+- Local hosts use symlink-confined opens.
+- Remote targets use the same installer as `download_artifact`.
+
+The result returns the relative path, the size and the SHA-256.
+
+Each generated image records one `cost_events` row (`metered_api`,
+`costStatus: "estimated"`) from a reviewed `gpt-image-2` rate card. The row is
+recorded even when saving the image fails. Each call also writes
+content-free `runner.image_generate` audit records.
+
+A per-call receipt in the run result makes a retried or recovered call replay
+the first result instead of paying again.
+
 ### Media files and upload limits
 
 The 1 GiB limit covers new snapshots returned by `call_api`, such as large JSON

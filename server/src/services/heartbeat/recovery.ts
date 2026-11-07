@@ -1,3 +1,4 @@
+import { releaseDeadControllerResultLeases } from "../native-runtime/native-dead-controller-result-lease.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -11,6 +12,7 @@ import { retainedNativeSessionCleanupWork } from "../native-runtime/retained-nat
 import { reconcileRetainedNativeSessionCleanups } from "../native-runtime/retained-native-session-cleanup.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
+import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "../controller-process-identity.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -24,7 +26,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStop, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, recordNativeLocalProcessStopInTransaction, releaseSettledNativeRunProcess, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -38,6 +40,8 @@ import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecut
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import { sweepOrphanedRunScratch, type RunScratchSweepRunState } from "../run-scratch.js";
+import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
   and,
   asc,
@@ -74,6 +78,7 @@ import {
   reconcileNativeFinalizations,
   reconcileRetainedNativeSessionCleanup,
 } from "../native-runtime/index.js";
+import { settleUnstartedNativeSessionResume } from "../native-runtime/native-failed-run-owner-release.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
 import {
@@ -105,6 +110,7 @@ import type { agentInstructionWorkingCopyService } from "../agent-instruction-wo
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { HeartbeatRetryDependencies, createHeartbeatRetries } from "./retries.js";
 import type { CancelRunOptions } from "./run-control.js";
+import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRetries = ReturnType<typeof createHeartbeatRetries>;
@@ -182,6 +188,9 @@ const NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE =
 
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
+// An environment delete tries each of that environment's cleanups once, from
+// one snapshot, so the request does not stop after a sweep page.
+const ENVIRONMENT_CLEANUP_RETRY_LIMIT = 1_000;
 
 const pendingCleanupAttemptsInFlight = new Set<string>();
 
@@ -929,7 +938,19 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     };
   }
 
-  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean }) {
+  async function recoverNativeRunsAfterRestart(now = new Date(), runIds?: string[], options?: { skipDelegatedWork?: boolean; trigger?: "same_run_retry" }) {
+    // A hard kill cannot release its accepted results the way a graceful drain
+    // does. Release leases whose earlier-boot controller has exited, so the
+    // finalization below settles them now instead of after lease expiry.
+    const releasedResults = await releaseDeadControllerResultLeases(db, { now, runIds,
+      liveRunExecutions: activeRunExecutions });
+    for (const released of releasedResults) {
+      const run = await getRun(released.runId).catch(() => null);
+      if (run) await appendRunEvent(run, { eventType: "native.recovery.transition", stream: "system", level: "info",
+        message: "Server restart released the accepted native result of a stopped controller for finalization",
+        payload: { restartKind: "hard", runnerDisposition: "awaiting_result_finalization", reason: released.reason },
+      }).catch(error => logger.warn({ err: error, runId: released.runId }, "failed to record released native result lease"));
+    }
     if (!runIds && !options?.skipDelegatedWork) {
       await reconcileRetainedWorkspaces(db, environmentRuntime, resumeRemoteStopComments);
       await reconcileNativeFinalizations(db, undefined, {
@@ -1045,7 +1066,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             message:
               disposition.kind === "reattach_existing_runner" ||
               disposition.kind === "reattach_remote_runner"
-                ? "Recovering the existing native runner process after server restart"
+                ? options?.trigger === "same_run_retry" ? "Reattaching to the existing remote runner to resume this run" : "Recovering the existing native runner process after server restart"
                 : disposition.kind === "resume_dead_runner"
                   ? "Resuming the durable native provider session after runner process loss"
                   : disposition.kind === "bootstrap_incomplete"
@@ -1060,7 +1081,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                           ? "Native startup timed out; cancellation and verified cleanup are queued"
                           : "Native restart recovery blocked ambiguous or conflicting ownership",
             payload: {
-              restartKind: isClaim ? disposition.restartKind : restartKind,
+              restartKind: isClaim ? disposition.restartKind : restartKind, ...(options?.trigger ? { trigger: options.trigger } : {}),
               recoveryRequestId: isClaim
                 ? disposition.recoveryRequestId
                 : (intent?.recoveryRequestId ?? null),
@@ -1093,6 +1114,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
             { err: error, runId: claim.runId, disposition: claim.kind },
             "native restart recovery execution failed",
           );
+        }).then(async () => { await requestRestartInterruptedTurnRetry(db, claim); }).catch((error) => {
+          // The failed run keeps its visible Retry; only the automatic request is lost.
+          logger.warn({ err: error, runId: claim.runId }, "restart-interrupted turn Retry request failed");
         }).finally(() => preparationRenewal?.stop().catch(() => undefined));
         // The executor releases preparation only after acquiring its own renewal.
         // The finalizer above also covers exits before execution can acquire it.
@@ -1183,11 +1207,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           processPid: run.processPid,
           processStartedAt: run.processStartedAt?.toISOString() ?? null,
         });
-        await db.transaction(async tx => {
+        // An accepted result needs finalization, not a runner reattach. Its
+        // execution lease must still be released: the detached executor will
+        // not finalize, and the next controller's reconciler skips leased rows.
+        // A finalizer lease belongs to finalization already in progress here.
+        const released = await db.transaction(async tx => {
           await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-          await tx.update(nativeRunFinalizations).set({
-            leaseExpiresAt: now,
-            recoveryState: "awaiting_runner_reattach",
+          return tx.update(nativeRunFinalizations).set({
+            leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
+              and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'
+              then ${nativeRunFinalizations.leaseExpiresAt} else ${now.toISOString()}::timestamptz end`,
+            recoveryState: sql`case when ${nativeRunFinalizations.resultId} is null
+              then 'awaiting_runner_reattach' else ${nativeRunFinalizations.recoveryState} end`,
             recoveryHistory: sql`(
               select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
               from jsonb_array_elements(
@@ -1209,20 +1240,26 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               eq(nativeRunFinalizations.runId, run.id),
               owner?.bootId ? eq(nativeRunFinalizations.controllerBootId, owner.bootId)
                 : isNull(nativeRunFinalizations.controllerBootId),
-              isNull(nativeRunFinalizations.resultId),
             ),
-          );
+          )
+          .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
         });
+        const resultAccepted = Boolean(released[0]?.resultId);
+        const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
         await appendRunEvent(run, {
           eventType: "native.recovery.transition",
           stream: "system",
           level: "info",
-          message:
-            "Server shutdown suspended native controller ownership without cancelling provider work",
+          message: finalizerHeld
+            ? "Server shutdown kept the in-progress finalizer lease of the accepted native result"
+            : resultAccepted
+              ? "Server shutdown released the accepted native result for finalization by the next controller"
+              : "Server shutdown suspended native controller ownership without cancelling provider work",
           payload: {
             restartKind: "graceful",
             signal,
-            runnerDisposition: "awaiting_runner_reattach",
+            runnerDisposition: finalizerHeld ? "finalizer_in_progress"
+              : resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
             processPid: run.processPid,
             processGroupId: run.processGroupId,
             processStartedAt: run.processStartedAt?.toISOString() ?? null,
@@ -1397,6 +1434,62 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
   }
 
+  // A teardown claim fences other sweeps for 15 minutes. After a restart, a
+  // claim whose server process has exited cannot still be running, so its
+  // fence ends now. The saved process is bound to its own attempt: a later
+  // claim from another path that kept the old record is never released. A live
+  // or unidentified claimer keeps its fence. Pages pass every skipped claim.
+  async function releaseLostPendingCleanupClaims(): Promise<void> {
+    const nowMs = Date.now();
+    let after: string | null = null;
+    for (;;) {
+      const claimed: Array<{ id: string; metadata: Record<string, unknown> | null }> = await db
+        .select({ id: environmentLeases.id, metadata: environmentLeases.metadata })
+        .from(environmentLeases)
+        .where(and(
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+          sql`jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs') = 'number'`,
+          sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${environmentLeases.metadata}->>'pendingCleanupAttemptId'`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'bootId' is distinct from ${currentControllerBootId()}`,
+          after === null ? undefined : gt(environmentLeases.id, after),
+        ))
+        .orderBy(asc(environmentLeases.id))
+        .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+      for (const row of claimed) {
+        const metadata = row.metadata ?? {};
+        const saved = metadata.pendingCleanupController as Record<string, unknown> | undefined;
+        const controller = readControllerProcess(saved);
+        const attemptId = saved?.attemptId;
+        if (!controller || typeof attemptId !== "string" || !await controllerProcessExited(controller)) continue;
+        // A dead server is not a failed teardown. A sweep claim already counted
+        // its attempt, so give it back; claims from other paths never counted.
+        // The update is single-use: it matches only while the fence is still in
+        // the future and it consumes `countedAttempt`, so an overlapping sweep
+        // that read the same claim cannot refund the attempt again.
+        const returnAttempt = saved?.countedAttempt === true;
+        await db.update(environmentLeases)
+          .set({ metadata: sql`jsonb_set(jsonb_set(jsonb_set(${pendingCleanupMetadataObjectSql()},
+            '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint)),
+            array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}],
+            to_jsonb(greatest(${pendingCleanupAttemptsSql()} - ${returnAttempt ? 1 : 0}, 0)::int), true),
+            '{pendingCleanupController,countedAttempt}', 'false'::jsonb, true)` })
+          .where(and(
+            eq(environmentLeases.id, row.id),
+            eq(environmentLeases.status, "pending_cleanup"),
+            sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+            sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
+            sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+            sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${attemptId}`,
+            sql`coalesce(${environmentLeases.metadata}->'pendingCleanupController'->>'countedAttempt', 'false') = ${returnAttempt ? "true" : "false"}`,
+          ));
+      }
+      if (claimed.length < PENDING_CLEANUP_SWEEP_PAGE_SIZE) return;
+      after = claimed[claimed.length - 1]!.id;
+    }
+  }
+
   // Atomically claim one retry attempt on a pending_cleanup lease. The update
   // only matches when the lease is still pending_cleanup and its stored attempt
   // count still equals `expectedAttempts`. Two concurrent sweeps read the same
@@ -1416,6 +1509,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   ): Promise<string | null> {
     const now = new Date();
     const attemptId = randomUUID();
+    const controller = await currentControllerProcess();
     const claimed = await db
       .update(environmentLeases)
       .set({
@@ -1423,6 +1517,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           || ${JSON.stringify({ ...(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {}),
             pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
             pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+            pendingCleanupController: { ...controller, attemptId, countedAttempt: true },
           })}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
@@ -1639,6 +1734,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
      * but cannot take over an in-flight cleanup attempt.
      */
     explicitRetry?: { companyId: string; runId: string; actorId: string; reason?: "retry_failed_run" | "queued_comment_interrupt" };
+    /** One cleanup attempt per lease of this environment, for an operator who
+     * asked to delete it with its sandboxes. It bypasses the cooldown in the
+     * same way as `explicitRetry`, and never takes over an in-flight attempt. */
+    environmentRetry?: { environmentId: string; actorId: string };
   }): Promise<{
     swept: number;
     destroyed: number;
@@ -1647,6 +1746,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     const backoffMs = opts?.backoffMs ?? 0;
     const now = new Date();
     const cutoff = new Date(now.getTime() - backoffMs);
+    const manualRetry = Boolean(opts?.explicitRetry || opts?.environmentRetry);
 
     let deferredFlushFailed = false;
     // Flush the in-process orphan-cleanup buffer first. A failed acquire buffers
@@ -1655,7 +1755,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // `pending_cleanup` row lands once the database recovers. The flush runs
     // before the read below, so this same tick tears down a freshly-landed row.
     try {
-      const flushed = opts?.explicitRetry ? null : await environmentRuntime.flushDeferredOrphanCleanups?.();
+      const flushed = manualRetry ? null : await environmentRuntime.flushDeferredOrphanCleanups?.();
       if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
         logger.info(
           { recovered: flushed.recovered, pending: flushed.pending },
@@ -1671,6 +1771,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       deferredFlushFailed = true;
     }
 
+    await releaseLostPendingCleanupClaims();
+
     const rows = await db
       .select()
       .from(environmentLeases)
@@ -1679,12 +1781,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           eq(environmentLeases.status, "pending_cleanup"),
           opts?.explicitRetry ? eq(environmentLeases.companyId, opts.explicitRetry.companyId) : undefined,
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
-          pendingCleanupRetryDueSql(Boolean(opts?.explicitRetry)),
+          opts?.environmentRetry ? eq(environmentLeases.environmentId, opts.environmentRetry.environmentId) : undefined,
+          pendingCleanupRetryDueSql(manualRetry),
           backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
         ),
       )
       .orderBy(asc(environmentLeases.updatedAt))
-      .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+      .limit(opts?.environmentRetry ? ENVIRONMENT_CLEANUP_RETRY_LIMIT : PENDING_CLEANUP_SWEEP_PAGE_SIZE);
 
     let destroyed = 0;
     let capped = 0;
@@ -1757,7 +1860,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // The deadline survives a server restart; the counter saturates at the
       // escalation threshold while attempt identities remain unique.
       const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts,
-        opts?.explicitRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
+        manualRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
       if (!claimed) continue;
       pendingCleanupAttemptsInFlight.add(row.id);
       lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
@@ -1781,6 +1884,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
           action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
           runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
+        });
+        else if (opts?.environmentRetry) await logActivity(db, {
+          companyId: row.companyId, actorType: "user", actorId: opts.environmentRetry.actorId,
+          action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
+          runId: row.heartbeatRunId ?? undefined, details: { attempt: attempts + 1, reason: "environment_deleted" },
         });
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
@@ -2144,7 +2252,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           )
           .returning({ id: heartbeatRuns.id })
           .then((rows) => rows[0] ?? null);
-        if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+        if (cleared) await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, run);
         return cleared;
       });
       if (cleared) claimableNativeRunIds.add(cleared.id);
@@ -2153,7 +2261,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     await beforeDispatch?.();
 
     const remoteRetryClaims = remoteRetryRunIds.length
-      ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true })).claims
+      ? (await recoverNativeRunsAfterRestart(now, remoteRetryRunIds, { skipDelegatedWork: true, trigger: "same_run_retry" })).claims
       : [];
 
     // An explicit result-less retryable failure resumes on the original run.
@@ -2179,7 +2287,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   { err: error, runId: claim.runId },
                   "persisted native session resume failed",
                 );
-              });
+              }).finally(() => settleUnstartedNativeSessionResume(db, claim));
               activeRunExecutionPromises.add(execution);
               void execution.finally(() =>
                 activeRunExecutionPromises.delete(execution),
@@ -2453,8 +2561,23 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const legacyLease = await liveLegacyControllerExpiresAt(db, run);
       if (legacyLease) { scope.onDeferredDeadline?.(legacyLease.getTime()); continue; }
 
+      // A legacy controller proves it is alive only by renewing its lease, and
+      // the check above found no live lease (a missing expiry also lands here;
+      // revocation below then refuses the row). When the lease belongs to a
+      // previous boot, setup never reached adapter dispatch, and no process
+      // was recorded, the owner is gone and no provider work can be running:
+      // recover now instead of waiting for the age threshold. A dispatched
+      // adapter (for example a remote HTTP request) keeps the age guard. The
+      // stage is rechecked from the state committed with the revocation below.
+      const priorBootSetupExpired =
+        run.runtimeMode === "legacy" &&
+        run.executionStage === "preparing" &&
+        !!run.controllerBootId &&
+        run.controllerBootId !== legacyControllerBootId &&
+        !run.processPid &&
+        !run.processGroupId;
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      if (staleThresholdMs > 0 && !priorBootSetupExpired) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
         if (now.getTime() - refTime < staleThresholdMs) {
           scope.onDeferredDeadline?.(refTime + staleThresholdMs);
@@ -2525,6 +2648,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
+      // The earlier snapshot may predate a final renewal that admitted the
+      // adapter. Revocation leaves a fresh foreign lease, so a later pass
+      // applies the age guard to that dispatched run.
+      if (priorBootSetupExpired && staleThresholdMs > 0 && (revokedState.executionStage !== "preparing"
+        || revokedState.processPid || revokedState.processGroupId)) {
+        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        scope.onDeferredDeadline?.(Math.max(refTime + staleThresholdMs, Date.now() + 60_000));
+        continue;
+      }
       // A legacy controller persists "dispatching" in the same lease renewal
       // that admits the adapter. An expired lease from another boot that is
       // still "preparing" proves a restart stopped setup before provider work.
@@ -2677,6 +2809,25 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     });
     await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit, skipDirectoryCleanup: opts?.skipInstructionDirectoryCleanup }).catch(error => {
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
+    });
+
+    await sweepOrphanedRunScratch({
+      resolveRunStates: async (runIds) => {
+        // Markers are untrusted: only well-formed UUIDs reach the query.
+        const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const validIds = runIds.filter((id) => uuid.test(id));
+        // A run absent from this database may belong to another instance sharing the temp root.
+        const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
+        if (validIds.length === 0) return states;
+        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
+        for (const row of rows) states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
+        return states;
+      },
+    }).then((swept) => {
+      if (swept.removed.length > 0) logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");
+    }).catch(error => {
+      logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
     });
 
     // Complete persisted native results before generic orphan recovery. The

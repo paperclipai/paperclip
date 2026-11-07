@@ -20,6 +20,10 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRe
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { remoteRecoveryLeaseMismatch, type RemoteRecoveryLeaseMismatchField } from "./native-runtime/remote-recovery-lease-mismatch.js";
+import { EnvironmentProviderUnavailableError, readTransientEnvironmentProviderFailure } from "./environment-provider-unavailable-error.js";
+import { findReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import type {
   Environment,
   EnvironmentLease,
@@ -29,7 +33,11 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "./runner-environment-lifecycle.js";
+import {
+  resolveRunnerEnvironmentForRun,
+  resolveRunnerReconnectGraceMsForRun,
+  resolveWarmRunnerIdleTimeoutMsForRun,
+} from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -218,17 +226,26 @@ export function environmentRunOrchestrator(
     runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
     warmRunnerIdleTimeoutMs?: number;
+    runnerReconnectGraceMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
+      // setup path with its bounded bootstrap budget. Saved-sandbox resume and
+      // stopped-worker refusals keep their own, more specific classifications.
+      const transient = findReusableSandboxResumeError(err) || findPluginWorkerUnavailableError(err)
+        ? null : readTransientEnvironmentProviderFailure(err);
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
         {
           environmentId: input.environment.id,
           driver: input.environment.driver,
-          cause: err,
+          cause: transient
+            ? new EnvironmentProviderUnavailableError({ environmentName: input.environment.name,
+              driver: input.environment.driver, evidence: transient, cause: err })
+            : err,
         },
       );
     }
@@ -317,6 +334,9 @@ export function environmentRunOrchestrator(
     const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
       selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
     );
+    const runnerReconnectGraceMs = input.adapterType
+      ? resolveRunnerReconnectGraceMsForRun(selectedEnvironment, input.adapterType)
+      : undefined;
     const acquisitionInput = {
       companyId: input.companyId,
       environment,
@@ -329,6 +349,7 @@ export function environmentRunOrchestrator(
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
+      runnerReconnectGraceMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
@@ -336,20 +357,24 @@ export function environmentRunOrchestrator(
       // Never reacquire: acquisition can replace a non-reusable sandbox.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
-      if (!lease ||
-          lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
+      const mismatch: RemoteRecoveryLeaseMismatchField | null = !lease ? "lease"
+        : lease.companyId !== input.companyId || lease.environmentId !== environment.id ||
           lease.heartbeatRunId !== input.heartbeatRunId || lease.issueId !== input.issueId ||
           lease.executionWorkspaceId !== (input.persistedExecutionWorkspace?.id ?? null) ||
-          lease.metadata?.agentId !== input.agentId || lease.status !== "active" ||
-          lease.releasedAt !== null || lease.cleanupStatus !== null ||
-          (lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now()) ||
-          (expected.kind === "plugin_task"
-            ? environment.driver !== "plugin" || input.adapterType !== "paperclip_runner"
-              || lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
-              || lease.metadata?.runnerTaskExecutionStopped === true
-            : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
-              || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
-        throw new Error("native_remote_recovery_lease_mismatch");
+          lease.metadata?.agentId !== input.agentId ? "lease_scope"
+        : lease.status !== "active" || lease.releasedAt !== null || lease.cleanupStatus !== null ? "lease_status"
+        : lease.expiresAt !== null && new Date(lease.expiresAt).getTime() <= Date.now() ? "lease_expired"
+        : expected.kind === "plugin_task"
+          ? environment.driver !== "plugin" ? "environment_driver"
+            : input.adapterType !== "paperclip_runner" ? "adapter_type"
+            : lease.metadata?.runnerTaskLease !== true || lease.metadata?.runnerTaskDispatched !== true
+              || lease.metadata?.runnerTaskExecutionStopped === true ? "plugin_task" : null
+        : environment.driver !== "sandbox" ? "environment_driver"
+        : lease.provider !== environment.config.provider ? "provider"
+        : lease.providerLeaseId !== expected.providerLeaseId ? "provider_lease_id"
+        : lease.metadata?.remoteCwd !== expected.remoteCwd ? "remote_cwd" : null;
+      if (mismatch || !lease) {
+        throw remoteRecoveryLeaseMismatch("environment_acquire", mismatch ?? "lease");
       }
       if (expected.kind !== "plugin_task") {
         // The provider may have archived this retained sandbox while its
@@ -359,11 +384,13 @@ export function environmentRunOrchestrator(
         const resumed = await environmentRuntime.resumeRunLease({
           environment, lease, requestedCwd: expected.remoteCwd,
           ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+          ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
         });
-        if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
-            resumed.metadata?.expired === true) {
-          throw new Error("native_remote_recovery_lease_mismatch");
+        if (!resumed) throw remoteRecoveryLeaseMismatch("environment_resume", "lease");
+        if (resumed.providerLeaseId !== expected.providerLeaseId) {
+          throw remoteRecoveryLeaseMismatch("environment_resume", "provider_lease_id");
         }
+        if (resumed.metadata?.expired === true) throw remoteRecoveryLeaseMismatch("environment_resume", "lease_expired");
         // Resume confirms allocation readiness. Its optional metadata may
         // describe the allocation root; keep the validated lease's workspace.
       }

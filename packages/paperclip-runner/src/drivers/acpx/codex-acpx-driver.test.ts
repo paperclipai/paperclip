@@ -2,7 +2,7 @@ import { appendSemanticToolReceipt } from "../semantic-tool-receipt.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { AcpxProviderProcessLostError } from "./codex-runtime-adapter.js";
 import { QUALIFIED_ACPX_PROFILES } from "./qualified-profiles.js";
 
@@ -31,7 +31,7 @@ describe("Codex ACPX harness driver", () => {
   it("captures the direct driver's normalized input only when the exact proposal is retained", async () => {
     const fixture = driverFixture({ agent: "copilot", model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-normalized-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    await session.startTurn({ message: { text: "Complete" } });
+    await session.startTurn({ message: { role: "user", text: "Complete" } });
     const { schema: _, attentionRequests: __, artifacts: ___, ...raw } = completedResult();
     const commit = vi.fn(), capture = vi.fn((value: unknown) => { expect(commit).not.toHaveBeenCalled(); return commit; });
     const handler = fixture.hostOptions!.semanticTools!.handler;
@@ -58,7 +58,7 @@ describe("Codex ACPX harness driver", () => {
       runtimeEvents: Array.from({ length: 8 }, (_, n) => ({ type: "text_delta" as const, stream: "output" as const, text: `bounded-${n}` })),
     });
     const session = await fixture.driver.openSession({ runId: "run-normalized-pressure", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    await session.startTurn({ message: { text: "Complete" } });
+    await session.startTurn({ message: { role: "user", text: "Complete" } });
     await vi.waitFor(async () => expect((await session.transcript!()).eventCount).toBeGreaterThanOrEqual(4));
     const commit = vi.fn(), capture = vi.fn(() => commit);
     await expect(fixture.hostOptions!.semanticTools!.handler({ tool: PRP_COMPLETION_TOOL_NAME, callId: "finish", arguments: completedResult(),
@@ -107,23 +107,23 @@ describe("Codex ACPX harness driver", () => {
       },
     } };
     fixture.host.status.mockResolvedValueOnce(before as never).mockResolvedValue(after as never);
-    await session.startTurn({ message: { text: "fixture" } });
+    await session.startTurn({ message: { role: "user", text: "fixture" } });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
     const events = await collectUntil(session.events(), "turn.completed");
     const notices = events.filter(e => e.eventType === "provider.notice.recorded" && e.payload.category === "cursor_native_usage_observed");
     expect(notices).toHaveLength(agent === "cursor" ? 1 : 0);
-    expect(events.filter(e => e.eventType === "usage.updated")).toEqual([]);
+    expect(events.filter(e => e.eventType === "usage.reported")).toEqual([]);
     expect(events.at(-1)?.eventType).toBe("turn.completed");
     await session.close({ reason: "partial diagnostics verified" });
   });
 
   it.each(["tool-1", "tool with spaces", "🧭/plan", "x".repeat(300)])("binds a native Cursor plan request to its actual projected tool identity: %s", async toolCallId => {
     const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", mode: "plan", providerPolicy: { readOnly: false } }, {
-      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "arbitrary tool display", kind: "execute", status: "pending" }],
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "arbitrary tool display", kind: "execute", status: "pending", text: "arbitrary tool display" }],
     });
     const session = await fixture.driver.openSession({ runId: "run-plan-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     const toolEvents = collectUntil(session.events(), "tool.execution.started");
-    const { turnId } = await session.startTurn({ message: { text: "Plan" } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Plan" } });
     const tool = (await toolEvents).find(e => e.eventType === "tool.execution.started")!;
     const created = collectUntil(session.events(), "runtime_request.created");
     const callback = fixture.host.startTurn.mock.calls[0]![0].onExtensionRequest!;
@@ -145,7 +145,7 @@ describe("Codex ACPX harness driver", () => {
     ];
     const fixture = driverFixture({ agent, model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
     const session = await fixture.driver.openSession({ runId: "other-provider-identity", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    const { turnId } = await session.startTurn({ message: { text: "fixture" } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "fixture" } });
     fixture.finishTurn({ status: "completed" });
     const events = await collectUntil(session.events(), "turn.completed");
     const messages = events.filter(event => event.payload.kind === "agentMessage");
@@ -162,7 +162,7 @@ describe("Codex ACPX harness driver", () => {
     runtimeEvents.push(chunk(undefined, "Info: native session activity"));
     const fixture = driverFixture({ agent: "copilot", model: "explicit-model", providerPolicy: { readOnly: true } }, { runtimeEvents });
     const session = await fixture.driver.openSession({ runId: "run-copilot-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    await session.startTurn({ message: { text: "Answer exactly" } });
+    await session.startTurn({ message: { role: "user", text: "Answer exactly" } });
     fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
     const events = await collectUntil(session.events(), scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
     const interim = events.find(event => event.eventType === "item.delta" && event.payload.text === "EXACT_MARKER");
@@ -179,7 +179,7 @@ describe("Codex ACPX harness driver", () => {
   it("keeps Pi retry-only activity as a rich notice without inventing a final answer", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-pi-notice", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    await session.startTurn({ message: { text: "Work" } });
+    await session.startTurn({ message: { role: "user", text: "Work" } });
     const input = fixture.host.startTurn.mock.calls[0]![0];
     await input.onExtensionNotification!("paperclip/pi_notice", { sessionId: "backend-1", category: "auto_retry_end", summary: "Retry did not recover.", severity: "warning", details: { attempt: 2, success: false } });
     fixture.finishTurn({ status: "completed" });
@@ -201,7 +201,7 @@ describe("Codex ACPX harness driver", () => {
     }
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents });
     const session = await fixture.driver.openSession({ runId: "run-pi-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    await session.startTurn({ message: { text: "Answer exactly" } });
+    await session.startTurn({ message: { role: "user", text: "Answer exactly" } });
     fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
     const events = await collectUntil(session.events(), scenario === "missing-end" ? "turn.failed" : scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
     expect(events.some(event => event.eventType === "item.delta" && event.payload.text === "Calling finish.")).toBe(true);
@@ -233,7 +233,7 @@ describe("Codex ACPX harness driver", () => {
     }
     const fixture = driverFixture({ agent: "kimi", model: "kimi-for-coding", providerPolicy: { readOnly: true } }, { runtimeEvents });
     const session = await fixture.driver.openSession({ runId: "run-kimi-boundaries", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    const { turnId } = await session.startTurn({ message: { text: "Answer exactly" } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer exactly" } });
     fixture.finishTurn({ status: scenario === "cancelled" ? "cancelled" : "completed" });
     const events = await collectUntil(session.events(), scenario === "missing-end" ? "turn.failed" : scenario === "cancelled" ? "turn.interrupted" : "turn.completed");
     const progress = events.find(event => event.eventType === "item.delta" && event.payload.text === "Calling finish.")!;
@@ -256,34 +256,34 @@ describe("Codex ACPX harness driver", () => {
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     expect(fixture.hostOptions?.providerPolicy).toEqual({ readOnly: true });
     expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: true });
-    const { turnId } = await session.startTurn({ message: { text: "Work" } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
     const turnInput = fixture.host.startTurn.mock.calls[0]![0];
     const context = { requestId: 0, signal: new AbortController().signal };
     await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "agent-1" }, context)).rejects.toThrow(/session mismatch/);
-    await session.steer!({ turnId, correlationId: "control-1", message: { text: "Change focus" } });
-    await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { text: "Then validate" } });
+    await session.steer!({ turnId, correlationId: "control-1", message: { role: "user", text: "Change focus" } });
+    await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { role: "user", text: "Then validate" } });
     expect(fixture.host.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Change focus", `run-controls:${turnId}`);
     expect(fixture.host.queueFollowUp).toHaveBeenCalledExactlyOnceWith("Then validate", `run-controls:${turnId}`);
     expect(fixture.host.interruptActiveTurn).not.toHaveBeenCalled();
-    await expect(session.steer!({ turnId, correlationId: "control-2", message: { text: "Duplicate" } })).rejects.toThrow(/already attempted/);
-    await expect(session.steer!({ turnId: "wrong-turn", message: { text: "Stale" } })).rejects.toThrow();
+    await expect(session.steer!({ turnId, correlationId: "control-2", message: { role: "user", text: "Duplicate" } })).rejects.toThrow(/already attempted/);
+    await expect(session.steer!({ turnId: "wrong-turn", message: { role: "user", text: "Stale" } })).rejects.toThrow();
     fixture.finishTurn({ status: "completed" });
     const events = await collectUntil(session.events(), "turn.completed");
     expect(events.filter(event => event.payload.kind === "steering_acknowledgement").map(event => event.payload.mode)).toEqual(["steer", "follow_up"]);
     for (const event of events) expect(validatePrpEvent(event).ok).toBe(true);
-    await expect(session.steer!({ turnId, message: { text: "Already settled" } })).rejects.toThrow();
+    await expect(session.steer!({ turnId, message: { role: "user", text: "Already settled" } })).rejects.toThrow();
     await session.close({ reason: "controls verified" });
   });
 
   it("rejects unnegotiated controls and retains ambiguous delivery attempts", async () => {
     const fixture = driverFixture({ agent: "pi", model: "openrouter/deepseek/deepseek-v4-flash-0731", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-controls", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    const { turnId } = await session.startTurn({ message: { text: "Work" } });
-    await expect(session.steer!({ turnId, message: { text: "No handshake" } })).rejects.toThrow(/did not negotiate/);
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
+    await expect(session.steer!({ turnId, message: { role: "user", text: "No handshake" } })).rejects.toThrow(/did not negotiate/);
     expect(fixture.host.steerActiveTurn).not.toHaveBeenCalled();
     fixture.host.steeringCapability.mockReturnValue({ steering: true, queuedFollowUp: false });
     fixture.host.steerActiveTurn.mockRejectedValueOnce(new Error("delivery acknowledgement lost"));
-    const input = { turnId, correlationId: "ambiguous", message: { text: "Maybe delivered" } };
+    const input = { turnId, correlationId: "ambiguous", message: { role: "user" as const, text: "Maybe delivered" } };
     await expect(session.steer!(input)).rejects.toThrow(/acknowledgement lost/);
     await expect(session.steer!(input)).rejects.toThrow(/already attempted/);
     expect(fixture.host.steerActiveTurn).toHaveBeenCalledOnce();
@@ -440,6 +440,34 @@ describe("Codex ACPX harness driver", () => {
       ok: false,
       issues: [{ code: "unsupported_agent" }],
     });
+  });
+
+  it("keeps Claude status banners out of the answer as status notices", async () => {
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" }, {
+      runtimeEvents: [
+        { type: "text_delta", stream: "output", messageId: "m1", text: "Reading the worker." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "Compacting..." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "\n\nCompacting completed." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "**Warning:** Stop hook blocked continuation" },
+        { type: "text_delta", stream: "output", messageId: "m1", text: " Fixed it." },
+      ],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-claude-banners", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { role: "user", text: "Fix it" } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    for (const event of events) validatePrpEvent(event);
+    const notices = events.filter(e => e.eventType === "provider.notice.recorded").map(e => e.payload);
+    expect(notices).toEqual([
+      expect.objectContaining({ category: "context_compaction", details: [{ name: "Phase", value: "running" }] }),
+      expect.objectContaining({ category: "context_compaction", details: [{ name: "Phase", value: "completed" }] }),
+      expect.objectContaining({ category: "provider_informational", severity: "warning", summary: "Stop hook blocked continuation" }),
+    ]);
+    expect(notices[0].noticeId).toBe(notices[1].noticeId);
+    const final = events.find(e => e.eventType === "item.completed" && e.payload.channel === "final");
+    expect(final?.payload.text).toBe("Reading the worker. Fixed it.");
+    expect(events.filter(e => e.eventType === "item.delta").map(e => e.payload.text).join("")).toBe("Reading the worker. Fixed it.");
+    await session.close({ reason: "banners classified" });
   });
 
   it("opens the qualified Claude profile through the shared driver", async () => {
@@ -685,11 +713,11 @@ describe("Codex ACPX harness driver", () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow("does not match");
-    await session.interrupt({ turnId, reason: "user cancelled" });
+    await session.interrupt!({ turnId, reason: "user cancelled" });
     expect(fixture.host.interruptActiveTurn).toHaveBeenCalledWith(
       "user cancelled",
     );
-    await expect(session.interrupt({ turnId: "stale-turn" })).rejects.toThrow(
+    await expect(session.interrupt!({ turnId: "stale-turn" })).rejects.toThrow(
       "is not the active turn",
     );
     await session.close({ reason: "cancelled" });
@@ -1263,13 +1291,13 @@ describe("Codex ACPX harness driver", () => {
       const fixture = driverFixture({}, { closeSettlementTimeoutMs: 1 });
       const hostA = {
         ...fixture.host,
-        close: vi.fn(async () => {
+        close: vi.fn(async (_input: { reason: string }): Promise<void> => {
           throw new Error("host A cleanup failed");
         }),
       };
       const hostB = {
         ...fixture.host,
-        close: vi.fn(async () => {
+        close: vi.fn(async (_input: { reason: string }): Promise<void> => {
           throw new Error("host B cleanup failed");
         }),
       };
@@ -1578,7 +1606,7 @@ describe("Codex ACPX harness driver", () => {
     ).rejects.toThrow("awaiting canonical terminal-event retention");
     expect(dynamicToolHandler).not.toHaveBeenCalled();
     await expect(
-      session.interrupt({ turnId, reason: "too late" }),
+      session.interrupt!({ turnId, reason: "too late" }),
     ).rejects.toThrow("awaiting canonical terminal-event retention");
     expect(fixture.host.interruptActiveTurn).not.toHaveBeenCalled();
     await expect(session.snapshot()).resolves.toMatchObject({
@@ -1733,7 +1761,7 @@ describe("Codex ACPX harness driver", () => {
     const fixture = driverFixture({ agent: "copilot", model: "gpt-5.6-luna", providerPolicy: { readOnly: false } }, { eventStreamFailure: failure.promise });
     const session = await fixture.driver.openSession({ runId: "run-provider-death", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     const created = collectUntil(session.events(), "runtime_request.created");
-    const { turnId } = await session.startTurn({ message: { text: "Edit the file" } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Edit the file" } });
     const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
     const controller = new AbortController();
     const response = callback({ inferredKind: "edit", raw: {
@@ -1867,11 +1895,11 @@ describe("Codex ACPX harness driver", () => {
   it.each(["cursor-tool", "native\u0000tool", "native\u007ftool"].flatMap(toolCallId => ["written", "failed"].map(outcome => ({ toolCallId, outcome }))))("binds Cursor denial evidence to its original tool and response write: $outcome/$toolCallId", async ({ outcome, toolCallId }) => {
     const command = "printf 'sensitive-value' > /workspace/denied.txt";
     const fixture = driverFixture({ agent: "cursor", model: "explicit-test-model", providerPolicy: { readOnly: false } }, {
-      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "Run command", kind: "execute", status: "pending", rawInput: { command } }],
+      runtimeEvents: [{ type: "tool_call", tag: "tool_call", toolCallId, title: "Run command", kind: "execute", status: "pending", text: "Run command", rawInput: { command } }],
     });
     const session = await fixture.driver.openSession({ runId: "run-cursor-receipt", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
     const origin = collectUntil(session.events(), "tool.execution.started");
-    const { turnId } = await session.startTurn({ message: { text: "Request the command." } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Request the command." } });
     const originEvents = await origin;
     const created = collectUntil(session.events(), "runtime_request.created");
     const callback = fixture.host.startTurn.mock.calls[0]![0].onPermissionRequest!;
@@ -1914,7 +1942,7 @@ describe("Codex ACPX harness driver", () => {
     const fixture = driverFixture({ agent, providerPolicy: { readOnly: false } }, { runtimeEvents });
     const session = await fixture.driver.openSession({ runId: "run-attached", normalizedSessionId: "session-1", workingDirectory: "/fixture/workspace" });
     const completed = collectUntil(session.events(), "turn.completed");
-    const { turnId } = await session.startTurn({ message: { text: "Start attached work." } });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Start attached work." } });
     fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
     const events = await completed;
     const evidence = events.filter(event => event.eventType === "provider.notice.recorded" && event.payload.category === "copilot_tool_evidence_v1");
@@ -1948,6 +1976,7 @@ describe("Codex ACPX harness driver", () => {
     const providerResponse = onElicitation(
       {
         mode: "form",
+        sessionId: "backend-1",
         message: "Choose deployment settings.",
         requestedSchema: {
           type: "object",
@@ -2037,6 +2066,8 @@ describe("Codex ACPX harness driver", () => {
       onElicitation(
         {
           mode: "form",
+          sessionId: "backend-1",
+          message: "Provide a value.",
           requestedSchema: {
             type: "object",
             properties: { value: { type: "string" } },
@@ -2073,6 +2104,8 @@ describe("Codex ACPX harness driver", () => {
     const providerResponse = onElicitation(
       {
         mode: "form",
+        sessionId: "backend-1",
+        message: "Provide a value.",
         requestedSchema: {
           type: "object",
           properties: { value: { type: "string" } },
@@ -2120,6 +2153,8 @@ describe("Codex ACPX harness driver", () => {
     const providerResponse = onElicitation(
       {
         mode: "form",
+        sessionId: "backend-1",
+        message: "Provide a value.",
         requestedSchema: {
           type: "object",
           properties: { value: { type: "string" } },
@@ -2166,6 +2201,8 @@ describe("Codex ACPX harness driver", () => {
     const providerResponse = onElicitation(
       {
         mode: "form",
+        sessionId: "backend-1",
+        message: "Provide a value.",
         requestedSchema: {
           type: "object",
           properties: { value: { type: "string" } },
@@ -2234,6 +2271,8 @@ describe("Codex ACPX harness driver", () => {
     const providerResponse = onElicitation(
       {
         mode: "form",
+        sessionId: "backend-1",
+        message: "Provide a value.",
         requestedSchema: {
           type: "object",
           properties: { value: { type: "string" } },
@@ -3149,12 +3188,12 @@ function driverFixture(
 function recoveryWorkspaceLease(
   path = "/workspace",
 ): AcpxRecoveryWorkspaceLease & {
-  assertHeld: ReturnType<typeof vi.fn>;
-  close: ReturnType<typeof vi.fn>;
+  assertHeld: Mock<() => void>;
+  close: Mock<() => Promise<void>>;
 } {
   return {
     path,
-    assertHeld: vi.fn(),
+    assertHeld: vi.fn<() => void>(),
     close: vi.fn(async () => undefined),
   };
 }
@@ -3179,6 +3218,7 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
       workspacePath: "/workspace",
       workspaceDigest: `sha256:${"b".repeat(64)}`,
       runtimeRoot: "/runtime/acpx/session-1",
+      commandDigest: `sha256:${"c".repeat(64)}`,
       profileDigest: `sha256:${"a".repeat(64)}`,
       requestedModel: "gpt-5.6-sol",
       effectiveModel: "gpt-5.6-sol",
@@ -3197,7 +3237,7 @@ function fakeHost(createTurn: () => AcpxRuntimeTurn, onClose: () => void) {
     steerActiveTurn: vi.fn(async (_text: string, _requestId?: string) => undefined),
     queueFollowUp: vi.fn(async (_text: string, _requestId?: string) => undefined),
     interruptActiveTurn: vi.fn(async () => undefined),
-    close: vi.fn(async () => {
+    close: vi.fn(async (_input: { reason: string }) => {
       onClose();
     }),
   };

@@ -1,4 +1,5 @@
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -499,25 +500,58 @@ export interface PersistedHarnessSession {
 /** Runner proof that saved provider state cannot be restored by this runner
  * build. Restoring the same state again fails the same way. */
 export const PROVIDER_STATE_INCOMPATIBLE = "provider_state_incompatible";
+/** Runner refused to attach a new run to the saved session (for example, a
+ * protected launch argument or the durable provider profile would change).
+ * The refusal leaves the saved state unchanged and repeats on every retry. */
+export const PROVIDER_ATTACH_REFUSED = "provider_attach_refused";
+/** The saved session still owns a side-effecting call without a recorded
+ * result. Replacing the session could repeat or lose that external action. */
+export const PROVIDER_SIDE_EFFECT_PENDING = "provider_side_effect_pending";
+
+export type RunnerRecoveryFailureClass =
+  | typeof PROVIDER_STATE_INCOMPATIBLE
+  | typeof PROVIDER_ATTACH_REFUSED
+  | typeof PROVIDER_SIDE_EFFECT_PENDING;
+
+const RUNNER_RECOVERY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
+  PROVIDER_STATE_INCOMPATIBLE,
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+]);
+
+/** A predecessor's semantic tool call or bridged runtime input has no settled
+ * result, so the source runner cannot hand its session to a new run. */
+export class NativeRunnerSourceReconciliationRequiredError extends Error {
+  readonly code: `native_runner_source_${"semantic" | "runtime"}_reconciliation_required`;
+  constructor(readonly pending: "semantic" | "runtime") {
+    super(`native_runner_source_${pending}_reconciliation_required`);
+    this.name = "NativeRunnerSourceReconciliationRequiredError";
+    this.code = `native_runner_source_${pending}_reconciliation_required`;
+  }
+}
 
 export interface HarnessSessionRecoveryResult {
   recovered: boolean;
   session?: HarnessSession;
   reason?: string;
   /** Closed runner class of a deterministic recovery failure. */
-  failureClass?: typeof PROVIDER_STATE_INCOMPATIBLE;
+  failureClass?: RunnerRecoveryFailureClass;
 }
 
-/** Reads the closed class of an authenticated runner command failure. */
+/** Reads the closed class of an authenticated runner command failure, or of a
+ * typed source-reconciliation refusal. Never derived from message text. */
 export function runnerRecoveryFailureClass(
   error: unknown,
   depth = 0,
-): typeof PROVIDER_STATE_INCOMPATIBLE | undefined {
+): RunnerRecoveryFailureClass | undefined {
   if (!error || typeof error !== "object" || depth > 5) return undefined;
+  if (error instanceof NativeRunnerSourceReconciliationRequiredError) return PROVIDER_SIDE_EFFECT_PENDING;
   const value = error as Record<string, unknown>;
   const result = value.runnerCommandResult as Record<string, unknown> | undefined;
   const detail = result?.result as Record<string, unknown> | undefined;
-  if (detail?.classification === PROVIDER_STATE_INCOMPATIBLE) return PROVIDER_STATE_INCOMPATIBLE;
+  if (typeof detail?.classification === "string" && RUNNER_RECOVERY_FAILURE_CLASSES.has(detail.classification)) {
+    return detail.classification as RunnerRecoveryFailureClass;
+  }
   return runnerRecoveryFailureClass(value.cause, depth + 1);
 }
 
@@ -538,9 +572,22 @@ export interface HarnessSession {
     requestedCollaborationMode?: "default" | "plan";
     /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
     reasoningMode?: "default" | "disabled";
+    /**
+     * Run the provider's own context compaction as this turn instead of
+     * submitting `message`. Only for a resumed session with prior context.
+     */
+    compact?: true;
+    /** Last context occupancy Paperclip recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     /** Queued follow-ups remain distinct from active-turn steering. */
@@ -576,6 +623,8 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean }): Promise<void>;

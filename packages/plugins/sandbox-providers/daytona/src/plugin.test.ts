@@ -1045,6 +1045,57 @@ describe("Daytona sandbox provider plugin", () => {
       }
     });
 
+    // RC-54: a per-turn, non-reusable sandbox running a remote runner must not
+    // auto-stop during a controller outage the host still treats as
+    // reattachable. The host forwards its reconnect grace for runner leases.
+    it.each([
+      [{ reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false, autoStopInterval: 2 }],
+      [{ reuseLease: true, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false }],
+    ])("keeps a runner sandbox alive through the host reconnect grace plus a margin (%o)", async (config) => {
+      const autoStopMs = (await acquire({ ...config, runnerReconnectGraceMs: 420_000 })) * 60_000;
+      expect(autoStopMs).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("combines the reconnect grace floor with the warm floor and explicit settings", async () => {
+      expect(await acquire({ reuseLease: true, warmRunnerIdleTimeoutMs: 900_000, runnerReconnectGraceMs: 420_000 }))
+        .toBe(Math.ceil(900_000 / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 60 })).toBe(60);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 0 })).toBe(0);
+      // Without a host-forwarded grace (not a runner lease), the configured value stands.
+      expect(await acquire({ reuseLease: false, autoStopInterval: 5 })).toBe(5);
+    });
+
+    it("raises the auto-stop of an existing runner sandbox on recovery resume", async () => {
+      // The stopped sandbox from the outage restarts on resume and keeps its
+      // original 5-minute auto-stop unless the provider raises it.
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-runner", state: "stopped" });
+      (sandbox as { autoStopInterval: number }).autoStopInterval = 5;
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+        result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config: { reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5, runnerReconnectGraceMs: 420_000 },
+        leaseMetadata: { workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token", result: "written" } },
+      });
+      expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
+      const [minutes] = sandbox.setAutostopInterval.mock.calls[0] as [number];
+      expect(minutes * 60_000).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("keeps the host reconnect grace out of the saved provider config", async () => {
+      const result = await plugin.definition.onEnvironmentValidateConfig!({ driverKey: "daytona",
+        config: { apiKey: "key", image: "node:20", runnerReconnectGraceMs: 420_000, warmRunnerIdleTimeoutMs: 900_000, reuseLease: true } });
+      expect(result.ok).toBe(true);
+      expect(result.normalizedConfig).not.toHaveProperty("runnerReconnectGraceMs");
+      expect(result.normalizedConfig).not.toHaveProperty("warmIdleTimeoutMs");
+    });
+
     it("does not change auto-stop on resume of a per-turn reusable sandbox", async () => {
       const sandbox = await resume({ reuseLease: true, runnerLifecycleMode: "per_turn" });
       expect(sandbox.setAutostopInterval).not.toHaveBeenCalled();
@@ -5907,6 +5958,63 @@ describe("daytona native file-sync hooks", () => {
 
     // Neither the ro directory nor the access-absent file directory is recorded.
     expect(__getDaytonaWritableDirsForTest(params)).toEqual([]);
+  });
+
+  it.each((["syncIn", "syncOut"] as const).flatMap(method => [
+    { minimumTimeoutMs: undefined, configured: 300_000, expected: 300 },
+    { minimumTimeoutMs: 900_000, configured: 300_000, expected: 900 },
+    { minimumTimeoutMs: 900_000, configured: 1_200_000, expected: 1200 },
+  ].map(budget => ({ method, ...budget }))))("uses a $method minimum of $minimumTimeoutMs without changing later transfers", async ({ method, minimumTimeoutMs, configured, expected }) => {
+    mockCreate.mockClear();
+    const root = await makeHostDir();
+    const local = path.join(root, "archive.pcws");
+    await fs.writeFile(local, "bytes");
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation((...args: unknown[]) => fulfilDownload(args));
+    mockGet.mockResolvedValue(sandbox);
+    const params = method === "syncIn"
+      ? syncInParams({ operationId: "bounded-upload", sourcePath: local, targetPath: `${REMOTE_DIR}/archive.pcws` })
+      : syncOutParams({ operationId: "bounded-download", sourcePath: `${REMOTE_DIR}/archive.pcws`, targetPath: local });
+    params.config.timeoutMs = configured;
+    const hook = method === "syncIn" ? plugin.definition.onEnvironmentSyncIn! : plugin.definition.onEnvironmentSyncOut!;
+    await hook({ ...params, minimumTimeoutMs });
+    const transfer = method === "syncIn" ? sandbox.fs.uploadFiles : sandbox.fs.downloadFiles;
+    expect(transfer.mock.calls[0]?.[1]).toBe(expected);
+    await hook(params);
+    expect(transfer.mock.calls[1]?.[1]).toBe(configured / 1000);
+    expect(params.config.timeoutMs).toBe(configured);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { minimumTimeoutMs: undefined, transferSeconds: 300 },
+    { minimumTimeoutMs: 900_000, transferSeconds: 900 },
+  ])("keeps command deadlines separate from a $minimumTimeoutMs transfer minimum", async ({ minimumTimeoutMs, transferSeconds }) => {
+    const root = await makeHostDir();
+    const source = path.join(root, "archive.pcws");
+    await fs.writeFile(source, "bytes");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+    const params = syncInParams({ operationId: "transfer-with-commands", sourcePath: source, targetPath: `${REMOTE_DIR}/archive.pcws` });
+    await plugin.definition.onEnvironmentSyncIn!({
+      ...params, minimumTimeoutMs,
+      operations: [{ ...params.operations[0], postUploadCommands: [
+        { command: "check-default-deadline" },
+        { command: "check-explicit-deadline", timeoutMs: 2000 },
+      ] }],
+    });
+    expect(sandbox.fs.uploadFiles.mock.calls[0]?.[1]).toBe(transferSeconds);
+    expect(sandbox.process.executeCommand).toHaveBeenCalledWith("check-default-deadline", REMOTE_DIR, undefined, 300);
+    expect(sandbox.process.executeCommand).toHaveBeenCalledWith("check-explicit-deadline", REMOTE_DIR, undefined, 2);
+  });
+
+  it.each(["syncIn", "syncOut"] as const)("rejects an invalid $0 minimum before sandbox access", async method => {
+    const hook = method === "syncIn" ? plugin.definition.onEnvironmentSyncIn! : plugin.definition.onEnvironmentSyncOut!;
+    for (const minimumTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 30 * 60_000 + 1]) {
+      await expect(hook({ ...syncInParams({ operationId: "invalid-budget", sourcePath: "/host", targetPath: REMOTE_DIR }),
+        minimumTimeoutMs })).rejects.toThrow("Invalid sandbox sync timeout");
+    }
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it("syncIn coalesces file mappings into one uploadFiles batch to reserved temp destinations, then one batched mv, applying secret mode via setFilePermissions before the rename", async () => {

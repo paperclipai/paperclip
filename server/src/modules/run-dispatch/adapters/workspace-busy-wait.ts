@@ -1,11 +1,14 @@
 import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { notifyScheduledRetryDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
+import { readRemoteWorkspaceWriterHold } from "../../../services/remote-workspace-writer-hold.js";
 import {
   WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
   WORKSPACE_BUSY_PARKED_RECHECK_MS,
   WORKSPACE_BUSY_RETRY_REASON,
+  WORKSPACE_BUSY_SETTLING_RECHECK_MS,
   WORKSPACE_BUSY_WAIT_KEY,
   readWorkspaceBusyWait,
   type WorkspaceBusyWait,
@@ -42,9 +45,13 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, wait.holderRunId)));
+  // A remote writer that ended still holds its workspace until its save and
+  // sandbox release settle (a run stopped by reassignment, for example).
+  // Reservation defers on that hold, so the wait stays parked through it too.
+  const settlingSince = holder && holder.status !== "running" ? await settlingWriterActivityAt(tx, run, wait) : null;
   const holderStaleAt = holder?.status === "running"
     ? new Date(holder.lastActivityAt).getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS
-    : null;
+    : settlingSince ? settlingSince.getTime() + WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS : null;
   const holderLive = holderStaleAt !== null && holderStaleAt > now.getTime();
 
   // Arrival order among waiters for one workspace: an earlier waiter that is
@@ -68,7 +75,7 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
   if (!holderLive && !earlierWaiter) return false;
 
   const recheckAt = new Date(Math.min(
-    now.getTime() + WORKSPACE_BUSY_PARKED_RECHECK_MS,
+    now.getTime() + (holderLive && settlingSince ? WORKSPACE_BUSY_SETTLING_RECHECK_MS : WORKSPACE_BUSY_PARKED_RECHECK_MS),
     holderLive ? holderStaleAt! + 1_000 : Number.POSITIVE_INFINITY,
   ));
   await notifyScheduledRetryCancellation(tx, { companyId: run.companyId, runId: run.id });
@@ -86,6 +93,25 @@ export async function parkWorkspaceBusyRetryInTx(tx: Db, run: HeartbeatRun, now:
     ))
     .returning({ id: heartbeatRuns.id });
   return Boolean(parked);
+}
+
+/**
+ * When the recorded holder is an ended remote writer that still holds the
+ * waited execution workspace, the time its hold-cutoff clock started (the
+ * same value reservation measures). Null when that hold has settled or moved.
+ */
+async function settlingWriterActivityAt(tx: Db, run: HeartbeatRun, wait: WorkspaceBusyWait): Promise<Date | null> {
+  if (!wait.key.startsWith("execution:")) return null;
+  const [workspace] = await tx
+    .select({ metadata: executionWorkspaces.metadata })
+    .from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, wait.key.slice("execution:".length))));
+  const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+  if (!authority || authority.writerRunId !== wait.holderRunId) return null;
+  const hold = await readRemoteWorkspaceWriterHold(tx, { companyId: run.companyId, authority });
+  return hold.kind === "held" && hold.writer.ended && hold.writer.runId === wait.holderRunId
+    ? new Date(hold.writer.lastActivityAt)
+    : null;
 }
 
 async function taskStillUsesWaitedWorkspace(tx: Db, run: HeartbeatRun, wait: WorkspaceBusyWait): Promise<boolean> {
