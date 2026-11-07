@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -9,6 +10,7 @@ import type { Timeline } from "./timeline.js";
 import type {
   InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord, TaskSample,
 } from "./types.js";
+import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { workloadDefinitions } from "./workloads.js";
@@ -39,6 +41,8 @@ function stillQueued(runs: readonly RunSample[]): boolean {
   return runs.some(run => run.status === "queued" && !run.startedAt) && !runs.some(run => run.startedAt || run.status === "running");
 }
 export const TRIGGER_LATE_MS = 10_000;
+/** The run settles soon after acceptance; arming on the proposal keeps the window reachable. */
+const RESULT_TRIGGER_EVENTS = new Set(["run.result.proposed", "run.result.accepted"]);
 
 /** Rest must hold for this long before the observer acts on it. */
 export const REST_CONFIRM_MS = 12_000;
@@ -56,6 +60,43 @@ export function toRunSample(run: Json): RunSample {
     wakeCommentIds: [...wake], livenessState: run.livenessState ?? null,
     lastEvidenceAt: latestIso([run.startedAt, run.lastUsefulActionAt, run.execution?.lastConfirmedActivityAt]),
   };
+}
+
+interface RunEventCursor {
+  seq: number;
+  lastAt: string | null;
+  /** Tool starts minus tool ends. PRP item ids are not unique per tool call, so this counts. */
+  openTools: number;
+  /** The run's latest recorded local runner process, until recovery reports it stopped. */
+  process: { pid: number; startedAt: string } | null;
+}
+
+/** R5 liveness: a tool in flight, or a recorded local runner process. */
+export function noteLivenessEvent(cursor: RunEventCursor, event: Json) {
+  const payload = (event.payload ?? {}) as Json;
+  switch (event.eventType) {
+    case "tool.execution.started": cursor.openTools += 1; break;
+    case "tool.execution.completed": cursor.openTools = Math.max(0, cursor.openTools - 1); break;
+    case "native.process_identity_recorded":
+      if (payload.targetKind === "local" && Number.isSafeInteger(payload.processPid) && typeof payload.processStartedAt === "string") {
+        // A replacement runner cannot finish a tool its predecessor started.
+        if (cursor.process && cursor.process.pid !== payload.processPid) cursor.openTools = 0;
+        cursor.process = { pid: payload.processPid, startedAt: payload.processStartedAt };
+      }
+      break;
+    case "native.local_process_stopped":
+      // A stopped runner's in-flight tools can never send their completion.
+      if (cursor.process && payload.processPid === cursor.process.pid) { cursor.process = null; cursor.openTools = 0; }
+      break;
+  }
+}
+
+/** Alive only when the PID still runs with the recorded start time, so a recycled PID never counts. */
+export function localProcessAlive(pid: number, startedAt: string): boolean {
+  if (process.platform === "win32") return false;
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeout: 5_000 });
+  const started = Date.parse(result.stdout?.trim() ?? "");
+  return Number.isFinite(started) && restartProcessStartMatches(new Date(started).toISOString(), startedAt);
 }
 
 export function latestIso(values: ReadonlyArray<unknown>): string | null {
@@ -101,6 +142,9 @@ export class TaskObserver {
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
+
+  /** Replaceable in tests. A Daytona run's process is remote, so only local runs are checked. */
+  processAlive = (pid: number, startedAt: string) => this.lab.environmentKind === "local" && localProcessAlive(pid, startedAt);
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
     private readonly timeline: Timeline, private readonly supervisor: { serverReady: boolean; faultInProgress: boolean },
@@ -160,6 +204,7 @@ export class TaskObserver {
 
   private triggerWindowOpen(fault: ScheduledFault, now: number, dueAt: number): boolean {
     if (now - dueAt > TRIGGER_LATE_MS) return false;
+    if (fault.trigger === "result") return this.resultRunStillRunning(this.latestReachableRuns());
     if (fault.trigger !== "queued") return true;
     const latest = [...this.record.samples].reverse().find(sample => sample.reachable);
     return stillQueued(latest?.runs ?? []);
@@ -169,6 +214,11 @@ export class TaskObserver {
     if (!fault.trigger || fault.trigger === "time") return true;
     const armedAt = this.triggerArmedAt(fault);
     let open = typeof armedAt === "number" && now - (armedAt + (fault.delayMs ?? 0)) <= TRIGGER_LATE_MS;
+    if (open && fault.trigger === "result") {
+      const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
+        .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
+      open = runs !== null && this.resultRunStillRunning(runs);
+    }
     if (open && fault.trigger === "queued") {
       const runs = await this.api.get<Json[]>(`/api/issues/${this.record.issueId}/runs`, 5_000)
         .then(rows => (rows ?? []).map(toRunSample)).catch(() => null);
@@ -176,6 +226,20 @@ export class TaskObserver {
     }
     if (!open) this.noteTriggerMissed(fault);
     return open;
+  }
+
+  private latestReachableRuns(): RunSample[] {
+    return [...this.record.samples].reverse().find(sample => sample.reachable)?.runs ?? [];
+  }
+
+  /** A `result` fault outside the accepted-but-unsettled window would test a different boundary. */
+  private resultRunStillRunning(runs: readonly RunSample[]): boolean {
+    return runs.some(run => run.id === this.record.resultRunId && run.status === "running");
+  }
+
+  /** A due fault the wave decided not to fire (for example, the storm ended during its checks). */
+  markTriggerMissed(fault: ScheduledFault) {
+    if (fault.trigger && fault.trigger !== "time") this.noteTriggerMissed(fault);
   }
 
   private noteTriggerMissed(fault: ScheduledFault) {
@@ -206,6 +270,14 @@ export class TaskObserver {
         return queued && !started ? first.at : "missed";
       }
       case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "result": {
+        // B8: the run that received the follow-up has accepted its result but
+        // has not settled yet. A follow-up posted at rest cannot cross it.
+        const followUp = this.record.followUp;
+        if (!followUp) return null;
+        if (!followUp.commentId || !followUp.duringRun) return "missed";
+        return this.record.resultAcceptedAt ?? null;
+      }
     }
   }
 
@@ -284,22 +356,29 @@ export class TaskObserver {
     }
   }
 
-  private readonly runEventCursors = new Map<string, { seq: number; lastAt: string | null }>();
+  private readonly runEventCursors = new Map<string, RunEventCursor>();
 
   private async runEvidence(run: RunSample): Promise<RunSample> {
     if (run.status !== "running") return run;
-    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null };
+    const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null, openTools: 0, process: null };
     for (let page = 0; page < 3; page += 1) {
       const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
       if (!events?.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
+        if (RESULT_TRIGGER_EVENTS.has(String(event.eventType)) && this.record.followUp?.duringRun && !this.record.resultAcceptedAt) {
+          this.record.resultAcceptedAt = Date.now();
+          this.record.resultRunId = run.id;
+        }
         cursor.lastAt = latestIso([cursor.lastAt, event.createdAt]);
+        noteLivenessEvent(cursor, event);
       }
       if (events.length < RUN_EVENT_PAGE) break;
     }
     this.runEventCursors.set(run.id, cursor);
-    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]) };
+    return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]),
+      ...(cursor.openTools > 0 ? { toolInFlight: true } : {}),
+      ...(cursor.process && this.processAlive(cursor.process.pid, cursor.process.startedAt) ? { processAlive: true } : {}) };
   }
 
   private async sample(now: number): Promise<TaskSample> {

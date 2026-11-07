@@ -48,6 +48,9 @@ export function createPluginRunnerTaskOwner(input: {
   pollMs?: number;
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
+  releasedSource?: DurableRecoveryIdentity;
+  onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
+  onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
@@ -268,7 +271,8 @@ export function createPluginRunnerTaskOwner(input: {
     });
     return { child, completion, restart: null };
   };
-  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal) => {
+  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal, expectedIdentity?: DurableRecoveryIdentity) => {
+    const desired = expectedIdentity ? structuredClone(expectedIdentity) : undefined;
     const generation = ++registrationGeneration;
     let registrationReleased = false;
     let outbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
@@ -284,7 +288,15 @@ export function createPluginRunnerTaskOwner(input: {
       activate: () => {
         activation = (async () => {
           if (input.adoptIdentity) {
-            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            if (!desired || runId === input.adoptIdentity.runId) {
+              if (desired && Object.entries(input.adoptIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)) {
+                throw new Error("Plugin Runner adoption identity mismatch");
+              }
+              await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            } else if (!preparedIdentity || Object.entries(preparedIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)
+              || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key => desired[key as keyof DurableRecoveryIdentity] !== input.adoptIdentity![key as keyof DurableRecoveryIdentity])) {
+              throw new Error("Plugin Runner adoption identity mismatch");
+            }
           } else await running;
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
           const ingress = await endpoint();
@@ -318,6 +330,8 @@ export function createPluginRunnerTaskOwner(input: {
         if (submitted) {
           await call({ kind: "complete" });
           completed = true;
+          const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+          if (identity) await input.onRetired?.(identity);
         }
       },
       release: async (reason?: "detach") => {
@@ -330,6 +344,25 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get releaseResume() {
+      if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
+      return {
+        releasedSource: input.releasedSource,
+        release: async (identity: DurableRecoveryIdentity) => {
+          requireReleaseResume();
+          const outbound = activeOutbound;
+          outbound?.quiesce();
+          await release(identity);
+          await outbound?.close();
+          if (activeOutbound === outbound) activeOutbound = null;
+        },
+        resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
+          const outcome = await resume(identity, ticket);
+          if (outcome === "resumed") await input.onResumed?.(identity);
+          return outcome;
+        },
+      };
+    },
     get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
     get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
@@ -341,7 +374,7 @@ export function createPluginRunnerTaskOwner(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner archived state unavailable");
       return result.state;
     },
-    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal),
+    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal, identity),
     ...(input.adoptIdentity ? { adoptExistingRunner: {
       // Provider ownership is attested by Launcher, never by a controller-local PID.
       pid: null, processGroupId: null, startedAt: null,

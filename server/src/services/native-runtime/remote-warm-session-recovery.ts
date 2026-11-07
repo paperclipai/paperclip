@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
@@ -10,6 +10,7 @@ export type RemoteWarmSessionRecovery = {
   checkpoint: PersistedNativeSession;
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
+  releasedSource?: DurableRecoveryIdentity;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };

@@ -104,27 +104,41 @@ export function gradeR3(record: TaskRecord): RuleResult {
 }
 
 /**
- * R4: at most one active run (queued, running or scheduled_retry) per issue in
- * any sample, and no comment consumed twice. A wake comment may be reused only
- * by a run that follows a run which did not succeed (an explicit retry or
- * continuation after a failure); reuse after a successful run is a replay.
+ * R4 is about duplicate execution. A queued or scheduled wake waiting behind a
+ * running run (for example a follow-up comment, cancelled when the running run
+ * finished) never executed, so it is not a duplicate. Fail only when two runs
+ * of the issue actually executed at the same time (both running in a sample,
+ * or overlapping started→finished windows), or when a comment is consumed
+ * twice: a wake comment may be reused only by a run that follows a run which
+ * did not succeed (an explicit retry or continuation after a failure); reuse
+ * after a successful run is a replay.
  */
 export function gradeR4(record: TaskRecord): RuleResult {
   for (const sample of reachable(record.samples)) {
-    const active = (sample.runs ?? []).filter(run => ACTIVE_RUN_STATUSES.has(run.status));
-    if (active.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${active.map(run => `${run.id}(${run.status})`).join(",")}` };
+    const running = (sample.runs ?? []).filter(run => run.status === "running");
+    if (running.length > 1) return { verdict: "fail", detail: `concurrent_runs: ${running.map(run => `${run.id}(${run.status})`).join(",")}` };
   }
   const finalRuns = new Map<string, NonNullable<TaskSample["runs"]>[number]>();
   for (const sample of reachable(record.samples)) for (const run of sample.runs ?? []) finalRuns.set(run.id, run);
   const begun = [...finalRuns.values()].filter(run => run.startedAt)
     .sort((a, b) => (ms(a.createdAt) || 0) - (ms(b.createdAt) || 0));
+  // Execution windows seen between polls: started → finished (or still going at the last sample).
+  const lastAt = Math.max(0, ...reachable(record.samples).map(sample => sample.at));
+  const window = (run: (typeof begun)[number]) => ({ start: ms(run.startedAt) || 0,
+    end: run.finishedAt ? ms(run.finishedAt) || 0 : ACTIVE_RUN_STATUSES.has(run.status) ? lastAt : ms(run.startedAt) || 0 });
+  for (let index = 0; index < begun.length; index += 1) for (let other = index + 1; other < begun.length; other += 1) {
+    const [a, b] = [window(begun[index]!), window(begun[other]!)];
+    if (a.start < b.end && b.start < a.end) {
+      return { verdict: "fail", detail: `concurrent_runs: ${begun[index]!.id}(${begun[index]!.status}),${begun[other]!.id}(${begun[other]!.status}) executed together` };
+    }
+  }
   const consumers = new Map<string, typeof begun>();
   for (const run of begun) for (const commentId of run.wakeCommentIds) consumers.set(commentId, [...(consumers.get(commentId) ?? []), run]);
   for (const [commentId, runs] of consumers) {
     const replayed = runs.findIndex((_run, index) => index > 0 && runs.slice(0, index).some(prior => prior.status === "succeeded"));
     if (replayed > 0) return { verdict: "fail", detail: `comment_consumed_twice: ${commentId} by ${runs.slice(0, replayed + 1).map(run => run.id).join(",")}` };
   }
-  return { verdict: "pass", detail: "at most one active run per sample; no comment consumed after a successful run" };
+  return { verdict: "pass", detail: "no two runs executed together; no comment consumed after a successful run" };
 }
 
 function namedWait(sample: TaskSample): boolean {
@@ -145,6 +159,8 @@ export function deadRunningRun(sample: TaskSample, readySince: number): { id: st
   if (!sample.reachable || !sample.serverReady || sample.at - readySince <= STALL_LIMIT_MS) return null;
   for (const run of sample.runs ?? []) {
     if (run.status !== "running") continue;
+    // Quiet is not dead while a tool is still in flight or the run's process is verifiably alive.
+    if (run.toolInFlight || run.processAlive) continue;
     const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
     if (sample.at - evidence > STALL_LIMIT_MS) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
   }

@@ -361,6 +361,16 @@ runner-sourced event or controller checkpoint, records
 `remote_runner_never_launched` with the same disposition and budget. The
 executor records `native.process_start_requested` before a backend may spawn a
 runner, so its absence (with no checkpoint) proves nothing reached a runner.
+A remote run that a graceful drain suspended just after its runner opened the
+provider session records `remote_session_opened_without_turn` with the same
+disposition. Its Postgres controller record must hold only `run.prepare` and
+`session.open`, with every committed event a session-open event and no event
+missing. Before that same-run bootstrap relaunches in the reused sandbox, the
+executor stops the interrupted runner it can verify there, so the new runner
+does not fail with `runner_ingress_bind_conflict`.
+The same rule covers a remote run that its executor already settled as a
+same-run `bootstrap_retry` (for example when a shutdown closed the local
+runtime listener during startup) and that is due when the server restarts.
 
 For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
@@ -387,6 +397,15 @@ The server writes `native.local_process_stopped` in the same transaction that
 clears a local run's process identity, after it verifies that its PID and process
 group are absent. The payload contains only those process IDs. Remote process
 IDs are never checked against the control-plane host.
+
+A crash can land after `native.process_start_requested` and before the runner's
+process identity is recorded. Continuation admission then writes
+`native.local_process_stopped` with null process IDs and
+`basis: "unidentified_runner_absent"`. It does this only on the host named in
+the launch event's `hostname` payload, after it checks two things. First, no
+process carries the run's `--run-id` runner argument. Second, no
+saved runner control-plane state (canonical or quarantined) belongs to the run;
+a provider starts only after its runner connects and writes that state.
 
 The server writes `native.process_start_requested` before a backend can spawn,
 and `native.process_identity_recorded` when it stores a new native process

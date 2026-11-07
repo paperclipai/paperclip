@@ -34,12 +34,30 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   retry: [0, 2_000],
   queued: [0, 0],
   tool: [15_000, 60_000],
+  result: [0, 3_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
-  if (trigger === "comment") return workload === "C1";
+  if (trigger === "comment" || trigger === "result") return workload === "C1";
   if (trigger === "tool") return workload === "B5";
   return true;
+}
+
+/** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
+const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
+
+/**
+ * A storm task has no fault of its own (`K13`): the wave's storm crosses it.
+ * A `result` task in a storm also fires its own K1 or K2 just after its run
+ * accepts a result, the window of RC-30, RC-33 and RC-41.
+ */
+function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes">, trigger: TriggerId): readonly TaskFaultKind[] {
+  if (!options.stormMinutes) return options.faults;
+  if (trigger === "time") return ["K13"];
+  if (trigger !== "result") throw new Error(`A K13 storm fires on its own clock; --triggers ${trigger} does not combine with it (use time or result)`);
+  const faults = options.faults.filter(fault => STORM_RESULT_FAULTS.includes(fault));
+  if (!faults.length) throw new Error("--triggers result in a storm needs K1 or K2 in --faults");
+  return faults;
 }
 
 /**
@@ -49,17 +67,19 @@ export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): b
 export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
-  // A storm task has no fault of its own: the wave's storm crosses it.
-  const faults: readonly TaskFaultKind[] = options.stormMinutes ? ["K13"] : options.faults;
-  if (options.stormMinutes && triggers.some(trigger => trigger !== "time")) throw new Error("A K13 storm fires on its own clock; use --triggers time");
   for (const trigger of triggers) {
     if (!options.workloads.some(workload => triggerFitsWorkload(trigger, workload))) {
-      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" ? "C1" : "B5"} in --workloads`);
+      throw new Error(`Trigger "${trigger}" needs workload ${trigger === "comment" || trigger === "result" ? "C1" : "B5"} in --workloads`);
     }
   }
   const cells: Array<{ workload: WorkloadId; adapter: AdapterId; fault: TaskFaultKind; trigger: TriggerId }> = [];
+  // Same cell order as before storms took triggers, so a seed keeps its plan.
+  const allowed = new Map(triggers.map(trigger => [trigger, stormCellFaults(options, trigger)]));
+  const faults = [...new Set([...allowed.values()].flat())];
   for (const workload of options.workloads) for (const adapter of options.adapters) for (const fault of faults) {
-    for (const trigger of triggers) if (triggerFitsWorkload(trigger, workload)) cells.push({ workload, adapter, fault, trigger });
+    for (const trigger of triggers) {
+      if (triggerFitsWorkload(trigger, workload) && allowed.get(trigger)!.includes(fault)) cells.push({ workload, adapter, fault, trigger });
+    }
   }
   const tasks: TaskPlan[] = [];
   let order = rng.shuffle(cells);
@@ -193,6 +213,17 @@ export function stormFaultDue(storm: StormPlan, state: StormState, now: number):
   const next = storm.faults[state.fired];
   if (!next) return null;
   return now >= (state.lastSettledAt ?? state.startedAt) + next.gapMs ? next : null;
+}
+
+/** Written after every fault: each task's launch time and the faults that crossed it so far. */
+export const TASK_FAULT_LOG = "task-faults.json";
+export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[] }>;
+
+/** The crossing record for a replay: the graded record, else the live fault log (interrupted or wedged waves). */
+export function replayRecordFor(taskId: string, graded: { createdAt: number | null; faultIds: string[] } | null,
+  logged: TaskFaultLog | null): { createdAt: number | null; faultIds: string[] } | null {
+  if (graded?.faultIds.length) return graded;
+  return logged?.[taskId] ?? graded;
 }
 
 /** Faults that actually crossed a task, as offsets from its launch. */
