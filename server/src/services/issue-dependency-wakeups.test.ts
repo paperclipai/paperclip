@@ -18,6 +18,7 @@ type WakeRow = {
   status: string;
   idempotencyKey: string | null;
   requestedAt: Date;
+  runId?: string | null;
 };
 
 function dbWithWakes(rows: WakeRow[]): Db {
@@ -93,6 +94,27 @@ describe("buildIssueBlockersResolvedWakeStateKey", () => {
 });
 
 describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
+  it("does not let a historical queued request without a run suppress a ready task", async () => {
+    const key=buildIssueBlockersResolvedWakeStateKey({dependentIssueId,blockerIssueIds:[blockerIssueId]});
+    const wake=await findExistingIssueBlockersResolvedWakeForReadyState(dbWithWakes([{
+      id:"orphan",status:"queued",idempotencyKey:key,runId:null,requestedAt:new Date(Date.now()-3600000),
+    }]),{companyId,dependentIssueId,blockerIssueIds:[blockerIssueId]});
+    expect(wake).toBeNull();
+  });
+
+  it("keeps a fresh unlinked enqueue and a real old queued run protected from duplicates", async () => {
+    const key=buildIssueBlockersResolvedWakeStateKey({dependentIssueId,blockerIssueIds:[blockerIssueId]});
+    for(const row of [
+      {id:"fresh",runId:null,requestedAt:new Date()},
+      {id:"real-queue",runId:"existing-run",requestedAt:new Date(Date.now()-86400000)},
+    ]) {
+      const wake=await findExistingIssueBlockersResolvedWakeForReadyState(dbWithWakes([{
+        ...row,status:"queued",idempotencyKey:key,
+      }]),{companyId,dependentIssueId,blockerIssueIds:[blockerIssueId]});
+      expect(wake?.id).toBe(row.id);
+    }
+  });
+
   const readyState = {
     companyId,
     dependentIssueId,
