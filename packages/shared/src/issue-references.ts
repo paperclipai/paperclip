@@ -7,7 +7,15 @@ export interface IssueReferenceMatch {
   matchedText: string;
 }
 
-const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z][A-Z0-9]*-\d+/gi;
+// The identifier alternative anchors its first letter with a negative
+// lookbehind so it cannot start in the middle of a letter run (a letter
+// preceded by letter/digits/letter). Without it, the pattern retries at
+// every character of a long alphanumeric run and backtracks through the
+// whole run each time, which is O(n^2) on hex dumps or base64 blobs and
+// blocked the server event loop for minutes (#15998). A match the old
+// pattern could find still starts either at a run boundary or right after
+// a digit run, so extraction results are unchanged.
+const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z](?<![A-Z][0-9]*[A-Z])[A-Z0-9]*-\d+/gi;
 
 function preserveNewlinesAsWhitespace(value: string) {
   return value.replace(/[^\n]/g, " ");
@@ -73,17 +81,34 @@ function stripMarkdownCode(markdown: string): string {
 }
 
 function trimTrailingPunctuation(token: string): string {
+  // Count brackets once up front. Recounting them on every removed
+  // character made a token that ends in a long run of ")" or "]" cost
+  // O(n^2) (#15998); the counts only change when a bracket itself is
+  // trimmed, so they can be maintained incrementally with the same result.
+  let openParens = 0;
+  let closeParens = 0;
+  let openBrackets = 0;
+  let closeBrackets = 0;
+  for (const char of token) {
+    if (char === "(") openParens += 1;
+    else if (char === ")") closeParens += 1;
+    else if (char === "[") openBrackets += 1;
+    else if (char === "]") closeBrackets += 1;
+  }
+
   let trimmed = token;
   while (trimmed.length > 0) {
     const last = trimmed[trimmed.length - 1]!;
     if (!".,!?;:".includes(last) && last !== ")" && last !== "]") break;
 
     if (
-      (last === ")" && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0))
-      || (last === "]" && (trimmed.match(/\[/g)?.length ?? 0) >= (trimmed.match(/\]/g)?.length ?? 0))
+      (last === ")" && openParens >= closeParens)
+      || (last === "]" && openBrackets >= closeBrackets)
     ) {
       break;
     }
+    if (last === ")") closeParens -= 1;
+    else if (last === "]") closeBrackets -= 1;
     trimmed = trimmed.slice(0, -1);
   }
   return trimmed;
