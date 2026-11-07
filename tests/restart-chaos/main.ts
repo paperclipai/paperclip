@@ -7,7 +7,7 @@
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay <wave>/<task>
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
@@ -59,13 +60,23 @@ function run(command: string, args: string[], cwd: string, label: string) {
   if (result.status !== 0) throw new Error(`${label} failed (${command} ${args.join(" ")})`);
 }
 
-/** The bundled Daytona plugin is outside the root workspace; prepare it as CI does. */
-function ensureDaytonaPlugin() {
+/**
+ * The bundled Daytona plugin is outside the root workspace; prepare it as CI
+ * does, and rebuild it whenever its sources (or the plugin SDK's) changed since
+ * the last build, so a worktree that moved to a new master tests that master's
+ * plugin rather than an older build.
+ */
+function ensureDaytonaPlugin(timeline: Timeline) {
   const root = path.join(repositoryRoot, "packages/plugins/sandbox-providers/daytona");
-  if (["dist/manifest.js", "dist/worker.js", "node_modules/@daytonaio/sdk"].every(file => existsSync(path.join(root, file)))) return;
+  const sdkInputs = ["src", "package.json"].map(file => path.join(repositoryRoot, "packages/plugins/sdk", file));
+  const state = pluginBuildState(root, sdkInputs);
+  timeline.add("daytona_plugin_build_state", { reason: state.reason, inputHash: state.inputHash });
+  if (!state.needsBuild) return;
   run("pnpm", ["install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"], root, "Daytona plugin install");
   run(process.execPath, [path.join(repositoryRoot, "scripts/link-plugin-dev-sdk.mjs")], repositoryRoot, "Plugin SDK link");
   run("pnpm", ["--dir", root, "build"], repositoryRoot, "Daytona plugin build");
+  writeFileSync(path.join(root, PLUGIN_BUILD_STAMP), `${state.inputHash}\n`);
+  timeline.add("daytona_plugin_built", { inputHash: state.inputHash });
 }
 
 /**
@@ -80,7 +91,7 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
-  ensureDaytonaPlugin();
+  ensureDaytonaPlugin(timeline);
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
