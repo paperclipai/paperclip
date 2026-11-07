@@ -93,10 +93,23 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
+let resolvedProcessStartedAt: string | null = null;
+
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
-  return { bootId, pid: process.pid, hostHash,
-    processStartedAt: startedAt === null ? null : new Date(startedAt).toISOString() };
+  const iso = startedAt === null ? null : new Date(startedAt).toISOString();
+  resolvedProcessStartedAt = iso;
+  return { bootId, pid: process.pid, hostHash, processStartedAt: iso };
+}
+
+/**
+ * This process's identity without any I/O, for stamps written on the turn
+ * path. The start time is present only once an earlier call resolved it. A
+ * stamp without one still proves exit when its PID is gone in this PID space;
+ * a live PID then stays ambiguous, which fails closed.
+ */
+export function currentControllerProcessStamp(): ControllerProcess {
+  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt };
 }
 
 export function readControllerProcess(value: unknown): ControllerProcess | null {
@@ -145,6 +158,8 @@ export function processStartsDefinitelyDiffer(
 export async function controllerProcessExited(controller: ControllerProcess): Promise<boolean> {
   if (controller.bootId === bootId || hostHash === UNKNOWN_PROCESS_SPACE || controller.hostHash !== hostHash) return false;
   if (!processExists(controller.pid)) return true;
+  // Without a recorded start time a live PID can never prove exit; skip the probe.
+  if (!Number.isFinite(Date.parse(controller.processStartedAt ?? ""))) return false;
   // The PID now belongs to a live process, possibly this restarted server.
   // Only a definitely different start time proves the recorded process is gone.
   const observed = await observedProcessStartedAt(controller.pid);

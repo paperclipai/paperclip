@@ -1478,6 +1478,30 @@ differed, for example `lease_status`, `adapter_type`, `provider_lease_id`, `remo
 `identity_run_id`. The detail contains no identifiers. Consumers match the code
 exactly or as the `code: ` prefix.
 
+A continuation run starts with its predecessor's saved provider session. For a
+warm session it also carries the predecessor's runner process identity. When the
+run fails before it asks for a runner of its own (for example while it stages
+its provider pack), a due same-run retry does not reattach: there is no runner
+of this run to reattach to. The server retires the inherited process identity
+and uses the ordinary same-run resume, which is the path the failed attempt
+took. The resume prepares the run again in its own retained sandbox when that
+sandbox lease is still active, and acquires one as an ordinary resume does when
+it is gone. The server does this only when all of these are true:
+
+- the failed attempt is a result-less exact-checkpoint retry that recorded
+  `providerEventsExist: false`, and no controller owns it;
+- the run has no runner start, process identity, adapter invocation, tool start,
+  runner event, controller checkpoint, provider event or provider session of
+  its own;
+- the saved session has no active turn and no pending runtime request; and
+- a settled predecessor of the same native session recorded the exact same
+  process identity.
+
+It records an `inherited_runner_never_launched` lifecycle event. Any other run,
+and any run saved by an older release without these facts, keeps verified
+reattachment. A reattachment that loses its runner still requests the user's
+Retry as described above.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,

@@ -6,9 +6,9 @@ import { inspectFinalizedWorkspaceRecoveryHold, type FinalizedWorkspaceRecoveryH
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
-import { workspaceExportCauses } from "./workspace-recovery-source.js";
+import { inspectWorkspaceRecoverySource, WorkspaceSourceInspectionLimit, workspaceExportCauses } from "./workspace-recovery-source.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
-import { readSystemRecovery } from "./system-recovery-state.js";
+import { readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 
 type ReadDb = Pick<Db, "select">;
@@ -116,6 +116,31 @@ export type OnlineLegacyWorkspaceRecoveryHold = {
   preparedSource?: LegacyWorkspaceRecoverySource;
 };
 
+async function coveredHistoricalSource(db: ReadDb, workspace: Workspace, recovery: Recovery, source: LegacyWorkspaceRecoverySource) {
+  const raw = recovery.evidence.historicalWorkspaceSource;
+  if (raw == null) return true;
+  if (typeof raw !== "object" || Array.isArray(raw)) return false;
+  const historical = raw as Record<string, unknown>, ids = historical.leaseIds;
+  const covered = new Map([...(source.reference ? [source.reference] : []), ...(source.recoveryAllocations ?? [])]
+    .map(binding => [binding.leaseId, binding]));
+  if (historical.schema !== "paperclip.historical-workspace-source.v1" || historical.runId !== source.runId
+    || Object.keys(historical).some(key => !["schema", "runId", "leaseIds"].includes(key))
+    || !Array.isArray(ids) || !ids.length || ids.length > covered.size || new Set(ids).size !== ids.length
+    || ids.some(id => typeof id !== "string" || !covered.has(id))) return false;
+  try {
+    const inspected = await inspectWorkspaceRecoverySource(db as Db, { companyId: workspace.companyId,
+      issueId: source.issueId, runId: source.runId, actionId: recovery.id }, { maximumSources: covered.size });
+    const verifiedIds = new Set(inspected.sources.map(item => item.lease.id));
+    return ids.every(id => verifiedIds.has(id)) && inspected.sources.every(item => {
+      const binding = covered.get(item.lease.id);
+      return binding && binding.providerLeaseId === item.lease.providerLeaseId && binding.remoteCwd === item.remoteCwd;
+    });
+  } catch (error) {
+    if (error instanceof SystemRecoveryFailure || error instanceof WorkspaceSourceInspectionLimit) return false;
+    throw error;
+  }
+}
+
 export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input: {
   workspace: Workspace; recovery: Recovery;
 }): Promise<OnlineLegacyWorkspaceRecoveryHold | null> {
@@ -175,7 +200,7 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     && recovery.fingerprint === nativeSha256({ runId: settled.run.id, failureCode: recovery.cause })
     && system?.sourceRunId === settled.run.id && system.state === "exhausted" && system.nextAttemptAt === null
     && workspaceRecovery?.runId === settled.run.id && workspaceRecovery.status === "blocked"
-    && !["workspaceRestoreRecovery", "historicalWorkspaceSource", "nativeFailureBlock"].some(key => recovery.evidence?.[key] != null)) {
+    && !["workspaceRestoreRecovery", "nativeFailureBlock"].some(key => recovery.evidence?.[key] != null)) {
     const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
       executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
       eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
@@ -185,7 +210,8 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
       eq(nativeRunResults.completionContractId, settled.run.completionContractId), eq(nativeRunResults.schemaStatus, "accepted")));
     if (!task || task.status !== "blocked" || task.executionRunId !== null || task.checkoutRunId !== null || !result) return null;
     const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
-    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId)
+    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId
+      && await coveredHistoricalSource(db, input.workspace, recovery, source))
       return { fingerprint: fingerprint({ recovery, system, workspaceRecovery, source, task, result }), finalizedHold: null, preparedSource: source };
   }
   const held = await inspectFinalizedWorkspaceRecoveryHold(db, {

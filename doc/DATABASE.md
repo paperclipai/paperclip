@@ -979,6 +979,20 @@ recovery hold. The existing migration recipe routes later file recovery away
 from the retired local destination. This neither declares preexecution nor
 proves remote export, provider termination or permission to resume execution.
 
+An exhausted prepared-export hold can also retain the canonical historical-source
+marker added by recovery backfill. Its schema and run must match, and every unique
+recorded lease must already belong to the proven prepared source or its declared
+recovery allocations. The existing historical-source inspector verifies those
+same allocation bindings. Unknown fields, malformed markers and foreign, duplicate
+or uncovered lease references still block import.
+
+The full historical marker stays in the action fingerprint. Existing source,
+task, lifecycle and finalizer locks and publication reinspection remain required.
+This permits preservation of the current local files only. It neither clears the
+hold nor claims that remote files were copied or a provider stopped. Marked holds
+add bounded database reads during maintenance inspection; they add no provider
+calls or recurring background work.
+
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
 order too. The lifecycle advisory lock alone does not fence runtime operations.
