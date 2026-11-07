@@ -323,7 +323,7 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
     });
 
-    it("rebinds a child whose own workspace its parent selected, and the parent keeps it", async () => {
+    it("keeps a child's own workspace when its parent selected it, and moves the parent instead", async () => {
       const fixture = await seedOldReleaseChild();
       const childWorkspaceId = randomUUID();
       await db.insert(executionWorkspaces).values({
@@ -333,12 +333,21 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       });
       await db.update(issues).set({ executionWorkspaceId: childWorkspaceId }).where(eq(issues.id, fixture.childIssueId));
       await db.update(issues).set({ executionWorkspaceId: childWorkspaceId }).where(eq(issues.id, fixture.parentIssueId));
-      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+      // The child created the workspace, so its admission keeps it. A fresh
+      // workspace for the child would land on the same issue-named branch.
+      const childRunId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
       expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
-        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId: childRunId,
+      })).toBe(false);
+      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBe(childWorkspaceId);
+      // The parent's next admission moves the parent off its descendant's workspace.
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, childRunId));
+      const parentRunId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.parentIssueId, status: "running" });
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.parentIssueId, runId: parentRunId,
       })).toBe(true);
-      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBeNull();
-      expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(childWorkspaceId);
+      expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBeNull();
+      expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBe(childWorkspaceId);
     });
 
     it("keeps a child's own unshared workspace", async () => {

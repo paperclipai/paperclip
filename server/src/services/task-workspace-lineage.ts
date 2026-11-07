@@ -89,6 +89,48 @@ export async function loadAncestorIssueIds(
 }
 
 /**
+ * True when `task` is bound to a workspace that a relative in its task tree
+ * owns: an ancestor (or the requester it was placed beside) created it or is
+ * bound to it, or a descendant created it. The task that created the
+ * workspace keeps it; the relative bound to it is the one that moves, so its
+ * fresh workspace never lands on the owner's branch or folder.
+ */
+export async function bindsRelativesExecutionWorkspace(
+  db: LineageReader,
+  input: {
+    companyId: string;
+    executionWorkspaceId: string;
+    task: { id: string; parentId: string | null; privacyParentIssueId?: string | null };
+  },
+): Promise<boolean> {
+  const [workspace] = await db
+    .select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.companyId, input.companyId),
+      eq(executionWorkspaces.id, input.executionWorkspaceId),
+    ))
+    .limit(1);
+  const ownerIssueId = workspace?.sourceIssueId ?? null;
+  if (ownerIssueId === input.task.id) return false;
+  const ancestorIssueIds = await loadTaskLineageIssueIds(db, input.companyId, input.task);
+  if (await isAncestorExecutionWorkspace(db, {
+    companyId: input.companyId,
+    executionWorkspaceId: input.executionWorkspaceId,
+    ancestorIssueIds,
+  })) return true;
+  if (!ownerIssueId) return false;
+  const [owner] = await db
+    .select({ parentId: issues.parentId, privacyParentIssueId: issues.privacyParentIssueId })
+    .from(issues)
+    .where(and(eq(issues.companyId, input.companyId), eq(issues.id, ownerIssueId)))
+    .limit(1);
+  if (!owner) return false;
+  const ownerLineage = await loadTaskLineageIssueIds(db, input.companyId, { id: ownerIssueId, ...owner });
+  return ownerLineage.includes(input.task.id);
+}
+
+/**
  * True when the execution workspace belongs to one of `ancestorIssueIds`:
  * an ancestor created it, or an ancestor is currently bound to it. Either way
  * a descendant bound to it would write into the ancestor's files.

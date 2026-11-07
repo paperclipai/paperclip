@@ -673,6 +673,10 @@ and strategy) and the run realizes the child's own workspace. A running child
 finishes its current run in the shared workspace first, and a process-loss retry
 or a Retry that keeps the current workspace also finishes there. The parent keeps
 its workspace, and no files in it are moved or removed. Nobody is asked to act.
+The same admission rule covers any task bound to a workspace that a relative in
+its task tree created: the task that created the workspace keeps it, and the
+relative bound to it (for example a parent that selected its child's workspace)
+moves to its own on its next admission.
 
 ### Blockers (`blockedByIssueIds`)
 
