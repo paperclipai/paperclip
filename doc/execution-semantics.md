@@ -3524,6 +3524,11 @@ provider pack when its verified durable session binding and pack receipt remain
 available. A new controller release or diagnostics setting does not replace the
 proxy behind the saved provider state. If the exact artifacts are unavailable,
 continuation stays blocked; this rule grants no fresh-session or replay authority.
+A configured controller pack with a different identity is not uploaded in its
+place: before clearing or uploading anything, the run fails as
+`runner_remote_provider_artifact_incompatible` and names both digest prefixes.
+Archive integrity failures keep `runner_remote_provider_archive_invalid` with a
+fixed reason such as `size_mismatch` or `sha256_mismatch`.
 A newly launched daemon binds its current Runner artifact while retaining the
 provider pack. Only a surviving daemon retains its previous Runner artifact.
 An authorized continuity break releases the pack pin after archiving the old

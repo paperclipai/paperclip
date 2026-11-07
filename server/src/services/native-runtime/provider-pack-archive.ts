@@ -1,9 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
-import { readProviderPackLayers, stageProviderPackLayers } from "./provider-pack-layers.js";
+import { invalidArchive, readProviderPackLayers, stageProviderPackLayers, verifyArchive } from "./provider-pack-layers.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -14,7 +13,7 @@ export async function readProviderPackArchive(root: string, expectedDigest: stri
     receipt = JSON.parse(await readFile(`${root}.archive.json`, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw new Error("runner_remote_provider_archive_invalid", { cause: error });
+    throw invalidArchive("receipt_unreadable", error);
   }
   if (receipt.schema === "paperclip-runner/provider-pack-archive/v2") {
     return readProviderPackLayers(root, expectedDigest, receipt);
@@ -24,19 +23,10 @@ export async function readProviderPackArchive(root: string, expectedDigest: stri
     || receipt.providerPackDigest !== expectedDigest
     || !/^[a-f0-9]{64}$/.test(receipt.sha256 ?? "")
     || !Number.isSafeInteger(receipt.bytes) || receipt.bytes! <= 0) {
-    throw new Error("runner_remote_provider_archive_invalid");
+    throw invalidArchive(receipt.providerPackDigest !== expectedDigest ? "receipt_identity_mismatch" : "receipt_invalid");
   }
   const sourcePath = `${root}.tar.zst`;
-  const file = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const metadata = await file.stat();
-    if (!metadata.isFile() || metadata.size !== receipt.bytes) throw new Error("runner_remote_provider_archive_invalid");
-    const hash = createHash("sha256");
-    for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
-    if (hash.digest("hex") !== receipt.sha256) throw new Error("runner_remote_provider_archive_invalid");
-  } finally {
-    await file.close();
-  }
+  await verifyArchive(sourcePath, { sha256: receipt.sha256!, bytes: receipt.bytes! });
   return { sourcePath, sha256: receipt.sha256!, bytes: receipt.bytes! };
 }
 
