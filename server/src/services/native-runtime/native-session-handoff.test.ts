@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
+import { agents, applyPendingMigrations, companies, createDb, documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { buildNativeSessionHandoff, createNativeSessionHandoffLoader, NATIVE_HANDOFF_MAX_BYTES, renderNativeSessionHandoff } from "./native-session-handoff.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
@@ -192,5 +193,40 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(result).not.toContain("QUARANTINED RUN SUMMARY");
     expect(result).toContain("Quarantined low-trust output omitted");
     expect(result).toContain(runId);
+  });
+
+  it("excerpts long multibyte history by character on a SQL_ASCII database", async () => {
+    // Embedded clusters created without an explicit encoding are SQL_ASCII. There, left()/right()
+    // count bytes, so a server-side excerpt splits a UTF-8 character and the read fails.
+    await db.execute(sql.raw("CREATE DATABASE legacy_ascii TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'"));
+    const url = new URL(database.connectionString);
+    url.pathname = "/legacy_ascii";
+    await applyPendingMigrations(url.toString());
+    const ascii = createDb(url.toString());
+    const textIssueId = randomUUID();
+    await ascii.insert(companies).values({ id: companyId, name: "Handoff", issuePrefix: "HAND" });
+    await ascii.insert(agents).values({ id: agentId, companyId, name: "Dickens", role: "general", adapterType: "paperclip_runner" });
+    await ascii.insert(issues).values({ id: textIssueId, companyId, title: "Encoding", status: "in_progress", assigneeAgentId: agentId });
+    // 2,899 ASCII bytes put the first byte of an em dash at byte 2,900, and the last em dash
+    // straddles the final 900 bytes, so both byte cuts would split a character.
+    const body = "a".repeat(2_899) + "\u2014".repeat(1_200) + "z".repeat(899);
+    await ascii.insert(issueComments).values({ companyId, issueId: textIssueId, body, authorUserId: "user", createdAt: new Date(1_000) });
+    const result = await buildNativeSessionHandoff({ db: ascii, companyId, issueId: textIssueId, agentId, before: new Date(20_000) });
+    const packet = JSON.parse(result!.split("\n").at(-1)!);
+    const entry = packet.entries.find((item: { kind: string }) => item.kind === "original_request");
+    expect(entry.body).toBe(`${body.slice(0, 2_900)}\n[content omitted]\n${body.slice(-900)}`);
+    expect(entry.truncated).toBe(true);
+  }, 120_000);
+
+  it("skips the handoff instead of failing run setup on an invalid UTF-8 history row", async () => {
+    const encodingError = Object.assign(new Error("Failed query"), {
+      cause: Object.assign(new Error('invalid byte sequence for encoding "UTF8": 0xe2 0x0a 0x5b'), { code: "22021" }),
+    });
+    const select = vi.spyOn(db, "select").mockImplementation(() => { throw encodingError; });
+    try {
+      await expect(buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000) })).resolves.toBeNull();
+      select.mockImplementation(() => { throw new Error("connection reset"); });
+      await expect(buildNativeSessionHandoff({ db, companyId, issueId, agentId, before: new Date(20_000) })).rejects.toThrow("connection reset");
+    } finally { select.mockRestore(); }
   });
 });

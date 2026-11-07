@@ -4,10 +4,38 @@ import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { buildLowTrustSourceTrust, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { fastResponseHistoryBody } from "@paperclipai/shared";
+import { logger } from "../../middleware/logger.js";
 
 export const NATIVE_HANDOFF_MAX_BYTES = 24_000;
 const ENTRY_MAX_CHARS = 4_000;
+const TITLE_MAX_CHARS = 256;
 const LIMIT = 10;
+
+// SQL_ASCII clusters store UTF-8 bytes, so left()/right() cut bytes and can split a
+// character (22021 on read). There, SQL returns whole text and the renderer clips in JS.
+const sqlAsciiByDb = new WeakMap<Db, Promise<boolean>>();
+function isSqlAsciiDatabase(db: Db): Promise<boolean> {
+  let pending = sqlAsciiByDb.get(db);
+  if (!pending) {
+    pending = Promise.resolve(db.execute(sql`select current_setting('server_encoding') as server_encoding`))
+      .then((rows) => {
+        const first = Array.isArray(rows) ? rows[0] : (rows as { rows?: unknown[] })?.rows?.[0];
+        const encoding = first && typeof first === "object" ? (first as { server_encoding?: unknown }).server_encoding : null;
+        return typeof encoding === "string" && encoding.toUpperCase() === "SQL_ASCII";
+      })
+      .catch(() => true);
+    sqlAsciiByDb.set(db, pending);
+  }
+  return pending;
+}
+
+export function isInvalidByteSequenceError(err: unknown): boolean {
+  let current = err as { code?: unknown; cause?: unknown } | null | undefined;
+  for (let depth = 0; current && depth < 4; current = current.cause as typeof current, depth += 1) {
+    if (current.code === "22021") return true;
+  }
+  return false;
+}
 
 export type HandoffEntry = { kind: string; id: string; body: string; truncated?: boolean; [key: string]: unknown };
 
@@ -46,12 +74,26 @@ export function renderNativeSessionHandoff(input: {
   return render();
 }
 
-/** All reads are company/task scoped, row bounded and text bounded in SQL. */
-export async function buildNativeSessionHandoff(input: {
+type NativeSessionHandoffInput = {
   db: Db; companyId: string; issueId: string; agentId: string; before: Date;
   throughCommentId?: string | null;
-}): Promise<string | null> {
+};
+
+export async function buildNativeSessionHandoff(input: NativeSessionHandoffInput): Promise<string | null> {
+  try {
+    return await loadNativeSessionHandoff(input);
+  } catch (err) {
+    // History is optional background. A legacy-encoded row must not fail run setup.
+    if (!isInvalidByteSequenceError(err)) throw err;
+    logger.warn({ err, issueId: input.issueId, agentId: input.agentId }, "skipping fresh session handoff: history text is not valid UTF-8");
+    return null;
+  }
+}
+
+/** All reads are company/task scoped, row bounded and text bounded in SQL (or in JS on SQL_ASCII). */
+async function loadNativeSessionHandoff(input: NativeSessionHandoffInput): Promise<string | null> {
   const { db, companyId, issueId, agentId } = input;
+  const sqlAscii = await isSqlAsciiDatabase(db);
   const [issue] = await db.select({
     id: issues.id, companyId: issues.companyId, projectId: issues.projectId,
     executionPolicy: issues.executionPolicy, conversationAgentId: issues.conversationAgentId,
@@ -67,7 +109,7 @@ export async function buildNativeSessionHandoff(input: {
   if (input.throughCommentId && !cutoff) return null;
   const afterBoundary = (date: typeof issueComments.createdAt | typeof issueThreadInteractions.createdAt | typeof heartbeatRuns.createdAt | typeof issueDocuments.createdAt) =>
     boundary ? sql`${date} > ${boundary.createdAt.toISOString()}::timestamptz` : undefined;
-  const excerpt = (body: SQL) => sql<string>`case when length(${body}) > ${ENTRY_MAX_CHARS}
+  const excerpt = (body: SQL) => sqlAscii ? sql<string>`${body}` : sql<string>`case when length(${body}) > ${ENTRY_MAX_CHARS}
     then left(${body}, 2900) || ${"\n[content omitted]\n"} || right(${body}, 900) else ${body} end`;
   const commentFields = {
     id: issueComments.id, body: excerpt(sql`${issueComments.body}`),
@@ -92,7 +134,9 @@ export async function buildNativeSessionHandoff(input: {
     // Only conversational summaries are history. Never replay a toolAction,
     // connection authorization payload, credentials, or approval as live authority.
     db.select({ id: issueThreadInteractions.id, kind: issueThreadInteractions.kind, status: issueThreadInteractions.status,
-      title: sql<string>`left(coalesce(${issueThreadInteractions.title}, ''), 256)`,
+      title: sqlAscii
+        ? sql<string>`coalesce(${issueThreadInteractions.title}, '')`
+        : sql<string>`left(coalesce(${issueThreadInteractions.title}, ''), ${TITLE_MAX_CHARS})`,
       body: excerpt(sql`coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')`),
       truncated: sql<boolean>`length(coalesce(${issueThreadInteractions.result}->>'summaryMarkdown', ${issueThreadInteractions.summary}, '')) > ${ENTRY_MAX_CHARS}`,
     }).from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
@@ -152,7 +196,8 @@ export async function buildNativeSessionHandoff(input: {
   };
   if (origin[0]) addComment(origin[0], "original_request");
   recent.slice(0, LIMIT).forEach(row => addComment(row, "message"));
-  decisions.slice(0, 8).forEach(row => entries.push({ ...row, kind: "resolved_interaction", interactionKind: row.kind }));
+  decisions.slice(0, 8).forEach(row => entries.push({ ...row, title: Array.from(row.title).slice(0, TITLE_MAX_CHARS).join(""),
+    kind: "resolved_interaction", interactionKind: row.kind }));
   for (const row of replies.slice(0, 4)) {
     const { executionPolicy, ...entry } = row;
     const sourceTrust = historicalTrust(row.runId, executionPolicy);
