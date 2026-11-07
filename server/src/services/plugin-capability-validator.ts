@@ -71,6 +71,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "approvals.get": ["approvals.read"],
   "agents.list": ["agents.read"],
   "agents.get": ["agents.read"],
+  "agents.getQueuedRunCounts": ["agents.queued_counts.read"],
   "agents.managed.get": ["agents.managed"],
   "agents.managed.reconcile": ["agents.managed"],
   "agents.managed.reset": ["agents.managed"],
