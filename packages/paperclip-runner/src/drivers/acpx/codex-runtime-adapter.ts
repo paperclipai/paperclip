@@ -77,6 +77,15 @@ const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
 // qualified runtime enough time to complete that local handshake.
 const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
 
+/**
+ * Pi and Claude get the same 60 s cold session.open bound as the runner's
+ * sidecar and the controller's cold admission budget. A cold Claude handshake
+ * exceeded 30 s on a loaded host; a shorter inner bound would fail first.
+ */
+export function acpxSessionHandshakeTimeoutMs(agent: string): number {
+  return agent === "pi" || agent === "claude" ? 60_000 : SESSION_HANDSHAKE_TIMEOUT_MS;
+}
+
 interface GoalAwareAcpRuntime extends AcpRuntime {
   requestExtension?(input: {
     handle: AcpRuntimeHandle;
@@ -543,6 +552,7 @@ export async function openQualifiedAcpxRuntime(
 
   let handle: AcpRuntimeHandle | null = null;
   const ensuredSession = Promise.resolve()
+    .then(() => options.restoringSession ? undefined : resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey))
     .then(() =>
       runtime.ensureSession({
         sessionKey: options.providerSessionKey,
@@ -647,7 +657,7 @@ export async function openQualifiedAcpxRuntime(
   try {
     const boundedHandshake = boundedSessionHandshake(
       handshake,
-      dependencies.sessionHandshakeTimeoutMs ?? SESSION_HANDSHAKE_TIMEOUT_MS,
+      dependencies.sessionHandshakeTimeoutMs ?? acpxSessionHandshakeTimeoutMs(options.profile.agent),
     );
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
@@ -1114,6 +1124,24 @@ function nonEmptyRuntimeIdentity(
   value: string | undefined,
 ): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * A fresh open has no runner-recorded provider identity, so a saved record for
+ * its session key was left by an earlier bootstrap of the same session that
+ * stopped before any prompt (for example a session.open the controller gave up
+ * on). Its provider session was never used and may not be resumable: Claude
+ * saves nothing until the first prompt. Ask ACPX to start a new session instead
+ * of reusing it. A record that holds any conversation is left unchanged.
+ */
+export async function resetAbandonedBootstrapRecord(store: AcpSessionStore, sessionKey: string): Promise<boolean> {
+  const record = await store.load(sessionKey);
+  if (!record || record.acpx?.reset_on_next_ensure === true) return false;
+  // Only a record that provably holds no conversation qualifies.
+  if (!Array.isArray(record.messages) || record.messages.length > 0 || record.lastSeq !== 0 ||
+      record.lastPromptAt !== undefined) return false;
+  await store.save({ ...record, acpx: { ...record.acpx, reset_on_next_ensure: true } });
+  return true;
 }
 
 async function boundedSessionHandshake(
