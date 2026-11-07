@@ -53,10 +53,6 @@ type ScopeRecord = {
   budgetHeld: boolean;
 };
 
-/**
- * Why an invocation is blocked. `company_paused` covers every company pause,
- * operator or budget; every other block is `budget_exhausted`.
- */
 export type InvocationBlockCause = "company_paused" | "budget_exhausted";
 
 type PolicyRow = typeof budgetPolicies.$inferSelect;
@@ -719,11 +715,6 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpend[] }) {
     const scope = prepared?.scope ?? await resolveScopeRecord(db, scopeType, scopeId);
     if (scope.companyId !== companyId) throw notFound("Budget scope not found");
-    // A paused company is a stop of the whole company, and the pause can come
-    // from an operator as well as from a budget hard-stop. The cause is taken
-    // from this read, so callers never read the company again to tell the two
-    // apart: a second read can observe a later resume and turn a pause into a
-    // false budget verdict.
     const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
     const policies = prepared?.policies ?? await db.select().from(budgetPolicies).where(and(
       eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, scopeType), eq(budgetPolicies.scopeId, scopeId),

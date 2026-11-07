@@ -14500,8 +14500,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
     });
-    // The pause lands after the candidate read, while this issue waits its turn
-    // in the sweep. The invocation probe is the first reader that sees it.
     const originalBudgetService = budgetsModule.budgetService;
     const budgetSpy = vi
       .spyOn(budgetsModule, "budgetService")
@@ -14554,10 +14552,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
     });
-    // The pause lands after the per-issue pause check, the invocation probe
-    // observes it, and the company resumes right after. The skip must follow
-    // the cause attached to that observation; a later company read would see
-    // an active company and misreport the block as a budget failure.
     const originalBudgetService = budgetsModule.budgetService;
     const budgetSpy = vi
       .spyOn(budgetsModule, "budgetService")
