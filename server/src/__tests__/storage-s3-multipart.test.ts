@@ -10,6 +10,40 @@ import { createStorageService } from "../storage/service.js";
 import { STORAGE_FAILURE_CLEANUP_MS } from "../storage/failure-cleanup.js";
 
 describe("streamed S3 multipart uploads", () => {
+  it("delivers four slow part payloads concurrently before any part is drained", async () => {
+    const client = new S3Client({ region: "us-east-1" }), started = new Set<number>(), received = new Map<number, number>();
+    let release!: () => void, active = 0, peak = 0, completed = false;
+    const reading = new Promise<void>(resolve => { release = resolve; });
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
+      if (command instanceof UploadPartCommand) {
+        const number = command.input.PartNumber!; started.add(number);
+        await reading; active++; peak = Math.max(peak, active);
+        let bytes = 0; const digest = createHash("sha256");
+        for await (const chunk of command.input.Body as Readable) {
+          digest.update(chunk); bytes += chunk.length;
+          await new Promise(resolve => setTimeout(resolve, 1));
+        }
+        expect(bytes).toBe(8 * 1024 * 1024);
+        expect(digest.digest("hex")).toBe(createHash("sha256").update(Buffer.alloc(bytes, number)).digest("hex"));
+        received.set(number, bytes); active--;
+        return { ETag: `part-${number}` };
+      }
+      expect(command).toBeInstanceOf(CompleteMultipartUploadCommand);
+      expect(command.input.MultipartUpload.Parts).toEqual([1, 2, 3, 4].map(PartNumber => ({ PartNumber, ETag: `part-${PartNumber}` })));
+      completed = true; return {};
+    });
+    const body = Readable.from((async function* () {
+      for (let index = 0; index < 512; index++) yield Buffer.alloc(64 * 1024, Math.floor(index / 128) + 1);
+    })());
+    const saving = putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream", contentLength: 32 * 1024 * 1024, body }).catch(error => error);
+    try {
+      await expect.poll(() => started.size, { timeout: 1500 }).toBe(4);
+      expect(received.size).toBe(0); release();
+      expect(await saving).toBeUndefined();
+      expect(peak).toBe(4); expect(received.size).toBe(4); expect(completed).toBe(true);
+    } finally { release(); await saving; send.mockRestore(); client.destroy(); }
+  });
   it("sends concurrent exact part bodies through the real S3 HTTP client", async () => {
     const received = new Map<number, string>();
     const responses = new Map<number, ServerResponse>();
@@ -100,7 +134,7 @@ describe("streamed S3 multipart uploads", () => {
 
   it("streams exact ordered parts without buffering the full response", async () => {
     const client = new S3Client({ region: "us-east-1" });
-    const lengths: number[] = [];
+    const lengths = new Map<number, number>();
     const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
       if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
       if (command instanceof UploadPartCommand) {
@@ -111,7 +145,7 @@ describe("streamed S3 multipart uploads", () => {
           length += chunk.length;
         }
         expect(length).toBe(command.input.ContentLength);
-        lengths.push(length);
+        lengths.set(command.input.PartNumber!, length);
         return { ETag: `part-${command.input.PartNumber}` };
       }
       expect(command).toBeInstanceOf(CompleteMultipartUploadCommand);
@@ -121,7 +155,7 @@ describe("streamed S3 multipart uploads", () => {
     const body = Readable.from((async function* () { for (let i = 0; i < 272; i++) yield Buffer.alloc(64 * 1024); })());
     try {
       await putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "text/plain", contentLength: 17 * 1024 * 1024, body });
-      expect(lengths).toEqual([8, 8, 1].map(mb => mb * 1024 * 1024));
+      expect([...lengths].sort(([a], [b]) => a - b)).toEqual([[1, 8], [2, 8], [3, 1]].map(([part, mb]) => [part, mb * 1024 * 1024]));
     } finally { send.mockRestore(); client.destroy(); }
   });
   it("keeps source backpressure and at most four part requests while acknowledgements stall", async () => {
@@ -149,8 +183,8 @@ describe("streamed S3 multipart uploads", () => {
     })());
     const saving = putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream", contentLength: 100 * 1024 * 1024, body });
     try {
-      await expect.poll(() => active).toBe(1);
-      expect(yielded).toBeLessThanOrEqual(3);
+      await expect.poll(() => active).toBe(4);
+      expect(yielded).toBeLessThanOrEqual(4 * 128 + 3);
       releaseReading();
       await expect.poll(() => received).toBe(4);
       expect(yielded).toBeLessThanOrEqual(4 * 128 + 3);
@@ -161,6 +195,76 @@ describe("streamed S3 multipart uploads", () => {
       expect(yielded).toBe(1600);
       expect(peak).toBe(4);
     } finally { releaseReading(); releaseAcknowledgements(); await saving; send.mockRestore(); client.destroy(); }
+  });
+
+  it("shares the buffered payload window across simultaneous uploads", async () => {
+    const client = new S3Client({ region: "us-east-1" });
+    let release!: () => void, yielded = 0;
+    const reading = new Promise<void>(resolve => { release = resolve; });
+    const started = new Map<string, number>();
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: command.input.Key };
+      if (command instanceof UploadPartCommand) {
+        const key = command.input.Key!;
+        started.set(key, (started.get(key) ?? 0) + 1);
+        await reading;
+        let bytes = 0;
+        for await (const chunk of command.input.Body as Readable) bytes += chunk.length;
+        expect(bytes).toBe(command.input.ContentLength);
+        return { ETag: `part-${command.input.PartNumber}` };
+      }
+      expect(command).toBeInstanceOf(CompleteMultipartUploadCommand);
+      return {};
+    });
+    const saving = Promise.all(["a", "b"].map(key => putS3Multipart(client, "bucket", key, {
+      objectKey: key, contentType: "application/octet-stream", contentLength: 32 * 1024 * 1024,
+      body: Readable.from((async function* () {
+        for (let index = 0; index < 512; index++) { yielded++; yield Buffer.alloc(64 * 1024); }
+      })()),
+    })));
+    try {
+      await expect.poll(() => ["a", "b"].every(key => (started.get(key) ?? 0) >= 3)).toBe(true);
+      expect(yielded).toBeLessThanOrEqual(4 * 128 + 8);
+      release(); await saving;
+      expect(yielded).toBe(1024);
+      expect([...started.values()]).toEqual([4, 4]);
+    } finally { release(); await saving; send.mockRestore(); client.destroy(); }
+  });
+
+  it.each(["source", "request"])("releases the shared payload allowance after a %s failure", async failure => {
+    const client = new S3Client({ region: "us-east-1" });
+    let release!: () => void, yielded = 0, started = 0;
+    const reading = new Promise<void>(resolve => { release = resolve; });
+    const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: command.input.Key };
+      if (command instanceof UploadPartCommand) {
+        if (command.input.Key === "failed") throw new Error("request failed");
+        started++; await reading;
+        for await (const _chunk of command.input.Body as Readable) {}
+        return { ETag: `part-${command.input.PartNumber}` };
+      }
+      expect(command instanceof CompleteMultipartUploadCommand || command instanceof AbortMultipartUploadCommand).toBe(true);
+      return {};
+    });
+    const first = Readable.from((async function* () {
+      if (failure === "source") throw new Error("source failed");
+      yield Buffer.alloc(8 * 1024 * 1024);
+    })());
+    let saving: Promise<void> | undefined;
+    try {
+      await expect(putS3Multipart(client, "bucket", "failed", {
+        objectKey: "failed", contentType: "application/octet-stream", contentLength: 8 * 1024 * 1024, body: first,
+      })).rejects.toThrow(`${failure} failed`);
+      saving = putS3Multipart(client, "bucket", "next", {
+        objectKey: "next", contentType: "application/octet-stream", contentLength: 32 * 1024 * 1024,
+        body: Readable.from((async function* () {
+          for (let index = 0; index < 512; index++) { yielded++; yield Buffer.alloc(64 * 1024); }
+        })()),
+      });
+      await expect.poll(() => started).toBe(4);
+      expect(yielded).toBe(512);
+      release(); await saving;
+    } finally { release(); await saving; send.mockRestore(); client.destroy(); }
   });
 
   it("settles cancelled siblings before aborting a failed multipart upload", async () => {
@@ -274,11 +378,11 @@ describe("streamed S3 multipart uploads", () => {
     } finally { send.mockRestore(); vi.useRealTimers(); }
   });
 
-  it("bounds cancellation while an asynchronous source read is stalled", async () => {
+  it.each([128 * 1024, 8 * 1024 * 1024 * 10_000 + 1])("bounds cancellation while an asynchronous source read is stalled (declared bytes: %s)", async contentLength => {
     vi.useFakeTimers();
     const client = new S3Client({ region: "us-east-1" });
     const cancellation = new AbortController();
-    let release!: () => void, waiting = false, settled = false;
+    let release!: () => void, waiting = false, settled = false, partLength: number | undefined;
     const sourceGate = new Promise<void>(resolve => { release = resolve; });
     const body = Readable.from((async function* () {
       yield Buffer.alloc(64 * 1024);
@@ -289,17 +393,19 @@ describe("streamed S3 multipart uploads", () => {
     const send = vi.spyOn(client, "send").mockImplementation(async (command: any, options: any) => {
       if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
       if (command instanceof UploadPartCommand) {
+        partLength = command.input.ContentLength;
         (command.input.Body as Readable).resume();
         return new Promise((_resolve, reject) => options.abortSignal.addEventListener("abort", () => reject(options.abortSignal.reason), { once: true }));
       }
       expect(command).toBeInstanceOf(AbortMultipartUploadCommand);
       return {};
     });
-    const saving = putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "text/plain", contentLength: 128 * 1024, body, signal: cancellation.signal })
+    const saving = putS3Multipart(client, "bucket", "key", { objectKey: "key", contentType: "text/plain", contentLength, body, signal: cancellation.signal })
       .catch(error => error).finally(() => { settled = true; });
     try {
       await vi.advanceTimersByTimeAsync(0);
       expect(waiting).toBe(true);
+      if (contentLength > 8 * 1024 * 1024 * 10_000) expect(partLength).toBe(8 * 1024 * 1024 + 1);
       cancellation.abort(new Error("cancelled during source read"));
       await vi.advanceTimersByTimeAsync(STORAGE_FAILURE_CLEANUP_MS + 1);
       expect(settled).toBe(true);

@@ -7,8 +7,10 @@ import { readNativeWorkspaceSyncReference } from "../native-runtime/native-works
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../native-runtime/native-runner-recovery-contract.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 import { readNativeControllerRecoveryInventory } from "../native-runtime/native-controller-recovery-inventory.js";
+import { readNativeFinalizationUpgradeReadiness } from "../native-runtime/native-finalization-upgrade-readiness.js";
 
 const MAX_UPGRADE_RUNS = 1_000;
+const POST_RESULT_INSPECTION_BUDGET_MS = 2_000;
 type Counters = { activeRuns: number; pendingWakes: number; draining: boolean };
 type Candidate = { id: string; recoverable: boolean };
 
@@ -20,17 +22,19 @@ export async function readUpgradeReadiness(db: Db, input: {
   activeRunIds: ReadonlySet<string>;
   counters: () => Counters;
 }) {
+  const inspectionDeadline = performance.now() + POST_RESULT_INSPECTION_BUDGET_MS;
   const before = input.counters();
   const beforeIds = [...input.activeRunIds];
   const owner = await currentNativeControllerIdentity();
   const rows = await db.transaction(async tx => {
     await tx.execute(sql`set local statement_timeout = '2s'`);
-    return tx.execute<Candidate & { companyId: string; issueId: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; pluginLeaseId: string | null; material: Record<string, unknown> | null }>(sql`
+    return tx.execute<Candidate & { companyId: string; issueId: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; hasResult: boolean; pluginLeaseId: string | null; material: Record<string, unknown> | null }>(sql`
     select r.id, r.company_id as "companyId", r.native_issue_id as "issueId",
       r.runner_instance_id as "runnerId", r.native_session_id as "sessionId",
       r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
       r.runner_profile_json ? 'remoteWorkspace' as "hasRemoteWorkspace", p.id as "pluginLeaseId",
+      f.result_id is not null as "hasResult",
       case when pg_column_size(c.material) <= ${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
         and sum(pg_column_size(c.material)) over () <= ${NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES} then c.material else null end as material, (
       r.runtime_mode = 'native' and a.adapter_type = 'paperclip_runner'
@@ -58,19 +62,25 @@ export async function readUpgradeReadiness(db: Db, input: {
     where r.status = 'running'
     limit ${MAX_UPGRADE_RUNS + 1}`);
   }, { accessMode: "read only" });
-  const candidates = rows.map(row => {
+  const candidates: Candidate[] = [];
+  for (const row of rows) {
     const remote = remoteWorkspaceRunReferenceSchema.safeParse(row.remoteWorkspace);
     // A remote reference owns the logical workspace identity. Corruption or conflicting
     // plugin authority must not fall back to a different recoverable-looking record.
     const workspaceId = row.hasRemoteWorkspace
       ? remote.success && !row.pluginLeaseId ? remote.data.workspaceId : null
       : row.pluginLeaseId ?? readNativeWorkspaceSyncReference(row.workspace)?.workspaceId;
-    const identity = row.recoverable && row.material
+    const identity = (row.recoverable || row.hasResult) && row.material
       ? inspectNativeRunnerUpgradeHeader({ companyId: row.companyId, issueId: row.issueId, runId: row.id }, row.material) : null;
-    return { id: row.id, recoverable: Boolean(workspaceId && identity && identity.runId === row.id
+    const bound = Boolean(workspaceId && identity && identity.runId === row.id
       && identity.runnerInstanceId === row.runnerId && identity.normalizedSessionId === row.sessionId
-      && identity.environmentLeaseId === workspaceId) };
-  });
+      && identity.environmentLeaseId === workspaceId);
+    const finalization = bound && row.hasResult && remote.success && !row.pluginLeaseId
+      && performance.now() < inspectionDeadline
+      ? await readNativeFinalizationUpgradeReadiness(db, { companyId: row.companyId, runId: row.id,
+        controller: owner, supportedOutageMs: 300_000 }).catch(() => false) : false;
+    candidates.push({ id: row.id, recoverable: bound && (row.recoverable || finalization) });
+  }
   // Additive evidence does not strengthen or redefine the existing ready flag.
   const retained = await readNativeControllerRecoveryInventory(db).catch(() => ({
     version: 1 as const, observedAt: new Date().toISOString(), coverage: "unknown" as const,

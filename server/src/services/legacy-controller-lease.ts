@@ -30,6 +30,7 @@ export class LegacyControllerLeaseLostError extends Error {
 export function legacyControllerClaim(runtimeMode: string) {
   if (runtimeMode === "native") return {};
   return {
+    legacyProcessSettlement: null,
     controllerBootId: legacyControllerBootId,
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     executionStage: "preparing",

@@ -2,6 +2,8 @@
 
 export const FAULT_KINDS = ["K1", "K2", "K4", "K6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
+/** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
+export type TaskFaultKind = FaultKind | "K13";
 
 export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
@@ -9,7 +11,7 @@ export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool"] as const;
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result"] as const;
 export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
@@ -32,6 +34,30 @@ export interface WaveOptions {
   daytonaImage?: string;
   /** `--env daytona`: vCPU per sandbox (see seed.ts chaosDaytonaShape). */
   daytonaCpu?: number;
+  /**
+   * Known product signatures this wave deliberately masks. "rc06" keeps the
+   * company budget amount but disables its hard stop, so a stuck
+   * accounting row (RC-06) cannot wedge every later task. Spend is still
+   * recorded per wave. Absent on plans written before masks existed.
+   */
+  masks?: string[];
+  /**
+   * K13 restart storm: fire faults drawn from `faults` every 2–4 minutes for
+   * this many minutes, keeping `concurrency` tasks in flight, then drain.
+   */
+  stormMinutes?: number;
+}
+
+export interface StormFault {
+  kind: FaultKind;
+  holdMs: number;
+  /** Wait this long after the previous storm fault settled (or the storm started). */
+  gapMs: number;
+}
+
+export interface StormPlan {
+  durationMs: number;
+  faults: StormFault[];
 }
 
 export interface TaskPlan {
@@ -39,7 +65,7 @@ export interface TaskPlan {
   index: number;
   workload: WorkloadId;
   adapter: AdapterId;
-  fault: FaultKind;
+  fault: TaskFaultKind;
   /** Fire the fault this long after the task's issue is created. */
   fireAfterMs: number;
   /** Outage hold between stop and restart. 0 for K1/K2. */
@@ -71,6 +97,8 @@ export interface WavePlan {
   createdAt: string;
   options: WaveOptions;
   tasks: TaskPlan[];
+  /** K13 only: the seeded storm fault sequence. */
+  storm?: StormPlan;
   /** Present when this wave replays one task of an earlier wave. */
   replayOf?: { waveId: string; taskId: string };
 }
@@ -90,6 +118,10 @@ export interface RunSample {
   wakeCommentIds: string[];
   livenessState: string | null;
   lastEvidenceAt?: string | null;
+  /** A tool started with no matching end yet (a long `bench.sh` is quiet but live). */
+  toolInFlight?: boolean;
+  /** The run's recorded local runner process is still running with the same start time. */
+  processAlive?: boolean;
 }
 
 export interface InterruptionSample {
@@ -199,6 +231,10 @@ export interface TaskRecord {
   /** B5: distinct bench progress values the observer read during polling. */
   benchProgressSeen?: string[];
   benchFirstSeenAt?: number | null;
+  /** C1: first time the observer saw the run that received the follow-up propose or accept its result. */
+  resultAcceptedAt?: number | null;
+  /** The run whose result armed the `result` trigger; the fault fires only while it is still running. */
+  resultRunId?: string | null;
   triggerMissed?: TriggerId[];
 }
 
