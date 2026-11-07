@@ -746,10 +746,17 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
-dispatch. The interval includes queueing, Core preparation, workspace preparation,
+The span starts at the earliest accepted input. The accepted comment or attested
+question response is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run starts at run creation from the queue span and reports `run_created`. The
+durable wake request's acceptance time replaces the start when it is earlier
+(deferred, coalesced and retried wakes). The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
+wait before `turn.start` and never delays event delivery. Callers without
+preparation history start at native dispatch and report `run_created`. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
 using the Core clock rather than the provider event timestamp. Browser delivery
@@ -1314,7 +1321,9 @@ executor's identity redaction. These observations do not change close, quarantin
 or recovery behavior.
 
 Remote runner reattachment failures also record `remoteRunnerRecoveryStage`
-and `remoteRunnerRecoveryReason` from the saved run. When reattachment fails
+and `remoteRunnerRecoveryReason` from the saved run. A confirmed missing process
+also records the closed `remoteRunnerLifecycle` and boolean `remoteRunnerSettled`
+from the exited runner's saved state. When reattachment fails
 before the coordinator saves its result, the report reads the same labels from
 the caught recovery error instead. These fields contain
 closed labels for marker reads and process verification. They distinguish

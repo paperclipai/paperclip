@@ -1,4 +1,7 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
@@ -8,6 +11,7 @@ import { conflict } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 import { createCostEventInTransaction } from "./costs.js";
+import { settleChargedImageReceiptsInTransaction } from "./native-runtime/generate-image-tool.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
@@ -98,12 +102,14 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
  * settled, not one usage receipt was ever journaled for the run (a provider
  * turn journals one as soon as it starts), and its local process either never
  * launched or was verified stopped. Settle it at once, like a pre-provider
- * failure, instead of holding company work. */
+ * failure, instead of holding company work. A usage recorder binds every run
+ * with an empty fence map; only a replaced receipt source (a non-empty map)
+ * shows that provider work began. */
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
   and ${settledNativeCoordinator}
   and coalesce((${heartbeatRuns.usageJson}->>'accountingReceiptSequence')::int, 0) = 0
-  and ${heartbeatRuns.usageJson}->'accountingReceiptSourceFences' is null
+  and coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb) = '{}'::jsonb
   and not exists (select 1 from ${runUsageReceipts} journaled_receipt
     where journaled_receipt.company_id = ${heartbeatRuns.companyId} and journaled_receipt.run_id = ${heartbeatRuns.id})
   and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
@@ -117,6 +123,15 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
  * grace plus a margin, a terminal run whose recovery has settled no longer
  * holds new company work: its debt settles as unpriced, flagged so the
  * blocking policy still counts it and the board sees which run it was. */
+/** A run's accounting settled: an admission hold may have cleared. Held work
+ * (queued runs, saved messages and Retries, and tasks whose start or
+ * continuation was refused) waits passively, so wake its owners. */
+async function notifyAccountingHoldRelease(tx: object, companyId: string) {
+  await notifyRunDispatch(tx, { companyId });
+  await notifyDeferredExecutionEligibility(tx, { companyId });
+  await notifyIssueRecovery(tx, { companyId });
+}
+
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
 /** `at` is one shared cutoff, so the actionable scan and the wake query
  * cannot both miss a run whose bound falls between them. */
@@ -204,10 +219,19 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     )).for("key share");
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
+    // Tool-side image spend is separate from the provider receipt; settle any
+    // paid image whose own accounting write did not complete.
+    for (const projectId of new Set(await settleChargedImageReceiptsInTransaction(tx, run, publications))) {
+      await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId });
+    }
     if (run.costAccountedAt) {
-      if (object(run.usageJson).accountingLateReceiptPending === true)
+      if (object(run.usageJson).accountingLateReceiptPending === true) {
+        // Clearing late debt can release an admission hold too.
+        await notifyAccountingHoldRelease(tx, run.companyId);
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
+      }
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+      await notifyAccountingHoldRelease(tx, run.companyId);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
         projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
@@ -249,6 +273,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+    await notifyAccountingHoldRelease(tx, run.companyId);
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
@@ -326,6 +351,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
+    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId);
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
       accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
       // A complete receipt arriving later may price this charge (see usage-receipts).

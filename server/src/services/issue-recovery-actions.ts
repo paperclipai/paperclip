@@ -17,6 +17,7 @@ import type {
 } from "@paperclipai/shared";
 
 import { isNativeWorkspaceFinalizationOperationActive } from "./workspace-operations.js";
+import { exhaustedSystemRecoveryAction, readSystemRecovery } from "./system-recovery-state.js";
 
 const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
@@ -112,6 +113,14 @@ export type ResolveIssueRecoveryActionInput = {
   resolutionNote?: string | null;
 };
 
+/** A spent saved-work recovery is described from its current state. Text saved
+ * by an older release could ask a person to inspect the run's environment. */
+function readModelNextAction(row: IssueRecoveryActionRow): string {
+  const system = readSystemRecovery(row.evidence);
+  return system?.state === "exhausted" && row.evidence?.workspaceRecovery
+    ? exhaustedSystemRecoveryAction(system) : row.nextAction;
+}
+
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
   return {
     id: row.id,
@@ -128,7 +137,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     cause: row.cause,
     fingerprint: row.fingerprint,
     evidence: row.evidence,
-    nextAction: row.nextAction,
+    nextAction: readModelNextAction(row),
     wakePolicy: row.wakePolicy,
     monitorPolicy: row.monitorPolicy,
     attemptCount: row.attemptCount,
