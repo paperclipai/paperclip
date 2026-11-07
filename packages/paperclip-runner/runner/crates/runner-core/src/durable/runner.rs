@@ -1985,6 +1985,23 @@ fn deliver_warm_attachment(
     }
 }
 
+/// A replayed terminal command must reproduce the lifecycle its fence
+/// recorded. One legacy exception: runners built before a failed
+/// `runner.suspend` stopped being terminal persisted a `suspended` fence for
+/// it. Its replay now continues; honour that old fence so an upgraded runner
+/// can still deliver the journaled result and finish the old transition.
+fn replay_satisfies_terminal_fence(
+    pending: &PendingTerminalDelivery,
+    result_status: &str,
+    lifecycle: CommandLifecycle,
+) -> bool {
+    lifecycle.durable_state() == Some(pending.lifecycle.as_str())
+        || (pending.command_type == "runner.suspend"
+            && pending.lifecycle == "suspended"
+            && matches!(result_status, "failed" | "rejected")
+            && lifecycle == CommandLifecycle::Continue)
+}
+
 fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
@@ -2009,7 +2026,7 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
             ));
         }
         let (result, lifecycle) = process_command(state, store, config, executor, command)?;
-        if lifecycle.durable_state() != Some(pending.lifecycle.as_str()) {
+        if !replay_satisfies_terminal_fence(&pending, &result.status, lifecycle) {
             return Err(DurableRunnerError::invalid(
                 "pending terminal command did not replay its durable lifecycle",
             ));
@@ -5957,6 +5974,44 @@ mod tests {
         assert_eq!(replay_stop, CommandLifecycle::Shutdown);
         assert_eq!(executor.calls, 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_failed_suspend_fence_still_reconciles_after_upgrade() {
+        let fence = |command_type: &str, lifecycle: &str| PendingTerminalDelivery {
+            command_id: "command_1".to_owned(),
+            controller_seq: 1,
+            command_type: command_type.to_owned(),
+            lifecycle: lifecycle.to_owned(),
+        };
+        // An old runner persisted `suspended` for a failed suspend; the
+        // upgraded replay continues, and must still satisfy that fence.
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Suspend
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Shutdown
+        ));
+        // A completed suspend or a shutdown must still replay its own lifecycle.
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Continue
+        ));
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
     }
 
     #[test]
