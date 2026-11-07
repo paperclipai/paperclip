@@ -1,5 +1,38 @@
 # Paperclip evaluation guide
 
+The optional Product regression TestOps lane in `runner-full-stack-e2e.yml`
+maps the standing 20-case plan to existing isolated Product E2E cells: native
+Codex/local, with native OpenCode/local for the task-workspaces case. A manual
+`testops_case` bootstrap accepts `all`, a case name or its TestOps ID. TestOps
+dispatch supplies `ALLURE_JOB_RUN_ID`; its exact case IDs and full names take
+precedence. This lane preserves the existing paid admission, fixture, model,
+timeout, assertion, cleanup and retained-report paths. Reporting credentials
+stay in trusted default-branch jobs. Missing evidence becomes a broken result.
+Subset runs do not qualify the full plan or the historical 355-row snapshot.
+Catalog and projection tests are not live qualification; retain the fresh
+TestOps launch and GitHub run when reporting acceptance.
+
+The sibling **Reliability — staging soak** TestOps plan uses the same lane for
+the seven staging-soak reliability cases. Six run once on native OpenCode with
+DeepSeek 1017 through OpenRouter: on Daytona for `three-turn-revise`,
+`long-silent-command` and `queued-across-restart`, and locally for the others.
+`queue-steer` needs steering, which OpenCode does not support, so it runs on
+native Codex on Daytona.
+A launch selects cases from exactly one plan, so plan 2 keeps its 20-case
+denominator. The plan is launched from TestOps before a release, or bootstrapped
+with `testops_plan=reliability`. It has no schedule and does not run per PR.
+Selection fails closed until TestOps-assigned identities are committed; see the
+[registration steps](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
+The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
+
+The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
+cell checks a native Codex agent on Daytona installing an authorized saved API
+response and delivering unchanged bytes. The oracle binds the source capture,
+tool completion and independent attachment download, including the complete
+388131-byte synthetic description. Registration and oracle calibration are
+separate from live provider qualification.
+
 The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
 registers twenty candidate cells across local and Daytona. It reuses the
 browser, semantic interaction, file/artifact, Stop and continuation oracles with
@@ -44,15 +77,28 @@ existing campaigns. Private Cloud bundles are rejected. The output contains
 only index HTML and history/pointer JSON; it does not upload evidence or change
 retained campaign bundles.
 
+The explicit-only [Cursor Cloud native cells](../tests/runner-e2e/README.md)
+cover task/artifact delivery, same-agent follow-up, active-run UI Stop and
+semantic Plan revision/approval from a local controller. They require explicit
+model/repository/key and a callback-only
+public HTTPS proxy. Controlled tests and discovery do not qualify hosted work.
+These cells remain private because raw evidence can contain provider session IDs.
+
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
 two natural-language task scenarios into local native Codex subscription and
 OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
 state/provenance checks. A separately selected native OpenCode/DeepSeek1017
-backlog cell measures TestOps integration acceptance with the same oracle and
-original bounds. Its source registration is not an AWS or TestOps pass. The
-broader YAML catalog remains planning inventory.
+backlog cell supplied historical TestOps integration acceptance with the same
+oracle and original bounds. Its former smoke plan and the three-case completion
+pilot are retired; their cases and measurements remain in history. The
+[full-catalog TestOps lane](../tests/runner-e2e/CHAT-FEATURES.md#full-catalog-in-testops)
+maps all 244 YAML scenarios into a separate candidate-scoped plan. Its app and
+fixtures use a preserved immutable catalog revision; trusted workflow helpers run
+from master. Registration, known gaps and private prerequisites remain distinct
+from measured results. This lane does not qualify the current master app or reset
+earlier campaign accounting.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 300-second controller outage
@@ -91,13 +137,26 @@ reply with the late requirement, and persistence after reload. Its attached and
 managed targets share the same story and permit one steered run or one normal
 successor. Registration and calibration are separate from a live staging pass.
 
+The explicit [dependency continuation journey](../tests/runner-e2e/product-journeys/task-dependency-resume.md) checks a finite blocked wait and one automatic native continuation after a browser-completed blocker. Local evidence controls are separate from a deployed QA pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
 onboarding supplies reusable verified state. The document journey checks exact
-saved content and both revision records through independent API reads. Cloud
-fleet operations and trusted CI remain private. Local eval gateway qualification
+saved content and both revision records through independent API reads. The explicit `chat-continuity` selection verifies browser reload/reopen, prompt-hidden recall,
+ordinary `/new` reset, fresh native context and retained history against an attached target.
+It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
+Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
+
+The explicit [onboarding approval-history journey](../tests/runner-e2e/README.md#first-task-onboarding)
+continues an interview through partial plan acceptance, approved hiring, and a
+separate execution confirmation. It requires the assigned child's real execution,
+saved output, unchanged approved scope, and reload persistence. Deterministic
+PostgreSQL producer/consumer tests run in ordinary CI; native provider cells
+require an explicit paid selection and a recorded live result.
+
+The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
 contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task
@@ -331,7 +390,10 @@ Use the selectors documented in the [runner E2E README](../tests/runner-e2e/READ
 for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
-explicitly; use a narrow selector while developing a fixture.
+explicitly; use a narrow selector while developing a fixture. Its staging-soak
+reliability cases need `--group reliability` as well; see
+[Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
+for the command, the TestOps Reliability plan and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
@@ -568,7 +630,9 @@ verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
 The 26 native `first-task` cells inspect the production wizard's saved native
 default on qualified targets, without an API runner switch. The 26 Legacy cells
-select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
+use an API-configured inactive setup record and resume it in the wizard, as
+described in the [first-task setup contract](../tests/runner-e2e/README.md#first-task-onboarding).
+Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
@@ -633,3 +697,9 @@ run-attributed tool receipts on local and Daytona execution. Its four native
 Claude/Codex cells are explicit-only. Remote registrations remain unqualified
 until retained live attempts prove them. It uses the normal Product E2E report
 and keeps synthetic feedback distinct from actionable product findings.
+# Legacy workspace preservation
+
+The explicit [legacy workspace migration Product E2E suites](../tests/runner-e2e/README.md#legacy-workspace-migration)
+verify a retained session through the production offline migration and an empty
+replacement controller. They complement the rolling deployment suites and do
+not claim uninterrupted service during initial enrollment.

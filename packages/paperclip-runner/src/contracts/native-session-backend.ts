@@ -1,3 +1,5 @@
+import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -14,6 +16,7 @@ import type {
   HarnessRuntimeRequestHandoff,
   HarnessRuntimeRequestResolution,
   HarnessGoalOperation,
+  HarnessSessionRecoveryResult,
   HarnessThreadGoal,
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
@@ -81,6 +84,7 @@ export interface NativeSessionRecoveryResult {
   recovered: boolean;
   session?: NativeSession;
   reason?: string;
+  failureClass?: HarnessSessionRecoveryResult["failureClass"];
 }
 
 /** Runner-owned cause: the process was restored, but its active turn was lost. */
@@ -92,11 +96,17 @@ export function isNativeRestartInterruption(error: unknown): boolean {
   return failure.code === NATIVE_RESTART_INTERRUPTION_CODE && failure.recoverable === true;
 }
 
+const RESTART_CONTINUATION_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex_app_server", "acpx_runtime", "opencode_server"]);
+
 /** The terminal fingerprint survives a crash between interruption and continuation. */
 export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
   "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
 >): string | null {
-  if (snapshot.driverKind !== "codex_app_server" || snapshot.activeTurnId != null ||
+  // Runnerd records this cause for Codex app-server and ACPX sessions after
+  // proving the old provider lifetime ended and restoring the conversation.
+  // A lost continuation re-arms the driver's marker before it is checkpointed,
+  // so a consumed marker here still means the allowance is used.
+  if (!RESTART_CONTINUATION_DRIVER_KINDS.has(snapshot.driverKind ?? "") || snapshot.activeTurnId != null ||
       snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
       snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
   const terminal = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
@@ -117,6 +127,7 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
  */
 export interface NativeSessionCancellation {
   cleanup: Promise<void>;
+  terminalDrainTimeoutMs?: number;
 }
 
 export interface NativeSessionSnapshotOptions {
@@ -191,6 +202,8 @@ export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
@@ -201,9 +214,22 @@ export interface NativeSession {
     requestedCollaborationMode?: "default" | "plan";
     /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
     reasoningMode?: "default" | "disabled";
+    /**
+     * Run the provider's own context compaction as this turn instead of
+     * submitting `message`. Only for a resumed session with prior context.
+     */
+    compact?: true;
+    /** Last context occupancy Paperclip recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     mode?: "steer" | "follow_up";
@@ -276,11 +302,36 @@ export interface NativeSessionBackend {
   ): Promise<NativeSessionRecoveryResult>;
 }
 
+/** Same-session recovery is forbidden here, and the runner proved that the
+ * saved provider session cannot be restored by its build. Retrying the same
+ * run cannot succeed. */
+export class NativeProviderStateIncompatibleError extends Error {
+  readonly code = "native_provider_state_incompatible";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderStateIncompatibleError";
+  }
+}
+
+/** The saved provider session still owns a side-effecting call without a
+ * recorded result. A replacement session could repeat or lose that action, so
+ * the run stops for an operator and the saved state stays intact. */
+export class NativeProviderSideEffectPendingError extends Error {
+  readonly code = "native_provider_side_effect_pending";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderSideEffectPendingError";
+  }
+}
+
 /** A provider failed terminal is not a missing completion proposal. */
 export class NativeProviderTerminalFailure extends Error {
   readonly code = "native_provider_terminal_failed";
-  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal") {
+  declare readonly providerFailure?: ProviderFailure;
+  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal",
+    providerFailure?: ProviderFailure | null) {
     super(message);
     this.name = "NativeProviderTerminalFailure";
+    if (providerFailure) Object.defineProperty(this, "providerFailure", { value: providerFailure, enumerable: false });
   }
 }

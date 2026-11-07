@@ -11,7 +11,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, not, notInArray, lte, or, isNull, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
@@ -41,18 +41,7 @@ const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
 const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
 
-/** A terminal run does not establish that its private local edits were saved.
- * Enrollment may discard these paths only after this owner's save/resolution
- * or explicit ownership transfer. A rejected directory save is settled only
- * after this owner confirms both process stop and completed no-save cleanup. */
-export async function hasUnsettledLocalInstructionCopies(db: Db): Promise<boolean> {
-  return (await db.select({ runId: copies.runId }).from(copies).where(and(
-    eq(copies.location, "local"), notInArray(copies.state, ["saved", "unchanged", "resolved", "superseded"]),
-    not(and(eq(copies.state, "unavailable"), isNotNull(copies.processStoppedAt),
-      sql`coalesce(${copies.receipt}->>'schema', '') = 'paperclip.agent-files.v1'`,
-      sql`coalesce(${copies.receipt}->>'cleanupPending', '') = 'false'`)!),
-  )).limit(1)).length > 0;
-}
+export { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 
 function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
   const scope = databaseWorkScopeKey(db);
@@ -129,8 +118,8 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     };
     return db.transaction(tx => write(tx as unknown as Db));
   }
-  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
-    const updated = await tryPatch(row, values);
+  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) {
+    const updated = await tryPatch(row, values, false, condition);
     // A late cleanup must not overwrite an explicit resolution or a newer
     // baseline. Canonical content has its own independent head CAS.
     return updated ?? (await get(row.companyId, row.runId))!;
@@ -499,8 +488,8 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   function directoryCleanupEntry(row: Copy | null): DirectoryCleanupEntry | null {
     return row && ["saved", "unchanged", "resolved", "unavailable"].includes(row.state)
       && row.processStoppedAt && isAgentDirectoryCopy(row) && !row.receipt?.retainedByRunId
-      && row.receipt?.cleanupPending !== false
-      && (Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
+      && (row.receipt?.cleanupPending === false ? row.nextAttemptAt !== null
+        : Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
       ? { id: row.runId, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 } : null;
   }
   function directoryCleanupPredicate() {
@@ -508,8 +497,9 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       AND ${copies.processStoppedAt} IS NOT NULL
       AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
       AND coalesce(${copies.receipt}->>'retainedByRunId', '') = ''
-      AND ${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
-      AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')`;
+      AND ((${copies.receipt}->>'cleanupPending' = 'false' AND ${copies.nextAttemptAt} IS NOT NULL)
+        OR (${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
+          AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')))`;
   }
   async function loadDirectoryCleanup(scope: DirectoryCleanupScope | undefined, admitted: () => boolean) {
     const entries: DirectoryCleanupEntry[] = [];

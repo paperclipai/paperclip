@@ -1,4 +1,5 @@
 import { subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work-signals";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { createWorkScheduler } from "./work-scheduler.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
@@ -20,10 +21,14 @@ export function createDeliveryWorkCoordinator(input: {
     nextWakeAt: scheduler.nextWakeAt,
     register(queue: DeliveryQueue, task: {
       retryMs: number;
+      // Bound bursts by the first notification's deadline; later notifications
+      // do not postpone the obligation indefinitely.
+      coalesceMs?: number;
       run: (signal: AbortSignal) => Promise<unknown>;
-      hasPending: () => Promise<boolean>;
+      hasPending: (runAllowed?: boolean) => Promise<boolean>;
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
       onSettled?: (hints?: ReadonlySet<string>) => void;
+      onStop?: () => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;
       // Opt in only when run has recorded per-item failure backoffs. Other
@@ -70,8 +75,8 @@ export function createDeliveryWorkCoordinator(input: {
         const attempt = new AbortController();
         let runFailed = false;
         controller = attempt;
-        running = Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
-          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending()).then(pending => {
+        running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
+          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending(input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.()))).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }
@@ -97,13 +102,13 @@ export function createDeliveryWorkCoordinator(input: {
           running = null;
           controller = null;
           finish();
-          if (dirty) schedule(0);
-        });
+          if (dirty) schedule(task.coalesceMs ?? 0);
+        }));
       }
       function wake() {
         if (workerStopped) return;
         dirty = true;
-        if (!running) schedule(0);
+        if (!running) schedule(task.coalesceMs ?? 0);
       }
       const unsubscribe = subscribeDatabaseWork(input.owner, queue, (event, hints) => {
         if (workerStopped) return;
@@ -117,6 +122,7 @@ export function createDeliveryWorkCoordinator(input: {
       });
       const worker = { wake, async stop() {
         workerStopped = true;
+        task.onStop?.();
         controller?.abort(new Error("Delivery worker stopped"));
         unsubscribe();
         scheduler.cancel(queue);

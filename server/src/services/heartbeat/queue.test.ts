@@ -1,13 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
-import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
+import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
+import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
+import { settleConversationTurn } from "../agent-conversations.js";
+import { chatCompletionDeliveryService, recordChatCompletion, recordChatHandoff } from "../chat-completion-delivery.js";
+import { instanceSettingsService } from "../instance-settings.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
 
@@ -83,7 +92,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   let db: Db;
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-queue-module");
-    db = createDb(external ?? database!.connectionString);
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
@@ -111,6 +120,331 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.budgets.getInvocationBlock).not.toHaveBeenCalled();
   });
 
+  it.each(["ordinary recovery", "mismatched compaction"] as const)(
+    "does not admit %s after the conversation settles between precheck and admission", async cause => {
+    const [user] = await db.insert(authUsers).values({
+      id: "queue-conversation-race-user", name: "Conversation owner", email: "queue-race@paperclip.test",
+      createdAt: new Date(), updatedAt: new Date(),
+    }).onConflictDoUpdate({ target: authUsers.id, set: { name: "Conversation owner" } }).returning();
+    const [company] = await db.insert(companies).values({ name: "Conversation race", issuePrefix: "CR" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Chat agent",
+      status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Answered conversation",
+      assigneeAgentId: agent.id, responsibleUserId: user.id, conversationAgentId: agent.id,
+      conversationUserId: user.id, conversationState: "active", status: "in_progress" }).returning();
+    const [completed] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "succeeded", finishedAt: new Date(), invocationSource: "on_demand", triggerDetail: "manual",
+      contextSnapshot: { issueId: issue.id, conversationSessionGeneration: issue.conversationSessionGeneration },
+    }).returning();
+    await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id, authorAgentId: agent.id,
+      createdByRunId: completed.id, origin: "comment", body: "The requested answer." });
+
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableAgentChat: true } as Awaited<ReturnType<typeof deps.instanceSettings.getExperimental>>);
+    // Admit through the normal transaction, but hold dispatch so no adapter runs.
+    deps.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
+    const getIssueExecutionContext = deps.getIssueExecutionContext;
+    const outsideStates: Array<{ status: string; conversationState: string | null }> = [];
+    deps.getIssueExecutionContext = async (...args) => {
+      const current = await getIssueExecutionContext(...args);
+      if (current) outsideStates.push({ status: current.status, conversationState: current.conversationState });
+      return current;
+    };
+    let reached!: () => void;
+    let release!: () => void;
+    const atBarrier = new Promise<void>(resolve => { reached = resolve; });
+    const admissionMayContinue = new Promise<void>(resolve => { release = resolve; });
+    deps.budgets.getInvocationBlock.mockImplementationOnce(async () => {
+      reached();
+      await admissionMayContinue;
+      return null;
+    });
+    const requestId = randomUUID();
+    const compaction = cause === "mismatched compaction";
+    const pending = createHeartbeatQueue(db, deps).enqueueWakeup(agent.id, {
+      source: compaction ? "on_demand" : "automation", triggerDetail: compaction ? "manual" : "system",
+      reason: compaction ? "context_compaction" : "issue.continuation_recovery",
+      requestedByActorType: compaction ? "user" : "system", requestedByActorId: compaction ? user.id : undefined,
+      ...(compaction ? { manualUserWake: true, allowRunCoalescing: false } : {}),
+      payload: { issueId: issue.id, ...(compaction ? { intent: "context_compaction", requestId: `foreign-${requestId}` } : {}) },
+      contextSnapshot: { issueId: issue.id, retryOfRunId: completed.id, source: "issue.continuation_recovery",
+        ...(compaction ? { contextCompactionRequestId: requestId } : {}) },
+    });
+    try {
+      await atBarrier;
+      expect(outsideStates).toEqual([{ status: "in_progress", conversationState: "active" }]);
+      expect(await settleConversationTurn(db, completed)).toBe(true);
+      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0])
+        .toMatchObject({ status: "in_review", conversationState: "waiting" });
+    } finally { release(); }
+    const admitted = await pending;
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect(admitted).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agent.id))).map(run => run.id))
+      .toEqual([completed.id]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agent.id)))
+      .toHaveLength(0);
+  });
+
+  async function waitingConversationFixture() {
+    const [user] = await db.insert(authUsers).values({ id: "queue-conversation-owner", name: "Owner",
+      email: "queue-owner@paperclip.test", createdAt: new Date(), updatedAt: new Date() })
+      .onConflictDoUpdate({ target: authUsers.id, set: { name: "Owner" } }).returning();
+    const [company] = await db.insert(companies).values({ name: "Waiting conversation", issuePrefix: "WC" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Chat agent", status: "idle", adapterType: "process" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Waiting for input",
+      assigneeAgentId: agent.id, responsibleUserId: user.id, conversationAgentId: agent.id,
+      conversationUserId: user.id, conversationState: "waiting", status: "in_review" }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableAgentChat: true } as Awaited<ReturnType<typeof deps.instanceSettings.getExperimental>>);
+    deps.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    return { user, company, agent, issue, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  async function waitingCompactionFixture() {
+    const f = await waitingConversationFixture();
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })
+      .where(eq(agents.id, f.agent.id)).returning();
+    if (!agent) throw new Error("Missing compaction agent");
+    f.deps.getAgent.mockResolvedValue(agent);
+    const service = contextCompactionService(db, { wakeup: f.queue.enqueueWakeup });
+    return { ...f, agent, service };
+  }
+
+  it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
+    const f = await waitingCompactionFixture();
+    const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ id: accepted.runId, status: "queued", contextSnapshot: {
+      issueId: f.issue.id, contextCompactionRequestId: accepted.requestId, skipIssueComment: true,
+    } });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id)))
+      .toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+      .toMatchObject({ status: "in_review", conversationState: "waiting", assigneeAgentId: f.agent.id });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("admits only one of two simultaneous waiting-conversation compaction requests", async () => {
+    const f = await waitingCompactionFixture();
+    // Both service requests must finish their real availability read before
+    // either enters queue admission. Dispatch remains suppressed, not mocked.
+    // task_drain explicitly retains admission (queue.ts's admission guard
+    // excludes it), while startNextQueuedRunForAgent stops before any claim.
+    // Do not tie two admissions to a call-count-sensitive suppression sequence.
+    f.deps.getSchedulingSuppression.mockReset().mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    const admission = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => f.user.id,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: { filterZombieCoalesceTarget: f.deps.filterZombieCoalesceTarget,
+        mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
+    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    let releaseAvailability!: () => void;
+    const bothAvailable = new Promise<void>(resolve => { releaseAvailability = resolve; });
+    let arrivals = 0;
+    const service = contextCompactionService(db, { wakeup: async (...args) => {
+      if (++arrivals === 2) releaseAvailability();
+      await bothAvailable;
+      return f.queue.enqueueWakeup(...args);
+    } });
+    const results = await Promise.allSettled([0, 1].map(() => service.request({
+      companyId: f.company.id, issue: f.issue, userId: f.user.id,
+    })));
+    // Inspect both forms of durable execution authority before asserting.
+    // A saved deferred maintenance request can replay after the first run;
+    // counting only currently admitted runs would miss that extra work.
+    const maintenanceRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    const maintenanceReceipts = receipts.filter(row => row.status !== "skipped"
+      && row.payload?.intent === "context_compaction" && row.payload.issueId === f.issue.id);
+    expect(arrivals).toBe(2);
+    expect(maintenanceReceipts.map(row => ({ id: row.id, status: row.status, runId: row.runId })),
+      "one durable compaction authority including deferred").toHaveLength(1);
+    expect(maintenanceRuns.map(run => run.id)).toHaveLength(1);
+    expect(maintenanceRuns[0]).toMatchObject({ companyId: f.company.id, contextSnapshot: { issueId: f.issue.id } });
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter(result => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    if (rejected[0]?.status === "rejected") expect(rejected[0].reason).toMatchObject({ code: "already_pending" });
+    expect(receipts.filter(row => row.status === "deferred_issue_execution")).toEqual([]);
+    expect(receipts.filter(row => row.reason === "context_compaction" && row.status !== "skipped")).toHaveLength(1);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves an existing deferred compaction authority until cancellation allows a new request", async () => {
+    const f = await waitingCompactionFixture();
+    f.deps.getSchedulingSuppression.mockReset().mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    // Reproduce a pre-existing receipt through the actual normal deferred
+    // writer. In particular, its informational reason is NOT context_compaction.
+    // The service builds the real request; no provider/result rows are seeded.
+    const historical = contextCompactionService(db, { wakeup: async (agentId, options) => {
+      const source = options.source ?? "on_demand";
+      const triggerDetail = options.triggerDetail ?? null;
+      const context = enrichWakeContextSnapshot({ contextSnapshot: { ...options.contextSnapshot },
+        reason: options.reason ?? null, source, triggerDetail, payload: options.payload ?? null });
+      await db.transaction(async tx => {
+        await createWakeAdmissionWriter().insertNewDeferredWake(TransactionScope.create(f.company.id, tx), {
+          companyId: f.company.id, agentId, source, triggerDetail,
+          payload: { ...options.payload, manualUserWake: true, [DEFERRED_WAKE_CONTEXT_KEY]: context.contextSnapshot },
+          requestedByActorType: options.requestedByActorType ?? null,
+          requestedByActorId: options.requestedByActorId ?? null, idempotencyKey: options.idempotencyKey ?? null,
+        });
+      });
+      return null;
+    } });
+    await expect(historical.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "wake_skipped" });
+    const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    expect(pending).toMatchObject({ reason: "issue_execution_deferred", status: "deferred_issue_execution", runId: null,
+      payload: { issueId: f.issue.id, intent: "context_compaction" } });
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "already_pending" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toEqual([pending]);
+    // This never-dispatched fixture authority is now cancelled, not completed.
+    // Nonpending history must not permanently block a fresh normal request.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, pending.id));
+    const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id)))
+      .toEqual([expect.objectContaining({ id: accepted.runId, status: "queued" })]);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.find(row => row.id === pending.id)).toMatchObject({ status: "cancelled", runId: null });
+    expect(receipts.find(row => row.runId === accepted.runId)).toMatchObject({ status: "queued" });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { actor: "missing actor", userId: "", message: "Manual wake requires an authenticated user" },
+    { actor: "foreign owner", userId: "another-conversation-owner", message: "Only the conversation owner can start a chat run" },
+  ])("refuses waiting-conversation compaction from a $actor", async ({ userId, message }) => {
+    const f = await waitingCompactionFixture();
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId })).rejects.toThrow(message);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing request", "malformed request", "mismatched request"] as const)(
+    "rejects a waiting-conversation compaction envelope with a %s", async kind => {
+      const f = await waitingCompactionFixture();
+      const service = contextCompactionService(db, { wakeup: (agentId, options) => {
+        const contextSnapshot = { ...options.contextSnapshot };
+        const payload = { ...options.payload };
+        if (kind === "missing request") delete contextSnapshot.contextCompactionRequestId;
+        if (kind === "malformed request") payload.requestId = { unexpected: true };
+        if (kind === "mismatched request") payload.requestId = randomUUID();
+        return f.queue.enqueueWakeup(agentId, { ...options, contextSnapshot, payload });
+      } });
+      await expect(service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+        .rejects.toMatchObject({ code: "wake_skipped" });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+        .toMatchObject({ status: "in_review", conversationState: "waiting" });
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+    });
+
+  it("does not turn an ordinary waiting-conversation wake into compaction authority", async () => {
+    const f = await waitingCompactionFixture();
+    expect(await f.queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual",
+      reason: "issue.continuation_recovery", requestedByActorType: "user", requestedByActorId: f.user.id,
+      manualUserWake: true, allowRunCoalescing: false, payload: { issueId: f.issue.id },
+      contextSnapshot: { issueId: f.issue.id } })).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps closed tasks ineligible for a compaction request", async () => {
+    const f = await waitingCompactionFixture();
+    const [closed] = await db.insert(issues).values({ companyId: f.company.id, title: "Closed task",
+      status: "done", assigneeAgentId: f.agent.id }).returning();
+    if (!closed) throw new Error("Missing closed task");
+    await expect(f.service.request({ companyId: f.company.id, issue: closed, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "task_closed" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+  });
+
+  it("keeps a busy conversation ineligible for a second compaction run", async () => {
+    const f = await waitingCompactionFixture();
+    const [running] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.issue.id, scopeKind: "issue", status: "running" }).returning();
+    if (!running) throw new Error("Missing active conversation run");
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "agent_busy" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).map(run => run.id))
+      .toEqual([running.id]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["comment", "interaction", "ordinary task"] as const)("preserves admission for a current %s", async cause => {
+    const f = await waitingConversationFixture();
+    const context: Record<string, unknown> = { issueId: f.issue.id, source: "issue.continuation_recovery" };
+    const payload: Record<string, unknown> = { issueId: f.issue.id };
+    if (cause === "comment") {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+        authorUserId: f.user.id, body: "A new question" }).returning();
+      context.wakeCommentId = comment.id;
+      payload.commentId = comment.id;
+    } else if (cause === "interaction") {
+      const [interaction] = await db.insert(issueThreadInteractions).values({ companyId: f.company.id,
+        issueId: f.issue.id, createdByAgentId: f.agent.id, kind: "ask_user_questions", status: "answered",
+        resolvedByUserId: f.user.id, resolvedAt: new Date(),
+        payload: { version: 1, questions: [{ id: "q", prompt: "Continue?", selectionMode: "single",
+          options: [{ id: "a", label: "Continue" }] }] },
+        result: { version: 1, answers: [{ questionId: "q", optionIds: ["a"] }] } }).returning();
+      Object.assign(context, { source: "issue.interaction.respond", interactionId: interaction.id,
+        interactionKind: interaction.kind, interactionStatus: interaction.status });
+      Object.assign(payload, { mutation: "interaction", interactionId: interaction.id });
+    } else {
+      await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
+        conversationState: null, status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    }
+    const admitted = await f.queue.enqueueWakeup(f.agent.id, { source: "automation", triggerDetail: "system",
+      reason: cause === "ordinary task" ? "issue.continuation_recovery" : "issue_commented",
+      requestedByActorType: "system", payload, contextSnapshot: context });
+    expect(admitted).toMatchObject({ agentId: f.agent.id, status: "queued" });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id)))
+      .toHaveLength(1);
+  });
+
+  it("delivers a real task completion to its waiting conversation", async () => {
+    const f = await waitingConversationFixture();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId: f.issue.id, conversationSessionGeneration: 0 } }).returning();
+    const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Handed-off task",
+      status: "in_progress", createdByAgentId: f.agent.id }).returning();
+    await recordChatHandoff(db, task, source.id);
+    const recorded = await db.transaction(async tx => {
+      const [done] = await tx.update(issues).set({ status: "done" }).where(eq(issues.id, task.id)).returning();
+      return recordChatCompletion(tx, task, done);
+    });
+    expect(recorded).toBe(true);
+    await chatCompletionDeliveryService(db, { wakeup: (agentId, options) => f.queue.enqueueWakeup(agentId, options) }).sweepPending();
+    const [delivery] = await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.companyId, f.company.id));
+    expect(delivery).toMatchObject({ status: "queued" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivery.targetRunId!));
+    expect(run).toMatchObject({ agentId: f.agent.id, status: "queued" });
+    expect(run.contextSnapshot).toMatchObject({ issueId: f.issue.id, wakeReason: "chat_task_completed" });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
   async function fixture(status = "running") {
     const [company] = await db.insert(companies).values({ name: "Queue module", issuePrefix: "QM" }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Queue agent", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
@@ -120,6 +454,212 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  async function pendingPredecessorFixture() {
+    const f = await fixture("queued");
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.issue.id, status: "failed", runtimeMode: "legacy", finishedAt: new Date(),
+      executionStage: "preparing", errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: { issueId: f.issue.id } }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.company.id, issueId: f.issue.id,
+      heartbeatRunId: source.id, provider: "daytona", providerLeaseId: crypto.randomUUID(), status: "active" }).returning();
+    const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: source.id, responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, source: "issue.continuation_recovery", retryOfRunId: source.id,
+        wakeReason: "issue_continuation_needed" } }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    return { ...f, source, lease, successor, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
+    const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
+    expect(await queue.claimQueuedRun(successor)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id)))[0].status).toBe("queued");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(successor.id);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+      .where(eq(environmentLeases.id, lease.id));
+    expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
+    expect(await queue.claimQueuedRun(successor)).toBeNull();
+  });
+
+  it("keeps a retry queued after failed cleanup and until its local executor releases", async () => {
+    const f = await pendingPredecessorFixture();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "failed" })
+      .where(eq(environmentLeases.id, f.lease.id));
+    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
+    await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, f.lease.id));
+    f.deps.liveRunExecutions.has.mockImplementation(id => id === f.source.id);
+    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
+    f.deps.liveRunExecutions.has.mockReturnValue(false);
+    expect(await f.queue.claimQueuedRun(f.successor)).toMatchObject({ id: f.successor.id, status: "running" });
+  });
+
+  it.each(["missing", "foreign company", "other task", "other agent", "native task overrides context"] as const)(
+    "does not hold a queued run for a %s retry source", async mismatch => {
+      const f = await pendingPredecessorFixture();
+      let sourceId = f.source.id;
+      if (mismatch === "missing") {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, sourceId));
+        expect(await f.queue.claimQueuedRun(f.successor)).toMatchObject({ id: f.successor.id, status: "running" });
+        return;
+      } else if (mismatch === "foreign company") {
+        const [company] = await db.insert(companies).values({ name: "Unrelated company", issuePrefix: "OTHER" }).returning();
+        const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Other company worker", adapterType: "process" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+          status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      } else if (mismatch === "other agent") {
+        const [other] = await db.insert(agents).values({ companyId: f.company.id, name: "Another worker", adapterType: "process" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: other.id, issueId: f.issue.id,
+          status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      } else {
+        const [other] = await db.insert(issues).values({ companyId: f.company.id, title: "Another task" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, issueId: other.id,
+          ...(mismatch === "native task overrides context" ? { nativeIssueId: other.id } : {}),
+          contextSnapshot: { issueId: f.issue.id }, status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      }
+      const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: sourceId })
+        .where(eq(heartbeatRuns.id, f.successor.id)).returning();
+      expect(await f.queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
+    },
+  );
+
+  it("retains the current execution owner's hold when retry provenance is unrelated", async () => {
+    const f = await pendingPredecessorFixture();
+    const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "succeeded", finishedAt: new Date() }).returning();
+    const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: unrelated.id })
+      .where(eq(heartbeatRuns.id, f.successor.id)).returning();
+    await db.update(issues).set({ executionRunId: f.source.id }).where(eq(issues.id, f.issue.id));
+    expect(await f.queue.claimQueuedRun(successor)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
+  });
+
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+    const f = await fixture("queued");
+    let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
+    await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
+    if (scenario === "same-named-agent") [admissionAgent] = await db.insert(agents).values({ companyId: f.company.id,
+      name: f.agent.name.toUpperCase(), role: "engineer", status: "idle", adapterType, adapterConfig: admissionAgent.adapterConfig,
+    }).returning();
+    const userId = `source-user-${f.company.id}`;
+    await db.insert(authUsers).values({ id: userId, name: "Source owner", email: `${f.company.id}@queue.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
+    await db.update(companies).set({ defaultResponsibleUserId: userId }).where(eq(companies.id, f.company.id));
+    const incomingActorId = scenario === "mixed-author" ? `second-user-${f.company.id}` : userId;
+    if (scenario === "mixed-author") {
+      await db.insert(authUsers).values({ id: incomingActorId, name: "Incoming source owner", email: `${incomingActorId}@queue.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: incomingActorId, status: "active", membershipRole: "operator" });
+    }
+    const [oldComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: userId, body: "Review source A" }).returning();
+    const [newComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: incomingActorId, body: "Review source B" }).returning();
+    await db.update(agentWakeupRequests).set({ status: scenario === "claimed-primary" ? "claimed" : "queued", runId: f.run.id, claimedAt: null,
+      requestedByActorType: scenario === "system-primary" ? "system" : "user", requestedByActorId: scenario === "system-primary" ? null : userId,
+      payload: scenario === "legacy-envelope" ? { issueId: f.issue.id, commentId: oldComment.id }
+        : withQueuedCommentIdsInWakePayload({ issueId: f.issue.id, retainedSource: "original-source" }, [oldComment.id]),
+    }).where(eq(agentWakeupRequests.id, f.wake.id));
+    const [scanned] = await db.update(heartbeatRuns).set({ responsibleUserId: userId,
+      contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented" }, [oldComment.id]),
+    }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    let foreignPrimary: typeof agentWakeupRequests.$inferSelect | undefined;
+    if (scenario === "foreign-primary") {
+      const [company] = await db.insert(companies).values({ name: "Foreign source", issuePrefix: "FOREIGN" }).returning();
+      const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Foreign source agent", adapterType: "process" }).returning();
+      [foreignPrimary] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id, source: "assignment", status: "queued", payload: { source: "foreign" } }).returning();
+      await db.update(heartbeatRuns).set({ wakeupRequestId: foreignPrimary.id }).where(eq(heartbeatRuns.id, f.run.id));
+    }
+    if (scenario === "delete-old") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, oldComment.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(admissionAgent);
+    deps.canStartNewExternalBotWork.mockResolvedValue(false);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false, enableNativeRunner: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    const admission = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: { filterZombieCoalesceTarget: deps.filterZombieCoalesceTarget,
+        mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
+    deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    const queue = createHeartbeatQueue(db, deps);
+    if (scenario === "running") {
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toMatchObject({ status: "running" });
+      deps.canStartNewExternalBotWork.mockResolvedValue(false);
+    }
+    const [originalPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
+    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
+      requestedByActorType: "user", requestedByActorId: incomingActorId });
+    if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {
+      expect(coalesced).toBeNull();
+      const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      expect(preserved.contextSnapshot).toMatchObject({ wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id] });
+      const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+      expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(receipts.find(row => row.id === f.wake.id)).toEqual(originalPrimary);
+      if (scenario === "same-named-agent") {
+        expect(preserved).toEqual(scanned);
+        expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ agentId: admissionAgent.id,
+          requestedByActorType: "user", requestedByActorId: incomingActorId, payload: { issueId: f.issue.id, commentId: newComment.id } });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toEqual([scanned]);
+      }
+      if (foreignPrimary) expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, foreignPrimary.id)))[0]).toEqual(foreignPrimary);
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    expect(coalesced).toMatchObject({ id: f.run.id, status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+    const accepted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+    expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date),
+      requestedByActorType: "user", requestedByActorId: incomingActorId });
+    const [updatedPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
+    expect(updatedPrimary).toMatchObject({ id: originalPrimary.id, companyId: originalPrimary.companyId,
+      agentId: originalPrimary.agentId, source: originalPrimary.source, requestedByActorType: originalPrimary.requestedByActorType,
+      requestedByActorId: originalPrimary.requestedByActorId, idempotencyKey: originalPrimary.idempotencyKey, requestedAt: originalPrimary.requestedAt });
+    if (scenario === "legacy-envelope" || scenario === "claimed-primary") expect(updatedPrimary.payload).toEqual(originalPrimary.payload);
+    else expect(updatedPrimary.payload).toMatchObject({ retainedSource: "original-source", commentId: oldComment.id,
+      _paperclipWakeContext: { commentId: oldComment.id, wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id, newComment.id] } });
+    if (scenario === "claimed-primary") {
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+        .toMatchObject({ status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0]).toEqual(originalPrimary);
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "stopped") {
+      await createHeartbeatRunControl(db, runControlCallbacks(db)).cancelRunInternal(f.run.id, "operator Stop");
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(scanned)).toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+        .toMatchObject({ status: "cancelled", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0].status).toBe("cancelled");
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "delete-new") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, newComment.id));
+    deps.canStartNewExternalBotWork.mockResolvedValue(true);
+    const claimed = await queue.claimQueuedRun(scanned);
+    expect(claimed).toMatchObject({ id: f.run.id, status: "running",
+      contextSnapshot: { wakeCommentId: scenario === "delete-new" ? oldComment.id : newComment.id,
+        wakeCommentIds: scenario === "delete-old" ? [newComment.id] : scenario === "delete-new" ? [oldComment.id] : [oldComment.id, newComment.id] } });
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
+    expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
 
   async function strandedMention(runtimeMode = "legacy") {
     const seeded = await fixture("succeeded");
@@ -435,6 +975,27 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.getAgent.mockResolvedValue(agent);
     expect(await createHeartbeatQueue(db, deps).claimQueuedRun(admitted)).toMatchObject({ id: run.id, status: "running" });
     expect(deps.canStartNewExternalBotWork).not.toHaveBeenCalled();
+  });
+
+  it("keeps a claim queued while another task of its routine holds the execution slot", async () => {
+    const { company, agent, issue, run } = await fixture("queued");
+    const origin = { originKind: "routine_execution", originId: crypto.randomUUID(), originFingerprint: "scheduled" };
+    await db.update(issues).set({ ...origin, executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, issue.id));
+    // An earlier task of the same routine keeps its lock while its failed run waits for a scheduled resume.
+    const [holder] = await db.insert(issues).values({ companyId: company.id, title: "Earlier routine task",
+      status: "in_progress", assigneeAgentId: agent.id, ...origin }).returning();
+    const [holderRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "failed", finishedAt: new Date(), contextSnapshot: { issueId: holder.id } }).returning();
+    await db.update(issues).set({ executionRunId: holderRun.id }).where(eq(issues.id, holder.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    await expect(createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "queued" });
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toMatchObject({ executionRunId: null });
+    expect((await db.select().from(issues).where(eq(issues.id, holder.id)))[0]).toMatchObject({ executionRunId: holderRun.id });
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it("cancels at the daily run cap before claiming or dispatching", async () => {

@@ -1940,6 +1940,28 @@ describe("agent live run routes", () => {
     );
   });
 
+  it("returns a retryable busy response for workspace-diff repair and permits a later retry", async () => {
+    const app = await createApp();
+    const { ObjectJournalBusyError } = await import("../services/object-byte-journal.js");
+    mockProviderTraceStore.getByRun.mockResolvedValue({
+      id: "trace-1", status: "complete", deletedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    mockProviderTraceStore.readExactEntries.mockRejectedValueOnce(new ObjectJournalBusyError());
+    const route = "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/provider-trace/reproject-workspace-diffs";
+    const busy = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(busy.status).toBe(503);
+    expect(busy.headers["retry-after"]).toBe("2");
+    expect(busy.body.code).toBe("object_journal_io_busy");
+    expect(mockWorkspaceDiffReprojection.project).not.toHaveBeenCalled();
+    expect(mockWorkspaceDiffReprojection.persist).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const retried = await requestApp(app, baseUrl => request(baseUrl).post(route));
+    expect(retried.status).toBe(200);
+    expect(mockWorkspaceDiffReprojection.persist).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["unavailable", null, "trace_unavailable"],
     [

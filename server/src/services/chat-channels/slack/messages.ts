@@ -91,8 +91,12 @@ export function slackThreadChannelId(threadId: string): string | null {
   return channelId || null;
 }
 
+export function slackThreadRootMessageId(threadId: string): string | null {
+  return /^slack:[^:]+:([^:]+)$/.exec(threadId)?.[1] ?? null;
+}
+
 export function slackOrphanFollowUp(threadId: string, messageId: string): boolean {
-  const rootMessageId = /^slack:[^:]+:(.+)$/.exec(threadId)?.[1];
+  const rootMessageId = slackThreadRootMessageId(threadId);
   return Boolean(rootMessageId) && rootMessageId !== messageId;
 }
 

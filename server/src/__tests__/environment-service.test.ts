@@ -26,6 +26,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
+import { attachPaperclipSessionMetadataToSessionParams, buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
@@ -51,7 +52,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       stopDb = () => closeRegisteredClients(externalTestDatabaseUrl);
     } else {
       const started = await startEmbeddedPostgresTestDatabase("environment-service");
-      stopDb = started.stop;
+      stopDb = started.cleanup;
       db = createDb(started.connectionString);
     }
     svc = environmentService(db);
@@ -143,7 +144,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
   }
 
   it("clears user metadata to null when no private platform proof exists", async () => {
-    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", config: { provider: "daytona" }, metadata: { userNote: "remove" } });
+    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", status: "active", envVars: {}, config: { provider: "daytona" }, metadata: { userNote: "remove" } });
     expect((await svc.update(created.id, { metadata: null }))?.metadata).toBeNull();
   });
 
@@ -153,7 +154,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
       const staleProof = { v: 1, marker: "old" };
       const freshProof = { v: 1, marker: "new" };
-      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", config,
+      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", status: "active", envVars: {}, config,
         metadata: { userNote: "old", _paperclipManagedArchiveToken: "old-archive-token",
           [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } });
       const patches: Record<typeof operation, UpdateEnvironment> = {
@@ -1240,6 +1241,92 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
   });
 
+  it("renames the managed sandbox in place without changing defaults, agent bindings, or leases", async () => {
+    const companyId = await seedCompany();
+    const input = {
+      companyId,
+      name: "Paperclip Computer",
+      description: "Managed execution environment.",
+      provider: "daytona",
+      config: { snapshot: "managed-snapshot", cpu: 4, memory: 4 },
+      platformFullyManaged: true,
+    };
+    const created = (await svc.ensureManagedSandboxEnvironment(input)).environment;
+    const envVars = { PROJECT_MODE: "retained" };
+    await db.update(environments).set({ envVars }).where(eq(environments.id, created.id));
+    const [agent] = await db.insert(agents).values({
+      companyId,
+      name: "Sandbox agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      defaultEnvironmentId: created.id,
+    }).returning();
+    await db.insert(instanceSettings).values({ defaultEnvironmentId: created.id }).onConflictDoUpdate({
+      target: instanceSettings.singletonKey,
+      set: { defaultEnvironmentId: created.id },
+    });
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId,
+      environmentId: created.id,
+      provider: "daytona",
+      providerLeaseId: "retained-sandbox-lease",
+    }).returning();
+
+    const renamed = await svc.ensureManagedSandboxEnvironment({ ...input, name: "Paperclip Sandbox" });
+    expect(renamed.action).toBe("updated");
+    expect(renamed.environment).toMatchObject({
+      id: created.id,
+      name: "Paperclip Sandbox",
+      description: input.description,
+      config: created.config,
+      envVars,
+    });
+    const [savedAgent] = await db.select().from(agents).where(eq(agents.id, agent!.id));
+    const [settings] = await db.select().from(instanceSettings);
+    const [savedLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+    expect(savedAgent?.defaultEnvironmentId).toBe(created.id);
+    expect(settings?.defaultEnvironmentId).toBe(created.id);
+    expect(savedLease).toEqual(lease);
+    expect(await db.select().from(environments)).toHaveLength(1);
+    expect((await svc.ensureManagedSandboxEnvironment({ ...input, name: "Paperclip Sandbox" })).action).toBe("unchanged");
+  });
+
+  it("preserves task sessions across cosmetic managed sandbox reconciliation", async () => {
+    const companyId = await seedCompany();
+    const input = { companyId, name: "Managed computer", description: "Original description", provider: "daytona",
+      config: { snapshot: "snapshot-a" }, platformFullyManaged: true };
+    const created = (await svc.ensureManagedSandboxEnvironment(input)).environment;
+    const revision = new Date("2026-01-01T00:00:00.000Z");
+    await db.update(environments).set({ updatedAt: revision }).where(eq(environments.id, created.id));
+    const metadata = (environment: typeof created) => buildEffectiveRunSessionConfigMetadata({
+      adapterType: "paperclip_runner", effectiveAdapterConfig: { model: "model-a" },
+      agentRuntimeConfig: {}, issueOverrides: null, workspaceConfig: null,
+      environment: { selectedEnvironmentId: environment.id, selectedEnvironment: {
+        id: environment.id, driver: environment.driver, config: environment.config,
+        configRevisionAt: new Date(environment.updatedAt).toISOString(),
+      } },
+      environmentEnv: environment.envVars, projectEnv: null, routineEnv: null, runtimeSkills: [],
+    });
+    const before = await metadata({ ...created, updatedAt: revision });
+    const taskSessionParams = attachPaperclipSessionMetadataToSessionParams({ sessionId: "saved-session" }, "model-a", before);
+    const reconciled = await svc.ensureManagedSandboxEnvironment({ ...input, name: "Managed sandbox",
+      description: "New description", extraMetadata: { platformLabel: "new label" } });
+    expect(reconciled.action).toBe("updated");
+    const freshness = resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "model-a",
+      taskSessionParams, configMetadata: await metadata(reconciled.environment) });
+    expect(freshness).toMatchObject({ reset: false, changedCategories: [] });
+    expect(reconciled.environment.updatedAt).toEqual(revision);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+      eq(activityLog.action, "environment.managed_stock_updated")))).toHaveLength(1);
+    const changed = await svc.ensureManagedSandboxEnvironment({ ...input, name: "Managed sandbox",
+      description: "New description", extraMetadata: { platformLabel: "new label" }, config: { snapshot: "snapshot-b" } });
+    expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "model-a",
+      taskSessionParams, configMetadata: await metadata(changed.environment) })).toMatchObject({
+      reset: true, changedCategories: ["environment"],
+    });
+    expect(new Date(changed.environment.updatedAt).getTime()).toBeGreaterThan(revision.getTime());
+  });
+
   it("ensures and refreshes a managed sandbox environment for an arbitrary provider", async () => {
     const companyId = await seedCompany();
     const createdResult = await svc.ensureManagedSandboxEnvironment({
@@ -1740,6 +1827,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: { provider: "daytona", target: "us" },
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
@@ -1777,6 +1865,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: { provider: "daytona", target: "us" },
     });
     expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
@@ -1810,6 +1899,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       driver: "ssh",
       status: "active",
+      envVars: {},
       config: {
         host: "fixture.example.test",
         port: 22,
@@ -1839,6 +1929,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Shared Fixture",
       driver: "ssh",
       status: "active",
+      envVars: {},
       config: {
         host: "fixture.example.test",
         port: 22,
@@ -1851,6 +1942,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Shared Fixture",
       driver: "sandbox",
       status: "active",
+      envVars: {},
       config: {
         provider: "fake-plugin",
         image: "fake:test",
@@ -1969,6 +2061,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     await svc.create(companyId, {
       name: "Fake Sandbox",
       driver: "sandbox",
+      status: "active",
+      envVars: {},
       config: { provider: "fake", image: "busybox", reuseLease: false },
     });
 
@@ -1991,6 +2085,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
     await svc.create(companyId, {
       name: "Tenant K8s Sandbox",
       driver: "sandbox",
+      status: "active",
+      envVars: {},
       config: { provider: "kubernetes", reuseLease: false },
     });
 
@@ -2020,11 +2116,15 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const first = await svc.create(companyId, {
       name: "Production SSH",
       driver: "ssh",
+      status: "active",
+      envVars: {},
       config: { host: "prod.example.com", username: "deploy" },
     });
     const second = await svc.create(companyId, {
       name: "Staging SSH",
       driver: "ssh",
+      status: "active",
+      envVars: {},
       config: { host: "staging.example.com", username: "deploy" },
     });
 

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, afterEach, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentFileRoots, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
+import { agentFileRoots, agentInstructionWorkingCopies, agents, companies, companySkills, companySkillVersions, executionWorkspaces, heartbeatRuns, providerTraceRecords, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { assertEphemeralServerData, readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
 import { initializeDurableAgentFiles } from "../services/agent-file-durability.js";
@@ -18,7 +19,7 @@ it("refuses volume-dependent rows before readiness and accepts their durable rep
   await db.insert(companies).values({ id: companyId, name: "Deployment gate", issuePrefix: "GATE" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Legacy files" });
   await expect(assertEphemeralServerData(db)).rejects.toThrow("agent_files_require_migration");
-  await db.transaction(tx => initializeDurableAgentFiles(tx, { id: agentId, companyId }));
+  await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
   await db.update(agents).set({ adapterConfig: { instructionsBundleMode: "external", instructionsRootPath: "/lost-disk" } }).where(eq(agents.id, agentId));
   await expect(assertEphemeralServerData(db)).rejects.toThrow("external_agent_instructions");
@@ -35,7 +36,7 @@ it("refuses volume-dependent rows before readiness and accepts their durable rep
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
   await expect(db.transaction(async tx => {
     const [created] = await tx.insert(agents).values({ companyId, name: "Rolled back hire" }).returning();
-    await initializeDurableAgentFiles(tx, created!);
+    await initializeDurableAgentFiles(tx as unknown as Db, created!);
     throw new Error("abort hire");
   })).rejects.toThrow("abort hire");
   expect(await db.select().from(agentFileRoots)).toHaveLength(1);
@@ -46,11 +47,11 @@ it("keeps replacement readiness independent of a serving controller's unfinished
   const companyId = randomUUID(), agentId = randomUUID(), skillId = randomUUID(), versionId = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Overlapping skill preparation", issuePrefix: "PINS" });
   await db.insert(agents).values({ id: agentId, companyId, name: "Preparing agent" });
-  await db.transaction(tx => initializeDurableAgentFiles(tx, { id: agentId, companyId }));
+  await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
   await db.insert(companySkills).values({ id: skillId, companyId, key: "overlap", slug: "overlap", name: "Overlap",
     sourceType: "managed", markdown: "# Overlap", fileInventory: [{ path: "SKILL.md", kind: "entrypoint" }] });
   await db.insert(companySkillVersions).values({ id: versionId, companyId, companySkillId: skillId, revisionNumber: 1,
-    fileInventory: [{ path: "SKILL.md", kind: "entrypoint", content: "# Overlap" }] });
+    fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Overlap" }] });
   await db.update(companySkills).set({ currentVersionId: versionId }).where(eq(companySkills.id, skillId));
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
   // Admission marks the run running before preparation publishes its skill pins.
@@ -64,4 +65,23 @@ it("keeps replacement readiness independent of a serving controller's unfinished
   expect((await readEphemeralServerDataEligibility(db)).eligible).toBe(true);
   await db.update(companySkills).set({ currentVersionId: null }).where(eq(companySkills.id, skillId));
   await expect(assertEphemeralServerData(db)).rejects.toThrow("skills_require_migration");
+});
+
+it("keeps an unsettled local instruction copy visible after its canonical files become durable", async () => {
+  vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
+  const companyId = randomUUID(), agentId = randomUUID();
+  await db.insert(companies).values({ id: companyId, name: "Private copy preservation", issuePrefix: "COPY" });
+  await db.insert(agents).values({ id: agentId, companyId, name: "File owner" });
+  await db.transaction(tx => initializeDurableAgentFiles(tx as unknown as Db, { id: agentId, companyId }));
+  const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", finishedAt: new Date() }).returning();
+  const [copy] = await db.insert(agentInstructionWorkingCopies).values({ runId: run.id, companyId, agentId,
+    responsibleUserId: "preservation-fixture", entryFile: "AGENTS.md", baseHash: "a".repeat(64),
+    localRoot: "/private/unsaved-copy", executionRoot: "/private/unsaved-copy", location: "local", state: "pending_collection" }).returning();
+  expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
+    .toContain("local_instruction_copies_require_settlement");
+  expect((await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, run.id)))[0]).toEqual(copy);
+  await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(),
+    receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } }).where(eq(agentInstructionWorkingCopies.runId, run.id));
+  expect((await readEphemeralServerDataEligibility(db, { purpose: "startup" })).blockers)
+    .not.toContain("local_instruction_copies_require_settlement");
 });

@@ -9,6 +9,7 @@ import {
   providerTraceRecords,
   type Db,
 } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createObjectByteJournal } from "./object-byte-journal.js";
 import {
@@ -22,14 +23,18 @@ import {
   createNativeRunLogCoverageVerifier,
   nativeRunLogSourceWhere,
 } from "./native-runtime/native-run-log-export.js";
+import { inspectNativeLogArchiveSource, withNativeLogArchiveSource } from "./native-runtime/native-log-archive-source.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 
-const SETTLED = ["succeeded", "failed", "cancelled", "timed_out"];
+const SETTLED = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
 export interface RunEvidenceMigrationItem {
   kind: "log" | "trace";
   id: string;
   state: "inventoried" | "migrated" | "blocked";
   bytes?: number;
   sha256?: string;
+  historicalArchive?: boolean;
   reason?: string;
 }
 
@@ -43,6 +48,10 @@ export async function migrateRunEvidence(
     limit?: number;
     kinds?: readonly ("log" | "trace")[];
     signal?: AbortSignal;
+    /** Offline enrollment only: preserve unfinalized local bytes without
+     * claiming canonical native-event coverage or repairing the old run. */
+    preserveHistoricalFiles?: boolean;
+    preserveSettledNativeFiles?: boolean;
   },
 ): Promise<{
   items: RunEvidenceMigrationItem[];
@@ -55,6 +64,22 @@ export async function migrateRunEvidence(
     throw new Error("Migration limit must be between 1 and 100");
   const config = resolveRunEvidenceStorage();
   if (!config) throw new Error("Run evidence migration requires instance S3 storage");
+  const preserveHistoricalFiles = options.preserveHistoricalFiles === true;
+  const preserveSettledNativeFiles = options.preserveSettledNativeFiles === true;
+  if (preserveHistoricalFiles && preserveSettledNativeFiles)
+    throw new Error("historical_log_archive_authority_conflict");
+  async function assertNoActiveRuns() {
+    options.signal?.throwIfAborted();
+    const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(offlineMigrationExecutionWhere()).limit(1);
+    if (active) throw new Error("active_execution_requires_drain");
+  }
+  if (preserveHistoricalFiles) {
+    if (process.env.PAPERCLIP_EPHEMERAL_MIGRATION !== "true") {
+      throw new Error("historical_log_archive_requires_offline_migration");
+    }
+    await assertNoActiveRuns();
+  }
   function drainedWriter(now = new Date()) {
     return and(
       inArray(heartbeatRuns.status, SETTLED),
@@ -115,17 +140,31 @@ export async function migrateRunEvidence(
     try {
       if (!SETTLED.includes(run.status)) throw new Error("legacy_writer_not_settled");
       if (!run.logRef) throw new Error("legacy_reference_missing");
+      const originalLogRef = run.logRef;
       await assertDrained(run.id, run.companyId);
-      const ref = `${run.companyId}/${run.agentId}/${run.id}`;
+      const historicalArchive = (preserveHistoricalFiles || preserveSettledNativeFiles) && run.runtimeMode === "native" &&
+        (run.bytes === null || run.sha256 === null);
+      const scopedArchive = historicalArchive && preserveSettledNativeFiles;
+      const sourceFence = scopedArchive ? options.apply
+        ? await withNativeLogArchiveSource(db, run, undefined, async (_tx, fence) => fence)
+        : await inspectNativeLogArchiveSource(db, run) : undefined;
+      // Keep raw history separate from the canonical log namespace. A later
+      // writer must never acquire this archive as a native source prefix.
+      const ref = `${run.companyId}/${run.agentId}/${run.id}${historicalArchive ? ".archive" : ""}`;
       const journal = createObjectByteJournal({
         provider: config.provider,
         prefix: `${config.keyPrefix || "run-logs"}/segments-v1/${ref}`,
       });
-      let writer = options.apply
+      const archiveSource = scopedArchive
+        ? await openLegacyRunLogForMigration(run.logRef, { requireCanonicalLocalFile: true }) : undefined;
+      let writer: Awaited<ReturnType<typeof journal.claim>> | null = null;
+      try { writer = options.apply
         ? await journal.claim({
             expectedOwner: (await journal.head(options.signal))?.head.owner ?? null,
             signal: options.signal,
             assertAuthority: async () => {
+              if (scopedArchive)
+                await withNativeLogArchiveSource(db, run, sourceFence, async () => undefined);
               const [current] = await db
                 .select({ id: heartbeatRuns.id })
                 .from(heartbeatRuns)
@@ -142,14 +181,15 @@ export async function migrateRunEvidence(
             },
           })
         : null;
-      const source = await openLegacyRunLogForMigration(run.logRef);
+      } catch (error) { archiveSource?.stream.destroy(); throw error; }
+      const source = archiveSource ?? await openLegacyRunLogForMigration(run.logRef);
       if (source.source === "mirror" && (run.bytes === null || !run.sha256)) {
         source.stream.destroy();
         throw new Error("mirror_completeness_unproven");
       }
       const hash = createHash("sha256");
       const nativeCoverage =
-        run.runtimeMode === "native" && (run.bytes === null || run.sha256 === null)
+        !historicalArchive && run.runtimeMode === "native" && (run.bytes === null || run.sha256 === null)
           ? createNativeRunLogCoverageVerifier(db, run.companyId, run.id)
           : undefined;
       let offset = 0,
@@ -180,6 +220,7 @@ export async function migrateRunEvidence(
         source.stream.destroy();
       }
       const digest = hash.digest("hex");
+      if (source.source === "local") await source.assertUnchanged();
       if (
         (source.bytes !== undefined && source.bytes !== offset) ||
         (run.bytes !== null && run.bytes !== offset) ||
@@ -194,8 +235,9 @@ export async function migrateRunEvidence(
       }
       item.bytes = offset;
       item.sha256 = digest;
+      if (historicalArchive) item.historicalArchive = true;
       let sourceCursor = (await nativeCoverage?.finish()) ?? 0;
-      if (run.runtimeMode === "native" && !nativeCoverage) {
+      if (run.runtimeMode === "native" && !nativeCoverage && !historicalArchive) {
         const [source] = await db
           .select({ seq: heartbeatRunEvents.seq })
           .from(heartbeatRunEvents)
@@ -209,24 +251,26 @@ export async function migrateRunEvidence(
         if (writer.head.end !== offset) throw new Error("migration_prefix_exceeds_source");
 
         const remoteHash = createHash("sha256");
-        for (let start = 0; start < offset; start += 1024 * 1024)
+        const verificationBytes = scopedArchive ? 4 * 1024 * 1024 : 1024 * 1024;
+        for (let start = 0; start < offset; start += verificationBytes)
           remoteHash.update(
-            await journal.readRange(writer.head, start, 1024 * 1024, options.signal),
+            await journal.readRange(writer.head, start, verificationBytes, options.signal),
           );
         if (remoteHash.digest("hex") !== digest)
           throw new Error("migration_remote_digest_mismatch");
         writer.head = { ...writer.head, sequence, sourceCursor };
         await journal.close(writer, options.signal);
         options.signal?.throwIfAborted();
-        const [updated] = await db
+        if (source.source === "local") await source.assertUnchanged();
+        const publish = (database: Db) => database
           .update(heartbeatRuns)
-          .set({ logStore: "s3_segments", logRef: ref })
+          .set({ logStore: historicalArchive ? "s3_archive" : "s3_segments", logRef: ref })
           .where(
             and(
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.companyId, run.companyId),
               eq(heartbeatRuns.logStore, "local_file"),
-              eq(heartbeatRuns.logRef, run.logRef),
+              eq(heartbeatRuns.logRef, originalLogRef),
               run.bytes === null
                 ? isNull(heartbeatRuns.logBytes)
                 : eq(heartbeatRuns.logBytes, run.bytes),
@@ -234,7 +278,7 @@ export async function migrateRunEvidence(
                 ? isNull(heartbeatRuns.logSha256)
                 : eq(heartbeatRuns.logSha256, run.sha256),
               drainedWriter(),
-              run.runtimeMode === "native"
+              run.runtimeMode === "native" && !historicalArchive
                 ? sql`not exists (select 1 from ${heartbeatRunEvents} where ${and(
                     nativeRunLogSourceWhere(run.companyId, run.id),
                     gt(heartbeatRunEvents.seq, sourceCursor),
@@ -243,8 +287,25 @@ export async function migrateRunEvidence(
             ),
           )
           .returning({ id: heartbeatRuns.id });
+        const publications: ActivityPublication[] = [];
+        const [updated] = scopedArchive
+          ? await withNativeLogArchiveSource(db, run, sourceFence, async tx => {
+              if (source.source !== "local") throw new Error("native_log_archive_local_source_required");
+              await source.assertUnchanged();
+              const result = await publish(tx);
+              if (!result.length) throw new Error("migration_publication_conflict");
+              await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "run-evidence-migration",
+                action: "run.historical_log_archived", entityType: "heartbeat_run", entityId: run.id,
+                agentId: run.agentId, runId: run.id, details: { bytes: offset, sha256: digest, sourceFence } }, publications);
+              return result;
+            })
+          : await publish(db);
         if (!updated) throw new Error("migration_publication_conflict");
         item.state = "migrated";
+        for (const publication of publications) {
+          try { publishActivity(publication); }
+          catch { logger.warn({ runId: run.id }, "Historical log archive notification failed after publication"); }
+        }
       }
     } catch (error) {
       options.signal?.throwIfAborted();
@@ -430,6 +491,10 @@ export async function migrateRunEvidence(
       item.reason = error instanceof Error ? error.message : "trace_migration_failed";
     }
   }
+  // Cloud has stopped every old process. Check that global prerequisite at
+  // page boundaries, not with an instance-wide scan at every per-run CAS.
+  // If it changes, fail enrollment; already verified copies remain resumable.
+  if (preserveHistoricalFiles) await assertNoActiveRuns();
   return {
     items,
     nextRunId: logs.length === limit ? logs.at(-1)!.id : undefined,

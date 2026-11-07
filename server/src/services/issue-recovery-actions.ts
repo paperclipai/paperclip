@@ -66,6 +66,9 @@ export type UpsertIssueRecoveryActionInput = {
   // one. The new failure then gets a distinct recovery identity and a fresh
   // operator notice, and the prior identity stays as a resolved record.
   supersedeOnIdentityChange?: boolean;
+  // When true, an existing active action is returned unchanged. A concurrent
+  // writer that wins the insert keeps its owner, cause, and evidence.
+  createOnly?: boolean;
   // Rollout compatibility for active pre-policy actions. Refresh their
   // evidence/attempt metadata without silently changing the recorded owner or
   // the wake/monitor contract that made that owner authoritative.
@@ -116,19 +119,27 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
 }
 
 function isUniqueRecoveryActionConflict(error: unknown) {
-  const maybe = error as { code?: string; constraint?: string; message?: string } | null;
-  return Boolean(
-    maybe &&
-      maybe.code === "23505" &&
-      (
+  const seen = new Set<unknown>();
+  let candidate = error;
+  // Drizzle wraps the driver error in cause. Only this specific uniqueness
+  // conflict can reuse the existing bounded source-scoped upsert retry.
+  for (let depth = 0; depth < 8 && candidate && typeof candidate === "object"; depth++) {
+    if (seen.has(candidate)) break;
+    seen.add(candidate);
+    const maybe = candidate as { code?: string; constraint?: string; constraint_name?: string; message?: string; cause?: unknown };
+    if (maybe.code === "23505" && (
         maybe.constraint === "issue_recovery_actions_active_source_uq" ||
         maybe.constraint === "issue_recovery_actions_active_fingerprint_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_source_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_fingerprint_uq" ||
         typeof maybe.message === "string" && (
           maybe.message.includes("issue_recovery_actions_active_source_uq") ||
           maybe.message.includes("issue_recovery_actions_active_fingerprint_uq")
         )
-      ),
-  );
+      )) return true;
+    candidate = maybe.cause;
+  }
+  return false;
 }
 
 export function issueRecoveryActionService(db: DbOrTransaction) {
@@ -369,6 +380,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
   ): Promise<IssueRecoveryAction> {
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
     const now = new Date();
+    if (existing && input.createOnly) return existing;
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
       // A distinct failure identity must not overwrite the active action of a

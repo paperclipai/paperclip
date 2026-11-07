@@ -1,10 +1,11 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { link, mkdtemp, open, rm } from "node:fs/promises";
+import { constants, createReadStream, createWriteStream } from "node:fs";
+import { link, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -95,19 +96,108 @@ export async function getWorkspaceSnapshot(db: Db, input: { companyId: string; w
   return row && ["uploaded", "committed", "superseded"].includes(row.status) ? reference(row) : null;
 }
 
-/** Upload attempts are journaled before remote I/O. The caller owns publication. */
-export async function uploadWorkspaceSnapshot(input: {
+export async function recoverWorkspaceSnapshotArchive(input: {
   db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
-  archivePath: string; manifestDigest: string; signal?: AbortSignal;
-}): Promise<WorkspaceSnapshotRef> {
+  targetPath: string; signal?: AbortSignal;
+}): Promise<WorkspaceSnapshotRef | null> {
   const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
   if (!row) failure("missing");
   if (["uploaded", "committed", "superseded"].includes(row!.status)) {
+    const ref = reference(row!);
+    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
+    return ref;
+  }
+  if (row!.status !== "pending") failure("not_writable");
+  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
+  for (const attempt of attempts) {
+    input.signal?.throwIfAborted();
+    const ref: WorkspaceSnapshotRef = { schema: SCHEMA, ...attempt, id: row!.id, companyId: row!.companyId,
+      workspaceId: row!.executionWorkspaceId, generation: row!.generation };
+    validateReference(ref);
+    if (!(await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) continue;
+    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
+    return ref;
+  }
+  return null;
+}
+
+type WorkspaceSnapshotUpload = {
+  db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
+  archivePath: string; manifestDigest: string; signal?: AbortSignal; verifiedArchivePath?: string;
+  // Only an owner with an immutable logical source may replace an unavailable,
+  // unpublished capture. A recoverable or concurrently published attempt wins,
+  // and its returned manifest may differ from the new physical capture.
+  unpublishedRecapture?: { sourceOperationId: string };
+};
+
+/** Upload attempts are journaled before remote I/O. The caller owns publication. */
+export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
+  if (input.verifiedArchivePath === undefined)
+    return uploadVerifiedWorkspaceSnapshot(input, ref => verifyObject(input.storage, ref, input.signal));
+  input.signal?.throwIfAborted();
+  const target = input.verifiedArchivePath, parent = path.dirname(target);
+  if (!path.isAbsolute(target) || path.normalize(target) !== target) failure("readback_parent_invalid");
+  const owner = await lstat(parent);
+  const assertParent = async () => {
+    const current = await lstat(parent);
+    if (!current.isDirectory() || current.isSymbolicLink() || (current.mode & 0o777) !== 0o700
+      || typeof process.getuid === "function" && current.uid !== process.getuid()
+      || current.dev !== owner.dev || current.ino !== owner.ino || await realpath(parent) !== parent) failure("readback_parent_invalid");
+  };
+  await assertParent();
+  await lstat(target).then(() => failure("readback_target_exists"), (error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  const scratch = await mkdtemp(path.join(parent, ".workspace-upload-readback-"));
+  const verified: Array<{ ref: WorkspaceSnapshotRef; file: string }> = [];
+  const verify = async (ref: WorkspaceSnapshotRef) => {
+    if (verified.some(saved => isDeepStrictEqual(saved.ref, ref))) return;
+    const file = path.join(scratch, `${randomUUID()}.pcws`);
+    await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref, targetPath: file,
+      signal: input.signal, temporaryParent: scratch });
+    verified.push({ ref: structuredClone(ref), file });
+  };
+  try {
+    const ref = await uploadVerifiedWorkspaceSnapshot(input, verify);
+    await verify(ref);
+    const file = verified.find(saved => isDeepStrictEqual(saved.ref, ref))!.file;
+    const wrapped = await snapshotKey(ref), handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const before = await handle.stat(), digest = createHash("sha256"); let bytes = 0;
+      if (!before.isFile() || (before.mode & 0o777) !== 0o600 || before.nlink !== 1
+        || typeof process.getuid === "function" && before.uid !== process.getuid()) failure("readback_file_changed");
+      for await (const chunk of createReadStream(file, { fd: handle.fd, autoClose: false, signal: input.signal })) {
+        digest.update(chunk); bytes += chunk.length;
+      }
+      const after = await handle.stat(), named = await lstat(file);
+      if (!named.isFile() || named.isSymbolicLink() || named.dev !== before.dev || named.ino !== before.ino
+        || named.nlink !== 1 || named.mode !== before.mode || after.size !== before.size
+        || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
+        || bytes !== wrapped.plaintextBytes || digest.digest("hex") !== wrapped.plaintextSha256) failure("readback_file_changed");
+      await assertParent(); input.signal?.throwIfAborted();
+      await link(file, target);
+    } finally { await handle.close(); }
+    return ref;
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, verify: (ref: WorkspaceSnapshotRef) => Promise<void>): Promise<WorkspaceSnapshotRef> {
+  const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
+  if (!row) failure("missing");
+  if (input.unpublishedRecapture && row!.sourceOperationId !== input.unpublishedRecapture.sourceOperationId) failure("operation_binding_changed");
+  if (["uploaded", "committed", "superseded"].includes(row!.status)) {
     const saved = reference(row!);
     if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    await verifyObject(input.storage, saved, input.signal); return saved;
+    await verify(saved); return saved;
   }
   if (row!.status !== "pending" || !/^[a-f0-9]{64}$/.test(input.manifestDigest)) failure("not_writable");
+  const recapture = Boolean(input.unpublishedRecapture);
+  const requireUnpublished = (current: SnapshotRow) => {
+    if (current.sourceOperationId !== input.unpublishedRecapture!.sourceOperationId
+      || current.objectKey !== null || current.sha256 !== null || current.byteSize !== null
+      || current.key !== null || current.manifestDigest !== null) failure("not_unpublished");
+  };
+  if (recapture) requireUnpublished(row!);
   const identity = { id: row!.id, companyId: row!.companyId, workspaceId: row!.executionWorkspaceId, generation: row!.generation };
   const publish = async (attempt: UploadAttempt) => {
     const updated = await input.db.transaction(async tx => {
@@ -118,20 +208,27 @@ export async function uploadWorkspaceSnapshot(input: {
     const winning = updated ?? (await input.db.select().from(executionWorkspaceSnapshots).where(scope(input)))[0];
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
-    if (saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+    if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+    if (saved.objectKey !== attempt.objectKey) await verify(saved);
     return saved;
   };
   // Recover a completed upload even when the previous process lost its reply
   // and its scratch directory. Failed attempts remain referenced for cleanup.
-  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
-  for (const attempt of attempts) {
-    if (attempt.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
-    const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
-    validateReference(ref);
-    if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
-      await verifyObject(input.storage, ref, input.signal); return publish(attempt);
+  const availableAttempt = async (attempts: UploadAttempt[]) => {
+    for (const attempt of attempts) {
+      input.signal?.throwIfAborted();
+      if (!recapture && attempt.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
+      const ref = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
+      validateReference(ref);
+      if ((await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) {
+        await verify(ref); return attempt;
+      }
     }
-  }
+    return null;
+  };
+  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
+  const available = await availableAttempt(attempts);
+  if (available) return publish(available);
   const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-encrypt-"));
   try {
     const encrypted = path.join(scratch, "archive.encrypted"), dataKey = randomBytes(32), iv = randomBytes(12);
@@ -150,27 +247,51 @@ export async function uploadWorkspaceSnapshot(input: {
     const content = await digestFile(encrypted, input.signal);
     const attempt: UploadAttempt = { objectKey: `${identity.companyId}/workspace-snapshots/${identity.workspaceId}/${identity.id}/${randomUUID()}.pcws`,
       ...content, key: material, manifestDigest: input.manifestDigest };
+    // Recheck after encryption, then bind admission to the unchanged ledger.
+    // Remote I/O stays outside the row lock. An older upload completing after
+    // this check can still win the pending-to-uploaded publication below.
+    if (recapture) {
+      const recovered = await availableAttempt(attempts);
+      if (recovered) return publish(recovered);
+    }
     const recorded = await input.db.transaction(async tx => {
       const [current] = await tx.select().from(executionWorkspaceSnapshots).where(scope(input)).for("update");
-      if (!current || current.status !== "pending") return false;
-      const previous = Array.isArray(current.metadata?.uploads) ? current.metadata.uploads : [];
+      if (!current || current.status !== "pending") return null;
+      const previous = Array.isArray(current.metadata?.uploads) ? current.metadata.uploads as UploadAttempt[] : [];
+      if (recapture) {
+        requireUnpublished(current);
+        if (!isDeepStrictEqual(previous, attempts)) failure("upload_attempts_changed");
+      } else if (previous.some(saved => saved.manifestDigest !== input.manifestDigest)) failure("operation_content_changed");
       await notifyRemoteWorkspaceSnapshots(tx, `workspace:${input.workspaceId}`);
       await tx.update(executionWorkspaceSnapshots).set({ metadata: { ...current.metadata, uploads: [...previous, attempt] }, updatedAt: new Date() }).where(scope(input));
       return true;
     });
     if (!recorded) {
       const saved = await getWorkspaceSnapshot(input.db, input);
-      if (!saved || saved.manifestDigest !== input.manifestDigest) failure("publication_changed");
-      await verifyObject(input.storage, saved, input.signal); return saved;
+      if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) failure("publication_changed");
+      await verify(saved); return saved;
     }
     // The object key is unique per attempt, so a late losing uploader cannot
     // overwrite an object already used by a committed generation.
     await input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
       originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted),
       byteSize: attempt.byteSize, sha256: attempt.sha256, signal: input.signal });
-    await verifyObject(input.storage, { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef, input.signal);
+    await verify({ schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef);
+    if (recapture) {
+      const recovered = await availableAttempt(attempts);
+      if (recovered) return publish(recovered);
+    }
     return await publish(attempt);
   } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+async function snapshotKey(ref: WorkspaceSnapshotRef) {
+  validateReference(ref);
+  const wrapped = JSON.parse(await localEncryptedProvider.resolveVersion({ material: ref.key, externalRef: null }));
+  if (wrapped.schema !== KEY_SCHEMA || wrapped.companyId !== ref.companyId || wrapped.workspaceId !== ref.workspaceId
+    || wrapped.id !== ref.id || wrapped.generation !== ref.generation || !/^[a-f0-9]{64}$/.test(wrapped.plaintextSha256 ?? "")
+    || !Number.isSafeInteger(wrapped.plaintextBytes) || wrapped.plaintextBytes < 0) failure("key_binding_invalid");
+  return wrapped;
 }
 
 /** Authentication finishes in private scratch before any plaintext is published. */
@@ -178,11 +299,7 @@ export async function loadWorkspaceSnapshotArchive(input: {
   storage: StorageService; reference: WorkspaceSnapshotRef; targetPath: string; signal?: AbortSignal; temporaryParent?: string;
 }): Promise<void> {
   input.signal?.throwIfAborted();
-  const ref = input.reference; validateReference(ref);
-  const wrapped = JSON.parse(await localEncryptedProvider.resolveVersion({ material: ref.key, externalRef: null }));
-  if (wrapped.schema !== KEY_SCHEMA || wrapped.companyId !== ref.companyId || wrapped.workspaceId !== ref.workspaceId
-    || wrapped.id !== ref.id || wrapped.generation !== ref.generation || !/^[a-f0-9]{64}$/.test(wrapped.plaintextSha256 ?? "")
-    || !Number.isSafeInteger(wrapped.plaintextBytes) || wrapped.plaintextBytes < 0) failure("key_binding_invalid");
+  const ref = input.reference, wrapped = await snapshotKey(ref);
   const scratch = await mkdtemp(path.join(input.temporaryParent ?? os.tmpdir(), "pc-workspace-decrypt-"));
   try {
     input.signal?.throwIfAborted();

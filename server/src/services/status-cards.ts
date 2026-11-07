@@ -1,4 +1,5 @@
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -21,7 +22,7 @@ import type {
   WriteStatusCardQuery,
   WriteStatusCardSummary,
 } from "@paperclipai/shared";
-import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
+import { companySearchQuerySchema, ISSUE_PRIORITIES, ISSUE_STATUSES, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
@@ -118,11 +119,47 @@ function updateDescription(input: {
   return `Update this Paperclip status card.\n\n${UNTRUSTED_PROMPT_RULE}\n\n${task}${promptBlock}\n\n${mechanical}\n\n## Previous summary\n\n${untrustedPromptBlock("previous-summary", input.previousSummary ?? null)}\n\n## Changed issues\n\n${untrustedPromptBlock("changed-issues", input.changes.map(({ issueId, identifier, title, from, to, changeKind }) => ({ issueId, identifier, title, from, to, changeKind })))}\n\n${input.kind === "full" ? `## Bounded snapshot\n\n${untrustedPromptBlock("bounded-snapshot", input.snapshot.map(({ id, identifier, title, status }) => ({ id, identifier, title, status })))}` : ""}\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
 }
 
-function compileDescription(card: StatusCardRow, generationIssueId: string | null, hash: string) {
+/**
+ * Query-compilation guidance inlined into every compile task. The compile task
+ * can be assigned to any company agent (the built-in Summarizer or a per-card
+ * override), and nothing provisions the `status-card-query` catalog skill to
+ * that agent, so the task must carry everything the run needs instead of
+ * pointing it at a skill it may not have.
+ */
+function compileQueryGuidance(card: StatusCardRow, generationIssueId: string | null) {
+  // The persisted task always carries its own issue id (the description is
+  // rewritten once the issue exists), so the example body is copy-pasteable.
+  const exampleGenerationIssueId = generationIssueId ?? "<generationIssueId from the JSON payload below>";
+  return `Everything needed for this task is in this description; no extra skill is required, so do not search for one.
+
+## Query format
+
+\`queries\` is an array of 1–10 company-search query objects with union semantics: an issue matching any query belongs to the card. Prefer one narrow query; add another only for genuinely distinct populations. Each object accepts:
+
+- \`scope\`: always \`"issues"\`.
+- \`q\`: optional short free text, only for concepts no structured filter covers. Never paste the whole prompt into it.
+- \`status\`: array of ${ISSUE_STATUSES.map((status) => `\`${status}\``).join(", ")}.
+- \`priority\`: array of ${ISSUE_PRIORITIES.map((priority) => `\`${priority}\``).join(", ")}.
+- \`assigneeAgentId\` / \`assigneeUserId\`: one resolved assignee id.
+- \`projectId\` / \`labelId\`: one resolved UUID each. Resolve names with \`GET /api/companies/${card.companyId}/projects\` and \`GET /api/companies/${card.companyId}/labels\`; never put a name in an id field. Use separate query objects for multiple projects or labels.
+- \`updatedWithin\`: a bounded window such as \`24h\`, \`7d\`, \`4w\`, or \`3m\`. Add it whenever the prompt implies recency (recent, this week, lately, current).
+- \`sort\`: \`relevance\`, \`updated\`, \`created\`, or \`priority\`.
+- \`limit\`: 1–50, normally 20. \`offset\`: 0.
+
+Preserve the prompt's intent; do not broaden it. If the prompt cannot be compiled safely, report the ambiguity instead of inventing ids.
+
+Example \`PUT /api/status-cards/${card.id}/query\` body:
+
+\`\`\`text
+{"queries":[{"scope":"issues","q":"launch","status":["in_progress","blocked","in_review"],"updatedWithin":"7d","sort":"updated","limit":20,"offset":0}],"title":"Launch work updated this week","changeSummary":"Compiled the prompt into one recent active-work query.","generationIssueId":${JSON.stringify(exampleGenerationIssueId)}}
+\`\`\``;
+}
+
+export function compileDescription(card: StatusCardRow, generationIssueId: string | null, hash: string) {
   const payload = compilePayload(card, generationIssueId, hash);
   return `Compile this status-card interest prompt into structured Paperclip company-search queries, then continue in the same run and write the first full summary.
 
-Use the bundled \`status-card-query\` skill. Resolve named projects and labels to ids. Keep queries narrow, cap limits, and preserve union semantics across the query array.
+${compileQueryGuidance(card, generationIssueId)}
 
 ${UNTRUSTED_PROMPT_RULE}
 
@@ -133,7 +170,7 @@ ${untrustedPromptBlock("interest-prompt", card.interestPrompt)}
 ## Required write-back sequence
 
 1. \`PUT /api/status-cards/${card.id}/query\` with \`queries\`, an auto-title, a non-empty \`changeSummary\`, and \`generationIssueId\`.
-2. Execute the compiled scope and write the first full Markdown summary with \`PUT /api/status-cards/${card.id}/summary\` using the same \`generationIssueId\`. Do not create or wait for a second task.
+2. Execute the compiled scope with \`GET /api/status-cards/${card.id}/dry-run\`, then write the first full Markdown summary with \`PUT /api/status-cards/${card.id}/summary\` (\`markdown\`, \`title\`, a non-empty \`changeSummary\`, the same \`generationIssueId\`, and the model id). Do not create or wait for a second task.
 
 Both writes must happen from this assigned issue run.
 
@@ -552,6 +589,7 @@ export function statusCardService(
         identifier: issues.identifier,
         title: issues.title,
         status: issues.status,
+        displayStatus: issueDisplayStatusSql(),
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,

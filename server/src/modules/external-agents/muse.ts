@@ -1,3 +1,4 @@
+import { budgetServiceInTransaction } from "../../services/budgets.js";
 import { pendingMuseTerminalAssignmentCondition } from "./muse-terminal-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -102,7 +103,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     const owns=run&&issue&&(reviewContext?!!review&&(review.interaction.status!=="pending"||issue.executionRunId===run.id):issue.assigneeAgentId===a.agentId&&[issue.checkoutRunId,issue.executionRunId].includes(run.id));
     if(!run||run.status!=="running"||run.runtimeMode!=="native"||run.nativeSessionId!==a.normalizedSessionId||!owns||!owner||owner.controllerGeneration!==a.controllerGeneration||!owner.leaseExpiresAt||owner.leaseExpiresAt<=new Date()
       ||["terminal_failure","turn_stopping","turn_stopped"].includes(run.nativePhase??"")||company?.status!=="active"||!agent||["paused","terminated","pending_approval"].includes(agent.status)
-      ||(company.budgetMonthlyCents>0&&company.spentMonthlyCents>=company.budgetMonthlyCents)||(agent.budgetMonthlyCents>0&&agent.spentMonthlyCents>=agent.budgetMonthlyCents)) throw forbidden("Native run no longer owns execution authority.");
+      ||await budgetServiceInTransaction(db).getInvocationBlock(a.companyId,a.agentId,{issueId:run.nativeIssueId})) throw forbidden("Native run no longer owns execution authority.");
     return {b,a,run};
   }
   async function fence(tx:ExternalAdmissionTransaction,b:typeof bindings.$inferSelect,reason:string,assignmentId?:string) {
@@ -132,7 +133,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
     await logActivity(tx as unknown as Db,{companyId:b.companyId,actorType,actorId:operatorId,action:"muse.binding_revoked",entityType:"agent",entityId:b.agentId,details:{bindingId:b.id,generation:b.generation,authorizingUserId:b.operatorId,source:reason,externalStopConfirmed:false}});
     return runs;
   }
-  const nativeBroker=createNativeExternalBroker<AgentConnectionSubject>(db,"muse",{enabled:identity.enabled,expectedResource:connectionResource,
+  const nativeBroker=createNativeExternalBroker<AgentConnectionSubject>(db,"muse",{enabled:database=>identity.enabled(database),expectedResource:connectionResource,
     assertSubjectCredential:async(tx,s)=>{await assertMuseSubjectCredential(tx,s,s.credentialSource==="oauth"?connectionResource():undefined);},
     authorize:async(s,id,settled)=>{const {b,a}=await authorizeAssignment(s,id,settled);return {binding:b,assignment:a};}});
   const operation=nativeBroker.operation;

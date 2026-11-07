@@ -1,3 +1,4 @@
+import { formatCommandForDisplay } from "./workspace-command-display.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
@@ -7,6 +8,8 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { assertCurrentWorkspaceSourceHeld, workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -46,6 +49,7 @@ import {
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
@@ -283,6 +287,23 @@ const quarantinedRuntimeExposurePorts = new Set<number>();
  * companion together or not at all.
  */
 const exposurePortPairClaims = new ExposurePortPairClaims();
+let runtimeReconstructionComplete = false;
+let runtimeStopsInFlight = 0;
+let runtimeReconstructionEpoch = 0;
+let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null = null;
+
+/** Read owner memory only. Durable stopped rows do not describe a surviving
+ * registry process, an allocation being published, or unfinished exposure cleanup. */
+export function readWorkspaceRuntimeIdleWork(): IdleLocalWork {
+  if (!runtimeReconstructionComplete || runtimeReconciliation !== null) return "unknown";
+  return runtimeStopsInFlight || runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
+    || runtimeReplacementClaimsByReuseKey.size || quarantinedRuntimeExposurePorts.size
+    || exposurePortPairClaims.activePorts().size
+    || [...inFlightAllocatedPorts.values()].some(until => until > Date.now()) ? "present" : "none";
+}
+// This registry and its probe share the application process lifetime, like the
+// native-session owner. Stopping one resource must not unregister its siblings.
+registerIdleLocalWorkProbe(readWorkspaceRuntimeIdleWork);
 /**
  * Execution-workspace statuses that still hold an exclusive lease. `archived`
  * is the only terminal state; everything else — including `idle` — is a lane an
@@ -525,6 +546,8 @@ type ProcessOutputAccumulator = {
 export async function resetRuntimeServicesForTests(
   opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
+  runtimeReconstructionComplete = false;
+  runtimeReconstructionEpoch += 1;
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
@@ -812,12 +835,6 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
     return resolveHomeAwarePath(value);
   }
   return path.resolve(baseDir, value);
-}
-
-function formatCommandForDisplay(command: string, args: string[]) {
-  return [command, ...args]
-    .map((part) => (/^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part)))
-    .join(" ");
 }
 
 function trimToLastBytes(value: string, limit: number) {
@@ -5150,6 +5167,7 @@ function renderRuntimeServiceEnv(input: {
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
+  executionWorkspaceId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv: Record<string, string>;
@@ -5194,6 +5212,8 @@ function resolveRuntimeServiceReuseIdentity(input: {
             stableStringify({
               scopeType: input.scopeType,
               scopeId: input.scopeId,
+              ...(input.scopeType === "run" && input.executionWorkspaceId
+                ? { executionWorkspaceId: input.executionWorkspaceId } : {}),
               serviceName,
               command,
               cwd: serviceCwd,
@@ -6189,6 +6209,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -6660,6 +6681,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
+    if (input.db) await assertCurrentWorkspaceSourceHeld(serviceCwd);
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });
@@ -6673,6 +6695,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let childFailure: Promise<Error>;
   try {
     child = spawn(shell, ["-lc", command], {
       cwd: serviceCwd,
@@ -6683,27 +6706,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       // on an orphaned socketpair during startup reconciliation.
       stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
     });
+    childFailure = new Promise<Error>((resolve) => {
+      child.once("error", resolve);
+      child.once("close", (code, signal) => {
+        resolve(new Error(
+          `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+        ));
+      });
+    });
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
-  const earlyExitPromise = new Promise<never>((_, reject) => {
-    // `close` follows `exit` after the child's inherited stdout/stderr file
-    // descriptors are closed. Waiting for it makes the startup log excerpt
-    // deterministic instead of racing the final validation line.
-    child.once("close", (code, signal) => {
-      reject(new Error(
-        `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
-      ));
-    });
-  });
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6769,8 +6785,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         waitForAllocatedPortBind({ service: input.service, port: ownedPort, child })
       ),
     ]).then(() => undefined),
-    spawnErrorPromise,
-    earlyExitPromise,
+    childFailure.then((error) => { throw error; }),
   ]).then(async () => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);
@@ -6989,6 +7004,7 @@ async function prepareRuntimeProvisioning(
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -7155,7 +7171,21 @@ async function cleanupRecordExposure(
   await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
 }
 
+async function withRuntimeStopWork<T>(stop: () => Promise<T>): Promise<T> {
+  runtimeStopsInFlight += 1;
+  try { return await stop(); }
+  catch (error) {
+    runtimeReconstructionComplete = false;
+    runtimeReconstructionEpoch += 1;
+    throw error;
+  } finally { runtimeStopsInFlight -= 1; }
+}
+
 async function stopRuntimeService(serviceId: string) {
+  return withRuntimeStopWork(() => stopRuntimeServiceRecord(serviceId));
+}
+
+async function stopRuntimeServiceRecord(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
@@ -7619,6 +7649,7 @@ async function ensureRuntimeServicesForRunInvocation(
       const reuseKey = resolveRuntimeServiceReuseIdentity({
         service,
         workspace: input.workspace,
+        executionWorkspaceId: input.executionWorkspaceId,
         agent: input.agent,
         issue: input.issue,
         adapterEnv: input.adapterEnv,
@@ -7719,6 +7750,7 @@ function resolveRuntimeStartMutexPlan(input: {
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.agent,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -7767,6 +7799,23 @@ async function withRuntimeStartMutexes<T>(
   return await acquire(0);
 }
 
+async function withRuntimeServiceSourceLocks<T>(input: {
+  db?: Db; workspace: RealizedExecutionWorkspace; agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null; adapterEnv: Record<string, string>; services: Record<string, unknown>[];
+}, action: () => Promise<T>): Promise<T> {
+  if (!input.db || input.services.length === 0) return action();
+  const paths = [...localWorkspaceSourcePaths({ cwd: input.workspace.cwd, providerRef: input.workspace.worktreePath }),
+    input.workspace.baseCwd, ...input.services.map(service =>
+    resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
+  const projectIds: string[] = [], issueIds: string[] = [];
+  for (const cwd of new Set(paths)) {
+    const identities = await workspaceSourceIdentities(input.agent.companyId, cwd);
+    projectIds.push(...identities.projectIds);
+    issueIds.push(...identities.issueIds);
+  }
+  return withWorkspaceSourceLocks(input.db, { companyId: input.agent.companyId, projectIds, issueIds }, action);
+}
+
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
@@ -7788,7 +7837,7 @@ export async function ensureRuntimeServicesForRun(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => ensureRuntimeServicesForRunInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, services }, () => ensureRuntimeServicesForRunInvocation(input)),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -7853,6 +7902,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.actor,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -8052,6 +8102,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
         const reuseKey = resolveRuntimeServiceReuseIdentity({
           service,
           workspace: input.workspace,
+          executionWorkspaceId: input.executionWorkspaceId,
           agent: input.actor,
           issue: input.issue,
           adapterEnv: input.adapterEnv,
@@ -8237,10 +8288,8 @@ export async function startRuntimeServicesForWorkspaceControl(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      async () => {
-        if (!input.db || !input.executionWorkspaceId) {
-          return startRuntimeServicesForWorkspaceControlInvocation(input);
-        }
+      () => withRuntimeServiceSourceLocks({ ...input, agent: input.actor, services }, async () => {
+        if (!input.db || !input.executionWorkspaceId) return startRuntimeServicesForWorkspaceControlInvocation(input);
         // Startup and direct callers can bypass the HTTP operation recorder.
         // Keep migration fenced through provision/bind/persistence, including the
         // HTTPS path which intentionally commits its reservation before binding.
@@ -8262,7 +8311,7 @@ export async function startRuntimeServicesForWorkspaceControl(
           }
           return startRuntimeServicesForWorkspaceControlInvocation(input);
         });
-      },
+      }),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -8296,7 +8345,11 @@ export async function releaseRuntimeServicesForRun(runId: string) {
   }
 }
 
-export async function stopRuntimeServicesForExecutionWorkspace(input: {
+export async function stopRuntimeServicesForExecutionWorkspace(input: Parameters<typeof stopRuntimeServicesForExecutionWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForExecutionWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForExecutionWorkspaceOwned(input: {
   db?: Db;
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
@@ -8351,7 +8404,11 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   }
 }
 
-export async function stopRuntimeServicesForProjectWorkspace(input: {
+export async function stopRuntimeServicesForProjectWorkspace(input: Parameters<typeof stopRuntimeServicesForProjectWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForProjectWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForProjectWorkspaceOwned(input: {
   db?: Db;
   projectWorkspaceId: string;
   runtimeServiceId?: string | null;
@@ -8577,6 +8634,19 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
 }
 
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
+  if (runtimeReconciliation) return runtimeReconciliation;
+  runtimeReconstructionComplete = false;
+  const epoch = ++runtimeReconstructionEpoch;
+  runtimeReconciliation = reconstructRuntimeServices(db).then(result => {
+    if (epoch === runtimeReconstructionEpoch) {
+      runtimeReconstructionComplete = result.restartFailed === 0 && result.exposureReservationDrift.length === 0;
+    }
+    return result;
+  }).finally(() => { runtimeReconciliation = null; });
+  return runtimeReconciliation;
+}
+
+async function reconstructRuntimeServices(db: Db) {
   const rows = await db
     .select()
     .from(workspaceRuntimeServices)

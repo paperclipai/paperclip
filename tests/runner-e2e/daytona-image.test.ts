@@ -11,10 +11,12 @@ import {
 } from "./daytona-image-content.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-function lastDockerignoreRule(dockerignore: string, fixturePath: string) {
+function lastMatchingDockerignoreRule(dockerignore: string, fixturePath: string) {
+  const segments = fixturePath.split("/");
+  const ancestors = segments.map((_, index) => segments.slice(0, index + 1).join("/"));
   return dockerignore.split(/\r?\n/).filter(rule => rule && !rule.startsWith("#")).filter(rule => {
-    const pattern = rule.startsWith("!") ? rule.slice(1) : rule;
-    return path.matchesGlob(fixturePath, pattern) || fixturePath.startsWith(`${pattern}/`);
+    const pattern = rule.replace(/^!/, "").replace(/^\//, "");
+    return ancestors.some(candidate => path.matchesGlob(candidate, pattern));
   }).at(-1);
 }
 
@@ -36,7 +38,7 @@ describe("runner E2E Daytona image contract", () => {
     for (const input of attestationInputs) {
       await expect(readFile(path.join(repositoryRoot, input), "utf8")).resolves.toBeTruthy();
       // Docker's last matching rule wins, including the parent-directory exclusion.
-      expect(lastDockerignoreRule(dockerignore, input)?.startsWith("!") ?? true, input).toBe(true);
+      expect(lastMatchingDockerignoreRule(dockerignore, input)?.startsWith("!") ?? true, input).toBe(true);
       expect(DAYTONA_IMAGE_INPUT_PATHS.some(inputPath => input === inputPath || input.startsWith(`${inputPath}/`)), input).toBe(true);
     }
   });
@@ -120,6 +122,40 @@ describe("runner E2E Daytona image contract", () => {
     expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain("packages/grok-acp/package.json");
   });
 
+  it("requires every build, including documented local recipes, to pass the lockfile digest", async () => {
+    const [dockerfile, e2eReadme, imageReadme] = await Promise.all([
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),
+      readFile(path.join(repositoryRoot, "tests/runner-e2e/README.md"), "utf8"),
+      readFile(path.join(repositoryRoot, "docker/daytona-runner/README.md"), "utf8"),
+    ]);
+    // A fixed default goes stale with every lockfile change and then fails as a
+    // misleading checksum mismatch; a missing argument must fail by name.
+    expect(dockerfile).toMatch(/^ARG PAPERCLIP_RUNNER_LOCK_SHA256$/m);
+    const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
+    const shapeCheck = normalizedDockerfile.indexOf(`grep -Eqx '[0-9a-f]{64}'`);
+    expect(shapeCheck).toBeGreaterThan(-1);
+    expect(shapeCheck).toBeLessThan(normalizedDockerfile.indexOf("sha256sum -c /tmp/provider-lock.sha256"));
+    expect(normalizedDockerfile.slice(shapeCheck)).toMatch(
+      /^grep -Eqx '\[0-9a-f\]\{64\}';\s+then\s+echo 'PAPERCLIP_RUNNER_LOCK_SHA256 build arg must be the SHA-256 of pnpm-lock\.yaml[^']*' >&2;\s+exit 1;\s+fi/,
+    );
+    for (const readme of [e2eReadme, imageReadme]) {
+      const recipes = [...readme.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)]
+        .map(match => match[1]!)
+        .filter(block => block.includes("--file docker/daytona-runner/Dockerfile"));
+      expect(recipes.length).toBeGreaterThan(0);
+      for (const recipe of recipes) {
+        // The computed digest itself must be the value passed to the build.
+        const passed = recipe.match(
+          /--build-arg "?PAPERCLIP_RUNNER_LOCK_SHA256="?(\$\{lock_sha\}|\$\(shasum -a 256 pnpm-lock\.yaml \| cut -d ' ' -f 1\))"/,
+        );
+        expect(passed, recipe).not.toBeNull();
+        if (passed![1] === "${lock_sha}") {
+          expect(recipe).toContain(`lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"`);
+        }
+      }
+    }
+  });
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
@@ -179,7 +215,7 @@ describe("runner E2E Daytona image contract", () => {
     expect(dockerignore).toContain("packages/paperclip-runner/dist");
     expect(dockerignore).toContain("packages/paperclip-runner/runner/target");
     expect(await readFile(path.join(repositoryRoot, ".github/docker-context-checks.Dockerfile"), "utf8")).toContain("node packages/paperclip-runner/scripts/generate-acpx-profiles.mjs --check");
-    expect(lastDockerignoreRule(dockerignore, "packages/paperclip-runner/test-fixtures/pi-acp/private-live-session.json")?.startsWith("!")).toBe(false);
+    expect(lastMatchingDockerignoreRule(dockerignore, "packages/paperclip-runner/test-fixtures/pi-acp/private-live-session.json")?.startsWith("!")).toBe(false);
     for (const developmentOnlyInput of [
       "packages/paperclip-runner/devtools",
       "packages/paperclip-runner/docs",
@@ -193,6 +229,18 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-runner/scripts/*-smoke.mjs",
     ]) {
       expect(dockerignore).toContain(developmentOnlyInput);
+    }
+    for (const developmentOnlyFile of [
+      "devtools/probe.mjs",
+      "docs/development.md",
+      "examples/demo.ts",
+      "test/fixtures/copilot-live-denial.json",
+      "test-fixtures/pi-acp/live-evidence.json",
+      "test-support/helpers.ts",
+      "runner/crates/runner/tests/contract.rs",
+      "scripts/pi-smoke.mjs",
+    ]) {
+      expect(lastMatchingDockerignoreRule(dockerignore, `packages/paperclip-runner/${developmentOnlyFile}`)?.startsWith("!")).toBe(false);
     }
     expect(workflow).toContain("--platform linux/amd64");
     expect(workflow).toContain(
@@ -234,6 +282,14 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
+    // An existing content tag is reused only when its signature verifies; an
+    // unsigned tag left by an interrupted run is rebuilt, pushed and signed.
+    const imageJob = daytonaImageJob ?? "";
+    const reuse = imageJob.indexOf('if verify_signed "$existing"');
+    expect(reuse).toBeGreaterThan(-1);
+    expect(imageJob.indexOf('if [ -z "$digest" ]; then')).toBeGreaterThan(reuse);
+    expect(imageJob.indexOf("cosign sign --yes")).toBeGreaterThan(reuse);
+    expect(imageJob).not.toMatch(/imagetools inspect "\$IMAGE_TAG" >\/dev\/null 2>&1; then\n\s*digest=/);
     expect(workflow).toContain("docker logout ghcr.io");
     expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
     expect(workflow).toContain(`--format '{{json .Image}}'`);
@@ -278,7 +334,10 @@ describe("runner E2E Daytona image contract", () => {
     expect(providerInstall).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeGreaterThan(0);
     expect(runnerSourceCopy).toBeLessThan(providerInstall);
-    expect(providerInstall).toBeLessThan(providerRevisionArg);
+    // The source-bound install and portable-pack build now share a layer so
+    // their disposable dependency tree can be removed before image export.
+    expect(providerRevisionArg).toBeGreaterThan(0);
+    expect(providerRevisionArg).toBeLessThan(providerInstall);
     expect(cliInstall).toBeGreaterThan(0);
     expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });

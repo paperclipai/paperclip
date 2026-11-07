@@ -136,9 +136,12 @@ context; source presence alone does not qualify this operation.
 
 ## Keeping the maps synchronized
 
-When a change adds/removes a capability or changes its behavior, API, permission,
-tool binding, CLI support, or work mode, update the affected companion and product
-recipe as appropriate in the same change. Preserve IDs across renames where the
+Add entries only for substantial new features under the
+[feature-map scope rule](../rules/feature-map-scope.mdc). Routine fixes, polish,
+refactors, performance work, and test changes do not require map updates. Correct
+or remove existing text only when behavior or access changes make it materially
+inaccurate; keep the correction local to the affected recipe or companion.
+Preserve IDs across renames where the
 capability is unchanged; update the affected cross-links together. Indexes discover recipes automatically. An API-only
 change may update the companion without rewriting unchanged user instructions.
 Update the corresponding chat scenarios when their request, assumptions or

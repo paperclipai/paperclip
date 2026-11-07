@@ -78,7 +78,8 @@ function registerClient(key: string, client: RegisteredPostgresClient): void {
  * its teardown cannot close another fixture's clients on that host.
  */
 export async function closeRegisteredClients(url: string, options?: { scope: "database" }): Promise<void> {
-  const key = hostPortKey(url);
+  const key = hostPortKeyOrNull(url);
+  if (key === null) return;
   const database = options?.scope === "database" ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined;
   if (database === "") throw new Error("Database-scoped teardown requires an explicit database name");
   const refs = clientsByHostPort.get(key);
@@ -259,6 +260,22 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
 const dedicatedDbFactories = new WeakMap<object, () => Db>();
+const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+export interface OwnedDatabaseListener {
+  listen: Db["$client"]["listen"];
+  close(): Promise<void>;
+}
+
+export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
+  const factory = ownedDatabaseListenerFactories.get(db);
+  if (!factory) throw new Error("owned_listener_requires_create_db");
+  const owned = factory();
+  return {
+    listen: owned.$client.listen.bind(owned.$client),
+    close: () => owned.$client.end({ timeout: 1 }),
+  };
+}
 
 export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
   const factory = dedicatedDbFactories.get(db);
@@ -359,6 +376,9 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   installDatabaseResponseCapture(db, schema);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }, db));
+  ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: 1,
   }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
@@ -590,6 +610,9 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0413_tired_kronos.sql",
   "0414_closed_edwin_jarvis.sql",
   "0419_slippery_impossible_man.sql",
+  "0432_strong_mole_man.sql",
+  "0435_premium_puff_adder.sql",
+  "0436_legal_reavers.sql",
 
 
   "0384_funny_adam_warlock.sql",

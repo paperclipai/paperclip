@@ -27,7 +27,7 @@ describe("text attachment tabs", () => {
   });
 
   it("classifies text without treating PDF or images as text", () => {
-    for (const [contentType, originalFilename] of [["text/plain", "notes.txt"], ["application/octet-stream", "AGENTS.md"], ["application/json", "report.json"]]) expect(isTextAttachment({ contentType, originalFilename })).toBe(true);
+    for (const [contentType, originalFilename] of [["application/octet-stream", "fix.patch"], ["application/octet-stream", "fix.diff"], ["text/x-patch", "download"], ["text/plain", "notes.txt"], ["application/octet-stream", "AGENTS.md"], ["application/json", "report.json"]]) expect(isTextAttachment({ contentType, originalFilename })).toBe(true);
     expect(isTextAttachment({ contentType: "application/pdf", originalFilename: "report.pdf" })).toBe(false);
     expect(isTextAttachment({ contentType: "image/png", originalFilename: "fake.txt" })).toBe(false);
   });
@@ -68,6 +68,17 @@ describe("text attachment tabs", () => {
     expect(host.querySelector("table")).toBeNull();
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Rendered"]')!.click());
     expect(host.querySelector("table")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+  it.each(["fix.patch", "fix.diff"])("highlights %s while preserving literal source and download", async (title) => {
+    const host = document.createElement("div"); const root = createRoot(host);
+    const text = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+<script>new</script>\n";
+    await act(async () => root.render(<TextAttachmentPreview title={title} markdown={false} text={text} downloadUrl="/download" />));
+    expect(host.querySelector("pre")?.textContent).toBe(text);
+    expect(host.querySelector('[data-patch-line="add"]')?.textContent).toBe("+<script>new</script>\n");
+    expect(host.querySelector('[data-patch-line="remove"]')?.textContent).toBe("-old\n");
+    expect(host.querySelector("script")).toBeNull();
+    expect(host.querySelector("a")?.getAttribute("href")).toBe("/download");
     await act(async () => root.unmount());
   });
   it("shows plain text literally without Markdown controls", async () => {

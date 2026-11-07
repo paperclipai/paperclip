@@ -217,7 +217,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
         linked = (await lstat(authPath)).isSymbolicLink();
         if (linked && !context.managedAiCredentialHome?.trim()) {
           const field = environment.CODEX_HOME?.trim() ? "env.CODEX_HOME" : "operator CODEX_HOME";
-          throw new Error(`${field} uses a linked auth.json that Paperclip Runner tasks cannot read. Choose Legacy runner in Advanced or use a managed Codex Connection.`);
+          throw new Error(`${field} uses a linked auth.json that Paperclip Runner tasks cannot read. Use a managed Codex Connection.`);
         }
         const resolvedAuthPath = await realpath(authPath);
         const source = await stat(resolvedAuthPath);
@@ -260,7 +260,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
     const rejectedModel = provider === "codex" ? CODEX_CHATGPT_MODEL_REJECTION_RE.exec(message)?.[1] : undefined;
     const retirementHint = rejectedModel ? codexChatGptRetirementHint(rejectedModel) : null;
     return { adapterType: "paperclip_runner", status: "fail", testedAt: new Date().toISOString(), checks: [{ code: `${provider}_hello_probe_${authentication ? "auth_required" : /timed out/i.test(message) ? "timeout" : "failed"}`, level: "error", message,
-      hint: retirementHint ?? "Check the selected account, model access, and native runtime prerequisites, then retry. Legacy runner is available explicitly in Advanced." },
+      hint: retirementHint ?? "Check the selected account, model access, and native runtime prerequisites, then retry." },
       ...(authentication && provider === "codex" ? [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "error" as const,
         message: "The selected Codex account needs authentication.",
         hint: "Sign in to Codex or choose an authenticated account, then test again." }] : [])] };

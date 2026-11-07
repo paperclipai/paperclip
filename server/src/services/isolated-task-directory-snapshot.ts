@@ -148,7 +148,14 @@ export async function captureTaskDirectorySnapshot(root: string, options: { limi
         await handle.close();
       }
     } });
-  const manifest: TaskDirectorySnapshotManifest = { schema: TASK_DIRECTORY_SNAPSHOT_SCHEMA, entries: walked.entries, excluded: walked.excluded };
+  return encodeTaskDirectorySnapshot({ schema: TASK_DIRECTORY_SNAPSHOT_SCHEMA, entries: walked.entries, excluded: walked.excluded }, bodies);
+}
+
+export function createEmptyTaskDirectorySnapshot() {
+  return encodeTaskDirectorySnapshot({ schema: TASK_DIRECTORY_SNAPSHOT_SCHEMA, entries: [], excluded: [] }, []);
+}
+
+function encodeTaskDirectorySnapshot(manifest: TaskDirectorySnapshotManifest, bodies: Buffer[]) {
   const encoded = Buffer.from(JSON.stringify(manifest));
   const length = Buffer.alloc(4);
   length.writeUInt32BE(encoded.length);
@@ -158,8 +165,8 @@ export async function captureTaskDirectorySnapshot(root: string, options: { limi
   return {
     payload,
     digest: taskDirectoryManifestDigest(manifest),
-    files: walked.entries.filter(entry => entry.type === "file").length,
-    excluded: walked.excluded.length,
+    files: manifest.entries.filter(entry => entry.type === "file").length,
+    excluded: manifest.excluded.length,
   };
 }
 
