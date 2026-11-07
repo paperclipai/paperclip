@@ -75,3 +75,9 @@ describe("composer run settings", () => {
     expect(readComposerRunSettings(grok, "grok_local").effort).toBe("xhigh");
   });
 });
+
+it("does not advertise an inactive primary model for a Pool agent", () => {
+  const pooled = { ...agent("paperclip_runner", "codex"), adapterConfig: { provider: "codex", model: "inactive-primary" }, runtimeConfig: { harnessPool: { poolId: "11111111-1111-4111-8111-111111111111" } } } as Agent;
+  expect(composerDefaultModel(pooled)).toBe("");
+  expect(composerEfforts(pooled, "gpt-5.6-sol", ["gpt-5.6-sol"])).toContain("high");
+});

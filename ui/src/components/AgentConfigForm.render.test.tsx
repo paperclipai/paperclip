@@ -301,11 +301,11 @@ function e2bEnvironments() {
   ];
 }
 
-function renderFormView(root: Root, queryClient: QueryClient, children: Parameters<Root["render"]>[0]) {
+function renderFormView(root: Root, queryClient: QueryClient, children: Parameters<Root["render"]>[0], wrapRouter = false) {
   root.render(
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <TooltipProvider>{children}</TooltipProvider>
+        <TooltipProvider>{wrapRouter ? <MemoryRouter>{children}</MemoryRouter> : children}</TooltipProvider>
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -327,6 +327,7 @@ async function renderForm(
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
+    wrapRouter?: boolean;
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
@@ -356,7 +357,7 @@ async function renderForm(
         onCancelActionChange={options.onCancelActionChange}
         showAdapterTypeField={options.showAdapterTypeField ?? false}
         showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-      />
+      />, options.wrapRouter
     );
   });
 
@@ -729,6 +730,24 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
   });
 
+  it("edits the shared Pool binding without exposing a direct account or model", async () => {
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const list = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([
+      { id: "smart", revision: 1, name: "Smart", enabled: true },
+      { id: "mid", revision: 1, name: "Mid", enabled: true },
+    ]);
+    try {
+      const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "inactive" }, runtimeConfig: { harnessPool: { poolId: "smart" } } }, { showAdapterTypeField: true, wrapRouter: true });
+      roots.push(edited.root);
+      expect(edited.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Pool");
+      expect(edited.container.querySelector('[aria-label="Harness pool"]')).not.toBeNull();
+      expect(edited.container.textContent).toContain("Runner: Paperclip Runner");
+      await act(async () => { const select = edited.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "mid"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await clickByText(edited.container, "Save");
+      expect(edited.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: expect.objectContaining({ harnessPool: { poolId: "mid" } }) }));
+    } finally { list.mockRestore(); }
+  });
+
   it.each([
     { harness: "claude_local", label: "Claude", profile: { provider: "acpx", acpxAgent: "claude" } },
     { harness: "pi_local", label: "Pi", profile: { provider: "acpx", acpxAgent: "pi" } },
@@ -1054,22 +1073,32 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
   });
 
-  it.each([false, true])("keeps experimental native selection gated when enableNativeRunner is %s", async enabled => {
+  it("retains the native source policy when selecting Pool", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const { harnessPoolsApi } = await import("../api/harness-pools");
+    const list = vi.spyOn(harnessPoolsApi, "choices").mockResolvedValue([{ id: "smart", name: "Smart", revision: 1, enabled: true }]);
+    const source = { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5", acpxPermissionMode: "deny-all" };
+    try {
+      const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: source, runtimeConfig: {} }, { showAdapterTypeField: true, wrapRouter: true }); roots.push(result.root);
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      await clickElement(document.querySelector('[role="option"][data-value="pool"]'));
+      await flushReact();
+      await act(async () => { const select = result.container.querySelector<HTMLSelectElement>('[aria-label="Harness pool"]')!; select.value = "smart"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+      await clickByText(result.container, "Save");
+      const patch = result.onSave.mock.calls[0]![0];
+      expect({ ...source, ...patch.adapterConfig }).toMatchObject({ provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "deny-all" });
+      expect(patch.runtimeConfig.harnessPool).toEqual({ poolId: "smart" });
+    } finally { list.mockRestore(); }
+  });
+
+  it.each([false, true])("gates Pool separately from concrete harnesses when enableNativeRunner is %s", async enabled => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: enabled });
-    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
     roots.push(result.root);
     await clickElement(result.container.querySelector('[aria-label="Harness"]'));
-    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.getAttribute("data-value") === "paperclip_runner");
-    expect(Boolean(option)).toBe(enabled);
-    if (!enabled) return;
-    expect(document.body.textContent).toContain("Advanced");
-    await clickElement(option);
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
-      adapterType: "paperclip_runner",
-      adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
-    }));
-    expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
+    const options = [...document.querySelectorAll('[role="option"]')];
+    expect(options.some(element => element.getAttribute("data-value") === "pool")).toBe(enabled);
+    expect(options.some(element => element.getAttribute("data-value") === "paperclip_runner")).toBe(false);
   });
 
   it("preserves Claude's saved runner without runner or legacy command controls when the experimental gate is off", async () => {

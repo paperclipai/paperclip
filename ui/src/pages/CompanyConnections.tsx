@@ -1,3 +1,4 @@
+import { HarnessPoolSettings } from "../components/ai-connections/HarnessPoolSettings";
 import { useEffect } from "react";
 import { Link2 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -34,6 +35,7 @@ export function CompanyConnections() {
         <Link2 className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Connections</h1>
       </div>
+      <HarnessPoolSettings key={`pools-${selectedCompanyId}`} companyId={selectedCompanyId} />
       <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId} />
       <div className="max-w-2xl border-t border-border pt-8">
         <PromptInjectionPreventionSettingsSection key={`injection-${selectedCompanyId}`} companyId={selectedCompanyId} />

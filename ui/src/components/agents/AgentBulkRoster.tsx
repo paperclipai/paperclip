@@ -128,7 +128,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
         <td>{renderStatus ? renderStatus(agent) : <AgentStatusBadge status={agent.status} />}</td>
         <td className="whitespace-nowrap text-xs">{getAdapterLabel(pendingSetup ?? bulkAgentHarness(agent))}</td>
         <td className="text-xs">{pendingSetup ? "Not configured" : ["http", "process"].includes(agent.adapterType) ? "Managed externally" : bulkConnectionName(agentConnection(agent), accounts.data)}</td>
-        <td className="font-mono text-xs">{pendingSetup ? "Not available yet" : agentDefaultModel(agent) ?? "Harness default"}</td>
+        <td className="font-mono text-xs">{pendingSetup ? "Not available yet" : agentDefaultModel(agent) ?? (agent.runtimeConfig.harnessPool ? "From pool" : "Harness default")}</td>
       </tr>;
       })}</tbody>
     </table></div>

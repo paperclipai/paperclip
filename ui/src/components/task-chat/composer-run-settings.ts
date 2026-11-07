@@ -1,3 +1,4 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { resolvePaperclipRunnerModel } from "@paperclipai/adapter-utils";
@@ -29,7 +30,7 @@ export function supportsComposerModel(agent: Agent | undefined): boolean {
 
 /** Resolve visible defaults; host environment and a local CLI's own config are unknown. */
 export function composerDefaultModel(agent: Agent | undefined): string {
-  if (!agent) return "";
+  if (!agent || agent.runtimeConfig?.harnessPool) return "";
   const config = agent.adapterConfig;
   const configured = typeof config.model === "string" ? config.model.trim() : "";
   if (configured) return configured;
@@ -56,7 +57,7 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
   if (!agent) return undefined;
   if (agent.adapterType === "paperclip_runner") return String(agent.adapterConfig.provider ?? "codex");
   if (agent.adapterType !== "opencode_local") return undefined;
-  const binding = aiConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection).data;
+  const binding = aiConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
   const configuredModel = agent.adapterConfig.model;
   return binding?.provider === "openrouter" || typeof configuredModel === "string" && configuredModel.startsWith("openrouter/")
     ? "openrouter" : undefined;
@@ -67,7 +68,7 @@ export function composerEfforts(agent: Agent | undefined, model: string, catalog
   const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
     : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
   if (!effectiveModel) return [];
-  const pool = aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection).data?.mode === "router";
+  const pool = aiRuntimeConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data?.mode === "router";
   if (pool && agent.adapterType === "paperclip_runner") return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : /^claude-/.test(effectiveModel) ? claudeLocalReasoningEffortsForModel(effectiveModel) : [];
   if (agent.adapterType === "codex_local" || (agent.adapterType === "paperclip_runner" && composerCatalogProvider(agent) === "codex")) {
     return isCodexLocalKnownModel(effectiveModel) ? codexLocalReasoningEffortsForModel(effectiveModel) : [];

@@ -1,3 +1,5 @@
+import { Link } from "@/lib/router";
+import { harnessPoolsApi } from "@/api/harness-pools";
 import { useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
@@ -633,6 +635,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
   const effectiveConfig = isCreate ? props.values.adapterSchemaValues ?? {} : { ...config, ...overlay.adapterConfig };
+  const selectedRuntime = (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig;
+  const harnessPoolId = isCreate ? undefined : (selectedRuntime.harnessPool as { poolId?: string } | undefined)?.poolId;
+  const isPoolHarness = harnessPoolId !== undefined;
+  const harnessPools = useQuery({ queryKey: ["harness-pool-choices", selectedCompanyId], queryFn: () => harnessPoolsApi.choices(selectedCompanyId!), enabled: Boolean(selectedCompanyId && isPoolHarness) });
   const harnessType = agentHarnessType(adapterType, effectiveConfig);
   const isCodexHarness = harnessType === "codex_local";
   const runnerProfile = paperclipRunnerProfileForHarness(harnessType);
@@ -1232,7 +1238,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
       const agentId = isCreate ? undefined : props.agent.id;
-      const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
+      const aiConnection = isPoolHarness ? { mode: "router" as const, connectionId: harnessPoolId! } : isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
       const testRunnerSelection = isCursorCloudRunner
@@ -1266,7 +1272,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [testActionError, setTestActionError] = useState<string | null>(null);
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
-  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+  const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId || (isPoolHarness && !harnessPoolId);
 
   // Drop a stale Test result when the adapter type or the effective environment
   // changes. A held result would keep the login affordance visible for a target
@@ -1487,7 +1493,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
-  const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
+  const showThinkingEffort = !isPoolHarness && !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
     && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
@@ -1819,12 +1825,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {showAdapterTypeField && !isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                value={isPoolHarness ? "pool" : isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                poolEnabled={!isCreate && experimentalSettings?.enableNativeRunner === true}
+                poolEligible={adapterType === "paperclip_runner"}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  if (choice === "pool") {
+                    if (isCreate || adapterType !== "paperclip_runner") return;
+                    setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { ...prev.adapterConfig, homeMode: undefined }, runtime: { ...prev.runtime, runtimeConfig: { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: "" } } } }));
+                    return;
+                  }
+                  if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, harnessPool: undefined });
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
                   const external = dot || muse;
@@ -1892,12 +1906,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
+          {!isCreate && adapterType !== "paperclip_runner" && experimentalSettings?.enableNativeRunner === true && <p className="text-sm text-muted-foreground">Upgrade this agent to Paperclip Runner before selecting a Pool harness.</p>}
+          {isPoolHarness && selectedCompanyId && <Field label="Pool" hint="Shared harness, model and account configuration.">
+            <NativeSelect aria-label="Harness pool" disabled={experimentalSettings?.enableNativeRunner !== true} value={harnessPoolId ?? ""} onChange={event => { if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: event.target.value } }); }}>
+              <option value="">Choose a pool</option>{harnessPools.data?.map(pool => <option key={pool.id} value={pool.id} disabled={!pool.enabled}>{pool.name}{pool.enabled ? "" : " (disabled)"}</option>)}
+            </NativeSelect>
+            {experimentalSettings?.enableNativeRunner !== true && <p className="text-sm text-muted-foreground">Enable Paperclip Runner in instance settings before selecting a pool.</p>}
+            {harnessPoolId && harnessPools.isSuccess && !harnessPools.data.some(pool => pool.id === harnessPoolId) && <p role="alert" className="text-sm text-destructive">The saved pool is unavailable. Choose another pool.</p>}
+            {harnessPools.isPending && <p className="text-sm text-muted-foreground">Loading pools…</p>}
+            {harnessPools.error && <p role="alert" className="text-sm text-destructive">{describeError(harnessPools.error).body}</p>}
+            <p className="text-sm text-muted-foreground">Runner: Paperclip Runner · Models and accounts come from the pool. <Link to="/company/settings/connections">Manage pools</Link></p>
+          </Field>}
+          {!isPoolHarness && isRunnerHarness && runnerDiscoveryView.kind === "error" && (
             <QueryErrorState size="inline" error={runnerDiscoveryView.error}
               action="load agent setup data" retrying={runnerDiscoveryView.isFetching}
               onRetry={runnerDiscoveryView.retry} />
           )}
-          {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+          {!isPoolHarness && !isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
@@ -1954,8 +1979,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {renderAdapterFields("adapter")}
-          {isLocal && (<>
+          {!isPoolHarness && renderAdapterFields("adapter")}
+          {!isPoolHarness && isLocal && (<>
               <ModelDropdown
                 models={models}
                 loadingModels={connectionModels?.isLoading ?? (fetchingModels || fetchedModelsView.kind === "reconnecting")}
@@ -4000,6 +4025,8 @@ export function AdapterTypeDropdown({
   openAiDotEnabled = false,
   museEnabled = false,
   nativeRunnerEnabled = false,
+  poolEnabled = false,
+  poolEligible = true,
 }: {
   value: string;
   onChange: (type: string) => void;
@@ -4007,19 +4034,22 @@ export function AdapterTypeDropdown({
   openAiDotEnabled?: boolean;
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
+  poolEnabled?: boolean;
+  poolEligible?: boolean;
 }) {
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
+      ...(poolEnabled && poolEligible && nativeRunnerEnabled && !disabledTypes.has("paperclip_runner") ? [{ value: "pool", label: "Pool", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || (nativeRunnerEnabled && !poolEnabled)) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, poolEnabled, poolEligible]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
-      <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+      <span className="truncate">{value === "pool" ? "Pool" : adapterLabels[value] ?? getAdapterLabel(value)}</span>
       {selectedDisplay.experimental && <ExperimentalBadge />}
     </span>}
     options={adapterList.map(item => ({ value: item.value,

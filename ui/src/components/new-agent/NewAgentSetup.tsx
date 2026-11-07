@@ -1,3 +1,4 @@
+import { PoolAgentSetup } from "./PoolAgentSetup";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/native-model-catalog";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { ExternalAgentInviteDialog } from "./ExternalAgentInviteDialog";
@@ -96,6 +97,7 @@ export function NewAgentSetup() {
         Select an organization to create an agent.
       </p>
     );
+  if (params.get("runnerProvider") === "pool" && params.get("setupAgentId")) return <PoolAgentSetup companyId={selectedCompanyId} agentId={params.get("setupAgentId")!} />;
   if (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse") return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
   return (
     <Setup
@@ -871,6 +873,7 @@ function Setup({
           : "Loading your agent…"}
       </p>
     );
+  if ((created?.runtimeConfig?.harnessPool || savedSetupChoice?.runnerProvider === "pool") && created && !createdAgentId) return <PoolAgentSetup companyId={companyId} agentId={created.id} />;
   if (resumeSavedChoice) return <p role="status" className="text-sm text-muted-foreground">Loading your agent setup…</p>;
   if (choosingAdapter || !name || !adapterType || (created?.metadata?.setupAdapterPending === true && !unreleasedAntigravity))
     return (

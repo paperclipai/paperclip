@@ -10,9 +10,11 @@ export function AiConnectionPoolRunDetails({ context }: { context: Record<string
   const waitingUntil = failover?.waitingUntil && Date.parse(failover.waitingUntil) > Date.now() ? failover.waitingUntil : undefined;
   const reasons: Record<string, string> = { quota: "usage limit reached", auth: "account authentication failed", runner: "provider process interrupted" };
   const reason = reasons[failover?.reason ?? ""];
+  const pool = context?.harnessPoolSelection as { poolName?: string; poolRevision?: number } | undefined;
   const config = selection.runtimeConfig;
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? config.variant;
   return <div className="rounded-lg border p-4 text-sm space-y-1">
+    {pool?.poolName && <p className="font-medium">{pool.poolName} � revision {pool.poolRevision}</p>}
     <p className="font-medium">{failover?.sourceRunId ? "Backup pool account" : "Pool account"} · {accountName ?? connectionId ?? "Selected account"}</p>
     <p>{[selection.binding.provider, selection.adapterType, config.provider, config.acpxAgent, config.model, effort].filter(Boolean).map(String).join(" · ")}</p>
     {failover?.sourceRunId && reason && <p className="text-muted-foreground">Backup selected: {reason}.</p>}

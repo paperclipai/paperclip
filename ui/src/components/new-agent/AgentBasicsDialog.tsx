@@ -147,19 +147,19 @@ export function AgentBasicsDialog({
       const nextProvider = hostedCursor ? "cursor_cloud" : adapterType === "kimi_runtime" ? "kimi" : adapterType === "antigravity_runtime" ? "antigravity" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
       const nextRunner = hostedCursor ? "paperclip" as const : "auto" as const;
       // Pending providers can show setup while the saved name-only draft stays held.
-      const pendingAntigravity = nextProvider === "antigravity" && !antigravityQualified;
+      const heldSetupChoice = nextProvider === "pool" || (nextProvider === "antigravity" && !antigravityQualified);
       if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
         const { setupAdapterChoice: _previousChoice, ...metadata } = agent.metadata ?? {};
         agent = await agentsApi.update(agent.id, {
           name: name.trim(),
-          ...(step === "adapter" && pendingAntigravity ? {
+          ...(step === "adapter" && heldSetupChoice ? {
             metadata: { ...metadata, setupAdapterPending: true,
               setupAdapterChoice: { adapterType: nextAdapter, runnerProvider: nextProvider, runner: "auto" } },
           } : {}),
-          ...(step === "adapter" && !pendingAntigravity ? {
+          ...(step === "adapter" && !heldSetupChoice ? {
             adapterType: nextAdapter, runner: nextRunner,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
-              provider: ["claude", "grok", "copilot", "antigravity", "kimi"].includes(nextProvider) ? "acpx" : nextProvider,
+              provider: nextProvider === "pool" ? "codex" : ["claude", "grok", "copilot", "antigravity", "kimi"].includes(nextProvider) ? "acpx" : nextProvider,
               ...(["claude", "grok", "copilot", "antigravity", "kimi"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
               ...(nextProvider === "grok" ? { model: "grok-4.7" } : {}),
             } : {},
@@ -325,6 +325,7 @@ export function AgentBasicsDialog({
                       placeholder="Choose a native harness…"
                       onValueChange={provider => { setRunnerProvider(provider); setAdapterType("paperclip_runner"); }}
                       options={[
+                        { value: "pool", label: "Pool (Paperclip Runner)" },
                         { value: "grok", label: "Grok Build (Paperclip Runner)" },
                         { value: "opencode", label: "OpenCode (Paperclip Runner)" },
                       ]} />

@@ -28,3 +28,8 @@ describe("bulk agent writes", () => {
     expect(sameBinding(undefined, { mode: "responsible_user", method: "api_key", provider: "openai" })).toBe(false);
   });
 });
+
+it("keeps Pool account/model changes in central pool management", () => {
+  const pooled = { adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, runtimeConfig: { harnessPool: { poolId: "11111111-1111-4111-8111-111111111111" } }, status: "active" } as unknown as Agent;
+  expect(bulkAgentDisabledReason(pooled)).toContain("pool members");
+});
