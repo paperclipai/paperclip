@@ -676,8 +676,20 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         // only when a sibling the transaction would actually reuse exists. A
         // lock that moved to an unrelated run still has no sibling and is still
         // rejected here, so the ownership guarantee is preserved.
+        //
+        // Restricted to the dedicated continuation reasons this harden targets.
+        // Those are the only reasons whose in-transaction fast-path keys on
+        // reason + attempt + live status + issue (and whose in-tx block also
+        // re-checks the execution lock, backstopping this preflight bypass).
+        // For every other reason the sibling predicate would match on
+        // `retryOfRunId` alone — a long-dead successor would qualify — and no
+        // in-transaction lock recheck covers `native_safe_replacement` reasons
+        // such as `interrupted_preparation`, so bypassing the gate there could
+        // schedule onto a stale run while a foreign lock holder is ignored.
         const canCoalesceOntoSibling =
           gate.errorCode === "issue_execution_lock_changed" &&
+          (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+            retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) &&
           (await hasCoalescibleRetrySuccessor());
         if (!canCoalesceOntoSibling) {
           await appendRunEvent(run, {

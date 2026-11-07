@@ -1702,6 +1702,96 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(successors).toHaveLength(0);
   });
 
+  it("rejects a non-continuation retry whose lock moved to an unrelated run even when a stale sibling exists", async () => {
+    // Pins the coalescing bypass to the dedicated continuation reasons.
+    //
+    // The preflight-gate bypass must never fire for a native_safe_replacement
+    // reason such as "interrupted_preparation": its sibling predicate keys on
+    // retryOfRunId alone (no live-status filter), so a long-dead successor row
+    // would satisfy it, and no in-transaction lock recheck backstops that
+    // reason. Without the reason guard the gate is bypassed, the call coalesces
+    // onto a stale `completed` sibling, and the caller is told `scheduled` for a
+    // run that already finished — a dropped retry while a foreign lock holder is
+    // ignored. This is also the mutation canary: neutering
+    // hasCoalescibleRetrySuccessor() to always-true cannot turn this green,
+    // because the reason guard short-circuits before it is consulted.
+    const { companyId, agentId, issueId, runId, now } =
+      await seedMaxTurnFixture();
+
+    // A stale, already-finished successor for this exact predecessor. Matches
+    // the non-continuation sibling predicate (retryOfRunId alone).
+    const staleSuccessorId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: staleSuccessorId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "completed",
+      retryOfRunId: runId,
+      scheduledRetryReason: "interrupted_preparation",
+      contextSnapshot: { issueId },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    // The issue execution lock genuinely belongs to an unrelated running run.
+    const unrelatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: unrelatedRunId })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: "interrupted_preparation",
+      wakeReason: "interrupted_preparation_retry",
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+
+    // The ownership guarantee holds: a foreign lock holder is still rejected,
+    // and the caller is not handed a stale finished run as a fresh schedule.
+    expect(result).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_execution_lock_changed",
+    });
+
+    // No new successor was scheduled; the only row is the pre-seeded stale one,
+    // still finished. (Before the reason guard this call returned the stale
+    // `completed` run as `scheduled`.)
+    const successors = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toEqual([
+      { id: staleSuccessorId, status: "completed" },
+    ]);
+
+    // The lock did not move off the unrelated run.
+    const lockAfter = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockAfter?.executionRunId).toBe(unrelatedRunId);
+  });
+
   it.each(["schedule", "transaction", "promote", "dispatch"] as const)(
     "suppresses a busy-subscription retry whose task lock was cleared before %s",
     async (phase) => {
