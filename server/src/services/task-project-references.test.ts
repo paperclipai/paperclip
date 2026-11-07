@@ -5,6 +5,7 @@ import {
   cases,
   companies,
   createDb,
+  documents,
   documentAnnotationComments,
   documentAnnotationThreads,
   executionAdmissions,
@@ -18,7 +19,7 @@ import {
   subscribeDatabaseWork,
 } from "@paperclipai/db";
 import { scanProjectMentions } from "@paperclipai/shared";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -208,6 +209,61 @@ describe.skipIf(!support.supported)("task project references", () => {
     }
   });
 
+  it("indexes the committed body when a document link and a body edit run concurrently, in either order", async () => {
+    const f = await fixture();
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Concurrent link" }).returning();
+    for (const order of ["edit first", "link first"] as const) {
+      const [doc] = await db.insert(documents).values({ companyId: f.companyId, latestBody: link(f.a) }).returning();
+      const editor = await db.$client.reserve(), linker = await db.$client.reserve();
+      try {
+        await editor`begin`;
+        await linker`begin`;
+        const edit = () => editor`update documents set latest_body = ${link(f.b)} where id = ${doc.id}`.execute();
+        const attach = () => linker`insert into issue_documents (company_id, issue_id, document_id, key)
+          values (${f.companyId}, ${task.id}, ${doc.id}, ${`doc-${order.replace(" ", "-")}`})`.execute();
+        // The second statement waits for the first transaction's row lock, then reads its committed body or link.
+        const [first, firstOwner, second, secondOwner] = order === "edit first"
+          ? [edit, editor, attach, linker] : [attach, linker, edit, editor];
+        await first();
+        const pending = second();
+        await new Promise(done => setTimeout(done, 100));
+        await firstOwner`commit`;
+        await pending;
+        await secondOwner`commit`;
+      } finally {
+        editor.release();
+        linker.release();
+      }
+      expect((await db.select({ projectId: issueProjectReferences.projectId }).from(issueProjectReferences)
+        .where(and(eq(issueProjectReferences.issueId, task.id), eq(issueProjectReferences.sourceId, doc.id)))).map(row => row.projectId))
+        .toEqual([f.b]);
+    }
+    expect(await findTasksReferencingProject(db, { companyId: f.companyId, projectId: f.b })).toEqual([task.id]);
+    expect(await findTasksReferencingProject(db, { companyId: f.companyId, projectId: f.a })).toEqual([]);
+  });
+
+  it("reads the primary project and the task text in one snapshot", async () => {
+    const f = await fixture();
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Snapshot", projectId: f.a }).returning();
+    let raced = false;
+    // A primary and description edit commits between the resolver's statements.
+    const racing = (tx: TestDb) => new Proxy(tx, { get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      if (key !== "execute" || raced) return typeof value === "function" ? value.bind(target) : value;
+      return async (...args: unknown[]) => {
+        raced = true;
+        await db.update(issues).set({ projectId: f.b, description: link(f.c) }).where(eq(issues.id, task.id));
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    } });
+    const result = await inTransaction(tx => resolveTaskProjectReferences(racing(tx), { companyId: f.companyId, issueId: task.id,
+      actor: f.actor, selection: NONE, lockedProjectIds: sorted(f.a, f.c) }));
+    expect(raced).toBe(true);
+    // Never the old primary with the new description: the new primary is outside the locked set.
+    expect(result).toEqual({ kind: "lock_set_changed", missing: 1 });
+    expect(await resolve(f, task.id)).toMatchObject({ kind: "resolved", primaryProjectId: f.b, projectIds: sorted(f.b, f.c) });
+  });
+
   it("detects phantom and in-flight writes by revision, rolls back with the source and signals after the outer commit", async () => {
     const f = await fixture();
     const svc = issueService(db);
@@ -301,6 +357,12 @@ describe.skipIf(!support.supported)("task project references", () => {
     expect(withPlan).not.toMatchObject({ contextRevision: (await resolve(f, task.id) as { contextRevision: string }).contextRevision });
     expect(await findTasksReferencingProject(db, { companyId: f.companyId, projectId: f.c })).toEqual(sorted(parent.id, task.id));
 
+    // A later draft is not supplied while the accepted revision is: its broken link cannot block that context.
+    await documentService(db).upsertIssueDocument({ issueId: task.id, key: "plan", format: "markdown", body: "[draft](project://nope)",
+      baseRevisionId: (await documentService(db).getIssueDocumentByKey(task.id, "plan"))!.latestRevisionId });
+    expect(await resolve(f, task.id, oldPlan)).toMatchObject({ kind: "resolved", projectIds: sorted(f.a, f.b, f.c) });
+    expect(await resolve(f, task.id)).toEqual({ kind: "invalid_references", malformed: 1, unavailable: 0 });
+
     const otherTask = await svc.create(f.companyId, { title: "Other" });
     const foreignPlan = await documentService(db).upsertIssueDocument({ issueId: otherTask.id, key: "plan", format: "markdown", body: "x" });
     expect(await resolve(f, task.id, { ...NONE, acceptedPlanRevisionId: foreignPlan.document.latestRevisionId }))
@@ -309,8 +371,8 @@ describe.skipIf(!support.supported)("task project references", () => {
 
   it("validates a retained session's pinned session, run and admission and carries only that admitted set", async () => {
     const f = await fixture();
-    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: link(f.a) }).returning();
-    const [otherTask] = await db.insert(issues).values({ companyId: f.companyId, title: "Other" }).returning();
+    const [task] = await db.insert(issues).values({ companyId: f.companyId, title: link(f.a), identifier: `${f.prefix}-1` }).returning();
+    const [otherTask] = await db.insert(issues).values({ companyId: f.companyId, title: "Other", identifier: `${f.prefix}-2` }).returning();
     const [otherAgent] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();
     const run = async (issueId = task.id, agentId = f.agentId) =>
       (await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, issueId }).returning())[0].id;
@@ -329,15 +391,21 @@ describe.skipIf(!support.supported)("task project references", () => {
     expect(await hint(f, task.id, resumed)).toEqual({ projectIds: sorted(f.a, f.b) });
     expect(await resolve(f, task.id, resumed)).toMatchObject({ kind: "resolved", projectIds: sorted(f.a, f.b) });
     expect(await resolve(f, task.id, resumed, [f.a])).toEqual({ kind: "lock_set_changed", missing: 1 });
+    // Conversation sessions are often keyed by the task identifier (heartbeat run-state accepts both forms).
+    const keyedRun = await run(), keyedAdmission = await admit(keyedRun, [f.c]);
+    expect(await resolve(f, task.id, retained(await session(keyedRun, f.agentId, `${f.prefix}-1`), keyedRun, keyedAdmission)))
+      .toMatchObject({ kind: "resolved", projectIds: sorted(f.a, f.c) });
 
     const laterRun = await run(), laterAdmission = await admit(laterRun, [f.c]);
     const otherAgentRun = await run(task.id, otherAgent.id);
     const otherTaskRun = await run(otherTask.id);
+    const otherKeyedRun = await run(otherTask.id);
     for (const mismatch of [
       retained(sessionId, laterRun, laterAdmission),                                       // the session has not advanced to that run
       retained(sessionId, runId, laterAdmission),                                          // an admission of another run
       retained(await session(otherAgentRun, otherAgent.id), otherAgentRun, await admit(otherAgentRun, [])), // another agent's session
       retained(await session(otherTaskRun, f.agentId, otherTask.id), otherTaskRun, await admit(otherTaskRun, [])), // another task
+      retained(await session(otherKeyedRun, f.agentId, `${f.prefix}-2`), otherKeyedRun, await admit(otherKeyedRun, [])), // another task's identifier
       retained(randomUUID(), runId, admissionId),
     ]) {
       expect(await resolve(f, task.id, mismatch)).toEqual({ kind: "retained_context_mismatch" });

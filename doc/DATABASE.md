@@ -952,8 +952,12 @@ primaryless and `accepted_plan` rows from accepted plan confirmations. The SQL
 extractor returns every UUID inside a `project://` link, a tested superset of
 the shared parser. The migration backfills existing tasks.
 
-The triggers lock nothing but the changed source's own candidate rows, and the
-table has no foreign keys. A per-task counter or a foreign-key check would lock
+The triggers lock nothing but the changed source's own candidate rows, except
+that a new or moved document link share-locks its document before reading the
+body. That makes the link wait for an open body edit and index the committed
+body, and makes a later body edit wait for the link. Service writers link only
+documents created in the same transaction and edit the document before its
+link, so this adds no cycle. The table has no foreign keys. A per-task counter or a foreign-key check would lock
 the task inside source writes, while many writers lock the task before or after
 their source row (case PATCH against handoff apply, interaction expiry against
 accept, document PUT against runner writes). Task deletion removes the rows,
@@ -961,7 +965,10 @@ and missing or foreign project IDs stay visible.
 
 The projection is only a candidate index. `resolveTaskProjectReferences` runs
 in the caller's transaction after the caller's locks and takes none. It
-re-parses every linked source in one statement with the shared parser.
+reads the primary project and re-parses every linked source in one statement
+(one snapshot) with the shared parser. A selected accepted plan revision
+replaces the latest plan body. A retained session matches by the task's UUID or
+identifier, as heartbeat run state does.
 Summaries, truncation, pagination and workspace staging never shrink the set.
 It returns the complete set and a `contextRevision`, or one of these typed
 outcomes:
