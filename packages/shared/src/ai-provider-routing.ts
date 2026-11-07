@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Value-free routing stored on the connection, never supplied by an agent binding. */
 export const aiProviderRoutingSchema = z
   .object({
-    kind: z.enum(["openrouter", "bedrock", "gateway", "local"]),
+    kind: z.enum(["openrouter", "bedrock", "gateway", "local", "wally"]),
     protocol: z.enum(["responses", "messages", "chat", "bedrock"]),
     baseUrl: z.string().trim().max(2048).optional(),
     auth: z
@@ -49,6 +49,11 @@ export const aiProviderRoutingSchema = z
       (route.baseUrl || route.auth !== "bearer")
     )
       invalid("OpenRouter uses its official endpoint and an API key.");
+    if (
+      route.kind === "wally" &&
+      (route.baseUrl || route.auth !== "bearer" || route.protocol !== "chat")
+    )
+      invalid("Wally uses its official Chat Completions endpoint and an API key.");
     if (route.auth === "api_key" && route.protocol !== "messages")
       invalid("API-key header authentication requires Anthropic Messages.");
     if (route.kind === "gateway" || route.kind === "local") {
@@ -112,17 +117,21 @@ export function isAiRoutingCompatible(
       "pi_local",
       "hermes_local",
     ].includes(harness);
+  if (route.kind === "wally")
+    return ["opencode_local", "hermes_local"].includes(harness);
   if (route.protocol === "responses") return harness === "codex_local";
   if (route.protocol === "messages") return harness === "claude_local";
   return ["opencode_local", "hermes_local"].includes(harness);
 }
+export const WALLY_BASE_URL = "https://inference.runanywhere.ai/v1";
 export function aiRoutingBaseUrl(
   route: AiProviderRouting,
   harness: string,
 ): string {
-  return route.kind === "openrouter"
-    ? `https://openrouter.ai/api${harness === "claude_local" ? "" : "/v1"}`
-    : (route.baseUrl ?? "").replace(/\/+$/, "");
+  if (route.kind === "openrouter")
+    return `https://openrouter.ai/api${harness === "claude_local" ? "" : "/v1"}`;
+  if (route.kind === "wally") return WALLY_BASE_URL;
+  return (route.baseUrl ?? "").replace(/\/+$/, "");
 }
 
 export function aiRoutingModel(
@@ -146,7 +155,7 @@ export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProvi
 
 /** Direct catalog setup presets; legacy gateway links still open their existing setup. */
 export function aiProviderSetupPreset(source: string | null): {
-  provider: "openrouter" | "bedrock" | "gateway" | "local" | "google";
+  provider: "openrouter" | "bedrock" | "gateway" | "local" | "wally" | "google";
   protocol?: AiProviderRouting["protocol"];
   label?: string;
 } | undefined {
@@ -155,7 +164,7 @@ export function aiProviderSetupPreset(source: string | null): {
     case "messages-api": return { provider: "gateway", protocol: "messages", label: "Messages API" };
     case "chat-completions-api": return { provider: "gateway", protocol: "chat", label: "Chat Completions API" };
     case "google-ai": return { provider: "google" };
-    case "google": case "openrouter": case "bedrock": case "gateway": case "local": return { provider: source };
+    case "google": case "openrouter": case "bedrock": case "gateway": case "local": case "wally": return { provider: source };
     default: return undefined;
   }
 }

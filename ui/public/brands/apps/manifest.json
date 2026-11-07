@@ -537,6 +537,12 @@
       "darkAsset": "/brands/apps/openrouter-dark.svg"
     },
     {
+      "slug": "wally",
+      "provider": "Wally",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/wally.svg"
+    },
+    {
       "slug": "xai",
       "provider": "Grok",
       "catalogVisible": true,
