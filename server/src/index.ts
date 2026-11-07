@@ -1729,6 +1729,9 @@ async function startServerWithDatabaseTeardown(
 
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerResidualRecoveryWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    // Lifecycle workers start only after this boot's run recovery is registered,
+    // so a pause or resume left by the previous process sees recovered runs.
+    await app.locals.reconcileAgentLifecycleOnStartup();
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) {
@@ -1912,6 +1915,8 @@ async function startServerWithDatabaseTeardown(
     // this path registers the same startup recovery and pending-work deadlines
     // as the enabled path.
     await startEnvironmentCleanup();
+    // No heartbeat run recovery runs on this path, so lifecycle workers can start now.
+    await app.locals.reconcileAgentLifecycleOnStartup();
   }
   
   if (config.databaseBackupEnabled) {

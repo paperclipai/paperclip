@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import express from "express";
 import request from "supertest";
 import { agentRoutes } from "../../../routes/agents.js";
+import { createApp } from "../../../app.js";
 import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
@@ -427,6 +428,47 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       .where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("reclaims interrupted pause and resume operations only after startup recovery", async () => {
+    const operation = { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 2,
+      leaseOwner: "prior-boot", leaseUntil: new Date(Date.now() + 120_000).toISOString(),
+      retryAt: new Date(Date.now() + 60_000).toISOString() };
+    const rows = await db.insert(agents).values((["pausing", "resuming", "preparing"] as const).map(lifecycleState => ({
+      companyId, name: lifecycleState, adapterType: "process", status: "paused", lifecycleState,
+      lifecycleHolds: lifecycleState === "pausing" ? ["manual"] : [], lifecycleVersion: 1,
+      lifecycleRequiredPluginIds: [], lifecycleOperation: operation,
+    }))).returning();
+    const app = await createApp(db, { uiMode: "none", serverPort: 3100, storageService: {} as never,
+      deploymentMode: "local_trusted", deploymentExposure: "private", allowedHostnames: [], bindHost: "127.0.0.1",
+      authReady: true, companyDeletionEnabled: false,
+      decisionServiceOptions: { wakeOriginAgent: async () => { throw new Error("Unexpected decision wake"); } }, managedPluginAutoInstall: [],
+      announcements: { enabled: false, feedUrl: "https://unused.example.test" } });
+    try {
+      await app.locals.bundledPluginsStartup;
+      expect((await current(rows[0].id)).lifecycleState).toBe("pausing");
+      expect((await current(rows[1].id)).lifecycleState).toBe("resuming");
+      await app.locals.reconcileAgentLifecycleOnStartup();
+      expect(await current(rows[0].id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["manual"] });
+      expect(await current(rows[1].id)).toMatchObject({ lifecycleState: "ready", lifecycleHolds: [], status: "idle" });
+      expect(await current(rows[2].id)).toMatchObject({ lifecycleState: "preparing", lifecycleOperation: operation });
+    } finally { await app.locals.paperclipShutdown(); }
+  });
+
+  it("finishes a board resume during pausing after stopped executions clear the pending backoff", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "Resume during pause", adapterType: "process",
+      status: "paused", lifecycleState: "pausing", lifecycleHolds: ["manual"], lifecycleVersion: 1,
+      lifecycleRequiredPluginIds: [], lifecycleOperation: { id: randomUUID(), hostComplete: false,
+        completedPluginIds: [], attempts: 1, retryAt: new Date(Date.now() + 60_000).toISOString() } }).returning();
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board" }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const response = await request(app).post(`/api/agents/${agent.id}/resume`).send({});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    await work.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleHolds: [] });
+    expect(response.body.lifecycleState).toBe("ready");
   });
 
   it("does not advance termination while a cancelled process still runs", async () => {

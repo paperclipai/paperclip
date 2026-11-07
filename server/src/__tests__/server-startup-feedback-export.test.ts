@@ -104,6 +104,7 @@ const {
     reconciliationSnapshot: () => ({ revision: "startup-coordinator:1", reconciled: true }) }));
   const createAppMock = vi.fn(async (_db: unknown, _options: unknown) => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
+      reconcileAgentLifecycleOnStartup: vi.fn(async () => undefined),
       fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
       deliveryWork: {
         register: deliveryWorkRegisterMock,
@@ -1044,7 +1045,11 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.registerDeferredReceiptWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+    const startedApp = await createAppMock.mock.results.at(-1)!.value;
+    expect(startedApp.locals.reconcileAgentLifecycleOnStartup).toHaveBeenCalledOnce();
     if (enabled) {
+      expect(startedApp.locals.reconcileAgentLifecycleOnStartup).toHaveBeenCalledAfter(heartbeatServiceMock.registerResidualRecoveryWork);
+      expect(heartbeatServiceMock.registerRunDispatchWork).toHaveBeenCalledAfter(startedApp.locals.reconcileAgentLifecycleOnStartup);
       const [coordinator, admitted] = heartbeatServiceMock.registerRunDispatchWork.mock.calls[0];
       const app = await createAppMock.mock.results.at(-1)!.value;
       expect(coordinator).toBe(app.locals.deliveryWork);

@@ -8,7 +8,7 @@ import { updateAgentConfiguration } from "./adapters/configuration.js";
 import type { AgentConfigurationPatch, UpdateAgentOptions } from "../../lib/agent-records.js";
 import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
-import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork } from "./adapters/postgres.js";
+import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork, recoverAgentLifecycleTransitions } from "./adapters/postgres.js";
 import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-policy.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
@@ -49,7 +49,11 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
   const store = createLifecycleStore(db, effects);
   async function change(id: string, command: "pause" | "resume" | "terminate" | "retry", reason?: string) {
     const result = await store.change(id, command, { reason });
-    if (result) scheduleAgentLifecycle(db, id);
+    if (result) {
+      const work = scheduleAgentLifecycle(db, id);
+      // Without a coordinator the worker runs inline, so a resume returns its settled state.
+      if (command === "resume") await work;
+    }
     return result ? records.getById(id) : null;
   }
   async function decideHire(target: HireDecisionTarget, decision: "approved" | "rejected", userId: string, note?: string | null) {
@@ -109,6 +113,7 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
   wakes.set(db, () => {});
   return {
     setWake(wake: () => void) { wakes.set(db, wake); },
+    recover: () => recoverAgentLifecycleTransitions(db),
     nextRunAt: () => nextDeadline,
     async hasPending() {
       if (stopped) { nextDeadline = null; return false; }

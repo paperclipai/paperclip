@@ -10,6 +10,18 @@ export function assertRootDatabase(db: Db) {
   if ("nestedIndex" in db) throw new AgentLifecycleConflict("Lifecycle commands require the root database connection");
 }
 
+/**
+ * Run once per boot after execution recovery and before lifecycle workers start.
+ * A pause or resume interrupted by a restart keeps a lease and backoff from the
+ * stopped process. Clear them so this boot can continue the operation now.
+ * Holds, receipts and the rest of the operation stay unchanged.
+ */
+export async function recoverAgentLifecycleTransitions(db: Db) {
+  await db.update(agents).set({
+    lifecycleOperation: sql`${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil' - 'retryAt'`,
+  }).where(inArray(agents.lifecycleState, ["pausing", "resuming"]));
+}
+
 type LifecycleRow = typeof agents.$inferSelect;
 type ChangeOptions = { version?: number; owner?: string; reason?: string };
 
@@ -66,8 +78,14 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
   if (["complete", "reconcile"].includes(command) && next === "paused" && holds.length === 1 && holds[0] === "setup"
     && await effects.setupRequiresPreparation(tx, agent.companyId, agent.defaultEnvironmentId, agent)) next = "preparing";
   if (next === agent.lifecycleState) {
-    if (JSON.stringify(holds) !== JSON.stringify(agent.lifecycleHolds) || agent.pauseReason !== (holds[0] ?? null)) {
-      const [updated] = await tx.update(agents).set({ lifecycleHolds: holds, pauseReason: holds[0] ?? null }).where(eq(agents.id, agent.id)).returning();
+    // A resume during pausing that removes the last hold finishes the pause
+    // operation as a resume. Clear its failure backoff so the worker can act now.
+    const clearBackoff = command === "resume" && next === "pausing" && !holds.length;
+    if (clearBackoff || JSON.stringify(holds) !== JSON.stringify(agent.lifecycleHolds) || agent.pauseReason !== (holds[0] ?? null)) {
+      const [updated] = await tx.update(agents).set({
+        lifecycleHolds: holds, pauseReason: holds[0] ?? null,
+        ...(clearBackoff ? { lifecycleOperation: sql`${agents.lifecycleOperation} - 'retryAt'` } : {}),
+      }).where(eq(agents.id, agent.id)).returning();
       return updated;
     }
     return agent;
