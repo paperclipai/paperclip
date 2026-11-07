@@ -1288,7 +1288,20 @@ not part of lease identity or metadata. Daytona derives its effective
 on resume (a bounded, best-effort update). Its cached-handle freshness keeps using
 the configured interval until the provider confirms the new one. An explicit `0`
 (auto-stop disabled), a longer configured interval, per-turn, and non-reusable
-sandboxes are unchanged, and idle sandboxes still auto-stop.
+sandboxes are unchanged by the warm floor, and idle sandboxes still auto-stop.
+
+A remote runner also keeps working while its controller is offline, and the host
+reattaches it within the remote runner reconnect grace (7 minutes). Daytona counts
+only SDK and lifecycle calls as activity, so with no controller its idle auto-stop
+runs during the outage; a shorter interval stops the sandbox and kills the runner
+while the host would still reattach it. For every `paperclip_runner` run on a
+sandbox environment the host therefore also forwards `runnerReconnectGraceMs`,
+on acquisition and on recovery resume, under the same provider-only rules. Daytona
+keeps the effective `autoStopInterval` at least the grace plus 5 minutes (12
+minutes today), applies it at creation, and raises an older sandbox's shorter
+interval on recovery resume. An explicit `0` and a longer configured interval are
+unchanged, released sandboxes are still stopped or destroyed by cleanup, and
+leaked sandboxes still auto-stop after the raised interval.
 
 When an admitted continuation reuses a sandbox after verified cleanup, an
 unpublished preparation uses a directory bound to its writer epoch and lease.
