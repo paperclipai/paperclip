@@ -161,4 +161,67 @@ describe("plugin UI static route", () => {
       expect.objectContaining({ signal: expect.any(Object) }),
     );
   });
+
+  it("ignores devUiUrl in production and serves the bundled UI", async () => {
+    process.env.NODE_ENV = "production";
+    readyPlugin(createPluginPackage("export const marker = 'production-static';\n"));
+    mockRegistry.getConfig.mockResolvedValue({
+      configJson: {
+        devUiUrl: "http://localhost:5173/",
+      },
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(boardActor([companyA]));
+
+    const res = await request(app)
+      .get(`/_plugins/${pluginId}/ui/index.js`)
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("production-static");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-loopback devUiUrl targets without proxying", async () => {
+    process.env.NODE_ENV = "development";
+    readyPlugin(createPluginPackage());
+    mockRegistry.getConfig.mockResolvedValue({
+      configJson: {
+        devUiUrl: "http://169.254.169.254/",
+      },
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(boardActor([companyA]));
+
+    const res = await request(app)
+      .get(`/_plugins/${pluginId}/ui/index.js`)
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/localhost/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects encoded absolute paths before they can override the devUiUrl base", async () => {
+    process.env.NODE_ENV = "development";
+    readyPlugin(createPluginPackage());
+    mockRegistry.getConfig.mockResolvedValue({
+      configJson: {
+        devUiUrl: "http://localhost:5173/",
+      },
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await createApp(boardActor([companyA]));
+
+    const res = await request(app)
+      .get(`/_plugins/${pluginId}/ui/https:%2F%2Fevil.example%2Fbundle.js`)
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid file path/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
