@@ -3602,8 +3602,13 @@ export function runnerCodexDynamicToolsFit(
   const supplied = [...tools, ...codexSemanticToolSpecs()];
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
-  return supplied.length <= 256 &&
-    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+  if (supplied.length > 256) return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+  } catch (error) {
+    if (error instanceof Error && error.message === "durable_prp_canonical_json_too_large") return false;
+    throw error;
+  }
 }
 
 /**
