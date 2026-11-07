@@ -278,3 +278,51 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
   );
   return covering ?? null;
 }
+
+
+export type CancelledDependencyHandoff = {
+  issueId: string;
+  assigneeAgentId: string;
+  commentId: string;
+  cancelledBlockerIssueIds: string[];
+};
+
+export function buildCancelledDependencyHandoffWake(handoff: CancelledDependencyHandoff) {
+  return {
+    source: "automation" as const,
+    triggerDetail: "system" as const,
+    // A real persisted system comment uses the existing bounded interaction
+    // path. Cancellation never makes the required work dependency-ready.
+    reason: "issue_commented",
+    idempotencyKey: `issue_dependency_cancelled:${handoff.commentId}`,
+    payload: {
+      issueId: handoff.issueId,
+      commentId: handoff.commentId,
+      mutation: "interaction",
+      cancelledBlockerIssueIds: handoff.cancelledBlockerIssueIds,
+    },
+    contextSnapshot: {
+      issueId: handoff.issueId,
+      taskId: handoff.issueId,
+      commentId: handoff.commentId,
+      wakeCommentId: handoff.commentId,
+      wakeReason: "issue_commented",
+      source: "issue.cancelled_dependency_handoff",
+      cancelledBlockerIssueIds: handoff.cancelledBlockerIssueIds,
+    },
+  };
+}
+
+export async function findExistingCancelledDependencyHandoffWake(
+  db: Db,
+  input: { companyId: string; commentId: string },
+) {
+  return db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status, requestedAt: agentWakeupRequests.requestedAt })
+    .from(agentWakeupRequests)
+    .where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.idempotencyKey, `issue_dependency_cancelled:${input.commentId}`),
+      inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+    ))
+    .then(rows => rows[0] ?? null);
+}
