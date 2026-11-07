@@ -246,7 +246,7 @@ describe("issue execution reconciliation with real routes and Postgres", () => {
     await db.update(issues).set({ status: "blocked", executionState: state, projectId: project!.id,
       executionWorkspaceId: workspace!.id }).where(eq(issues.id, f.issue.id));
     const [product] = await db.insert(issueWorkProducts).values({ companyId: f.company.id,
-      issueId: f.issue.id, type: "branch", provider: "gitea", title: "Task branch", status: "active",
+      issueId: f.issue.id, type: "branch", provider: "github", title: "Task branch", status: "active",
       externalId: "tasks/fixture", metadata: { workspace: "/test-owned/workspace" } }).returning();
     const [before] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id));
     const body = resolutionBody(f.run.id);
