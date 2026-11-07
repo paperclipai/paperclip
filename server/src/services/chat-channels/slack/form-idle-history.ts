@@ -46,3 +46,13 @@ export function completedSlackFormHistoryActionIds(rows: readonly SlackFormHisto
   }
   return [...completed].sort();
 }
+
+export function completedSlackFormSessionReceipt(session: Pick<SlackFormHistoryRow, "id" | "companyId" | "endpointId" | "kind" | "payload" | "result" | "status">) {
+  if (session.kind !== "slack_form_session" || !["processed", "cancelled", "failed"].includes(session.status)) return null;
+  const binding = parseSlackFormBinding(session.payload.binding), work = parseSlackFormAckWork(session.result?.formAck);
+  if (session.status === "failed" && work.receipt?.outcome !== "no_effect") return null;
+  if (binding.companyId !== session.companyId || binding.endpointId !== session.endpointId || work.phase !== "transferred"
+    || !work.receiptJws || !work.receipt || session.result?.nextAttemptAt !== null) return null;
+  assertSlackFormReceiptHistory(session, work.receipt);
+  return work.receipt;
+}

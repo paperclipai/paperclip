@@ -1045,12 +1045,20 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             })
             .onConflictDoNothing()
             .returning({ id: chatActions.id });
-          if (cloudForm && attempt) {
+          if (cloudForm) {
             if (!lease || !cloudForm.environment) throw new SlackCloudReceiptError("form_credential_lease_unavailable", "retry");
             const held = await stageSlackFormSession(tx, { operation: cloudForm.operation, currentBinding: cloudForm.currentBinding,
               principalId: principal.principal.id, resolved, lease, environment: cloudForm.environment });
             cloudForm.sessionActionId = held.actionId;
             if (held.kind !== "update") return { kind: "duplicate" as const };
+            if (!attempt) {
+              const [retainedAttempt] = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, record.endpoint.companyId),
+                eq(chatActions.endpointId, record.endpoint.id), eq(chatActions.conversationId, conversation.id),
+                eq(chatActions.principalId, principal.principal.id), eq(chatActions.kind, "question_form_open_attempt"),
+                eq(chatActions.providerActionId, attemptProviderActionId))).for("update");
+              if (!retainedAttempt || retainedAttempt.status !== "processing") throw new SlackCloudReceiptError("form_open_attempt_unresolved", "attention");
+              return { kind: "ready" as const, attemptActionId: retainedAttempt.id, resolved };
+            }
           }
           return attempt
             ? {

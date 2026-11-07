@@ -49,6 +49,11 @@ export async function stageSlackFormSession(tx: FormTx, input: {
       await closeSlackFormSession(tx, { companyId: binding.companyId, endpointId: binding.endpointId, principalId: principal.id, operationId: op.id }, op.closed.view);
       return { kind: "closed", actionId: old.id };
     }
+    if (old.status === "processing" && old.result?.phase === "update_attempted" && op.phase === "confirmed" && op.view
+      && isDeepStrictEqual(old.result.view, op.view)) {
+      await input.lease.assertOwned(tx);
+      return { kind: "update", actionId: old.id, view: op.view };
+    }
     return { kind: old.status === "cancelled" ? "closed" : "retained", actionId: old.id };
   }
   if (["reserved", "attempted"].includes(op.phase) && !op.closed) throw new SlackCloudReceiptError("form_receipt_pending", "retry");

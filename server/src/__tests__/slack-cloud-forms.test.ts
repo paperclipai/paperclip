@@ -273,3 +273,26 @@ describe("retained form consumer identity", () => {
     expect(result.owner).toEqual({ subject: "github-bot-events", companyId: "company", binding: null, requiresDelivery: true });
   });
 });
+
+
+it("retained session selection keeps unfinished GC custody but completed exact receipt history supplies no consumer", () => {
+  const f = closedProofFixture(), proof = prepareSlackFormProofAcceptance(f.intent, f.operation, "instance");
+  const receipt = { version: 1 as const, kind: "slack_form_finalized" as const, binding: f.intent.binding, environment: "test" as const,
+    operationId: f.intent.operationId, deliveryId: f.intent.deliveryId, appReceiptId: f.row.id, grantId: f.intent.grantId,
+    publicationId: f.intent.publicationId, interactionId: f.intent.interactionId, userId: f.intent.userId,
+    viewDigest: hash(JSON.stringify([f.intent.view!.id, f.intent.view!.hash, f.intent.view!.externalId])),
+    terminalDigest: proof.terminalDigest, outcome: "closed" as const, finalizedAt: f.operation.acceptedAt };
+  const base = { ...f.row, payload: { ...f.row.payload, environment: "test" }, result: { ...f.row.result, cloudProofAcceptance: proof,
+    formAck: { version: 1, phase: "transferred", leaseId: "exact-lease", deliveryId: receipt.deliveryId, receiptJws: "a.b.c", receipt }, nextAttemptAt: null } };
+  const identity = { instanceId: "instance", environment: "test" as const };
+  expect(selectSlackFormRetainedConsumer([base], identity)).toEqual({ owner: null, attention: [] });
+  for (const phase of ["accepted", "gc_pending"]) {
+    const pending = { ...base, result: { ...base.result, formAck: { ...base.result.formAck, phase }, nextAttemptAt: f.operation.acceptedAt } };
+    expect(selectSlackFormRetainedConsumer([pending], identity).owner).toMatchObject({ companyId: f.row.companyId, subject: "github-bot-events", requiresDelivery: false });
+  }
+  const malformed = { ...base, result: { ...base.result, formAck: { ...base.result.formAck, receipt: { ...receipt, binding: { ...receipt.binding, companyId: "foreign" } } } } };
+  const result = selectSlackFormRetainedConsumer([malformed], identity);
+  expect(result.owner !== null || result.attention.length > 0).toBe(true);
+  const stillDue = { ...base, result: { ...base.result, nextAttemptAt: f.operation.acceptedAt } };
+  expect(selectSlackFormRetainedConsumer([stillDue], identity).owner).not.toBeNull();
+});

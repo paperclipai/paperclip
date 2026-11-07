@@ -5,6 +5,7 @@ import {
   generateKeyPairSync,
   hkdfSync,
   randomBytes,
+  sign,
   type KeyObject,
 } from "node:crypto";
 import { SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
@@ -21,6 +22,9 @@ import {
   PaperclipCloudConnectorError,
   type PaperclipCloudConnectorConfig,
 } from "./paperclip-cloud-connector.js";
+
+import { parseSlackFormFinalizedReceipt } from "./chat-channels/slack/ack-receipt.js";
+import { verifySlackFormFinalizedReceipt } from "./chat-channels/slack/receipt-authority.js";
 
 const instanceId = "inst_test";
 const companyId = "company_test";
@@ -858,5 +862,58 @@ describe("sealed Slack event connector transport", () => {
     expect(new URL(String(url)).pathname).toBe("/v1/connector/slack-events");
     expect(typeof init.body).toBe("string");
     expect(JSON.parse(String(init.body))).toMatchObject({ enrollment: JSON.stringify(enrollment) });
+  });
+});
+
+
+describe("Slack form normal connector terminal reply contracts", () => {
+  it("returns current signed refresh and GC-only replies through the actual signed connector", async () => {
+    const keys = config(), pair = generateKeyPairSync("ed25519"), kid = "connector-terminal-reply";
+    const canonical = parseSlackFormFinalizedReceipt({ version: 1, kind: "slack_form_finalized", environment: keys.config.environment,
+      binding: { version: 1, instanceId, companyId, endpointId: "endpoint", publicId: "p".repeat(43), connectionId: "connection",
+        runtimeGeneration: 1, teamId: "TTEST", appId: "ATEST", eventBindingId: "slack-event:" + "b".repeat(64), credentialFingerprint: "c".repeat(64) },
+      operationId: "a".repeat(64), deliveryId: "slack_form_" + "a".repeat(64), appReceiptId: "11111111-1111-4111-8111-111111111111",
+      grantId: "grant", publicationId: "publication", interactionId: "interaction", userId: "UTEST", viewDigest: null,
+      terminalDigest: "d".repeat(64), outcome: "no_effect", finalizedAt: "2026-11-07T00:00:00.000Z" });
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const unsigned = encode({ alg: "EdDSA", typ: "paperclip-connector-ack-receipt+jwt", kid }) + "."
+      + encode({ v: 1, iss: "paperclip-cloud", aud: "paperclip-connector-ack-receipt/v1", sub: instanceId, receipt: canonical });
+    const compactJws = unsigned + "." + sign(null, Buffer.from(unsigned), pair.privateKey).toString("base64url");
+    const operations: Record<string, unknown>[] = [];
+    let reply: unknown = { ackReceiptJws: compactJws };
+    const request = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      const parts = String(body.request).split("."); expect(parts).toHaveLength(3);
+      const claims = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+      expect(claims.sub).toBe(subject); expect(claims.cid).toBe(companyId);
+      expect(claims.sh).toBe(createHash("sha256").update(body.operation).digest("base64url"));
+      operations.push(JSON.parse(body.operation));
+      return Response.json({ slackForm: reply });
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request });
+    const refresh = { kind: "receipt", binding: { instanceId }, operationId: canonical.operationId, refreshAckReceipt: true };
+    await expect(connector.slackFormOperation({ subject, companyId, operation: refresh })).resolves.toEqual({ ackReceiptJws: compactJws });
+    const digest = "d".repeat(64);
+    reply = { releasedAckDigest: digest };
+    const release = { kind: "receipt", binding: { instanceId }, operationId: canonical.operationId, releaseAckFact: true };
+    await expect(connector.slackFormOperation({ subject, companyId, operation: release })).resolves.toEqual({ releasedAckDigest: digest });
+    expect(operations).toEqual([refresh, release]); expect(request).toHaveBeenCalledTimes(2);
+    expect(verifySlackFormFinalizedReceipt({ compactJws, env: { PAPERCLIP_CLOUD_STACK_ID: instanceId,
+      PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid, alg: "EdDSA", use: "sig" }] }) } })).toEqual(canonical);
+  });
+  it("does not confuse refresh, release, acceptance or sealed operation responses", async () => {
+    const keys = config(); let reply: unknown;
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: vi.fn<typeof fetch>(async () => Response.json({ slackForm: reply })) });
+    const call = (operation: Record<string, unknown>) => connector.slackFormOperation({ subject, companyId, operation: { kind: "receipt", ...operation } });
+    for (const invalid of [{ releasedAckDigest: "d".repeat(64) }, { ackReceiptJws: "missing.signature" },
+      { ackReceiptJws: "a.b.c", extra: true }, { acceptedReceiptDigest: "d".repeat(64), needsTerminalOriginal: false }, { sealed: {} }]) {
+      reply = invalid; await expect(call({ refreshAckReceipt: true })).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+    }
+    for (const invalid of [{ ackReceiptJws: "a.b.c" }, { releasedAckDigest: "invalid" }, { releasedAckDigest: "d".repeat(64), extra: true }]) {
+      reply = invalid; await expect(call({ releaseAckFact: true })).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+    }
+    reply = { releasedAckDigest: "d".repeat(64) };
+    await expect(call({ acceptedAckReceipt: "a.b.c" })).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+    await expect(call({})).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
   });
 });

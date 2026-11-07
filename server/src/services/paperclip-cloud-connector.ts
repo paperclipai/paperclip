@@ -420,6 +420,18 @@ export function createPaperclipCloudConnector(input: {
     async slackFormOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }) {
       const response = await call("slack-forms", values, { field: "operation", value: JSON.stringify(values.operation) });
       if (!isRecord(response.slackForm)) throw badEnvelope();
+      if (values.operation.kind === "receipt" && values.operation.refreshAckReceipt !== undefined) {
+        if (values.operation.acceptedAckReceipt !== undefined || values.operation.releaseAckFact !== undefined
+          || Object.keys(response.slackForm).join() !== "ackReceiptJws" || typeof response.slackForm.ackReceiptJws !== "string"
+          || Buffer.byteLength(response.slackForm.ackReceiptJws, "ascii") > 12000
+          || !/^[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+[.][A-Za-z0-9_-]+$/.test(response.slackForm.ackReceiptJws)) throw badEnvelope();
+        return response.slackForm;
+      }
+      if (values.operation.kind === "receipt" && values.operation.releaseAckFact !== undefined) {
+        if (values.operation.acceptedAckReceipt !== undefined || Object.keys(response.slackForm).join() !== "releasedAckDigest"
+          || typeof response.slackForm.releasedAckDigest !== "string" || !/^[a-f0-9]{64}$/.test(response.slackForm.releasedAckDigest)) throw badEnvelope();
+        return response.slackForm;
+      }
       if (values.operation.kind === "receipt" && values.operation.acceptedAckReceipt !== undefined) {
         if (Object.keys(response.slackForm).sort().join() !== "acceptedReceiptDigest,needsTerminalOriginal" || typeof response.slackForm.acceptedReceiptDigest !== "string"
           || !/^[a-f0-9]{64}$/.test(response.slackForm.acceptedReceiptDigest) || typeof response.slackForm.needsTerminalOriginal !== "boolean") throw badEnvelope();

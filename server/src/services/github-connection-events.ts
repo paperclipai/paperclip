@@ -1,6 +1,5 @@
 import { parseSlackFormOperation } from "./chat-channels/slack/cloud-forms.js";
-import { stageSlackFormNormalAck, acceptSlackFormAckReceipt } from "./chat-channels/slack/form-ack-work.js";
-import { slackFormConnectorIdentity } from "./chat-channels/slack/cloud-consumer.js";
+import { acknowledgeSlackFormDeliveries } from "./chat-channels/slack/form-normal-ack.js";
 import { readSlackFormRetainedConsumer } from "./chat-channels/slack/cloud-consumer.js";
 import { reconcileRegisteredSlackFormWork } from "./chat-channels/slack/form-owner.js";
 import { SlackCloudReceiptError } from "./chat-channels/slack/cloud-event.js";
@@ -647,34 +646,8 @@ export function githubConnectionEventService(
       }
     }
     if (acknowledge.length > 0) {
-      const formIds = acknowledge.filter(id => /^slack_form_[a-f0-9]{64}$/.test(id));
-      const values = { subject: first.subject, companyId: first.companyId, leaseId: lease.leaseId, deliveryIds: acknowledge };
-      if (!formIds.length) await connector.acknowledgeEvents(values);
-      else {
-        const identity = slackFormConnectorIdentity(connector), detailed = Reflect.get(connector, "acknowledgeEventsWithReceipts");
-        if (!identity || typeof detailed !== "function") throw new SlackCloudReceiptError("form_ack_receipts_unsupported", "attention");
-        for (const deliveryId of formIds) {
-          const companyId = formCompanies.get(deliveryId);
-          if (!companyId) throw new SlackCloudReceiptError("form_ack_company_missing", "attention");
-          await db.transaction(tx => stageSlackFormNormalAck(tx, { companyId, instanceId: identity.instanceId, leaseId: lease.leaseId, deliveryIds: [deliveryId] }));
-        }
-        const response: unknown = await Reflect.apply(detailed, connector, [values]);
-        if (!response || typeof response !== "object" || Array.isArray(response) || !Array.isArray(Reflect.get(response, "formReceipts")))
-          throw new SlackCloudReceiptError("form_ack_receipts_invalid", "attention");
-        const receipts: unknown = Reflect.get(response, "formReceipts");
-        if (!Array.isArray(receipts) || receipts.length !== formIds.length) throw new SlackCloudReceiptError("form_ack_receipts_invalid", "attention");
-        const seen = new Set<string>();
-        for (const value of receipts) {
-          if (!value || typeof value !== "object" || Array.isArray(value)) throw new SlackCloudReceiptError("form_ack_receipts_invalid", "attention");
-          const deliveryId: unknown = Reflect.get(value, "deliveryId"), receiptJws: unknown = Reflect.get(value, "receiptJws");
-          if (typeof deliveryId !== "string" || !formIds.includes(deliveryId) || seen.has(deliveryId) || typeof receiptJws !== "string")
-            throw new SlackCloudReceiptError("form_ack_receipts_invalid", "attention");
-          seen.add(deliveryId);
-          const companyId = formCompanies.get(deliveryId);
-          if (!companyId) throw new SlackCloudReceiptError("form_ack_company_missing", "attention");
-          await db.transaction(tx => acceptSlackFormAckReceipt(tx, { companyId, instanceId: identity.instanceId, leaseId: lease.leaseId, receiptJws }));
-        }
-      }
+      await acknowledgeSlackFormDeliveries(db, { connector,
+        values: { subject: first.subject, companyId: first.companyId, leaseId: lease.leaseId, deliveryIds: acknowledge }, companies: formCompanies });
     }
     for (const deliveryId of lease.failedEventIds ?? []) {
       logger.warn({ deliveryId, reason: "inner_event_authentication_failed" },

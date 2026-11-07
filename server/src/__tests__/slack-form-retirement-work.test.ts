@@ -1,3 +1,8 @@
+import { readSlackFormRetainedConsumer } from "../services/chat-channels/slack/cloud-consumer.js";
+import { transferSlackFormAckReceipt } from "../services/chat-channels/slack/form-ack-work.js";
+import { parseSlackFormFinalizedReceipt, slackFormFinalizedReceiptDigest } from "../services/chat-channels/slack/ack-receipt.js";
+import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -210,6 +215,56 @@ if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1" && !external) throw new Error(
     await db.execute(sql.raw(`DROP TRIGGER ${trigger} ON chat_actions`)); await db.execute(sql.raw(`DROP FUNCTION ${trigger}()`));
     await transferSlackFormRetirement(db, await row(), identity, protocol); expect((await row()).result?.phase).toBe("retirement_gc_pending"); expect(releases).toBe(0);
     await transferSlackFormRetirement(db, await row(), identity, protocol); expect((await row()).result?.phase).toBe("transferred"); expect(releases).toBe(1);
+  });
+
+  it("a real paused endpoint polls reconstructed GC debt but completed exact session history stops recurring empty leases", async () => {
+    await acceptSlackFormRetirementLocally(db, await row(), identity, compactJws);
+    const retirementDigest = slackFormRetirementReceipt(binding, identity.environment, actorId).receiptId;
+    const retirementProtocol = async (input: { operation: Record<string, unknown> }) => input.operation.refreshRetirementReceipt
+      ? { retirementReceiptJws: compactJws } : input.operation.acceptedRetirementReceipt
+        ? { acceptedRetirementDigest: retirementDigest } : { releasedRetirementDigest: retirementDigest };
+    await transferSlackFormRetirement(db, await row(), identity, retirementProtocol);
+    await transferSlackFormRetirement(db, await row(), identity, retirementProtocol);
+    expect((await row()).result?.phase).toBe("transferred");
+    expect((await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId)))[0]?.status).toBe("paused");
+    const sessionId = randomUUID(), operationId = "c".repeat(64), deliveryId = `slack_form_${operationId}`, now = new Date().toISOString();
+    const receipt = parseSlackFormFinalizedReceipt({ version: 1, kind: "slack_form_finalized", environment: identity.environment, binding,
+      operationId, deliveryId, appReceiptId: sessionId, grantId: "grant", publicationId: "publication", interactionId: "interaction", userId: "UTEST",
+      viewDigest: null, terminalDigest: "d".repeat(64), outcome: "no_effect", finalizedAt: now });
+    const pair = generateKeyPairSync("ed25519"), kid = "session-canonical-control";
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const input = encode({ alg: "EdDSA", typ: "paperclip-connector-ack-receipt+jwt", kid }) + "." + encode({ v: 1, iss: "paperclip-cloud", aud: "paperclip-connector-ack-receipt/v1", sub: identity.instanceId, receipt });
+    const receiptJws = input + "." + sign(null, Buffer.from(input), pair.privateKey).toString("base64url");
+    const terminalIntent = { version: 1, binding, operationId, deliveryId, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction",
+      appReceiptId: sessionId, view: null, outcome: "no_effect", submitReceiptId: null, rejectionDigest: receipt.terminalDigest, encryptedEvidence: null };
+    await db.insert(chatActions).values({ id: sessionId, companyId, endpointId, kind: "slack_form_session", providerActionId: `slack-form-session:${operationId}`,
+      status: "failed", payload: { binding, environment: identity.environment, operationId, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction" },
+      result: { phase: "not_opened", terminalIntent,
+        cloudProofAcceptance: { version: 1, binding, operationId, appReceiptId: sessionId, outcome: "no_effect", terminalDigest: receipt.terminalDigest, acceptedAt: now },
+        formAck: { version: 1, phase: "gc_pending", leaseId: "exact-session-lease", deliveryId, receiptJws, receipt }, nextAttemptAt: now } });
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const signPrivateKey = signing.privateKey.export({ format: "jwk" }).d, sealPrivateKey = sealing.privateKey.export({ format: "jwk" }).d;
+    if (!signPrivateKey || !sealPrivateKey) throw new Error("normal controlled connector private keys absent");
+    const connector = createPaperclipCloudConnector({ config: { baseUrl: "https://broker.example.test", instanceId: identity.instanceId,
+      environment: identity.environment, signPrivateKey, sealPrivateKey }, request: async () => { throw new Error("Unexpected external connector request"); } });
+    const lease = vi.spyOn(connector, "leaseEvents").mockResolvedValue(null);
+    expect((await readSlackFormRetainedConsumer(db, connector)).owner).toMatchObject({ companyId, requiresDelivery: false });
+    const pendingWorker = githubConnectionEventService(db, { connector, env: { PAPERCLIP_GITHUB_EVENT_POLLING: "1" } });
+    await pendingWorker.pollOnce(); expect(lease).toHaveBeenCalledTimes(1); expect(pendingWorker.nextPollAt()).not.toBeNull();
+    let releases = 0;
+    await transferSlackFormAckReceipt(db, { companyId, actionId: sessionId, instanceId: identity.instanceId, protocol: async values => {
+      expect(values.subject).toBe("github-bot-events"); expect(values.companyId).toBe(companyId);
+      expect(values.operation).toEqual({ kind: "receipt", binding, operationId, deliveryId,
+        releaseAckFact: { leaseId: "exact-session-lease", receiptDigest: slackFormFinalizedReceiptDigest(receipt), appReceiptId: sessionId } });
+      releases++; return { releasedAckDigest: slackFormFinalizedReceiptDigest(receipt) };
+    } });
+    const [completed] = await db.select().from(chatActions).where(and(eq(chatActions.id, sessionId), eq(chatActions.companyId, companyId)));
+    expect(completed?.result?.formAck).toMatchObject({ phase: "transferred", leaseId: "exact-session-lease", receipt });
+    expect(completed?.result?.nextAttemptAt).toBeNull(); expect(releases).toBe(1);
+    expect(await readSlackFormRetainedConsumer(db, connector)).toEqual({ owner: null, attention: [] });
+    const completedWorker = githubConnectionEventService(db, { connector, env: { PAPERCLIP_GITHUB_EVENT_POLLING: "1" } });
+    await completedWorker.pollOnce(); expect(lease).toHaveBeenCalledTimes(2); expect(completedWorker.nextPollAt()).toBeNull();
+    await completedWorker.pollOnce(); expect(lease).toHaveBeenCalledTimes(2);
   });
 
 });

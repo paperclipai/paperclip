@@ -1,3 +1,4 @@
+import { completedSlackFormSessionReceipt } from "./form-idle-history.js";
 import { and, inArray, sql } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 import { projectSlackFormRetainedOwner, type SlackFormRetainedRow } from "./form-session.js";
@@ -25,6 +26,8 @@ export function selectSlackFormRetainedConsumer(rows: readonly SlackFormRetained
   for (const row of rows) {
     try {
       const value = projectSlackFormRetainedOwner(row, identity.instanceId, identity.environment);
+      if (value && row.kind === "slack_form_session" && row.result?.formAck && typeof row.result.formAck === "object"
+        && Reflect.get(row.result.formAck, "phase") === "transferred" && completedSlackFormSessionReceipt(row)) continue;
       if (value && !owner) owner = value;
     } catch {
       attention.push({ actionId: row.id, code: "form_retained_owner_invalid" });
