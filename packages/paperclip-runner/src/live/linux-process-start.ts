@@ -38,3 +38,48 @@ export function readLinuxProcessStartedAt(pid: number, options: LinuxProcessStar
   }
   return new Date(value).toISOString();
 }
+
+/** OS start time of a local process as an ISO string, or null when it cannot be read. */
+export function readLocalProcessStartedAt(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      return readLinuxProcessStartedAt(pid);
+    }
+    if (
+      ["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(
+        process.platform,
+      )
+    ) {
+      const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      }).trim();
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    if (process.platform === "win32") {
+      const script = [
+        `$target = Get-Process -Id ${pid} -ErrorAction Stop`,
+        "$target.StartTime.ToUniversalTime().ToString('o')",
+      ].join("; ");
+      for (const command of ["powershell.exe", "pwsh.exe"]) {
+        try {
+          const raw = execFileSync(
+            command,
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", timeout: 1_500, windowsHide: true },
+          ).trim();
+          const parsed = new Date(raw);
+          if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+        } catch {
+          // Try the other supported PowerShell host.
+        }
+      }
+    }
+  } catch {
+    // Process exit and restricted process metadata both produce no fingerprint.
+  }
+  return null;
+}

@@ -1188,6 +1188,12 @@ describe("OpenCodeServerDriver", () => {
     expect(
       events.filter((event) => event.eventType === "item.delta"),
     ).toHaveLength(1);
+    // The session names the exact spawned `opencode serve`, so cleanup can prove it is gone.
+    expect(events.find((event) => event.eventType === "session.started")?.payload).toMatchObject({
+      processId: spawns[0]!.pid,
+      processGroupId: spawns[0]!.processGroupId,
+      processStartedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    });
     expect(
       events.find((event) => event.eventType === "item.delta")?.payload.text,
     ).toBe("done [guide](guide.md)");

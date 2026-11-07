@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "../openrouter-attribution.js";
+import { readLocalProcessStartedAt } from "../../live/linux-process-start.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -231,6 +232,8 @@ interface OpenCodeRuntime {
   version: string;
   permissionMode: "allow" | "ask" | "deny";
   process: ChildProcess;
+  /** OS identity of the spawned `opencode serve`, so cleanup can prove that exact process is gone. */
+  processIdentity: { processId: number; processGroupId: number | null; processStartedAt: string | null } | null;
   bridge: OpenCodeMcpBridge;
   trace: ProviderTraceFileSink | null;
   sensitiveValues: readonly string[];
@@ -624,6 +627,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emit(input.snapshot ? "session.resumed" : "session.started", {
       driverSessionId: input.providerSessionId,
       providerSessionId: input.providerSessionId,
+      ...(input.runtime.processIdentity ?? {}),
       context: {
         protocolVersion: "http+sse/v1",
         opencodeVersion: input.runtime.version,
@@ -2726,6 +2730,11 @@ async function startRuntime(input: {
       providerChild.once("spawn", resolve);
       providerChild.once("error", reject);
     });
+    const processIdentity = child.pid ? {
+      processId: child.pid,
+      processGroupId: globalThis.process.platform === "win32" || !isolateProcessGroup ? null : child.pid,
+      processStartedAt: readLocalProcessStartedAt(child.pid),
+    } : null;
     if (child.pid)
       await input.options.onSpawn?.({
         pid: child.pid,
@@ -2762,6 +2771,7 @@ async function startRuntime(input: {
       version,
       permissionMode: input.options.permissionMode ?? "allow",
       process: child,
+      processIdentity,
       bridge,
       trace: input.trace,
       sensitiveValues,
