@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { attentionApi } from "../api/attention";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
@@ -181,6 +182,8 @@ import {
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import { coordinatorAttentionTasksQueryKey } from "../lib/coordinator-attention";
+import { filterInboxInReviewIssues } from "../lib/inbox-in-review";
 import {
   captureInboxOrderPin,
   reconcileInboxOrderPin,
@@ -1186,13 +1189,29 @@ function StreamlinedInbox({
     [companyMembers?.users],
   );
 
+  // Tasks that need this viewer. In-review tasks outside it are not asks.
+  const { data: attentionTaskIndex } = useQuery({
+    queryKey: coordinatorAttentionTasksQueryKey(selectedCompanyId!),
+    queryFn: () => attentionApi.taskIndex(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!currentUserId,
+  });
+  const attentionTaskIds = useMemo(
+    () => (attentionTaskIndex ? new Set(attentionTaskIndex.taskIds) : null),
+    [attentionTaskIndex],
+  );
   const mineIssues = useMemo(
-    () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, mineIssuesRaw],
+    () => filterInboxInReviewIssues(
+      getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+      { attentionTaskIds, statuses: issueFilters.statuses },
+    ),
+    [attentionTaskIds, issueFilters.statuses, locallyArchivedIssueIds, mineIssuesRaw],
   );
   const touchedIssues = useMemo(
-    () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, touchedIssuesRaw],
+    () => filterInboxInReviewIssues(
+      getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
+      { attentionTaskIds, statuses: issueFilters.statuses },
+    ),
+    [attentionTaskIds, issueFilters.statuses, locallyArchivedIssueIds, touchedIssuesRaw],
   );
   const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
   const sourceSearchQuery = useQuery<Issue[]>({
