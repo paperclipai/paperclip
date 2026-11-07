@@ -191,6 +191,17 @@ describe("governed retained-file recovery", () => {
     expect(api.recover).not.toHaveBeenCalled();
   });
 
+  it("does not request recovery when the source stops verifying between render and click", async () => {
+    api.inspect.mockResolvedValueOnce(inspection()).mockResolvedValueOnce({ ...inspection(), sourceInspection: {
+      ...inspection().sourceInspection, status: "blocked", failureCode: "allocation_ownership_ambiguous" } });
+    await mount();
+    await click("Recover saved files");
+    expect(api.recover).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
+    expect(container.textContent).not.toContain("File recovery changed");
+    expect(button("Recover saved files")).toBeUndefined();
+  });
+
   it("keeps naming the unverified source after an accepted request failed", async () => {
     const key = "accepted-request";
     writePendingSend("workspace-file-recovery:company-1:issue-1:legacy-hold:run-1:board-1",

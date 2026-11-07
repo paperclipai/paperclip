@@ -25,8 +25,10 @@ export function useTaskRetry(issue: Issue | undefined) {
       {
         for (const ref of refs) queryClient.setQueryData<Issue>(queryKeys.issues.detail(ref), current =>
           current ? { ...current, interruption: result.presentation } : current);
+        // Retry can queue retained-file recovery; refresh its inspected state too.
         await Promise.all(refs.flatMap(ref => [queryKeys.issues.detail(ref), queryKeys.issues.runs(ref),
-          queryKeys.issues.liveRuns(ref), queryKeys.issues.activeRun(ref)]).map(queryKey =>
+          queryKeys.issues.liveRuns(ref), queryKeys.issues.activeRun(ref),
+          queryKeys.issues.allRecoveryActions(ref)]).map(queryKey =>
           queryClient.invalidateQueries({ queryKey })));
       }
       if (isCurrent && !request.current) { setOptimistic(false); setTakingLonger(false); }
