@@ -586,13 +586,16 @@ async function captureSandboxWorkspaceArchive(input: {
 }
 
 export async function restoreRemoteWorkspaceDirectory(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; allowEmptyRoot?: boolean;
+  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; restorationEpoch?: number; allowEmptyRoot?: boolean;
   allocationFiles?: Array<{ relativePath: string; sha256: string }>;
   /** The server proved this sandbox's root is the workspace's own earlier allocation, fully saved. */
   replaceRetiredRoot?: boolean;
 }) {
   if (input.replaceRetiredRoot && input.allowEmptyRoot) throw new Error("remote_workspace_restore_mode_invalid");
+  if (input.restorationEpoch !== undefined && (!Number.isSafeInteger(input.restorationEpoch) || input.restorationEpoch < 1))
+    throw new Error("remote_workspace_restore_epoch_invalid");
   if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
+  if (!/^[a-f0-9]{64}$/.test(input.manifestDigest)) throw new Error("remote_workspace_restore_manifest_invalid");
   const id = input.restorationIdentity;
   const operationId = `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
   // Stage outside the destination; the restore validator requires an empty target.
@@ -605,8 +608,12 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
   ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='validate';
-  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles,replaceRetired]=process.argv.slice(1),files=JSON.parse(rawFiles);
-   if(!/^[a-f0-9]{64}$/.test(identity)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
+  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles,replaceRetired,rawEpoch]=process.argv.slice(1),files=JSON.parse(rawFiles);
+   const validEpoch=value=>Number.isSafeInteger(value)&&value>0,restorationEpoch=rawEpoch===undefined||rawEpoch===''?null:Number(rawEpoch);
+   if(restorationEpoch!==null&&!validEpoch(restorationEpoch))throw Error('invalid_epoch');
+   const completedReceipt=(id,manifestDigest,epoch)=>epoch===null?{identity:id,manifestDigest}
+    :{schema:'paperclip.workspace-restored.v1',root,restorationEpoch:epoch,identity:id,manifestDigest};
+   if(!/^[a-f0-9]{64}$/.test(identity)||!/^[a-f0-9]{64}$/.test(digest)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
    for(const file of files)if(!/^\.paperclip-runtime\/[a-zA-Z0-9_-]+\.json$/.test(file.relativePath)
      ||file.relativePath==='.paperclip-runtime/workspace-restored.json'||!/^[a-f0-9]{64}$/.test(file.sha256))throw Error('invalid_allocation');
    if(new Set(files.map(file=>file.relativePath)).size!==files.length)throw Error('invalid_allocation');
@@ -650,21 +657,88 @@ export async function restoreRemoteWorkspaceDirectory(input: {
       if(['workspace-ready.json','workspace-restored.json','workspace-snapshots'].includes(name)||await stat(path.join(to,name)))continue;
       await fs.rename(path.join(from,name),path.join(to,name));}}
     stage='cleanup_parked';await open(retired);await fs.rm(retired,{recursive:true,force:true});};
+   const pendingInPlace=receipt=>receipt.schema==='paperclip.workspace-restore-pending.v1'&&receipt.root===root&&validEpoch(receipt.restorationEpoch)
+    &&typeof receipt.pendingIdentity==='string'&&/^[a-f0-9]{64}$/.test(receipt.pendingIdentity)
+    &&typeof receipt.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(receipt.manifestDigest)
+    &&Number.isSafeInteger(receipt.inPlaceMode)&&receipt.inPlaceMode>=0&&receipt.inPlaceMode<=0o7777;
+   const finishInPlace=async receipt=>{
+    if(!pendingInPlace(receipt))throw Error('unsafe_receipt');
+    stage='cleanup_replaced';await fs.rm(path.join(root,'.paperclip-runtime','workspace-ready.json'),{force:true});
+    await fs.chmod(root,receipt.inPlaceMode);
+    stage='commit_replaced';const marker=path.join(root,'.paperclip-runtime','workspace-restored.json'),pending=marker+'.'+crypto.randomUUID()+'.tmp';
+    const completed=completedReceipt(receipt.pendingIdentity,receipt.manifestDigest,receipt.restorationEpoch);
+    try{await fs.writeFile(pending,JSON.stringify(completed),{flag:'wx',mode:0o600});await fs.rename(pending,marker);return completed;}
+    finally{await fs.rm(pending,{force:true});}
+   };
    const replaceInPlace=async staged=>{stage='replace_in_place';const runtime=path.join(root,'.paperclip-runtime');
     const s=await fs.lstat(root);await fs.chmod(root,(s.mode&0o7777)|0o700);
     for(const name of await fs.readdir(root))if(name!=='.paperclip-runtime'){await open(path.join(root,name));await fs.rm(path.join(root,name),{recursive:true,force:true});}
     if(await stat(path.join(runtime,'workspace-snapshots'))){await open(path.join(runtime,'workspace-snapshots'));
      await fs.rm(path.join(runtime,'workspace-snapshots'),{recursive:true,force:true});}
     for(const name of await fs.readdir(staged))if(name!=='.paperclip-runtime')await fs.rename(path.join(staged,name),path.join(root,name));
+    const receiptFile=path.join(staged,'.paperclip-runtime','workspace-restored.json'),receipt={schema:'paperclip.workspace-restore-pending.v1',
+     root,pendingIdentity:identity,manifestDigest:digest,restorationEpoch,inPlaceMode:(await fs.lstat(staged)).mode&0o7777};
+    await fs.writeFile(receiptFile,JSON.stringify(receipt),{mode:0o600});
     await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json'),path.join(runtime,'workspace-restored.json'));
-    await fs.rm(path.join(runtime,'workspace-ready.json'),{force:true});await fs.chmod(root,(await fs.lstat(staged)).mode&0o7777);};
+    await finishInPlace(receipt);};
+   stage='restore_lock';await directory(path.dirname(root));
+   const lockRoot=path.join(path.dirname(root),'.paperclip-runtime','workspace-restore-locks');
+   await directory(path.dirname(lockRoot));
+   for(const parent of [path.dirname(root),path.dirname(lockRoot)]){const s=await fs.lstat(parent);
+    if(s.uid!==process.getuid()||(s.mode&0o022)!==0)throw Error('unsafe_restore_lock');}
+   await fs.mkdir(lockRoot,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+   await directory(lockRoot);const lockDirectory=await fs.lstat(lockRoot);
+   if(lockDirectory.uid!==process.getuid()||(lockDirectory.mode&0o077)!==0)throw Error('unsafe_restore_lock');
+   const lockPath=path.join(lockRoot,crypto.createHash('sha256').update(root).digest('hex')+'.sqlite'),lockStat=await stat(lockPath);
+   if(lockStat&&(!lockStat.isFile()||lockStat.isSymbolicLink()||lockStat.nlink!==1||lockStat.uid!==process.getuid()||lockStat.size>65536))throw Error('unsafe_restore_lock');
+   const lock=new(require('node:sqlite').DatabaseSync)(lockPath,{allowExtension:false});
+   try{
+    await fs.chmod(lockPath,0o600);lock.exec('PRAGMA busy_timeout=0');const deadline=performance.now()+120000;
+    while(true){try{lock.exec('BEGIN IMMEDIATE');break}catch(e){if(typeof e.errcode!=='number'||(e.errcode&255)!==5)throw e;
+     if(performance.now()>=deadline)throw Error('restore_lock_busy');await new Promise(resolve=>setTimeout(resolve,50));}}
+   stage='restore_fence';const fencePath=lockPath.slice(0,-7)+'.fence.json';
+   const checkedJson=async file=>{const s=await stat(file);if(!s)return null;
+    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.uid!==process.getuid()||s.size>16384)throw Error('unsafe_restore_fence');
+    const value=JSON.parse(await fs.readFile(file,'utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error('unsafe_restore_fence');return value;};
+   const validFence=value=>value.schema==='paperclip.workspace-restore-fence.v1'&&value.root===root&&validEpoch(value.epoch)
+    &&typeof value.identity==='string'&&/^[a-f0-9]{64}$/.test(value.identity)
+    &&typeof value.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(value.manifestDigest);
+   const persisted=await checkedJson(fencePath);if(persisted&&!validFence(persisted))throw Error('unsafe_restore_fence');
+   let latest=persisted;
+   for(const location of [root,parked,retired]){
+    if(!await stat(location))continue;await directory(location);const runtime=path.join(location,'.paperclip-runtime');
+    if(!await stat(runtime))continue;await directory(runtime);const receipt=await checkedJson(path.join(runtime,'workspace-restored.json'));
+    if(!receipt)continue;
+    if(receipt.restorationEpoch===undefined){if(receipt.schema!==undefined)throw Error('unsafe_restore_fence');continue;}
+    const pending=receipt.schema==='paperclip.workspace-restore-pending.v1';
+    if(receipt.root!==root||!validEpoch(receipt.restorationEpoch)||!(pending?pendingInPlace(receipt)
+      :receipt.schema==='paperclip.workspace-restored.v1'&&typeof receipt.identity==='string'&&/^[a-f0-9]{64}$/.test(receipt.identity)
+       &&typeof receipt.manifestDigest==='string'&&/^[a-f0-9]{64}$/.test(receipt.manifestDigest)))throw Error('unsafe_restore_fence');
+    const observed={schema:'paperclip.workspace-restore-fence.v1',root,epoch:receipt.restorationEpoch,
+     identity:pending?receipt.pendingIdentity:receipt.identity,manifestDigest:receipt.manifestDigest};
+    if(latest&&observed.epoch===latest.epoch&&(observed.identity!==latest.identity||observed.manifestDigest!==latest.manifestDigest))throw Error('unsafe_restore_fence');
+    if(!latest||observed.epoch>latest.epoch)latest=observed;
+   }
+   if(latest&&restorationEpoch===null)throw Error('restore_fence_required');
+   if(latest&&(restorationEpoch<latest.epoch||restorationEpoch===latest.epoch&&(identity!==latest.identity||digest!==latest.manifestDigest)))throw Error('workspace_owner_changed');
+   if(restorationEpoch!==null&&(!persisted||persisted.epoch!==restorationEpoch||persisted.identity!==identity||persisted.manifestDigest!==digest)){
+    const pending=fencePath+'.'+crypto.randomUUID()+'.tmp';
+    try{await fs.writeFile(pending,JSON.stringify({schema:'paperclip.workspace-restore-fence.v1',root,epoch:restorationEpoch,identity,manifestDigest:digest}),{flag:'wx',mode:0o600,flush:true});
+     await fs.rename(pending,fencePath);const directory=await fs.open(lockRoot,'r');try{await directory.sync();}finally{await directory.close();}}
+    finally{await fs.rm(pending,{force:true});}
+   }
    stage='allocation';if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
    stage='inspect_root';const prior=await stat(root);if(prior)await directory(root);
    const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
    if(prior&&await stat(marker)){
     stage='existing_receipt';await directory(path.dirname(marker));const file=await fs.lstat(marker);
     if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
-    const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
+    let receipt=JSON.parse(await fs.readFile(marker,'utf8'));
+    if(receipt.schema==='paperclip.workspace-restore-pending.v1'){
+     if(!pendingInPlace(receipt))throw Error('unsafe_receipt');
+     if(receipt.pendingIdentity===identity?receipt.manifestDigest!==digest:replaceRetired!=='true')throw Error('workspace_owner_changed');
+     receipt=await finishInPlace(receipt);
+    }
     if(receipt.identity===identity&&receipt.manifestDigest===digest){
      if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}
      await removeRetired();return;}
@@ -674,6 +748,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    // Replacing is allowed only for a root the server proved is this workspace's
    // own earlier allocation whose last use ended in a completed final save.
    const retire=Boolean(prior)&&replaceRetired==='true'&&await ownReceipt(root);
+   if(retire&&restorationEpoch===null)throw Error('restore_fence_required');
    if(prior&&!retire&&allowEmpty!=='true')throw Error('occupied_root');
    stage='allocation';const retained=prior&&!retire?await allocation(root):[];
    if(!prior&&files.length)throw Error('allocation_missing');
@@ -682,7 +757,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
     stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
-    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify(completedReceipt(identity,digest,restorationEpoch)),{flag:'wx',mode:0o600});
     stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
     const holding=retire?retired:parked;
     if(prior){if(retire){if(!await ownReceipt(root))throw Error('occupied_root');}else await allocation(root);
@@ -692,10 +767,11 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     stage='cleanup_parked';if(prior&&!retire){await allocation(parked);await fs.rm(parked,{recursive:true});}
     await removeRetired();
    }finally{await fs.rm(staged,{recursive:true,force:true});}
+   }finally{lock.close();}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
   await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
-    String(input.replaceRetiredRoot === true)]);
+    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]);
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

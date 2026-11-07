@@ -582,7 +582,9 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     // Only the new restore receipt identifies the root; the retired preparation receipt is gone.
     expect(await fs.lstat(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-ready.json")).catch(() => null)).toBeNull();
     expect(JSON.parse(await fs.readFile(path.join(restored.remoteRoot, ".paperclip-runtime", "workspace-restored.json"), "utf8")))
-      .toMatchObject({ identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      .toMatchObject({ schema: "paperclip.workspace-restored.v1", root: restored.remoteRoot,
+        restorationEpoch: readRemoteWorkspaceAuthority(restored.workspace.metadata)!.epoch,
+        identity: expect.stringMatching(/^[a-f0-9]{64}$/) });
     // A lost reply repeats the same preparation without replacing the restored root again.
     await fs.writeFile(path.join(restored.remoteRoot, "parent-continued.md"), "unsaved parent edits\n");
     // An attempt interrupted after publish left its retired root; the repeat keeps its runtime state.

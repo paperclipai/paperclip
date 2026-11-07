@@ -422,7 +422,7 @@ export async function prepareRemoteWorkspace(input: {
           await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
           step = "sandbox_restore";
           restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-            restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+            restorationIdentity: preparationIdentity, restorationEpoch: initial.epoch, allowEmptyRoot: migration !== null,
             allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [],
             replaceRetiredRoot });
         } finally { await rm(scratch, { recursive: true, force: true }); }
