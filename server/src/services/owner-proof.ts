@@ -1,8 +1,8 @@
 import { hostname } from "node:os";
 import {
   currentControllerBootId,
+  currentControllerProcessStamp,
   currentProcessSpaceHash,
-  currentProcessStartedAtMs,
   observedProcessStartedAt,
   processExists,
   processStartsDefinitelyDiffer,
@@ -121,20 +121,21 @@ export function currentProcessProbe(): ProcessProbe {
   };
 }
 
-/** The stamp this process writes when it takes ownership of a record. It reads
- * only cached values, so it adds no OS call to the turn path.
+/** The stamp this process writes when it takes ownership of a record. It does
+ * no I/O: the start time comes from an earlier resolved identity read, and is
+ * null until one has happened. A stamp without a start time still proves exit
+ * when its PID is gone; a live PID then stays unprovable, which fails closed.
  *
  * It records no process group: the control-plane server owns the record, and
  * its provider children are tracked by their own records (the run's process
  * identity, the runner's startup attempt). A caller that stamps a child it
  * leads must set `processGroupId` and `processGroupStartedAt` itself; without
  * them a surviving group is never judged at all. */
-export async function currentLocalOwnerStamp(scope: string, generation: number | null = null): Promise<LocalOwnerStamp> {
-  const startedAt = await currentProcessStartedAtMs();
+export function currentLocalOwnerStamp(scope: string, generation: number | null = null): LocalOwnerStamp {
+  const controller = currentControllerProcessStamp();
   return {
-    kind: "local", scope, generation, host: hostname(), processSpace: currentProcessSpaceHash(),
-    bootId: currentControllerBootId(), pid: process.pid,
-    processStartedAt: startedAt === null ? null : new Date(startedAt).toISOString(),
+    kind: "local", scope, generation, host: hostname(), processSpace: controller.hostHash,
+    bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt,
     processGroupId: null,
   };
 }
