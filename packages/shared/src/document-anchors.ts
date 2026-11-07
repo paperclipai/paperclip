@@ -80,6 +80,12 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
       continue;
     }
 
+    if (isNonTextBlockLine(line)) {
+      builder.addSeparator(offset + line.length);
+      offset += rawLine.length;
+      continue;
+    }
+
     const { text, sourceOffset } = stripBlockSyntax(line, offset);
     addInlineMarkdownText(builder, text, sourceOffset);
     builder.addSeparator(offset + line.length);
@@ -244,10 +250,58 @@ export function remapDocumentAnchor(input: RemapDocumentAnchorInput): RemapDocum
   return { anchorState: "orphaned", confidence: "missing", anchor: null, projection, reason: "missing" };
 }
 
+/** Thematic breaks and table delimiter rows render no text. */
+function isNonTextBlockLine(line: string): boolean {
+  if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) return true;
+  return line.includes("|") && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*(?::?-+:?\s*)?$/.test(line);
+}
+
+/**
+ * Strip every leading block marker (nested blockquotes, list markers at any
+ * indent, task-list checkboxes, headings) so the projection matches the text
+ * the browser renders. A selection that crosses list items must not hit
+ * marker residue that the reader never sees.
+ */
 function stripBlockSyntax(line: string, absoluteOffset: number): { text: string; sourceOffset: number } {
-  const blockMatch = line.match(/^\s{0,3}(?:(#{1,6})\s+|(?:[-+*]|\d+[.)])\s+|>\s?)/);
-  if (!blockMatch) return { text: line, sourceOffset: absoluteOffset };
-  return { text: line.slice(blockMatch[0].length), sourceOffset: absoluteOffset + blockMatch[0].length };
+  let consumed = 0;
+  const heading = line.match(/^\s{0,3}#{1,6}\s+/);
+  if (heading) consumed = heading[0].length;
+  for (;;) {
+    const rest = line.slice(consumed);
+    const quote = rest.match(/^\s*>\s?/);
+    if (quote) {
+      consumed += quote[0].length;
+      continue;
+    }
+    const listItem = rest.match(/^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/);
+    if (listItem) {
+      consumed += listItem[0].length;
+      continue;
+    }
+    break;
+  }
+  return { text: line.slice(consumed), sourceOffset: absoluteOffset + consumed };
+}
+
+const NAMED_HTML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: "\"",
+  apos: "'",
+  nbsp: " ",
+};
+
+function decodeHtmlEntity(entity: string): string | null {
+  const body = entity.slice(1, -1);
+  if (body.startsWith("#")) {
+    const codePoint = body[1] === "x" || body[1] === "X"
+      ? Number.parseInt(body.slice(2), 16)
+      : Number.parseInt(body.slice(1), 10);
+    if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) return null;
+    return String.fromCodePoint(codePoint);
+  }
+  return NAMED_HTML_ENTITIES[body.toLowerCase()] ?? null;
 }
 
 function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceOffset: number): void {
@@ -277,6 +331,16 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
       if (closing > index + 1) {
         builder.addText(text.slice(index + 1, closing), absolute + 1);
         index = closing;
+        continue;
+      }
+    }
+
+    if (char === "&") {
+      const entity = rest.match(/^&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/);
+      const decoded = entity ? decodeHtmlEntity(entity[0]) : null;
+      if (entity && decoded) {
+        for (const unit of decoded.split("")) builder.addChar(unit, absolute, absolute + entity[0].length);
+        index += entity[0].length - 1;
         continue;
       }
     }

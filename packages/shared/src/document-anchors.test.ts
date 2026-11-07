@@ -58,6 +58,43 @@ describe("document text projection", () => {
 
     expect(projection.text).toBe("Keep (parenthetical) [plain brackets] visible.");
   });
+
+  it("drops block markers and non-text lines the renderer never shows", () => {
+    const markdown = [
+      "- Parent item",
+      "    - Deep child",
+      "- [ ] Open task",
+      "- [x] Done task",
+      "",
+      "---",
+      "",
+      "> - Quoted item",
+      "",
+      "Fish &amp; chips &#38; peas",
+    ].join("\n");
+
+    const projection = projectMarkdownToText(markdown);
+
+    expect(projection.text).toBe(
+      "Parent item Deep child Open task Done task Quoted item Fish & chips & peas",
+    );
+    expect(projection.positions).toHaveLength(projection.text.length);
+
+    const start = projection.text.indexOf("item Deep");
+    const range = resolveProjectionRange(projection, start, projection.text.indexOf(" Done"));
+    expect(range?.markdownStart).toBe(markdown.indexOf("item"));
+    expect(range?.markdownEnd).toBe(markdown.indexOf("Open task") + "Open task".length);
+
+    const entityStart = projection.text.indexOf("&");
+    const entityRange = resolveProjectionRange(projection, entityStart, entityStart + 1);
+    expect(entityRange?.markdownStart).toBe(markdown.indexOf("&amp;"));
+    expect(entityRange?.markdownEnd).toBe(markdown.indexOf("&amp;") + "&amp;".length);
+  });
+
+  it("keeps unknown entities and list-like text inside a line", () => {
+    const projection = projectMarkdownToText("Use &unknown; and a - b - c");
+    expect(projection.text).toBe("Use &unknown; and a - b - c");
+  });
 });
 
 describe("document anchor verification and remapping", () => {
