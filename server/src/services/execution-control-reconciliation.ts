@@ -25,6 +25,7 @@ import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-wo
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
+import { releaseAbandonedNativeOwners } from "./native-runtime/native-failed-run-owner-release.js";
 import { transitionHeartbeatRunStatus } from "./heartbeat-run-lifecycle.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
@@ -220,6 +221,11 @@ export async function reconcileAbandonedExecutionControl(
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
+          // The deadline replaces the run's error code. Keep the earlier
+          // diagnosis as its root cause, as the native finalizer does.
+          const priorFailureCode = coordinator?.failureCode ?? run.errorCode;
+          const recordsOriginalFailure = Boolean(priorFailureCode) && priorFailureCode !== cause &&
+            typeof run.resultJson?.originalFailureCode !== "string";
           if (coordinator)
             await tx
               .update(nativeRunFinalizations)
@@ -256,6 +262,9 @@ export async function reconcileAbandonedExecutionControl(
               errorCode: cause,
               error: nextAction,
               nextAction,
+              ...(recordsOriginalFailure
+                ? { resultJson: { ...run.resultJson, originalFailureCode: priorFailureCode } }
+                : {}),
               updatedAt: now,
             },
           }))?.run ?? null;
@@ -337,5 +346,11 @@ export async function reconcileAbandonedExecutionControl(
       }
     }
   }));
-  return { scanned: due.length, surfaced };
+  // Owners left on runs that already ended outside the native executor have no
+  // control deadline; their expired lease is the due time.
+  const releasedOwners = await releaseAbandonedNativeOwners(db, now).catch((error: unknown) => {
+    logger.warn({ err: error }, "Abandoned native owner release remains pending");
+    return 0;
+  });
+  return { scanned: due.length, surfaced, releasedOwners };
 }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, fillPlaceholders } from "drizzle-orm";
 import { agents, chatActions, chatConversations, chatEndpointResources, chatEndpoints,
   chatGitHubReviews, chatMessageLinks, companies, heartbeatRuns, issueComments, issues,
   runIdentityContexts, toolApplications, toolConnections, type Db } from "@paperclipai/db";
@@ -61,6 +61,16 @@ export function captureReviewWaitQueries(db: Db, queries: CapturedReviewWaitQuer
       const builder = target.select(...fields), from = builder.from.bind(builder);
       builder.from = ((...args: Parameters<typeof from>) => {
         const selection = from(...args), execute = selection.execute.bind(selection);
+        const prepare = selection.prepare.bind(selection);
+        selection.prepare = ((...args: Parameters<typeof prepare>) => {
+          const prepared = prepare(...args), executePrepared = prepared.execute.bind(prepared);
+          prepared.execute = async (values = {}) => {
+            const query = prepared.getQuery();
+            queries.push({ sql: query.sql, params: fillPlaceholders(query.params, values) });
+            return executePrepared(values);
+          };
+          return prepared;
+        }) as typeof selection.prepare;
         selection.execute = async () => { queries.push(selection.toSQL()); return execute(); };
         return selection;
       }) as typeof builder.from;

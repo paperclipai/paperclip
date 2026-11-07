@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createConnection, createServer, type Socket } from "node:net";
 
-export type ObservedQuery = { protocol: "simple" | "extended"; sql: string; fingerprint: string };
+export type ObservedQuery = { protocol: "simple" | "extended"; sql: string; fingerprint: string; at?: number };
 
 export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) => void, onFrame: (type: string) => void = () => {}) {
   let frontend = Buffer.alloc(0), backend = Buffer.alloc(0), startup = true, ready = false, pending = 1;
@@ -67,7 +67,7 @@ export function createPostgresProtocolObserver(onQuery: (query: ObservedQuery) =
   };
 }
 
-export async function startMaintenancePostgresProxy(databaseUrl: string) {
+export async function startMaintenancePostgresProxy(databaseUrl: string, captureQueryTimes = false) {
   const upstream = new URL(databaseUrl), queries: ObservedQuery[] = [], errors: Error[] = [];
   const frames = { Query: 0, Parse: 0, Bind: 0, Execute: 0, Sync: 0, Terminate: 0 };
   const transport = { connectionsOpened: 0, connectionsClosed: 0, frontendBytes: 0, backendBytes: 0 };
@@ -76,7 +76,7 @@ export async function startMaintenancePostgresProxy(databaseUrl: string) {
     transport.connectionsOpened++;
     client.once("close", () => { transport.connectionsClosed++; });
     const target = createConnection({ host: upstream.hostname, port: Number(upstream.port) || 5432 });
-    const observer = createPostgresProtocolObserver(query => queries.push(query), type => {
+    const observer = createPostgresProtocolObserver(query => queries.push(captureQueryTimes ? { ...query, at: Date.now() } : query), type => {
       if (type === "Q") frames.Query++; else if (type === "P") frames.Parse++; else if (type === "B") frames.Bind++;
       else if (type === "E") frames.Execute++; else if (type === "S") frames.Sync++; else if (type === "X") frames.Terminate++;
     });

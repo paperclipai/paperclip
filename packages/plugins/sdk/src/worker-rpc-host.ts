@@ -6,6 +6,12 @@ import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/s
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { environmentRunnerIngressErrorData } from "./environment-runner-ingress-error.js";
+import { environmentStopErrorData } from "./environment-stop-error.js";
+import { environmentResumeErrorData } from "./environment-resume-error.js";
+import { environmentAcquireErrorData } from "./environment-acquire-error.js";
+import { environmentTaskErrorCodeData, environmentTaskErrorData } from "./environment-task-error.js";
+import { workspaceOperationErrorData } from "./workspace-operation-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
@@ -1632,7 +1638,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         : await invoke();
       sendMessage(createSuccessResponse(id, result ?? null));
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const input = params as Partial<PluginEnvironmentTaskParams> | undefined;
+      const taskError = method === "environmentTask" && input?.operation?.kind === "submit" && input.operation.resumeFrom
+        ? environmentTaskErrorData(err) : undefined;
+      const errorMessage = taskError ? "Plugin Runner source state unavailable" : err instanceof Error ? err.message : String(err);
       // Propagate specific error codes from handler errors (e.g.
       // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED) — fall back to
       // WORKER_ERROR for untyped exceptions.
@@ -1642,9 +1651,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
-        method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
-          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+        method === "environmentAcquireLease" ? environmentAcquireErrorData(err)
+          : method === "environmentDestroyLease" ? environmentCreationCleanupErrorData(err)
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err)
+          : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err)
+          : method === "environmentStopLease" ? environmentStopErrorData(err)
+          : method === "environmentResumeLease" ? environmentResumeErrorData(err)
+          : method === "environmentTask" ? taskError ?? environmentTaskErrorCodeData(err)
+          : method === "workspaceOperation" ? workspaceOperationErrorData(err) : undefined));
     } finally {
       done?.();
     }

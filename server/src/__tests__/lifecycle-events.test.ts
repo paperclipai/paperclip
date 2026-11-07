@@ -43,7 +43,7 @@ describePostgres("lifecycle events of committed status changes", () => {
 
   function lifecycleEvents(eventType: "run_transition" | "task_transition") {
     return info.mock.calls
-      .map(([fields]) => (fields as { lifecycleEvent?: { eventType: string } }).lifecycleEvent)
+      .map(([fields]) => (fields as { lifecycleEvent?: { eventType: string; eventId: string } }).lifecycleEvent)
       .filter((event) => event?.eventType === eventType);
   }
 
@@ -121,7 +121,7 @@ describePostgres("lifecycle events of committed status changes", () => {
       await svc.update(issueId, { status });
     }
 
-    const eventIds = lifecycleEvents("task_transition").map((event) => (event as { eventId: string }).eventId);
+    const eventIds = lifecycleEvents("task_transition").map((event) => event!.eventId);
     expect(new Set(eventIds).size).toBe(4);
   });
 });

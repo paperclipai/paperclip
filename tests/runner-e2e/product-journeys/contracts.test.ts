@@ -39,6 +39,32 @@ function connectReceipt(): OnboardingConnectEvidence {
   };
 }
 describe("deployment journey contracts", () => {
+  it("discovers an ordinary assigned-skill journey without an experimental pin prerequisite", () => {
+    const discovered = productJourneys.find(journey => journey.id === "saved-skill-use")!;
+    expect(discovered).not.toHaveProperty("requiredSettings");
+    expect(journeyRequiredChecks[discovered.id]?.[0]).toBe("saved-skill-assignment-bound");
+    const config = parseTargetConfig({ ...local, journeys: ["saved-skill-use"],
+      limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } });
+    expect(preparationPreview(config).journeys).toContainEqual(discovered);
+    expect(config.baseline.features).toEqual({});
+  });
+  it("requires one native saved-skill run and every closed source/use/result check", () => {
+    const config = { ...local, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs",
+      executionEnvironment: "daytona", journeys: ["saved-skill-use"], limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } };
+    expect(parseTargetConfig(config).journeys).toEqual(["saved-skill-use"]);
+    for (const maxRuns of [0, 2]) expect(() => parseTargetConfig({ ...config, limits: { ...config.limits, maxRuns } })).toThrow("agent_journeys_require_bounded_runs");
+    const retained = result();
+    Object.assign(retained, { caseId: "saved-skill-use", provider: "opencode", model: "configured-model", runtimeMode: "native", runIds: ["run"] });
+    retained.productJourney!.checks = journeyRequiredChecks[retained.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    for (const check of retained.productJourney!.checks) {
+      const missing = structuredClone(retained);
+      missing.productJourney!.checks = missing.productJourney!.checks.filter(row => row.id !== check.id);
+      expect(() => validateRetainedRunnerResult(missing)).toThrow("result.productJourney");
+    }
+    retained.runIds = [];
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.agentJourneyRun");
+  });
   it("accepts historical results without Connect diagnostics and optional closed receipts", () => {
     const retained = result();
     retained.caseId = "cloud-onboarding";
