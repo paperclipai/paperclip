@@ -198,7 +198,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
 
   it("records native quota only for the host credential and exact durable pool pin", async () => {
     const f = await fixture();
-    const [ownerIssue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Native quota owner" }).returning();
+    const [ownerIssue] = await db.insert(issues).values({ id: f.run.id, companyId: f.run.companyId, title: "Native quota owner", identifier: "CMP-42" }).returning();
     await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: ownerIssue.id }).where(eq(heartbeatRuns.id, f.run.id));
     await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: f.run.id,
       phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
@@ -270,7 +270,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, credentialIdentity: `${grantId}:shared:no-auth` })).toBe(false);
     expect(await db.select().from(aiConnectionQuotaCooldowns)).toEqual([]);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, receiptId));
-    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Quota task", identifier: "CMP-42" }).returning();
+    const issue = ownerIssue;
     await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: issue.id,
       contextSnapshot: { aiRouterTaskKey: issue.identifier, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, f.run.id));
     await db.update(aiConnectionTaskPins).set({ taskKey: issue.identifier! }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
@@ -279,11 +279,11 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const [timerRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
       status: "failed", runtimeMode: "native", nativeIssueId: ownerIssue.id, errorCode: "native_provider_usage_limit",
       resultJson: f.input.adapterResult.resultJson, invocationSource: "timer",
-      contextSnapshot: { aiRouterTaskKey: "__heartbeat__", aiRouterSelection: selection, wakeSource: "timer" } }).returning();
+      contextSnapshot: { aiRouterTaskKey: issue.identifier, aiRouterSelection: selection, wakeSource: "timer" } }).returning();
     await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: ownerIssue.id, runId: timerRun.id,
       phase: "terminal_failure", failureCode: "native_provider_usage_limit" });
-    await db.update(aiConnectionTaskPins).set({ taskKey: "__heartbeat__" }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
-    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` }), "timer task").toBe(true);
+    await db.update(aiConnectionTaskPins).set({ taskKey: issue.identifier! }).where(eq(aiConnectionTaskPins.agentId, f.agent.id));
+    expect(await recordVerifiedRouterQuotaCooldown(db, { ...call, runId: timerRun.id, credentialIdentity: `${grantId}:shared:no-auth` }), "native timer issue affinity").toBe(true);
     await db.delete(aiConnectionQuotaCooldowns);
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, timerRun.id));
     const nativeFailure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
