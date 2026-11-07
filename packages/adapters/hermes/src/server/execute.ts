@@ -24,7 +24,6 @@ import path from "node:path";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
-  UsageSummary,
 } from "@paperclipai/adapter-utils";
 
 import {
@@ -231,18 +230,9 @@ const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 /** Regex for legacy session output format */
 const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
 
-/** Regex to extract token usage from Hermes output. */
-const TOKEN_USAGE_REGEX =
-  /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
-
-/** Regex to extract cost from Hermes output. */
-const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
-
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
-  usage?: UsageSummary;
-  costUsd?: number;
   errorMessage?: string;
 }
 
@@ -307,21 +297,6 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     if (cleaned.length > 0) {
       result.response = cleaned;
     }
-  }
-
-  // Extract token usage
-  const usageMatch = combined.match(TOKEN_USAGE_REGEX);
-  if (usageMatch) {
-    result.usage = {
-      inputTokens: parseInt(usageMatch[1], 10) || 0,
-      outputTokens: parseInt(usageMatch[2], 10) || 0,
-    };
-  }
-
-  // Extract cost
-  const costMatch = combined.match(COST_REGEX);
-  if (costMatch?.[1]) {
-    result.costUsd = parseFloat(costMatch[1]);
   }
 
   // Check for error patterns in stderr
@@ -617,14 +592,6 @@ export async function execute(
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
-  if (parsed.usage) {
-    executionResult.usage = parsed.usage;
-  }
-
-  if (parsed.costUsd !== undefined) {
-    executionResult.costUsd = parsed.costUsd;
-  }
-
   // Summary from agent response
   if (parsed.response) {
     executionResult.summary = parsed.response.slice(0, 2000);
@@ -634,8 +601,6 @@ export async function execute(
   executionResult.resultJson = {
     result: parsed.response || "",
     session_id: parsed.sessionId || null,
-    usage: parsed.usage || null,
-    cost_usd: parsed.costUsd ?? null,
   };
 
   // Store session ID for next run
