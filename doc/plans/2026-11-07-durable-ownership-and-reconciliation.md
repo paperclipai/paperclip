@@ -69,6 +69,30 @@ Each metric is reported by adapter (Codex, Claude/ACPX, OpenCode) and environmen
    - RC-27: a 5-minute orphan reaper.
 4. **Phase 0 measures, then sets budgets.** It records a baseline for every metric above. Phase 1 sets p50/p95 budgets per adapter and environment. From then on, every phase's exit criteria include "no regression against the baseline". The on-demand crash-point suite and the chaos soak also report TTFT and restart recovery latency.
 
+## Relationship to the zero-downtime upgrade work
+
+Separate work moves the control plane toward zero-downtime upgrades on an ephemeral filesystem. PostgreSQL holds execution authority and durable protocol state. Object storage holds workspace archives, provider checkpoints, logs, traces and skill assets. Replacement servers reuse stable encryption and signing secrets. Most of the foundations are on master; #19830 is still open. Entry points:
+- `server/src/services/ephemeral-server-contract.ts`
+- `server/src/services/heartbeat/upgrade-readiness.ts`
+- `server/src/services/native-runtime/native-runner-ownership.ts`
+- `server/src/services/native-runtime/native-finalization-reconciler.ts`
+- `server/src/services/native-runtime/native-harness-filesystem-independence.ts`
+- in paperclip-cloud, `src/fleet/ephemeral-overlap.ts`
+
+This plan builds on that work and must not fork it:
+
+1. **The remote runner keeps running across a control-plane replacement.** The replacement server takes fenced ownership and reconciles durable checkpoints and results. It never starts a duplicate execution. So for remote runners, ownership moves by **fenced handoff** (lease and fence token), not by a process-liveness proof. A different host is never proof that an owner is dead. The `OwnerStamp` in section A records the fence token. `proveOwnerGone` applies only to local processes and to providers that give a platform proof.
+2. **Graceful handoff and abrupt death are different paths.** Graceful replacement releases ownership explicitly. Abrupt death during a tool, result acceptance, finalization, or workspace export is recovered by proof or fence expiry. The crash-point suite covers both, including stale-owner fencing and duplicate result and accounting protection.
+3. **Obligations stay separate.** Ownership, accepted results, workspace preservation and accounting are separate obligations. Each Phase 0 inventory row names exactly one of them, and settling one never settles another:
+   - preserving files never marks a failed run successful;
+   - preserving files never clears an unresolved export or recovery hold;
+   - preserving files never grants provider-resume authority.
+
+   WEB evidence receipts prove filesystem preservation, not successful remote recovery.
+4. **Extend the existing pieces.** Section C extends `native-finalization-reconciler.ts`; it does not add a second loop. Section A starts from `native-runner-ownership.ts` and `controller-process-identity.ts`. Phase 0 includes the upgrade work's record kinds, and its owner reviews the inventory.
+5. **External tool effects are not exactly-once.** The design guarantees exactly-once for Paperclip's own records (results, accounting, wakes). A tool's outside effect may run again after a crash. The agent checks before it repeats one; see #19804.
+6. **Object storage must stay off the turn path.** Restoring an archive or checkpoint must not delay `turn.start` when a live workspace or runner exists. A cold restore that cannot be avoided counts against the time-to-first-token budget and is reported as its own step.
+
 ## Design
 
 ### A. One ownership primitive
