@@ -1005,6 +1005,12 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("/<prefix>/agents/<agentId>/runs/<runId>");
   });
 
+  it("gives chat replies a usable route for both task and approval sources", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/issues/<identifier>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For approval links, use /<prefix>/approvals/<approvalId>");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Never invent a hostname for a Paperclip link.");
+  });
+
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
     const prompt = buildPaperclipTaskMarkdown({
       issue: { id: "chat", identifier: null, title: "Chat", workMode: "planning", conversationAgentId: "agent" },
