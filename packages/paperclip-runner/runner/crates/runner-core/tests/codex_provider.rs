@@ -4384,6 +4384,98 @@ fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_rec
 }
 
 #[test]
+fn restart_continuation_ignores_late_usage_for_the_turn_lost_on_restore() {
+    // RC-20c: a resumed Codex thread reported the cumulative usage of the turn
+    // lost to the restart after it accepted the continuation turn. The runner
+    // must treat that usage as history of a settled turn, not as a foreign
+    // event that fails the continuation with turn_binding_mismatch.
+    let directory = temporary_directory("restart-continuation-stale-usage");
+    let config = provider_config(
+        &directory,
+        &[
+            "--durable-turn-ids",
+            "--linger-after-turn-start",
+            "--stale-usage-after-turn-start",
+        ],
+    );
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Run the long benchmark."}),
+        ))
+        .unwrap();
+    drop(first);
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec(&json!({
+            "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut restored = CodexCommandExecutor::new(&directory);
+    restored
+        .execute(&command("snapshot", 4, "session.snapshot", json!({})))
+        .unwrap();
+    let lost = poll_and_ack(&mut restored).unwrap();
+    assert!(lost.iter().any(|event| event.event_type == "turn.failed"
+        && event.payload["error"]["code"] == "provider_turn_lost_on_restore"));
+    let accepted = restored
+        .execute(&command(
+            "continue",
+            5,
+            "turn.start",
+            json!({"text": "Continue after the restart."}),
+        ))
+        .unwrap();
+    assert_eq!(accepted.result["providerTurnId"], "provider-turn-2");
+    let mut events = Vec::new();
+    for _ in 0..50 {
+        events.extend(poll_and_ack(&mut restored).unwrap());
+        if events
+            .iter()
+            .any(|event| event.event_type == "turn.started")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.payload["code"] == "turn_binding_mismatch"
+                || event.payload["error"]["code"] == "turn_binding_mismatch"),
+        "late usage for the lost turn must not fail the continuation: {:?}",
+        events
+            .iter()
+            .map(|event| (&event.event_type, &event.payload))
+            .collect::<Vec<_>>()
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.terminal" || event.event_type == "turn.failed"));
+    assert!(events.iter().any(|event| event.event_type == "turn.started"
+        && event.payload["providerTurnId"] == "provider-turn-2"));
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     let directory = temporary_directory("durable-tool-ended-offline");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
