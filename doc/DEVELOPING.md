@@ -565,6 +565,20 @@ STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test failure-
 The suite checks Storybook play and accessibility reports and saves screenshots.
 It does not compare visual baselines or dispatch real agent work.
 
+**Patch previews** mounts production inline document cards, attachment tabs,
+workspace source views, and Markdown diff fences. Use **Preview patch** to load
+an inline attachment preview. Opening the artifact list does not load patch bytes.
+The fixtures include long
+unbroken lines, multiple files, and literal HTML. The browser checks cover both
+themes at desktop and mobile widths, source preservation, and overflow:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test patch-preview.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
+These checks save screenshots. They do not compare external visual baselines or
+verify live file storage.
+
 **HTML artifacts** covers secure rendered/raw attachment previews, interactive
 reports, security probes, workspace previews, and opening a report from a task.
 See [HTML artifact previews](html-artifact-previews.md) for the security boundary,
