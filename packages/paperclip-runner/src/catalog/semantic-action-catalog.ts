@@ -1,3 +1,4 @@
+import { getTaskHistoryAction } from "../protocol-actions/get-task-history.js";
 import { taskDocumentKeySchema } from "../protocol-actions/task-document-key-schema.js";
 import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
 import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
@@ -143,7 +144,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
   descriptor({
     operationId: "get_task_history",
     title: "Get active task history",
-    description: "Read bounded comments on the active task.",
+    description: getTaskHistoryAction.live.descriptor.description,
     inputSchema: object({
       limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
     }),
