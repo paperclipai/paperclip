@@ -97,7 +97,9 @@
       "searchPlaceholder": "Buscar por nome ou papel…",
       "terminated": "Encerrado",
       "title": "Converse com um agente",
-      "tryAnother": "Tente outro nome ou papel."
+      "tryAnother": "Tente outro nome ou papel.",
+      "unreadMessages_one": "{{count}} mensagem não lida de {{name}}",
+      "unreadMessages_other": "{{count}} mensagens não lidas de {{name}}"
     },
     "AgentChatSidebar": {
       "chatWithAgent": "Converse com um agente",

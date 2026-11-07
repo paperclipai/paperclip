@@ -1,4 +1,5 @@
 import { fileKindForName } from "@/components/task-chat/task-chat-attachments";
+import { t } from "@/i18n";
 import type { LabArtifact, LabKind } from "../../kit";
 
 /**
@@ -58,8 +59,9 @@ export function kindLabel(a: LabArtifact): string {
   if (a.kind === "video") return "Video";
   if (a.kind === "link") return "Link preview";
   if (a.kind === "slides") return "Slides";
-  const byName = a.filename ? fileKindForName(a.filename).label : "File";
-  return byName === "File" ? (KIND_NOUN[a.kind] ?? "File") : byName;
+  const generic = t("common.fileKind.file");
+  const byName = a.filename ? fileKindForName(a.filename).label : generic;
+  return byName === generic ? (KIND_NOUN[a.kind] ?? generic) : byName;
 }
 
 /** A link's address without the scheme: "preview.acmehats.example/storefront". */

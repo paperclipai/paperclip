@@ -3787,6 +3787,8 @@
       "noMatch": "No agents match “{{search}}”",
       "noAgents": "No agents yet.",
       "tryAnother": "Try another name or role.",
+      "unreadMessages_one": "{{count}} unread message from {{name}}",
+      "unreadMessages_other": "{{count}} unread messages from {{name}}",
       "clearSearch": "Clear search",
       "createAgentHint": "Create an agent from the Agents page to start chatting.",
       "openChat": "Open chat",
@@ -6457,7 +6459,7 @@
       "keepMonitor": "Keep monitor",
       "cancelling": "Cancelling…",
       "reviewOnGithub": "Review on GitHub, then check status to have the agent verify the result.",
-      "reviewOnGithubWhileSaving": "Review on GitHub while the current run finishes saving its work.",
+      "reviewOnGithubWhileSaving": "Semak di GitHub sementara larian semasa selesai menyimpan kerjanya.",
       "keepInstructing": "You can keep sending instructions while the agent waits.",
       "replyWakes": "Sending a reply wakes the agent now — before the scheduled check."
     },

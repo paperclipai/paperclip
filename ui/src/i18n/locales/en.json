@@ -97,7 +97,9 @@
       "searchPlaceholder": "Search by name or role…",
       "terminated": "Terminated",
       "title": "Chat with an agent",
-      "tryAnother": "Try another name or role."
+      "tryAnother": "Try another name or role.",
+      "unreadMessages_one": "{{count}} unread message from {{name}}",
+      "unreadMessages_other": "{{count}} unread messages from {{name}}"
     },
     "AgentChatSidebar": {
       "chatWithAgent": "Chat with an agent",
