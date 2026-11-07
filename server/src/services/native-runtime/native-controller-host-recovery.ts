@@ -59,6 +59,8 @@ export async function confirmNativeControllerStopped(input: {
       || !["active", "escalated"].includes(action.status) || action.evidence?.runId !== input.runId
       || coordinator.controllerHostHash !== null || coordinator.controllerPid !== recorded.pid
       || coordinator.controllerBootId !== recorded.bootId) throw changed();
+    // Work intent before the write it announces (sleep-aware background work).
+    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId, agentId: run.agentId });
     const now = new Date();
     const updated = await tx.update(nativeRunFinalizations).set({ controllerHostHash: OPERATOR_ATTESTED_CONTROLLER_HOST, updatedAt: now })
       .where(and(eq(nativeRunFinalizations.runId, input.runId), isNull(nativeRunFinalizations.controllerHostHash),
@@ -71,7 +73,6 @@ export async function confirmNativeControllerStopped(input: {
       evidence: { ...action.evidence, controllerStop: proof },
       nextAction: "The previous server was confirmed stopped. Recovery resumes the run from its saved state.",
     }).where(eq(issueRecoveryActions.id, action.id));
-    await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId, agentId: run.agentId });
     const publication = await persistActivity(tx, { companyId: input.companyId, actorType: "user", actorId: input.actorId,
       action: "issue.native_controller_stop_confirmed", entityType: "issue", entityId: input.issueId, runId: input.runId,
       details: { recoveryActionId: input.actionId, ...proof } });

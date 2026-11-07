@@ -1820,7 +1820,7 @@ sandbox is gone; such a record keeps its lease, fence or staleness TTL.
 
 Rows saved before those columns existed have no recorded host. For one release
 only, a single-host server keeps the previous local proof for them, and each use
-appends a `legacy_host_unknown_dead_pid_proof` run-log event, so the release that
+writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
 removes this fallback can confirm that no rows still depend on it. An ephemeral
 server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
 controller rows with no recorded host wait as `controller_host_unrecorded`, with

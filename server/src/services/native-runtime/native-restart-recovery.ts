@@ -35,8 +35,8 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { ephemeralServerEnabled } from "../ephemeral-server-contract.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
+import { persistActivity } from "../activity-log.js";
 import { OPERATOR_ATTESTED_CONTROLLER_HOST, requestNativeControllerStopConfirmation } from "./native-controller-host-recovery.js";
 import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
@@ -370,17 +370,18 @@ export type NativeControllerTakeoverDecision = {
   legacyHostFallback?: true;
 };
 
-/** Run-log event for each use of the null-host fallback. The release that
- * removes the fallback counts these to see whether any rows still need it. */
+/** Activity-log action for each use of the null-host fallback. The release
+ * that removes the fallback counts these to see whether any rows still need
+ * it. It is not a run-log event: run events are progress evidence for
+ * restart recovery, and this record must not change any recovery decision. */
 export const LEGACY_HOST_FALLBACK_EVENT = "legacy_host_unknown_dead_pid_proof";
 
 export async function recordLegacyHostFallbackProof(db: Db, run: { companyId: string; id: string; agentId: string },
   decision: NativeControllerTakeoverDecision, source: string) {
   if (!decision.legacyHostFallback) return;
-  await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
-    eventType: LEGACY_HOST_FALLBACK_EVENT, stream: "system", level: "warn",
-    message: "Controller takeover used the one-release local proof for a row with no recorded host.",
-    payload: { reason: decision.reason, source } });
+  await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "native-restart-recovery",
+    action: LEGACY_HOST_FALLBACK_EVENT, entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+    details: { reason: decision.reason, source } });
 }
 
 export async function evaluateNativeControllerTakeover(input: {

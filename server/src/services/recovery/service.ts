@@ -109,12 +109,13 @@ import {
   isProcessGroupAlive,
 } from "../local-service-supervisor.js";
 import { sameProcessSpace } from "../controller-process-identity.js";
-import { ephemeralServerEnabled } from "../ephemeral-server-contract.js";
+import { ephemeralServerEnabled } from "../ephemeral-server-mode.js";
 import { LEGACY_HOST_FALLBACK_EVENT } from "../native-runtime/native-restart-recovery.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import {
   logActivity,
+  persistActivity,
   publishActivity,
   type ActivityPublication,
 } from "../activity-log.js";
@@ -6340,10 +6341,9 @@ export function recoveryService(
     // like the audit event above: it never holds the terminal write back.
     if (authority === "process_gone" && legacyHostFallback) {
       try {
-        await appendHeartbeatRunEvent(db, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
-          eventType: LEGACY_HOST_FALLBACK_EVENT, stream: "system", level: "warn",
-          message: "The orphan reaper used the one-release local proof for a process with no recorded host.",
-          payload: { reason: "orphaned_running_run", source: "orphan_reaper" } });
+        await persistActivity(db, { companyId: run.companyId, actorType: "system", actorId: "orphan-reaper",
+          action: LEGACY_HOST_FALLBACK_EVENT, entityType: "heartbeat_run", entityId: run.id, runId: run.id,
+          agentId: run.agentId, details: { reason: "orphaned_running_run", source: "orphan_reaper" } });
       } catch (error) {
         logger.error({ err: error, runId: run.id }, "failed to record the legacy host fallback event");
       }

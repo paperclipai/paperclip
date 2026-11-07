@@ -42,9 +42,11 @@ describe("native controller rows saved before their host was recorded", () => {
     const decision = await evaluateNativeControllerTakeover({ owner: coordinator, now: new Date() });
     expect(decision).toMatchObject({ allowed: true, legacyHostFallback: true });
     await recordLegacyHostFallbackProof(db, { companyId, id: runId, agentId }, decision, "test");
-    const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
-      eq(heartbeatRunEvents.eventType, LEGACY_HOST_FALLBACK_EVENT)));
-    expect(events).toEqual([expect.objectContaining({ payload: expect.objectContaining({ reason: decision.reason, source: "test" }) })]);
+    const events = await db.select().from(activityLog).where(and(eq(activityLog.runId, runId),
+      eq(activityLog.action, LEGACY_HOST_FALLBACK_EVENT)));
+    expect(events).toEqual([expect.objectContaining({ details: expect.objectContaining({ reason: decision.reason, source: "test" }) })]);
+    // It is not run-log evidence, which restart recovery reads as progress.
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).toEqual([]);
   });
 
   it("asks the board on an ephemeral server and resumes only after it confirms the exact controller stopped", async () => {

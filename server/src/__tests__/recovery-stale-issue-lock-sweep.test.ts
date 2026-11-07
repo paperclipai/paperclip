@@ -408,8 +408,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
         executionLockedAt: new Date() });
       const result = await heartbeatService(db).sweepStaleIssueLocks();
       expect(result.terminalizedRunIds.includes(runningRunId)).toBe(terminalized);
-      const events = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
-        .where(and(eq(heartbeatRunEvents.runId, runningRunId), eq(heartbeatRunEvents.eventType, "legacy_host_unknown_dead_pid_proof")));
+      const events = await db.select({ details: activityLog.details }).from(activityLog)
+        .where(and(eq(activityLog.runId, runningRunId), eq(activityLog.action, "legacy_host_unknown_dead_pid_proof")));
       expect(events).toHaveLength(terminalized ? 1 : 0);
     } finally { vi.unstubAllEnvs(); }
   });
