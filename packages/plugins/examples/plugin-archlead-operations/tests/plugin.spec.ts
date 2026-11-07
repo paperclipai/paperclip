@@ -989,4 +989,83 @@ describe("ArchLead Operations plugin", () => {
       qualificationStatus: "pending_review",
     });
   });
+
+  it("rejects concurrent idempotent upsert deliveries with conflicting payloads for the same event ID", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: { intakeWebhookSecretRef: SECRET_REF },
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const makeInput = (message: string) => webhookInput("intake", JSON.stringify({
+      companyId: COMPANY_ID,
+      eventId: "concurrent-lead-1",
+      eventType: "lead.created",
+      lead: {
+        name: "Synthetic Contact",
+        email: "contact@example.test",
+        business: "Example Test Co",
+        message,
+        source: "website",
+      },
+    }));
+
+    const results = await Promise.allSettled([
+      plugin.definition.onWebhook?.(makeInput("First payload")),
+      plugin.definition.onWebhook?.(makeInput("Conflicting payload")),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason.message).toContain(
+      "already used with a different payload",
+    );
+  });
+
+  it("preserves updated fields when creating a follow-up task on an edited record", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.performAction(
+      "admin-mutation",
+      {
+        operation: "create-request",
+        companyId: COMPANY_ID,
+        externalId: "concurrent-task-request",
+        business: "Example Test Co",
+        email: "contact@example.test",
+        message: "Needs an operator follow-up.",
+      },
+      { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
+    );
+
+    await harness.performAction(
+      "admin-mutation",
+      {
+        operation: "update-record",
+        companyId: COMPANY_ID,
+        entityType: ENTITY_TYPES.request,
+        externalId: "concurrent-task-request",
+        patch: { contactName: "Updated Contact Name" },
+      },
+      { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
+    );
+
+    const followUp = await harness.performAction<{ issueId: string }>(
+      "create-follow-up-issue",
+      { companyId: COMPANY_ID, entityType: ENTITY_TYPES.request, externalId: "concurrent-task-request" },
+      { companyId: COMPANY_ID, actor: { ...USER, companyId: COMPANY_ID } },
+    );
+
+    const record = await harness.ctx.entities.list({
+      entityType: ENTITY_TYPES.request,
+      scopeKind: "company",
+      scopeId: COMPANY_ID,
+      externalId: "concurrent-task-request",
+      limit: 1,
+    });
+    expect(record[0]?.data.contactName).toBe("Updated Contact Name");
+    expect(record[0]?.data.paperclipIssueId).toBe(followUp.issueId);
+  });
 });

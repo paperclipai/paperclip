@@ -98,6 +98,27 @@ export async function logMutation(
   });
 }
 
+const entityLocks = new Map<string, Promise<void>>();
+
+export async function withEntityLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = entityLocks.get(key) ?? Promise.resolve();
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate);
+  entityLocks.set(key, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (entityLocks.get(key) === tail) {
+      entityLocks.delete(key);
+    }
+  }
+}
+
 export async function upsertIdempotentEntity(
   ctx: PluginContext,
   input: {
@@ -109,21 +130,22 @@ export async function upsertIdempotentEntity(
     data: Record<string, unknown>;
   },
 ): Promise<{ record: PluginEntityRecord; created: boolean }> {
-  const existing = await findEntity(ctx, input.companyId, input.entityType, input.externalId);
-  if (existing) {
-    const storedDigest = existing.data.sourcePayloadSha256;
-    const incomingDigest = input.data.sourcePayloadSha256;
-    if (typeof storedDigest === "string" && typeof incomingDigest === "string") {
-      if (storedDigest !== incomingDigest) {
-        throw new Error("This external ID was already used with a different payload");
+  const lockKey = `${input.companyId}:${input.entityType}:${input.externalId}`;
+  return withEntityLock(lockKey, async () => {
+    const existing = await findEntity(ctx, input.companyId, input.entityType, input.externalId);
+    if (existing) {
+      const storedDigest = existing.data.sourcePayloadSha256;
+      const incomingDigest = input.data.sourcePayloadSha256;
+      if (typeof storedDigest === "string" && typeof incomingDigest === "string") {
+        if (storedDigest !== incomingDigest) {
+          throw new Error("This external ID was already used with a different payload");
+        }
+      } else if (canonicalJson(existing.data) !== canonicalJson(input.data)) {
+        throw new Error("This external ID was already used with different record data");
       }
-    } else if (canonicalJson(existing.data) !== canonicalJson(input.data)) {
-      throw new Error("This external ID was already used with different record data");
+      return { record: existing, created: false };
     }
-    return { record: existing, created: false };
-  }
-  return {
-    record: await upsertEntity(
+    const record = await upsertEntity(
       ctx,
       input.companyId,
       input.entityType,
@@ -131,9 +153,12 @@ export async function upsertIdempotentEntity(
       input.title,
       input.status,
       input.data,
-    ),
-    created: true,
-  };
+    );
+    return {
+      record,
+      created: true,
+    };
+  });
 }
 
 export function requestMessage(lead: LeadRecord): string {
@@ -506,11 +531,14 @@ export async function updateRecord(
   const entityType = scopedEntityType(entityTypeValue);
   const externalId = stringField(externalIdValue, 200);
   if (!entityType || !externalId) throw new PluginRequestError(400, "Unsupported record type or external ID");
-  const existing = await findEntity(ctx, companyId, entityType, externalId);
-  if (!existing) throw new PluginRequestError(404, "ArchLead record not found");
-  const updated = updatedRecord(entityType, existing, patch);
-  if (!updated) throw new PluginRequestError(422, "Record update contains unsupported or invalid fields");
-  return upsertEntity(ctx, companyId, entityType, externalId, updated.title, updated.status, updated.data);
+  const lockKey = `${companyId}:${entityType}:${externalId}`;
+  return withEntityLock(lockKey, async () => {
+    const existing = await findEntity(ctx, companyId, entityType, externalId);
+    if (!existing) throw new PluginRequestError(404, "ArchLead record not found");
+    const updated = updatedRecord(entityType, existing, patch);
+    if (!updated) throw new PluginRequestError(422, "Record update contains unsupported or invalid fields");
+    return upsertEntity(ctx, companyId, entityType, externalId, updated.title, updated.status, updated.data);
+  });
 }
 
 export async function convertRequestToClient(
@@ -551,19 +579,24 @@ export async function convertRequestToClient(
     clientData,
   );
   const isLinked = request.data.clientExternalId === clientExternalId;
-  const updatedRequest = isLinked ? request : await upsertEntity(
-    ctx,
-    companyId,
-    ENTITY_TYPES.request,
-    requestExternalId,
-    business,
-    "closed_won",
-    {
-      ...request.data,
-      onboardingStatus: "manual_setup_required",
-      clientExternalId,
-    },
-  );
+  const updatedRequest = isLinked
+    ? request
+    : await withEntityLock(`${companyId}:${ENTITY_TYPES.request}:${requestExternalId}`, async () => {
+        const latestRequest = await findEntity(ctx, companyId, ENTITY_TYPES.request, requestExternalId);
+        return upsertEntity(
+          ctx,
+          companyId,
+          ENTITY_TYPES.request,
+          requestExternalId,
+          latestRequest?.title ?? business,
+          latestRequest?.status ?? "closed_won",
+          {
+            ...(latestRequest?.data ?? request.data),
+            onboardingStatus: "manual_setup_required",
+            clientExternalId,
+          },
+        );
+      });
   return { client, request: updatedRequest, created: !existingClient, linked: isLinked };
 }
 
@@ -607,9 +640,20 @@ export async function createFollowUpIssue(
     originId,
   });
 
-  await upsertEntity(ctx, companyId, entityType, externalId, record.title ?? "ArchLead record", record.status ?? "open", {
-    ...record.data,
-    paperclipIssueId: issue.id,
+  await withEntityLock(`${companyId}:${entityType}:${externalId}`, async () => {
+    const latest = await findEntity(ctx, companyId, entityType, externalId);
+    await upsertEntity(
+      ctx,
+      companyId,
+      entityType,
+      externalId,
+      latest?.title ?? record.title ?? "ArchLead record",
+      latest?.status ?? record.status ?? "open",
+      {
+        ...(latest?.data ?? record.data),
+        paperclipIssueId: issue.id,
+      },
+    );
   });
   await logMutation(ctx, companyId, "issue", issue.id, "Created or linked an ArchLead follow-up task", {
     recordType: entityType,

@@ -213,7 +213,7 @@ export async function persistPaymentStatusEvent(
          latest_event_at = $4,
          updated_at = now()
      WHERE company_id = $1 AND external_id = $2
-       AND ($3 IS NULL OR provider_order_id IS NULL OR provider_order_id = $3)
+       AND ($3::text IS NULL OR provider_order_id IS NULL OR provider_order_id = $3)
        AND (latest_event_at IS NULL OR latest_event_at <= $4)`,
     [event.companyId, event.paymentOrderId, event.providerOrderId, event.occurredAt, event.status],
   );
