@@ -1,7 +1,7 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
-import { isNativeRestartInterruption, NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
+import { isNativeRestartInterruption, NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -324,6 +324,14 @@ export class CodexHarnessSession
           // provider thread before deciding whether this submission landed.
           this.terminal = true;
         }
+      }
+      if (this.protocolFailed && !(error instanceof CodexRpcError) && !(error instanceof NativeSessionProtocolIntegrityError)) {
+        // This session's own protocol failure closed the transport, so the
+        // start then reports a lost runner. Keep the cause that ended it.
+        throw new Error(
+          `codex_turn_start_protocol_failure: ${this.protocolFailureCode}: ${this.protocolFailureMessage}`,
+          { cause: error },
+        );
       }
       throw error;
     } finally {

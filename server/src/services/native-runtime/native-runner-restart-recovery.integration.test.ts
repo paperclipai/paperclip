@@ -2509,8 +2509,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     { attempt: 3, driverKind: "codex_app_server" },
     { attempt: 2, driverKind: "acpx_runtime" },
     { attempt: 2, driverKind: "opencode_server" },
-  ])("recovers a checkpointed $driverKind restart interruption within provider budget $attempt", async ({ attempt, driverKind }) => {
-    const fixture = await seedRun(`INTERRUPTED-${driverKind}-${attempt}`);
+    // A second restart that loses the first restart's continuation turn.
+    { attempt: 2, driverKind: "codex_app_server", lostContinuation: true },
+  ])("recovers a checkpointed $driverKind restart interruption within provider budget $attempt", async ({ attempt, driverKind, lostContinuation }) => {
+    const fixture = await seedRun(`INTERRUPTED-${driverKind}-${attempt}${lostContinuation ? "-CONTINUATION" : ""}`);
     await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
       driverKind,
       sessionId: fixture.native.normalizedSessionId,
@@ -2523,6 +2525,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         terminalState: "failed", result: null,
         error: { code: "provider_turn_lost_on_restore", recoverable: true },
       }) }],
+      // A restart during the first continuation: its turn is still the
+      // checkpointed active turn and the consumed marker names it.
+      ...(lostContinuation ? { activeTurnId: "continuation-turn", terminal: null,
+        dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "continuation-turn" } : {}),
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await fixture.db.update(nativeRunFinalizations).set({ attempt }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     const dispositions = await claimNativeRestartRecoveries({
