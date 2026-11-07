@@ -95,6 +95,53 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
 
+  it("rejects invalid local Runner configuration before native authority and retains the preparation owner", async () => {
+    const f = await fixture();
+    await claimPreparation(f);
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-invalid-dot-retry-controller");
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: join(tmpdir(), "ignored-injected-runnerd") };
+    const before = await read(f.run.id);
+    await expect(selectHeartbeatRuntime(db, f.input)).rejects.toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+    expect(await read(f.run.id)).toEqual(before);
+    expect(await coordinators(f.run.id)).toEqual([]);
+    expect(await db.select().from(completionContracts)).toHaveLength(0);
+    expect(f.input.stopControllerLease).not.toHaveBeenCalled();
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
+  it("ignores an injected runtime Runner value that the local backend does not consume", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(tmpdir(), "configuration-only-controller-runnerd"));
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: "relative-ignored-injected-runnerd" };
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("does not apply local Runner configuration to remote native selection", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-remote-controller");
+    f.input.workspace.executionTarget = sandbox;
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("preserves immutable native recovery when current local Runner configuration is invalid", async () => {
+    const f = await fixture();
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(f.run.id);
+    f.input.run = saved;
+    f.input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    f.input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-recovery-controller");
+    const resumed = await selectHeartbeatRuntime(db, f.input);
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
   async function connectorFixture(durable = true) {
     const f = await fixture(), { input } = f;
     const home = await mkdtemp(join(tmpdir(), "selection-connector-assets-"));
@@ -334,6 +381,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   it.each([false, true])("persists the Cursor provider API placement and completion authority without a Computer lease (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
     const { input, run, issue } = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-api-controller");
     input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
     await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
     input.workspace.activeEnvironmentLease = null;

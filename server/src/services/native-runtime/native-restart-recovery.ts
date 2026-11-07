@@ -35,6 +35,7 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -53,12 +54,17 @@ export type NativeControllerIdentity = {
   bootId: string;
   pid: number;
   processStartedAt: Date;
+  /** PID space of `pid`; "unknown" when this host's space cannot be read,
+   * which no later probe accepts. Optional for identities built in tests. */
+  hostHash?: string;
 };
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
 
 /** A recovery claim for one run failed unexpectedly and was deferred. */
 export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
+
+export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
 
 export type NativeRestartRecoveryClaim =
   | {
@@ -167,7 +173,8 @@ export function suspendedByCleanDrain(coordinator: {
  * completed work in it (a tool execution or a non-usage item). A resume that
  * dies before it completes any work in a new turn still charges, so a crash
  * loop without progress, a resume that fails each time, and provider failures
- * stay bounded. Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
+ * stay bounded. A resume the controller died before starting is not charged
+ * either (restartResumeKeepsAttempt). Credit stops after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
  * controller generations, so a run that makes progress and then crashes the
  * controller every time is still bounded.
  */
@@ -177,22 +184,47 @@ const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed
 type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
 
 /**
- * The watermark of the most recent claim, only while the run is still on the
- * provider attempt that claim resumed. A normal retry in between starts a new
- * attempt, so the earlier resume's work no longer counts for it.
+ * The most recent recovery claim's event-log position and the provider attempt
+ * its resume runs as. Entries from releases that did not record them give none.
  */
-export function lastRecoveryClaimProgressWatermark(
+export function lastRecoveryClaimResume(
   recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
-  currentAttempt: number,
-): number | null {
+): { watermark: number; attempt: number; launchesRunner: boolean } | null {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
-    if (entry?.progressAttempt !== currentAttempt) return null;
     const watermark = entry?.progressWatermarkSeq;
-    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : null;
+    const attempt = entry?.progressAttempt;
+    // A reattachment adopts a runner that had already started its provider.
+    const launchesRunner = entry?.disposition === "resume_dead_runner" || entry?.disposition === "bootstrap_incomplete";
+    return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0
+      && typeof attempt === "number" && Number.isSafeInteger(attempt)
+      ? { watermark, attempt, launchesRunner } : null;
   }
   return null;
+}
+
+/**
+ * Whether the resume claimed at `watermark` reached execution. The executor
+ * records native.process_start_requested before any backend may spawn a
+ * runner, and every runner event carries a source event ID.
+ */
+async function nativeExecutionStartedSince(tx: Pick<Db, "select">, runId: string, watermark: number): Promise<boolean> {
+  const [started] = await tx
+    .select({ seq: heartbeatRunEvents.seq })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.runId, runId),
+      gt(heartbeatRunEvents.seq, watermark),
+      or(
+        isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [
+          "adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "tool.execution.started",
+        ]),
+      ),
+    ))
+    .limit(1);
+  return started !== undefined;
 }
 
 async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): Promise<number> {
@@ -203,7 +235,19 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
   return Number(row?.seq ?? 0);
 }
 
-export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: {
+/**
+ * Whether this restart claim keeps the provider attempt instead of charging
+ * one. Both cases are judged from the previous claim's recorded position:
+ * - That resume launched a new runner (not a reattachment) and never started:
+ *   no runner was requested and no runner event was
+ *   recorded before the controller died (for example in a K6 crash loop). It
+ *   used no provider work, so this claim replaces it and carries its charge:
+ *   the attempt ends at the attempt that resume was to run as, never above it.
+ * - That resume made progress on the current attempt (see above). A normal
+ *   retry in between starts a new attempt, and earlier work does not count.
+ * Neither applies at or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT.
+ */
+export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   runId: string;
   coordinator: {
     attempt: number;
@@ -213,8 +257,14 @@ export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: 
 }): Promise<boolean> {
   if (input.coordinator.attempt <= 0) return false;
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
-  const watermark = lastRecoveryClaimProgressWatermark(input.coordinator.recoveryHistory, input.coordinator.attempt);
-  if (watermark === null) return false;
+  const previous = lastRecoveryClaimResume(input.coordinator.recoveryHistory);
+  if (previous === null) return false;
+  // Only a claim that launches a new runner can be unstarted. A reattachment
+  // adopted provider work that had already started, so only progress counts.
+  if (previous.launchesRunner && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
+    return input.coordinator.attempt >= previous.attempt;
+  if (previous.attempt !== input.coordinator.attempt) return false;
+  const watermark = previous.watermark;
   const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
   const [work] = await tx
     .select({ seq: heartbeatRunEvents.seq })
@@ -235,7 +285,6 @@ export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: 
   return work !== undefined;
 }
 
-const controllerBootId = randomUUID();
 
 function processIsAlive(pid: number | null | undefined): boolean {
   if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
@@ -277,14 +326,18 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+/** The native controller stamp of this process. The boot id is the single
+ * process boot id (`controller-process-identity.ts`) and the start time is read
+ * from the OS once, so claims and renewals on the turn path spawn no `ps`. */
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = await currentProcessStartedAtMs();
   const fallback = new Date(getServerProcessStartedAt());
   return {
-    bootId: controllerBootId,
+    bootId: currentControllerBootId(),
     pid: process.pid,
     processStartedAt:
-      observed ?? (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+      observed !== null ? new Date(observed) : (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+    hostHash: currentProcessSpaceHash(),
   };
 }
 
@@ -292,7 +345,7 @@ export function isCurrentNativeControllerProcess(owner: {
   controllerBootId: string | null;
   controllerPid: number | null;
 }): boolean {
-  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+  return owner.controllerBootId === currentControllerBootId() && owner.controllerPid === process.pid;
 }
 
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
@@ -303,12 +356,8 @@ function definitivelyDifferentProcessStart(
   left: Date | null,
   right: Date | null,
 ): boolean {
-  if (left === null || right === null) return false;
-  // `ps -o lstart` has only whole-second precision on macOS and BSD. A
-  // sub-second disagreement can therefore be the same process when one probe
-  // fell back to a higher-precision spawn timestamp. Treat it as ambiguous and
-  // fail closed instead of declaring the live PID recycled.
-  return Math.abs(left.getTime() - right.getTime()) >= 1_000;
+  // Shared with every other owner proof: a sub-second gap is ambiguous.
+  return processStartsDefinitelyDiffer(left, right);
 }
 
 export async function evaluateNativeControllerTakeover(input: {
@@ -318,7 +367,11 @@ export async function evaluateNativeControllerTakeover(input: {
     | "leaseExpiresAt"
     | "controllerPid"
     | "controllerProcessStartedAt"
-  >;
+  > & {
+    /** Absent for owners without a stored PID space (receipts, rows saved
+     * before the column existed): those keep the previous local proof. */
+    controllerHostHash?: string | null;
+  };
   now: Date;
   coordinatedPreviousController?: {
     pid: number;
@@ -350,6 +403,12 @@ export async function evaluateNativeControllerTakeover(input: {
           ? "expired_lease_without_controller_identity"
           : "live_legacy_lease_without_controller_identity",
     };
+  }
+  // A PID can only be judged in the PID space that recorded it. A controller
+  // on another host or namespace (or an unreadable local space) is never
+  // proven gone by a local probe; its lease or fence decides instead.
+  if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
+    return { allowed: false, reason: "controller_host_unprovable" };
   }
   if (!isAlive(priorPid)) {
     return {
@@ -643,7 +702,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     };
   }
   // Continuing an attempt already counted needs no budget; a new one does.
-  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
@@ -668,7 +727,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
 
 /** Any record that execution reached a runner: a requested or identified
  * process, an adapter invocation, a tool start, or a runner-sourced event. */
-async function hasNativeExecutionStartEvidence(
+export async function hasNativeExecutionStartEvidence(
   tx: Pick<Db, "select">, run: { companyId: string; id: string },
 ): Promise<boolean> {
   const [executionEvent] = await tx
@@ -1260,7 +1319,7 @@ export async function claimNativeRestartRecoveries(input: {
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
-      const resumeKeepsAttempt = cleanDrainSuspension || await previousResumeMadeProgress(tx, {
+      const resumeKeepsAttempt = cleanDrainSuspension || await restartResumeKeepsAttempt(tx, {
         runId: row.run.id, coordinator: row.coordinator,
       });
       const classification = classifyNativeRunnerRecoveryEvidence({
@@ -1477,6 +1536,7 @@ export async function claimNativeRestartRecoveries(input: {
           leaseExpiresAt: sql`clock_timestamp() + ${durableAuthority ? REMOTE_CONTROLLER_LEASE_MS : 20 * 60_000} * interval '1 millisecond'`,
           controllerBootId: controller.bootId,
           controllerPid: controller.pid,
+          controllerHostHash: controller.hostHash ?? null,
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
           recoveryState:

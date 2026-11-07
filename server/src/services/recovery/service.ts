@@ -108,6 +108,7 @@ import {
   isPidAlive,
   isProcessGroupAlive,
 } from "../local-service-supervisor.js";
+import { sameProcessSpace } from "../controller-process-identity.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import {
@@ -117,7 +118,8 @@ import {
 } from "../activity-log.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { budgetService, policyBlocks } from "../budgets.js";
+import { budgetService } from "../budgets.js";
+import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -175,6 +177,7 @@ import {
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
+import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -432,7 +435,7 @@ function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
   return /(?:usage|rate|quota) limit|you(?:'|’)ve hit your (?:\w+ )?limit|quota (?:exceeded|reset)|try again after/i.test(
-    latestRun.error ?? "",
+    currentRunFailureText(latestRun) ?? "",
   );
 }
 
@@ -624,10 +627,13 @@ export function classifyAdapterFailureForRecovery(
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
+  // A refused exact resume keeps its interrupted attempt for operators in
+  // `error` and `nativeExactResumeRefusal`. Recovery follows the refusal only.
+  const { nativeExactResumeRefusal: _interruptedAttempt, ...currentResult } = resultJson;
   const error = [
     latestRun.errorCode ?? "",
-    latestRun.error ?? "",
-    JSON.stringify(resultJson),
+    currentRunFailureText(latestRun) ?? "",
+    JSON.stringify(currentResult),
   ].join("\n");
   if (
     latestRun.errorCode === "configuration_incomplete" ||
@@ -2155,21 +2161,6 @@ export function recoveryService(
     agentId: string,
   ) {
     return Boolean(await readInvocationBudgetBlock(issue, agentId));
-  }
-
-  /** A reached hard stop (spend at the limit, or blocked unpriced usage) is a
-   * board decision. Any other budget block (completed runs awaiting accounting,
-   * a native run recovering its accounting, a hold awaiting reconciliation)
-   * clears by itself. Read only: the admission check already reconciled. */
-  async function isBoardOwnedBudgetBlock(
-    companyId: string,
-    block: { scopeType: string; scopeId: string },
-  ) {
-    const policies = await db.select().from(budgetPolicies).where(and(
-      eq(budgetPolicies.companyId, companyId), eq(budgetPolicies.scopeType, block.scopeType),
-      eq(budgetPolicies.scopeId, block.scopeId), eq(budgetPolicies.isActive, true)));
-    for (const policy of policies) if (await policyBlocks(db, policy)) return true;
-    return false;
   }
 
   async function reconcileUnassignedBlockingIssues(opts?: { companyId?: string }) {
@@ -4846,12 +4837,11 @@ export function recoveryService(
         }
       }
       const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
-      // A task that never started has nothing to recover: a temporary accounting
-      // hold only delays its first admission. Leave it `todo` so the assigned-todo
-      // liveness dispatch below admits it once the hold clears. A reached hard
-      // stop still goes to the board.
-      if (budgetBlock && issue.status === "todo" && !latestRun
-          && !(await isBoardOwnedBudgetBlock(issue.companyId, budgetBlock))) {
+      // A temporary hold (accounting still settling) only delays the task's
+      // start or continuation; it is not a reason to escalate. Leave the task
+      // as it is: settling accounting wakes this recovery again, which then
+      // admits it. A reached hard stop still goes to the board.
+      if (budgetBlock && !(await isBoardOwnedBudgetBlock(db, issue.companyId, budgetBlock))) {
         result.skipped += 1;
         continue;
       }
@@ -6191,7 +6181,12 @@ export function recoveryService(
     let processGone = false;
     const hasLiveExecution =
       deps.liveRunExecutions?.has(run.id) ?? runningProcesses.has(run.id);
-    if (!hasLiveExecution) {
+    // A recorded PID is judged only in the PID space that recorded it: a dead
+    // local PID never proves that a process on another host, in another
+    // namespace, or in a sandbox ("remote") is gone. Rows saved before the
+    // space was recorded keep the previous local proof for one release.
+    const processSpaceJudgeable = run.processHostHash == null || sameProcessSpace(run.processHostHash);
+    if (!hasLiveExecution && processSpaceJudgeable) {
       if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
           (typeof pid === "number" && isPidAlive(pid)) ||

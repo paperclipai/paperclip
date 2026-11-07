@@ -26,11 +26,21 @@ export interface ControllerOutageReceipt extends ControllerOutage {
   recoveryProgress?: Partial<ControllerRecoveryReceipt>;
 }
 
+/**
+ * Longest controller outage a harness may inject. Ten minutes lets chaos
+ * holds pass Daytona's sandbox auto-stop and the 7-minute runner reconnect
+ * grace. The recover-controller receipt check below still requires readiness
+ * inside that grace, so this does not loosen the qualification contract.
+ */
+export const MAX_CONTROLLER_OUTAGE_MS = 600_000;
+
 export function parseControllerOutage(value: unknown): ControllerOutage {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid controller outage");
   const { signal, holdMs } = value as Record<string, unknown>;
   if ((signal !== "SIGTERM" && signal !== "SIGKILL") || !Number.isSafeInteger(holdMs)
-    || Number(holdMs) < 0 || Number(holdMs) > 300_000) throw new Error("Controller outage requires SIGTERM/SIGKILL and 0..300000 integer milliseconds");
+    || Number(holdMs) < 0 || Number(holdMs) > MAX_CONTROLLER_OUTAGE_MS) {
+    throw new Error(`Controller outage requires SIGTERM/SIGKILL and 0..${MAX_CONTROLLER_OUTAGE_MS} integer milliseconds`);
+  }
   return { signal, holdMs: Number(holdMs) };
 }
 
