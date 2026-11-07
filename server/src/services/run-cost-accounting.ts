@@ -79,6 +79,8 @@ function estimateLostReceipt(usage: Record<string, unknown>) {
   const cachedInputTokens = count("cachedInputTokens"), cacheWriteTokens = count("cacheWriteTokens");
   if (inputTokens + outputTokens + (cachedInputTokens ?? 0) <= 0) return null;
   if ((usage.usageSource ?? "per_run") !== "per_run") return null;
+  // Aggregate totals across several models cannot take one model's rate.
+  if (Array.isArray(usage.usageByModel) && usage.usageByModel.length > 0) return null;
   const billingType = text(usage.billingType);
   const priced = priceAnthropicReceipt(priceCodexReceipt({
     complete: true, usageBasis: "per_run", provider: text(usage.provider) ?? undefined,

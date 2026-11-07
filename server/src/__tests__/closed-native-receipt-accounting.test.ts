@@ -145,6 +145,16 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  it("leaves a lost multi-model receipt unpriced instead of applying one model's rate", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await lostUsage(f, { provider: "openai", biller: "openai", model: "gpt-6.1-sol", billingType: "metered_api",
+      inputTokens: 28690, cachedInputTokens: 0, outputTokens: 220,
+      usageByModel: [{ model: "gpt-6.1-sol", usage: { inputTokens: 20000 } }, { model: "gpt-6-luna", usage: { inputTokens: 8690 } }] });
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    expect(await f.charges()).toMatchObject([{ costStatus: "unpriced" }]);
+    expect(await f.block()).toBeNull();
+  });
+
   it("never hard-stops a company for a lost receipt whose usage has no rate card", async () => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
     await lostUsage(f, { provider: "openai", biller: "openai", model: "unlisted-model", inputTokens: 1200, outputTokens: 80 });

@@ -150,9 +150,12 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date, ex
     // - a charge that carries a known partial cost;
     // - metered API or subscription billing with no observed tokens.
     // Unknown billing with no tokens (for example Cursor Cloud) still counts.
-    const exemptFromUnpricedBlock = sql`(exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
-        and lost_receipt_run.company_id = ${costEvents.companyId}
-        and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true')
+    // The lost-receipt exemption covers only that run's settled final charge;
+    // later growth from a complete receipt is ordinary usage.
+    const exemptFromUnpricedBlock = sql`((${costEvents.idempotencyKey} = 'heartbeat:' || ${costEvents.heartbeatRunId}::text || ':final'
+        and exists (select 1 from ${heartbeatRuns} lost_receipt_run where lost_receipt_run.id = ${costEvents.heartbeatRunId}
+          and lost_receipt_run.company_id = ${costEvents.companyId}
+          and lost_receipt_run.usage_json->>'accountingReceiptUnavailable' = 'true'))
       or ${costEvents.costCents} > 0
       or (${costEvents.billingType} in ('metered_api', 'api', 'subscription') and ${costEvents.inputTokens} = 0 and ${costEvents.cachedInputTokens} = 0
         and ${costEvents.outputTokens} = 0))`;
