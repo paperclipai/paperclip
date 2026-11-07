@@ -6,12 +6,13 @@ export type NativeLifecyclePolicy = NonNullable<NativeExecutionInput["session"][
 
 /**
  * Harnesses measured to start a follow-up turn faster on a live runner
- * (doc/plans/2026-11-07-ttft-baseline.md, "Warm follow-up turns"). An agent
- * that never chose a lifecycle gets warm for these on a local target.
+ * (doc/plans/2026-11-07-warm-follow-up-ttft.md). An agent that never chose a
+ * lifecycle gets warm for these on a local target. ACPX harnesses (Claude)
+ * relaunch their provider process on every follow-up turn by design, so warm
+ * does not shorten their follow-up and they stay per-turn.
  */
-function defaultsToWarmLocally(backend: string, acpxAgent: unknown): boolean {
-  return backend === "codex_app_server" || backend === "opencode_server"
-    || (backend === "acpx_runtime" && acpxAgent === "claude");
+function defaultsToWarmLocally(backend: string): boolean {
+  return backend === "codex_app_server" || backend === "opencode_server";
 }
 
 export function resolveHeartbeatNativeLifecyclePolicy(input: {
@@ -32,7 +33,7 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   // runner and provider session for the default idle window so a follow-up
   // turn skips the launch and session load.
   const agentMode = input.agentMode === "warm" || input.agentMode === "per_turn" ? input.agentMode
-    : input.adapterType === "paperclip_runner" && input.localTarget === true && defaultsToWarmLocally(input.backend, input.acpxAgent)
+    : input.adapterType === "paperclip_runner" && input.localTarget === true && defaultsToWarmLocally(input.backend)
       ? "warm" : "per_turn";
   const agentPolicy: NativeLifecyclePolicy = agentMode === "warm"
     ? { mode: "warm", idleTimeoutMs: input.agentMode === "warm"

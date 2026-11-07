@@ -3578,12 +3578,14 @@ A resumed sandbox lease can contain a workspace whose provider never started. A 
 
 ### Runner lifecycle default
 
-New native Codex, Claude and OpenCode agents store no `lifecycleMode`. On a local
-target, the controller resolves that to `warm` with the default 5-minute idle
+New native Codex, Claude and OpenCode agents store no `lifecycleMode`. For Codex
+and OpenCode on a local target, the controller resolves that to `warm` with the default 5-minute idle
 window (`resolveHeartbeatNativeLifecyclePolicy`), so a follow-up turn on the same
 task reuses the live runner and provider session instead of launching and
-loading them again. Remote targets, other harnesses and managed providers without
-warm support resolve to `per_turn`. An explicit `per_turn` or `warm` choice
+loading them again. Claude (ACPX) relaunches its provider process on every
+follow-up turn by design, so warm does not shorten its follow-up and it resolves
+to `per_turn`, as do remote targets, other harnesses and managed providers
+without warm support. An explicit `per_turn` or `warm` choice
 ("Turn by turn" or "Warm session" in the agent's Runner lifecycle field) always
 wins, and a session keeps the policy it was admitted with. The measurements are
 in [`plans/2026-11-07-warm-follow-up-ttft.md`](plans/2026-11-07-warm-follow-up-ttft.md).

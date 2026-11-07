@@ -39,7 +39,8 @@ describe("default lifecycle for an agent that never chose one", () => {
   it.each<{ name: string; change: Partial<Input>; expected: NativeLifecyclePolicy }>([
     { name: "local Codex keeps a warm runner for the default idle window", change: {}, expected: defaultWarm },
     { name: "local OpenCode is warm", change: { backend: "opencode_server" }, expected: defaultWarm },
-    { name: "local Claude is warm", change: { backend: "acpx_runtime", acpxAgent: "claude" }, expected: defaultWarm },
+    // ACPX relaunches its provider every follow-up turn, so warm buys Claude no TTFT.
+    { name: "local Claude stays per-turn", change: { backend: "acpx_runtime", acpxAgent: "claude" }, expected: perTurn },
     { name: "an explicit per-turn choice is honored", change: { agentMode: "per_turn" }, expected: perTurn },
     { name: "an explicit warm idle window is honored", change: { agentMode: "warm", agentIdleTimeoutMs: 900_000 }, expected: warm },
     { name: "a remote target stays per-turn", change: { localTarget: false }, expected: perTurn },
