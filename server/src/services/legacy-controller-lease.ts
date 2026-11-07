@@ -1,11 +1,13 @@
 import { notifyActiveExecutionRecovery, notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
-import { randomUUID } from "node:crypto";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
+import { randomUUID } from "node:crypto";
+import { currentControllerBootId } from "./controller-process-identity.js";
 
-// A boot UUID has meaning across containers; a numeric PID does not.
-export const legacyControllerBootId = randomUUID();
+// A boot UUID has meaning across containers; a numeric PID does not. Legacy
+// leases stamp the single process boot id shared with native claims.
+export const legacyControllerBootId = currentControllerBootId();
 export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
@@ -30,6 +32,7 @@ export class LegacyControllerLeaseLostError extends Error {
 export function legacyControllerClaim(runtimeMode: string) {
   if (runtimeMode === "native") return {};
   return {
+    legacyProcessSettlement: null,
     controllerBootId: legacyControllerBootId,
     controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
     executionStage: "preparing",

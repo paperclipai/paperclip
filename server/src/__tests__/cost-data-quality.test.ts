@@ -166,9 +166,16 @@ describe("actionable cost data quality", () => {
     expect(report.runs.find(item => item.id === captureFailed.id)?.reason).toBe("waiting_for_receipt");
     expect(report.runs.find(item => item.id === invalidProof.id)?.reason).toBe("waiting_for_receipt");
     const integrity = accountingIntegrityService(db);
+    // A failed capture is never certified free. Before the accounting closure
+    // bound it stays pending; past it, its known usage settles as unpriced.
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, captureFailed.id));
     expect(await integrity.retry(owner.companyId, captureFailed.id, "board")).toEqual({ accounted: false });
     expect(await integrity.retry(owner.companyId, noWork.id, "board")).toEqual({ accounted: true });
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, owner.companyId))).toEqual([]);
+    await db.update(heartbeatRuns).set({ finishedAt: now }).where(eq(heartbeatRuns.id, captureFailed.id));
+    expect(await integrity.retry(owner.companyId, captureFailed.id, "board")).toEqual({ accounted: true });
+    const charges = await db.select().from(costEvents).where(eq(costEvents.companyId, owner.companyId));
+    expect(charges.map(charge => [charge.heartbeatRunId, charge.costStatus])).toEqual([[captureFailed.id, "unpriced"]]);
   });
 
   it("does not offer retry while a native coordinator can still resume provider work", async () => {

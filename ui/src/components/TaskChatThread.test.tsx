@@ -1248,6 +1248,42 @@ function renderThread(props: ComponentProps<typeof TaskChatThread>) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it.each(["original", "changed"])("groups PAP-2525 native image uploads with %s receipt wording", async (wording) => {
+    const comment = (id: string, body: string, runId?: string) => ({
+      id, body, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId ?? null, createdAt: new Date("2026-11-06T13:32:00Z"), updatedAt: new Date("2026-11-06T13:32:00Z"),
+      metadata: null, presentation: null,
+    });
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const workProducts = [1, 2].map(n => ({
+      id: `image-${n}`, type: "artifact", provider: "paperclip", title: `Screen ${n}`, status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "images-run", createdAt: new Date(`2026-11-06T13:31:0${n}Z`), updatedAt: new Date(`2026-11-06T13:31:0${n}Z`),
+      metadata: { attachmentId: `00000000-0000-4000-8000-00000000000${n}`, originalFilename: `screen-${n}.png`, contentType: "image/png", byteSize: 2048, contentPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, openPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content`, downloadPath: `/api/attachments/00000000-0000-4000-8000-00000000000${n}/content?download=1` },
+    })) as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = workProducts.map((w, n) => ({ id: w.metadata!.attachmentId, issueCommentId: `receipt-${n}`, originatingRunId: "images-run", createdByAgentId: "agent",
+      originalFilename: `screen-${n}.png`, contentType: "image/png", contentPath: w.metadata!.contentPath,
+      createdAt: w.createdAt, updatedAt: w.updatedAt, byteSize: 2048,
+    })) as unknown as NonNullable<Props["attachments"]>;
+    const comments = workProducts.map((w, n) => ({ ...comment(`receipt-${n}`, wording === "original" ? `Prepared ${w.title} for this response.` : `Image ready: ${w.title}`, "images-run"),
+      createdAt: new Date(new Date(w.createdAt).getTime() + 100),
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol",
+        ...(wording === "changed" ? { attachmentPreparation: { attachmentId: String(w.metadata!.attachmentId) } } : {}),
+      },
+    }));
+    const props: Props = { comments, workProducts, attachments, onAdd: async () => {}, issueStatus: "done" };
+    render(<TaskChatThread {...props} />);
+    await settleThreadLayout();
+    for (const receipt of comments) expect(container.textContent).not.toContain(receipt.body);
+    expect(container.querySelectorAll('[data-testid="task-chat-image-grid"]')).toHaveLength(1);
+    expect(container.querySelectorAll('button[aria-label^="Open gallery:"]')).toHaveLength(2);
+    // The same words written by a person are conversation and must remain.
+    render(<TaskChatThread {...props} comments={[...comments, { ...comment("human-receipt-words", "Prepared Screen 1 for this response."), authorAgentId: null, authorType: "user", authorUserId: "viewer" }]} />);
+    expect(container.textContent).toContain("Prepared Screen 1 for this response.");
+    // Native progress messages share the protocol marker and can have attachments.
+    render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: { ...comments[0].metadata, attachmentPreparation: undefined } }, comments[1]]} />);
+    expect(container.textContent).toContain("Keep this image context");
+  });
+
   it("aligns the desktop thread header with the side-panel tab row", () => {
     renderThread({
       comments: [
@@ -4000,6 +4036,123 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
   });
 
+  it.each(["request_confirmation", "request_checkbox_confirmation"] as const)("immediately closes %s while a new message is sending and keeps it reopenable", async kind => {
+    const fixtures = await import("@/fixtures/issueThreadInteractionFixtures");
+    const request = kind === "request_confirmation"
+      ? fixtures.genericPendingRequestConfirmationInteraction
+      : fixtures.pendingRequestCheckboxConfirmationInteraction;
+    let finishSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { finishSend = resolve; }));
+    const onAcceptInteraction = vi.fn();
+    const onRejectInteraction = vi.fn();
+    const show = () => render(<TaskChatThread {...props} comments={[]} interactions={[request]}
+      onAdd={onAdd} onAcceptInteraction={onAcceptInteraction} onRejectInteraction={onRejectInteraction} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+    expect(request.status).toBe("pending");
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    expect(onRejectInteraction).not.toHaveBeenCalled();
+    await act(async () => editorCallbacks.change("Keep the review for later."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => finishSend());
+    expect(takeover()).toBeNull();
+  });
+
+  it("leaves an earlier confirmation in history after a newer user message, including on reload", async () => {
+    const request = { ...genericPendingRequestConfirmationInteraction, createdAt: old.createdAt };
+    const show = (comments = movedOn.slice(0, 0)) => render(<TaskChatThread {...props} comments={comments} interactions={[request]} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await act(async () => show(movedOn));
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show(movedOn);
+    expect(takeover()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+  });
+
+  it.each([true, false])("keeps a new confirmation open when an earlier message finishes sending (success=%s)", async success => {
+    const request = genericPendingRequestConfirmationInteraction;
+    const next = { ...request, id: "new-review", title: "New review", createdAt: new Date("2026-11-06T12:00:00Z") };
+    let finishSend!: () => void;
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((resolve, reject) => { finishSend = resolve; rejectSend = reject; }));
+    const show = (interactions = [request]) => render(<TaskChatThread {...props} comments={[]} interactions={interactions} onAdd={onAdd} />);
+    show();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).toBeNull();
+    await act(async () => show([request, next]));
+    expect(takeover()?.textContent).toContain("New review");
+    await act(async () => {
+      if (success) finishSend();
+      else rejectSend(new Error("Message not sent"));
+    });
+    expect(takeover()?.textContent).toContain("New review");
+  });
+
+  it("restores the confirmation when sending a separate message fails", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[genericPendingRequestConfirmationInteraction]}
+      onAdd={vi.fn().mockRejectedValue(new Error("Message not sent"))} />);
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('[data-testid="mock-editor"]')?.textContent).toContain("Let's discuss something else first.");
+  });
+
+  it.each([false, true])("restores a reopened historical confirmation after a failed optimistic send (rollback=%s)", async rollback => {
+    const request = { ...genericPendingRequestConfirmationInteraction, createdAt: old.createdAt };
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+    const show = (comments = movedOn) => render(<TaskChatThread {...props} comments={comments} interactions={[request]} onAdd={onAdd} />);
+    show();
+    await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="Open request: ${request.title}"]`)!.click());
+    expect(takeover()).not.toBeNull();
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    const optimistic = { ...movedOn[0]!, id: "optimistic-send", createdAt: new Date("2026-08-15T12:10:00Z") };
+    await act(async () => show([...movedOn, optimistic]));
+    expect(takeover()).toBeNull();
+    await act(async () => {
+      if (rollback) show();
+      rejectSend(new Error("Message not sent"));
+    });
+    expect(takeover()).not.toBeNull();
+    expect(takeover()?.textContent).toContain(request.title);
+    expect(container.querySelector('[data-testid="mock-editor"]')?.textContent).toContain("Let's discuss something else first.");
+  });
+
+  it("does not restore an earlier confirmation after the person opens and dismisses another request during a failed send", async () => {
+    const first = { ...genericPendingRequestConfirmationInteraction, id: "earlier-review", title: "Earlier review", createdAt: old.createdAt };
+    const second = { ...first, id: "later-review", title: "Later review" };
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+    render(<TaskChatThread {...props} comments={movedOn} interactions={[first, second]} onAdd={onAdd} />);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Earlier review"]')!.click());
+    await act(async () => editorCallbacks.change("Let's discuss something else first."));
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Later review"]')!.click());
+    await dismiss();
+    await act(async () => rejectSend(new Error("Message not sent")));
+    expect(takeover()).toBeNull();
+  });
+
   it.each(["Cancel", "dismiss"])("leaves only the history card after %s on a fresh question", async action => {
     render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
     await click("Yes");
@@ -4456,13 +4609,15 @@ describe("TaskChatThread blocker links", () => {
           '[data-testid="task-chat-live-work-step"] a',
         ),
       ].map((link) => link.textContent);
+      // Each step leads with the shared task status glyph (its <title> is
+      // the status label), the same glyph the task list draws (BUG-07).
       expect(orderedLinks).toEqual([
-        "PAP-17424Run the guarded cutover",
-        "PAP-17425Verify the live projection",
-        "PAP-17427Verify the completed projection",
+        "DonePAP-17424Run the guarded cutover",
+        "In ProgressPAP-17425Verify the live projection",
+        "TodoPAP-17427Verify the completed projection",
       ]);
       expect(notice.textContent).toContain(
-        "Now runningPAP-17426Restore live alias projection",
+        "Now runningIn ProgressPAP-17426Restore live alias projection",
       );
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
@@ -5555,6 +5710,30 @@ describe("TaskChatThread live transcript", () => {
       ).toBeNull();
     },
   );
+
+  it("renders one Stopped row when an interrupted native turn settles without a reply", () => {
+    const runId = "native-interrupted";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      assistantEntry("2026-11-06T15:14:05Z", "INTERRUPTED-PROGRESS-LINE", "progress"),
+      { kind: "run_terminal", ts: "2026-11-06T15:14:26Z", turnState: "cancelled", runState: "cancelled", disposition: "blocked" },
+    ]);
+    const activeRun = {
+      id: runId, runtimeMode: "native" as const, status: "running", invocationSource: "issue" as const,
+      triggerDetail: null, startedAt: "2026-11-06T15:14:05Z", createdAt: "2026-11-06T15:14:05Z", finishedAt: null,
+      agentId: "agent-1", agentName: "Researcher", adapterType: "paperclip_runner",
+    };
+    renderThread({ comments: [], onAdd: async () => {}, issueStatus: "in_progress", activeRun });
+    // Interrupt cancels the turn. A stopped turn posts no reply comment, so the
+    // settled turn alone owns it; the live tail must not render a second row.
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      linkedRuns: [{ ...activeRun, runId, status: "cancelled", finishedAt: "2026-11-06T15:14:26Z",
+        errorCode: "operator_interrupted", resultJson: { operatorInterrupted: true, cancelledByActorType: "user" } }],
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBeNull();
+    expect(container.textContent?.split("INTERRUPTED-PROGRESS-LINE")).toHaveLength(2);
+    expect(container.textContent?.match(/Stopped (for|after) /g)).toHaveLength(1);
+  });
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [

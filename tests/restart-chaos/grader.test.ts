@@ -89,6 +89,21 @@ describe("R1–R6 grading on fixture timelines", () => {
     expect(gradeR3(rejected).detail).toMatch(/^retry_rejected/);
   });
 
+  it("passes R4 for a queued wake that is cancelled behind a running run without executing", () => {
+    // Shape of w-20261107T013205-s11/t06: a follow-up comment queued a run while
+    // the first run was running; it was cancelled when the first one succeeded.
+    const queuedWake = run("w2", "queued", 30_000, null, { startedAt: null, wakeCommentIds: ["c1"] });
+    const samples = [
+      sample(10_000, "in_progress", [run("r1", "running", 1_000)]),
+      sample(35_000, "in_progress", [run("r1", "running", 1_000), queuedWake]),
+      sample(45_000, "in_progress", [run("r1", "succeeded", 1_000, 40_000), { ...queuedWake, status: "cancelled", finishedAt: iso(41_000) }]),
+    ];
+    expect(gradeR4(record(samples))).toMatchObject({ verdict: "pass" });
+    // The same queued/scheduled shapes never fail on their own either.
+    expect(gradeR4(record([sample(10_000, "in_progress", [run("r1", "queued", 1_000, null, { startedAt: null }),
+      run("r2", "scheduled_retry", 5_000, null, { startedAt: null })])])).verdict).toBe("pass");
+  });
+
   it("fails R4 for two concurrent running runs and for a comment consumed twice", () => {
     expect(gradeR4(record([sample(10_000, "in_progress", [run("r1", "running", 1_000), run("r2", "running", 5_000)])])).detail).toMatch(/concurrent_runs/);
     const twice = [sample(90_000, "done", [
@@ -96,8 +111,9 @@ describe("R1–R6 grading on fixture timelines", () => {
       run("r2", "succeeded", 50_000, 80_000, { wakeCommentIds: ["c1"] }),
     ])];
     expect(gradeR4(record(twice)).detail).toMatch(/comment_consumed_twice: c1/);
-    // Two active runs that are not both running also fail.
-    expect(gradeR4(record([sample(10_000, "in_progress", [run("r1", "queued", 1_000), run("r2", "scheduled_retry", 5_000)])])).detail).toMatch(/concurrent_runs/);
+    // Runs whose execution windows overlap fail even if no single poll saw both running.
+    const overlapped = [sample(90_000, "done", [run("r1", "succeeded", 1_000, 40_000), run("r2", "failed", 20_000, 60_000)])];
+    expect(gradeR4(record(overlapped)).detail).toMatch(/concurrent_runs: r1\(succeeded\),r2\(failed\) executed together/);
     // A failed run's comment may be served again by the retry; a successful one may not.
     const retried = [sample(90_000, "done", [
       run("r1", "failed", 1_000, 40_000, { wakeCommentIds: ["c1"] }),

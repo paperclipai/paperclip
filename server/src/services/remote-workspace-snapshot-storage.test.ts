@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { appendFileSync, readdirSync } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
@@ -10,6 +11,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
@@ -30,7 +32,7 @@ suite("remote workspace snapshot storage", () => {
   afterAll(async () => { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl); else await database?.cleanup(); });
   beforeEach(async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "41".repeat(32));
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-store-test-"));
+    root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-store-test-")));
     storage = createStorageService(createLocalDiskStorageProvider(path.join(root, "objects")));
   });
   afterEach(async () => { vi.unstubAllEnvs(); await db.delete(executionWorkspaceSnapshots); await fs.rm(root, { recursive: true, force: true }); });
@@ -56,6 +58,67 @@ suite("remote workspace snapshot storage", () => {
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("acknowledged workspace content\n");
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
+  });
+  it.each(["fresh", "uploaded", "lost-reply"])("reuses one authenticated %s readback for a complete cold restore", async state => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    if (state === "uploaded") await uploadWorkspaceSnapshot(f.upload);
+    if (state === "lost-reply") {
+      storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+      await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("lost upload reply");
+      storage.putFile = put;
+    }
+    const get = vi.spyOn(storage, "getObject"), verifiedArchivePath = path.join(root, "verified.pcws");
+    const request = { ...f.upload, verifiedArchivePath }, ref = await uploadWorkspaceSnapshot(request);
+    if (!await fs.lstat(verifiedArchivePath).catch(() => null))
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: verifiedArchivePath });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(verifiedArchivePath)).toEqual(await fs.readFile(f.archivePath));
+    expect((await fs.stat(verifiedArchivePath)).mode & 0o777).toBe(0o600);
+    expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: ref.id })).toEqual(ref);
+    await fs.rm(f.cwd, { recursive: true }); await fs.rm(f.archivePath);
+    await restoreRemoteWorkspaceArchive({ archivePath: verifiedArchivePath, targetDir: path.join(root, "cold"), expectedManifestDigest: ref.manifestDigest });
+    expect(await fs.readFile(path.join(root, "cold", "saved.txt"), "utf8")).toBe("acknowledged workspace content\n");
+    expect((await fs.readdir(root)).some(name => name.startsWith(".workspace-upload-readback-"))).toBe(false);
+  });
+  it.each(["existing", "public-parent", "linked-parent"])("refuses a caller-owned readback path with %s ownership", async mode => {
+    const f = await fixture(), parent = path.join(root, "destination"); await fs.mkdir(parent, { mode: 0o700 });
+    let verifiedArchivePath = path.join(parent, "archive.pcws");
+    if (mode === "existing") await fs.writeFile(verifiedArchivePath, "keep caller bytes");
+    if (mode === "public-parent") await fs.chmod(parent, 0o755);
+    if (mode === "linked-parent") {
+      const alias = path.join(root, "alias"); await fs.symlink(parent, alias); verifiedArchivePath = path.join(alias, "archive.pcws");
+    }
+    const get = vi.spyOn(storage, "getObject"), put = vi.spyOn(storage, "putFile");
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath })).rejects.toThrow("readback_");
+    expect(get).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled();
+    if (mode === "existing") expect(await fs.readFile(verifiedArchivePath, "utf8")).toBe("keep caller bytes");
+    expect((await db.select().from(executionWorkspaceSnapshots))[0].status).toBe("pending");
+  });
+  it("rejects a tampered verified plaintext before publishing the caller path", async () => {
+    const f = await fixture(), verifiedArchivePath = path.join(root, "tampered.pcws"), debug = db.$client.options.debug;
+    let changed = false;
+    db.$client.options.debug = (_connection, query) => {
+      if (changed || !query.startsWith('update "execution_workspace_snapshots"') || !query.includes('"status" =')) return;
+      const directory = readdirSync(root).find(name => name.startsWith(".workspace-upload-readback-"));
+      if (!directory) return;
+      const file = readdirSync(path.join(root, directory)).find(name => name.endsWith(".pcws"));
+      if (file) { appendFileSync(path.join(root, directory, file), "changed plaintext"); changed = true; }
+    };
+    try {
+      await expect(uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath })).rejects.toThrow("readback_file_changed");
+      expect(changed).toBe(true);
+      expect(await fs.lstat(verifiedArchivePath).catch(() => null)).toBeNull();
+      expect((await fs.readdir(root)).some(name => name.startsWith(".workspace-upload-readback-"))).toBe(false);
+    } finally { db.$client.options.debug = debug; }
+  });
+  it("keeps GCM authentication mandatory for an uploaded readback and removes all failed plaintext", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload), verifiedArchivePath = path.join(root, "bad-key.pcws");
+    const wrapped = JSON.parse(await localEncryptedProvider.resolveVersion({ material: ref.key, externalRef: null }));
+    const { material } = await localEncryptedProvider.createVersion({ value: JSON.stringify({ ...wrapped, dataKey: Buffer.alloc(32, 8).toString("base64") }) });
+    await db.update(executionWorkspaceSnapshots).set({ key: material }).where(eq(executionWorkspaceSnapshots.id, ref.id));
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, verifiedArchivePath })).rejects.toThrow();
+    expect(await fs.lstat(verifiedArchivePath).catch(() => null)).toBeNull();
+    expect((await fs.readdir(root)).some(name => name.startsWith(".workspace-upload-readback-"))).toBe(false);
   });
   it("reconciles an upload whose reply was lost after object persistence, without the old scratch file", async () => {
     const f = await fixture(); const put = storage.putFile.bind(storage); let loseReply = true;
@@ -156,7 +219,8 @@ suite("remote workspace snapshot storage", () => {
     expect(saved).toMatchObject({ status: "pending", objectKey: null });
     expect(saved!.metadata!.uploads).toHaveLength(1);
   });
-  it.each(["original", "recapture", "original-with-lost-reply"])("keeps a %s winner when another physical capture finishes late", async winner => {
+  it.each(["original", "recapture", "original-with-lost-reply"].flatMap(winner => [false, true].map(readback => ({ winner, readback }))))(
+    "keeps a $winner winner when another physical capture finishes late (readback: $readback)", async ({ winner, readback }) => {
     const f = await fixture(), put = storage.putFile.bind(storage);
     const deferred = () => {
       let resolve!: () => void;
@@ -174,14 +238,16 @@ suite("remote workspace snapshot storage", () => {
       return saved;
     };
     const unpublishedRecapture = { sourceOperationId: f.operationId };
-    const original = uploadWorkspaceSnapshot({ ...f.upload, unpublishedRecapture });
+    const originalPath = path.join(root, "original-verified.pcws"), recapturedPath = path.join(root, "recaptured-verified.pcws");
+    const original = uploadWorkspaceSnapshot({ ...f.upload, unpublishedRecapture, ...(readback ? { verifiedArchivePath: originalPath } : {}) });
     let recapture: ReturnType<typeof uploadWorkspaceSnapshot> | undefined;
     try {
       await originalReady.promise;
       const archivePath = path.join(root, "recaptured.pcws");
       await fs.writeFile(path.join(f.cwd, "saved.txt"), "different physical capture\n");
       const captured = await captureRemoteWorkspaceDirectory({ cwd: f.cwd, archivePath });
-      recapture = uploadWorkspaceSnapshot({ ...f.upload, archivePath, manifestDigest: captured.manifestDigest, unpublishedRecapture });
+      recapture = uploadWorkspaceSnapshot({ ...f.upload, archivePath, manifestDigest: captured.manifestDigest, unpublishedRecapture,
+        ...(readback ? { verifiedArchivePath: recapturedPath } : {}) });
       await recaptureReady.promise;
       (winner === "recapture" ? recaptureRelease : originalRelease).resolve();
       if (winner === "original-with-lost-reply") {
@@ -193,6 +259,11 @@ suite("remote workspace snapshot storage", () => {
       originalRelease.resolve(); recaptureRelease.resolve();
       if (winner !== "original-with-lost-reply") expect(await original).toEqual(saved);
       expect(await recapture).toEqual(saved);
+      if (readback) {
+        const winningBytes = await fs.readFile(winner === "recapture" ? archivePath : f.archivePath);
+        expect(await fs.readFile(recapturedPath)).toEqual(winningBytes);
+        if (winner !== "original-with-lost-reply") expect(await fs.readFile(originalPath)).toEqual(winningBytes);
+      }
       expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: f.row.id })).toEqual(saved);
       expect((await db.select().from(executionWorkspaceSnapshots))[0]!.metadata!.uploads).toHaveLength(2);
     } finally { originalRelease.resolve(); recaptureRelease.resolve(); await Promise.allSettled([original, recapture]); }

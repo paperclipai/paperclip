@@ -113,9 +113,9 @@ export function assertRepositoryRetryMatches(row: Pick<RepositoryRow, "repositor
 }
 
 export function executionWorkspaceRepositoryService(db: Db) {
-  async function catalog(companyId: string, userId: string | null, localTrusted: boolean) {
+  async function catalog(companyId: string, userId: string | null, localTrusted: boolean, requiredRepositoryIds: string[] = []) {
     return measureRunPhase("workspace.repository.catalog", async () =>
-      (await toolAccessService(db).listProjectRepositories(companyId, userId, localTrusted)).repositories);
+      (await toolAccessService(db).listProjectRepositories(companyId, userId, localTrusted, { requiredRepositoryIds })).repositories);
   }
   async function requiresAnonymousAcquisition(reader: Db | DbTransaction, input: {
     issue: typeof issues.$inferSelect; workspace: Pick<typeof executionWorkspaces.$inferSelect, "projectId"> | null;
@@ -362,7 +362,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
     }
     if (readRemoteWorkspaceAuthority(workspace.metadata)) {
       if (!input.remoteTarget || !input.remoteLease) throw conflict("Remote repository preparation requires its bound sandbox");
-      const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+      const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board",
+        rows.flatMap(row => row.catalogRepositoryId ? [row.catalogRepositoryId] : []));
       const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId,
         agentId: input.agentId, responsibleUserId: input.responsibleUserId });
       const prepared: Array<{ id: string; cwd: string; repoUrl: string; relativePath: string; pinnedCommit: string; branchName: string | null }> = [];
@@ -380,7 +381,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           await publicationBinding(db, input);
           if (!acquisitionRestricted) await assertCurrentControllerAcquisition(input);
           if (source.catalogRepositoryId) {
-            const current = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+            const current = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
             const authorized = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, current, false);
             if (authorized.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository catalog authorization changed");
           }
@@ -430,7 +431,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
       return prepared;
     }
     const root = await measureRunPhase("workspace.repository.paths", () => fs.realpath(input.cwd));
-    const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+    const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board",
+      rows.flatMap(row => row.catalogRepositoryId ? [row.catalogRepositoryId] : []));
     const resolveAuth = createGitRemoteAuthProvider(db, input.companyId, { issueId: input.issueId, heartbeatRunId: input.runId, agentId: input.agentId, responsibleUserId: input.responsibleUserId });
     const sources = rows.map(row => {
       assertAcquisitionReceipt(row, acquisitionRestricted);
@@ -535,7 +537,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
                 await assertCurrentControllerAcquisition(input);
                 await assertPublicationAllowed(input);
                 if (source.catalogRepositoryId) {
-                  const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+                  const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
                   const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
                   if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
                 }
@@ -558,7 +560,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           if (!acquisitionRestricted) {
             await assertCurrentControllerAcquisition(input);
             if (source.catalogRepositoryId) {
-              const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+              const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board", [source.catalogRepositoryId]);
               const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
               if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
             }

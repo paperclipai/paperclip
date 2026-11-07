@@ -1045,6 +1045,57 @@ describe("Daytona sandbox provider plugin", () => {
       }
     });
 
+    // RC-54: a per-turn, non-reusable sandbox running a remote runner must not
+    // auto-stop during a controller outage the host still treats as
+    // reattachable. The host forwards its reconnect grace for runner leases.
+    it.each([
+      [{ reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false, autoStopInterval: 2 }],
+      [{ reuseLease: true, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false }],
+    ])("keeps a runner sandbox alive through the host reconnect grace plus a margin (%o)", async (config) => {
+      const autoStopMs = (await acquire({ ...config, runnerReconnectGraceMs: 420_000 })) * 60_000;
+      expect(autoStopMs).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("combines the reconnect grace floor with the warm floor and explicit settings", async () => {
+      expect(await acquire({ reuseLease: true, warmRunnerIdleTimeoutMs: 900_000, runnerReconnectGraceMs: 420_000 }))
+        .toBe(Math.ceil(900_000 / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 60 })).toBe(60);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 0 })).toBe(0);
+      // Without a host-forwarded grace (not a runner lease), the configured value stands.
+      expect(await acquire({ reuseLease: false, autoStopInterval: 5 })).toBe(5);
+    });
+
+    it("raises the auto-stop of an existing runner sandbox on recovery resume", async () => {
+      // The stopped sandbox from the outage restarts on resume and keeps its
+      // original 5-minute auto-stop unless the provider raises it.
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-runner", state: "stopped" });
+      (sandbox as { autoStopInterval: number }).autoStopInterval = 5;
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+        result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config: { reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5, runnerReconnectGraceMs: 420_000 },
+        leaseMetadata: { workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token", result: "written" } },
+      });
+      expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
+      const [minutes] = sandbox.setAutostopInterval.mock.calls[0] as [number];
+      expect(minutes * 60_000).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("keeps the host reconnect grace out of the saved provider config", async () => {
+      const result = await plugin.definition.onEnvironmentValidateConfig!({ driverKey: "daytona",
+        config: { apiKey: "key", image: "node:20", runnerReconnectGraceMs: 420_000, warmRunnerIdleTimeoutMs: 900_000, reuseLease: true } });
+      expect(result.ok).toBe(true);
+      expect(result.normalizedConfig).not.toHaveProperty("runnerReconnectGraceMs");
+      expect(result.normalizedConfig).not.toHaveProperty("warmIdleTimeoutMs");
+    });
+
     it("does not change auto-stop on resume of a per-turn reusable sandbox", async () => {
       const sandbox = await resume({ reuseLease: true, runnerLifecycleMode: "per_turn" });
       expect(sandbox.setAutostopInterval).not.toHaveBeenCalled();

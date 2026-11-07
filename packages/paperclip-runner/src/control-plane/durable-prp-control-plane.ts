@@ -305,6 +305,8 @@ export interface DurablePrpControlPlaneOptions {
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  /** Diagnostic only: called synchronously after each runner connection is authenticated. */
+  onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
 
@@ -2035,6 +2037,7 @@ export class DurablePrpControlPlane {
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
+  #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
@@ -2093,6 +2096,7 @@ export class DurablePrpControlPlane {
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
+    this.#onAuthenticatedConnection = options.onAuthenticatedConnection;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
@@ -3773,6 +3777,7 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    try { this.#onAuthenticatedConnection?.(); } catch { /* Diagnostics never change admission. */ }
     this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
@@ -3983,7 +3988,8 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#releaseServingLifecycle(connection, command);
+      if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
         this.#sendNextCommand(connection);
       }
       return;
@@ -4028,8 +4034,28 @@ export class DurablePrpControlPlane {
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    if (!this.#isTerminalLifecycleCommand(command)) {
+    this.#releaseServingLifecycle(connection, command);
+    if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
       this.#sendNextCommand(connection);
+    }
+  }
+
+  /**
+   * A rejected runner.suspend changes no provider state, and the runner keeps
+   * serving this connection. Lift the terminal-lifecycle fence it installed
+   * so the controller's next command (a fresh suspend) can be delivered.
+   * Completed suspensions and every shutdown keep the fence.
+   */
+  #releaseServingLifecycle(
+    connection: AuthorityConnection,
+    command: DurableRecoveryCoreCommand,
+  ): void {
+    if (
+      command.type === "runner.suspend" &&
+      (command.status === "failed" || command.status === "rejected") &&
+      connection.terminalLifecycleCommandId === command.commandId
+    ) {
+      connection.terminalLifecycleCommandId = null;
     }
   }
 
