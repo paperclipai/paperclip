@@ -62,6 +62,9 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
   let contactSettled = 0;
   let deniedVerifications = 0;
   let committedVerifications = 0;
+  let otherVerifyCalls = 0;
+  let otherDeniedVerifications = 0;
+  let otherCommittedVerifications = 0;
   let expectedResumeState: string | undefined;
   let agentId: string | undefined;
   let bindingId: string | undefined;
@@ -176,7 +179,7 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
     vi.unstubAllEnvs();
     if (artifactPath) {
       try { await writeFile(artifactPath + "." + mode + ".cleanup.json", JSON.stringify({ stage, passed,
-        mode, deniedVerifications, committedVerifications, contactSettled, expectedResumeState, invitationFailure,
+        mode, deniedVerifications, committedVerifications, otherVerifyCalls, otherDeniedVerifications, otherCommittedVerifications, contactSettled, expectedResumeState, invitationFailure,
         queryCount, poolQueryCounts, callbacks, sessions, verifyCalls, unexpectedDecisionWakes, cleanupErrors: errors.length,
         appOwnerJoined: app === undefined, rootDbEnded: db === undefined, registeredClientsClosed,
         retainedHome: passed && !errors.length ? false : home ?? null }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); }
@@ -236,12 +239,19 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
     const realVerify = broker.verify;
     const observed = vi.spyOn(broker, "verify").mockImplementation(async (...args) => {
       verifyCalls++;
+      const current = args[0] === companyId && args[1] === createdAgentId
+        && args[2].bindingId === paired.bindingId && args[2].generation === paired.generation;
+      if (!current) otherVerifyCalls++;
       try {
         const result = await realVerify(...args);
-        committedVerifications++;
+        if (current) committedVerifications++;
+        else otherCommittedVerifications++;
         return result;
       } catch (error) {
-        if (error instanceof HttpError && error.status === 403) deniedVerifications++;
+        if (error instanceof HttpError && error.status === 403) {
+          if (current) deniedVerifications++;
+          else otherDeniedVerifications++;
+        }
         throw error;
       }
     });
@@ -302,7 +312,9 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
       expect(pausedAgent.lifecycleHolds).not.toContain("setup");
       expectedResumeState = pausedAgent.lifecycleOperation?.resumeState;
       expect(["preparing", "verifying"]).toContain(expectedResumeState);
-      expect(verifyCalls).toBe(0);
+      // A snapshot taken before Pause can reach the real verifier and be denied.
+      // The strict window below still accounts for ALL owner-wide calls.
+      expect(otherCommittedVerifications).toBe(0);
     }
     stage = "parked-current-binding";
     const parkedQuiet = await quiet();
@@ -370,7 +382,7 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
       agentId, bindingId, generation, grantId, receiverSignals: 1, contacts: 1, timestampCount: 1,
       parkedRevision: parked.revision, recoveredRevision: recovered.revision, expectedResumeState,
       actualRestoredLifecycle: restoredAgent.lifecycleState, compatibilityStatusUnchanged: true,
-      normalOAuth: true, deniedVerifications, committedVerifications, noManualVerify: true,
+      normalOAuth: true, deniedVerifications, committedVerifications, otherVerifyCalls, otherDeniedVerifications, otherCommittedVerifications, noManualVerify: true,
       parkedQuiet, restoredQuiet, revokedDisabledQuiet, nativeRuns: 0, cost: null, usage: null,
       liveMuseBackgroundReply: false, revoked: true, disabled: true }, null, 2) + "\n", { mode: 0o600, flag: "wx" });
     stage = "complete"; passed = true;

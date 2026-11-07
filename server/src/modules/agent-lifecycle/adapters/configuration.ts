@@ -49,7 +49,8 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
       ? { lifecycleState: "pausing" as const } : {}),
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,
       completedPluginIds: [], attempts: 0, leaseOwner: undefined, leaseUntil: undefined,
-      retryAt: undefined, retryRequired: undefined, verificationFailures: undefined },
+      retryAt: undefined, retryRequired: undefined, verificationFailures: undefined,
+      waitingForSignal: undefined, recheckRequested: undefined },
   } : {}) }).where(eq(agents.id, id)).returning();
   await effects.completeConfiguration(tx, current, updated, patch, options, publications);
   return agentRecordQueries(tx).getById(id);

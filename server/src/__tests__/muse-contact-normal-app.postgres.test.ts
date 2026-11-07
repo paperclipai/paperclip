@@ -298,6 +298,24 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
       assignmentId: challengeRows[0].assignmentId }).toEqual({ companyId, bindingGeneration: paired.generation, assignmentId: null });
     expect(await reconstructed.select({ id: activityLog.id }).from(activityLog).where(and(
       eq(activityLog.companyId, companyId), eq(activityLog.entityId, createdAgentId), eq(activityLog.action, "muse.readiness_challenge_created")))).toHaveLength(1);
+    stage = "healthy-lifecycle-reply-wait";
+    await vi.waitFor(() => {
+      expect(getTaskDrainStatus()).toMatchObject({ activeRuns: 0, pendingWakes: 0, quiescent: true });
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 15_000, interval: 25 });
+    const beforeWaitRead = { total: queryCount, main: poolQueryCounts.main };
+    const [waitingAgent] = await reconstructed.select().from(agents).where(eq(agents.id, createdAgentId));
+    expect(waitingAgent).toMatchObject({ lifecycleState: "verifying", status: "paused",
+      lifecycleOperation: { waitingForSignal: true, hostComplete: false } });
+    expect(waitingAgent.lifecycleOperation).not.toHaveProperty("retryAt");
+    expect(queryCount).toBeGreaterThan(beforeWaitRead.total);
+    expect(poolQueryCounts.main).toBeGreaterThan(beforeWaitRead.main);
+    const waitingBefore = { queryCount, poolQueryCounts: { ...poolQueryCounts }, callbacks, sessions, verifyCalls, unexpectedDecisionWakes };
+    const waitingStarted = performance.now();
+    await pause(15_000);
+    const waitingElapsedMs = performance.now() - waitingStarted;
+    const waitingAfter = { queryCount, poolQueryCounts: { ...poolQueryCounts }, callbacks, sessions, verifyCalls, unexpectedDecisionWakes };
+    expect(waitingAfter).toEqual(waitingBefore);
     stage = "genuine-challenge-confirmation";
     const inbox = await request(currentApp()).post("/api/muse/v1/queries").set("Host", host).set("Authorization", "Bearer " + accessToken)
       .send({ version: 1, query: "mailbox", after: 0 });
@@ -351,6 +369,8 @@ describe.skipIf(!databaseUrl)("normal Muse contact verification failure, durable
       companyId, userId, agentId, bindingId, generation, clientId, grantId, normalOAuth: true,
       receiverSignals: 1, oldOwnerFailures, retryObservedAtMs: retryObservedAt, firstFailureState,
       reconstructedDbObject: true, challengeCount: challengeRows.length, challengeConfirmed: true,
+      healthyLifecycleWait: { elapsedMs: waitingElapsedMs, before: waitingBefore, after: waitingAfter,
+        positiveReadControl: true, waitingForSignal: true },
       contacts: contactsBefore[0].contacts, contactTimestampCount: contactsBefore[0].timestamps.length,
       beforeRestartRevision: beforeRestart.revision, recoveredRevision: recovered.revision,
       queryInstrumentation: { beforeRequiredRead, afterRequiredRead }, unexpectedDecisionWakes,
