@@ -281,6 +281,16 @@ describe("OrgChart mobile gestures", () => {
     expect(layer.style.transform).toBe("translate(0px, 0px) scale(1)");
   });
 
+  it("orders the job title before the name on cards, like the agent page header", async () => {
+    listMock.mockResolvedValue([{ ...agents[0], title: "Chief executive" }, agents[1]]);
+    await renderOrgChart();
+
+    const lines = (card: Element | undefined) => Array.from(card?.querySelectorAll("span.leading-tight") ?? []).map((node) => node.textContent);
+    const cards = Array.from(container.querySelectorAll("[data-org-card]"));
+    expect(lines(cards[0]).slice(0, 2)).toEqual(["Chief executive", "CEO"]);
+    expect(lines(cards[1]).slice(0, 2)).toEqual(["Engineer", "Engineer"]);
+  });
+
   it("shows both portability buttons on self-hosted instances", async () => {
     await renderOrgChart();
 
