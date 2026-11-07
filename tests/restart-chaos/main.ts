@@ -23,7 +23,7 @@ import { TaskObserver } from "./observer.js";
 import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
-import { Timeline } from "./timeline.js";
+import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -122,6 +122,9 @@ async function main(): Promise<number> {
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
+    // A reader of our stdout went away. Keep running (results go to files); the
+    // timeline records harness_stdout_lost once on its next entry.
+    if (isBrokenStdoutError(error)) { markTimelineEchoBroken(error); return; }
     timeline.add("harness_uncaught_exception", { error: error.stack ?? String(error) });
     harnessError ??= error;
     interrupted = true;
@@ -300,9 +303,16 @@ async function main(): Promise<number> {
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
         + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
-        + `environment deleted: ${cleanup.environmentDeleted}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
+        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
       // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
       if (cleanup.remainingSandboxes.length) anyFailure = true;
+      // A delete still blocked by pending sandbox cleanup after the settle window
+      // is a leak, not a harness error: fail the wave and keep the instance, whose
+      // database owns that cleanup work.
+      if (cleanup.environmentDeleteBlocked) {
+        anyFailure = true;
+        timeline.add("daytona_environment_delete_blocked", { detail: cleanup.environmentDeleteBlocked });
+      }
       if (cleanup.errors.length) harnessError ??= new Error(`Daytona cleanup incomplete: ${cleanup.errors.join("; ")}`);
       await writeFile(path.join(waveDir, "sandbox-sweep.json"), `${JSON.stringify({ sweep: sandboxSweep, cleanup }, null, 2)}\n`, { mode: 0o600 });
     } catch (error) {

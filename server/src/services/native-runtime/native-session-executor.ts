@@ -90,7 +90,7 @@ import { createNativeProviderFailureObservation } from "./native-provider-failur
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
 import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
-  runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
+  runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -115,7 +115,7 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -137,7 +137,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
@@ -2125,6 +2125,54 @@ function runnerdStateBase(): string {
       "durable-sessions",
     )
   );
+}
+
+/**
+ * A runner launch requested without a recorded process identity leaves no PID
+ * to verify. On this host it is proven absent when no process carries the
+ * run's runner arguments and no saved runner state belongs to the run: a
+ * provider starts only after its runner connects and writes that state.
+ */
+export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): Promise<boolean> {
+  let execution: NativeExecutionInput;
+  try {
+    execution = parseNativeExecutionInput(input.execution);
+  } catch {
+    return false;
+  }
+  if (execution.binding.runId !== input.runId) return false;
+  if (!(await noLocalRunnerProcessForRun(input.runId))) return false;
+  const root = scopedRunnerdStateRoot(execution);
+  const candidates = [root];
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  try {
+    if (existsSync(quarantine)) {
+      for (const name of readdirSync(quarantine)) {
+        if (name.startsWith(`${basename(root)}.`)) candidates.push(resolve(quarantine, name));
+      }
+    }
+  } catch {
+    return false;
+  }
+  for (const candidate of candidates) {
+    if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
+    try {
+      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
+ * slow process listing proves nothing, so it keeps the caller blocked. */
+async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
+  const listing = await new Promise<string | null>(resolve => {
+    execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? null : stdout));
+  });
+  return listing !== null && !listing.split("\n").some(line => line.includes(`--run-id ${runId}`));
 }
 
 export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
@@ -5571,6 +5619,17 @@ async function migrateRunnerdStateRootForExecution(input: {
     }
     await assertCleanupActivationCommitted(input.db, scoped, input.execution);
     const identity = readRunnerdDurableIdentity(scoped);
+    if (!identity && input.restartRecovery?.kind === "bootstrap_incomplete" &&
+        (!input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local") &&
+        !existsSync(resolve(scoped, "control-plane", "control-plane-state.json")) &&
+        await noLocalRunnerProcessForRun(input.execution.binding.runId)) {
+      // The server was killed between creating the root and the local runner's
+      // first state write. No runner for the run is alive on this host and none
+      // connected, so no provider started and no command was acknowledged.
+      // Keep the partial root for inspection and start the bootstrap again.
+      quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      return;
+    }
     if (!identity) {
       if (input.restartRecovery?.kind !== "reattach_existing_runner" &&
           input.restartRecovery?.kind !== "reattach_remote_runner") {
@@ -5600,7 +5659,14 @@ async function migrateRunnerdStateRootForExecution(input: {
       // A local runner's process ids belong to this host, so a fresh provider
       // session it opened before any turn can be proven gone here.
       const localProcesses = !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local";
-      if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })) {
+      const target = input.runnerExecutionTarget;
+      const remoteSandbox = target?.kind === "remote" && target.transport === "sandbox" && !target.runnerTask;
+      // A remote controller record restored from Postgres is complete once its
+      // lease expired. A runner that opened its session but got no turn there
+      // holds no provider work (RC-29d).
+      if (runnerdStateProvesIncompleteBootstrap(scoped, { localProcesses })
+        || (remoteSandbox && runnerdStateProvesNoRemoteProviderTurn(scoped))) {
+        if (remoteSandbox) await stopStaleRemoteRunnerBeforeBootstrap({ ...input, identity });
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         return;
       }
@@ -6114,6 +6180,74 @@ export function runnerdStateProvesIncompleteBootstrap(
         localProcesses: options.localProcesses,
         processGone: (id, group) => localProcessDefinitelyGone(id, group),
       });
+  } catch {
+    return false;
+  }
+}
+
+const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
+
+/**
+ * The same-run bootstrap reuses the run's sandbox. A runner from the
+ * interrupted attempt can still be alive there (its reconnect grace is
+ * minutes) and still hold the runner ingress port, so the new runner would fail
+ * with runner_ingress_bind_conflict. Stop that exact runner first, using the
+ * same verified identity marker and process check as reattachment, which only
+ * signals a process whose identity matches this run. Best effort: if no prior
+ * runner can be verified there is nothing to stop, and a remaining conflict is
+ * still caught by the bounded same-run bootstrap retry.
+ */
+export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+  identity: Record<string, unknown>;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}, options: {
+  verify?: typeof verifyRemoteRunnerReattachment;
+  waitMs?: number;
+  pollMs?: number;
+} = {}): Promise<"no_prior_runner" | "stopped" | "killed" | "stop_failed"> {
+  const target = input.runnerExecutionTarget;
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
+  const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
+  if (!providerLeaseId) return "no_prior_runner";
+  const runId = input.execution.binding.runId;
+  const verify = options.verify ?? verifyRemoteRunnerReattachment;
+  let runner: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
+  try {
+    runner = await verify({
+      claim: { runId, remote: { providerLeaseId, remoteCwd: target.remoteCwd } },
+      target, identity: input.identity, runId, normalizedSessionId: nativeSessionKey(input.execution),
+    });
+  } catch {
+    // No runner with this run's exact identity and generation is alive here.
+    return "no_prior_runner";
+  }
+  try {
+    let outcome: "stopped" | "killed" = "stopped";
+    if (await runner.signal("SIGTERM")) {
+      const deadline = Date.now() + (options.waitMs ?? STALE_REMOTE_RUNNER_STOP_WAIT_MS);
+      while (Date.now() < deadline && await runner.isAlive()) {
+        await new Promise(done => setTimeout(done, options.pollMs ?? 500));
+      }
+      if (await runner.isAlive()) {
+        await runner.signal("SIGKILL");
+        outcome = "killed";
+      }
+    }
+    await input.onLog?.("stdout", `[paperclip-runner] Stopped the interrupted runner ${runner.pid} before restarting the bootstrap.\n`);
+    return outcome;
+  } catch (error) {
+    await input.onLog?.("stderr", `[paperclip-runner] Could not stop the interrupted runner before restarting the bootstrap: ${
+      error instanceof Error ? error.message : String(error)}\n`);
+    return "stop_failed";
+  }
+}
+
+/** The remote controller record proves its runner was never sent a turn. */
+export function runnerdStateProvesNoRemoteProviderTurn(root: string): boolean {
+  try {
+    return runnerdStateHasNoProviderTurn(readRunnerdControlPlaneState(root));
   } catch {
     return false;
   }
@@ -10422,6 +10556,8 @@ async function executePaperclipNativeSessionWithinScope(
                 stream: "system",
                 level: "info",
                 message: "Native execution requested; prior local stop evidence no longer applies.",
+                // Binds a later identity-less stop proof to the host that launched.
+                payload: { hostname: hostname() },
               });
             },
             input: runnerExecution,

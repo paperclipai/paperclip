@@ -9,7 +9,7 @@ import { reserveFreshPluginTaskWorkspace, stageProviderFreshWorkspace } from "..
 import { freshWorkspaceSchema, type PluginFreshWorkspace } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "../plugin-registry.js";
 import { attachPreservedWorkspaceSnapshots } from "../workspace-recovery-snapshot.js";
-import { materializeFreshWorkspaceSeed } from "../fresh-workspace-seed.js";
+import { describeRetainedPriorWorkspace, materializeFreshWorkspaceSeed } from "../fresh-workspace-seed.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { preparePluginWorkspace, type WorkspaceWorkers } from "../plugin-workspaces.js";
 import { readWorkspaceProviderBinding } from "@paperclipai/shared";
@@ -384,12 +384,21 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         // A completed fresh attempt becomes the current task directory. New
         // input reuses that binding; only another fresh attempt changes roots.
         let cwd: string;
+        // RC-35: preparing the same fresh attempt again after a restart reuses
+        // the attempt directory this run itself created and bound. Any other
+        // binding still requires a new attempt directory.
+        let ownFreshAttempt = false;
         try {
           if (reusableExistingExecutionWorkspace) {
             const [currentIssue] = await db.select({ workspaceId: issues.executionWorkspaceId }).from(issues)
               .where(and(eq(issues.id, issueRef.id), eq(issues.companyId, agent.companyId)));
             const stored = await executionWorkspacesSvc.getStoredById(agent.companyId, reusableExistingExecutionWorkspace.id);
-            if (fresh || currentIssue?.workspaceId !== reusableExistingExecutionWorkspace.id ||
+            // A pure path check: the reuse validation below confirms the full
+            // isolated-workspace-attempts/<company>/<issue>/<run> identity.
+            ownFreshAttempt = fresh && Boolean(stored?.cwd) && path.basename(stored!.cwd!) === run.id &&
+              path.basename(path.dirname(stored!.cwd!)) === issueRef.id &&
+              path.basename(path.dirname(path.dirname(path.dirname(stored!.cwd!)))) === "isolated-workspace-attempts";
+            if ((fresh && !ownFreshAttempt) || currentIssue?.workspaceId !== reusableExistingExecutionWorkspace.id ||
                 reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
                 reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
                 reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
@@ -403,7 +412,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           cwd = await materializeIsolatedTaskDirectory({
             companyId: agent.companyId,
             issueId: issueRef.id,
-            ...(fresh ? { attemptId: run.id } : {}),
+            ...(fresh && !reusableExistingExecutionWorkspace ? { attemptId: run.id } : {}),
             ...(reusableExistingExecutionWorkspace ? { reuseCwd: reusableExistingExecutionWorkspace.cwd! } : {}),
           });
         } catch (error) {
@@ -856,9 +865,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       issueId, sourceRunIds: [input.task.freshWorkspace.sourceRunId], cwd: executionWorkspace.cwd }))
       .map(snapshot => ({ ...snapshot, path: path.relative(executionWorkspace.cwd, snapshot.path) }));
     context.recoveredWorkspaceFiles = recoveredFiles;
+    // R2: never drop the previous attempt's files silently. Its directory stays
+    // as it was; tell the agent where it is and what it had changed.
+    const priorWorkspace = providerFresh ? null : await describeRetainedPriorWorkspace(db, { companyId: agent.companyId,
+      issueId, sourceRunId: input.task.freshWorkspace.sourceRunId, successorRunId: run.id, freshCwd: executionWorkspace.cwd });
+    if (priorWorkspace) context.priorWorkspace = priorWorkspace;
     const continuation = context.executionContinuation as import("@paperclipai/shared").ExecutionContinuationEnvelope | null;
     if (continuation) {
       continuation.recoveredFiles = recoveredFiles;
+      if (priorWorkspace) continuation.priorWorkspace = priorWorkspace;
       // The wake was assembled before filesystem preparation. Update that same
       // server-authored envelope so every adapter receives the verified paths.
       const wake = context.paperclipWake as Record<string, unknown> | undefined;

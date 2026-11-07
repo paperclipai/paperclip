@@ -6,7 +6,7 @@ import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint,
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
-import { runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
+import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -261,49 +261,59 @@ export async function loadNativeUnclaimedBootstrapCheckpoint(
 }
 
 const BOOTSTRAP_CHECKPOINT_PARTS = new Set(["header", "cursor", "command:1", "command:2"]);
+/** Session-open events are few; a longer journal is never a bootstrap. */
+const MAX_BOOTSTRAP_CHECKPOINT_EVENTS = 16;
+
+export type NativeRemoteBootstrapProof = "bootstrap_incomplete" | "session_opened_without_turn";
 
 /**
  * A remote runner's controller state lives only in this checkpoint, and every
  * command is written here before the controller sends it. Once the previous
  * controller's lease has expired, the checkpoint is therefore a complete record
- * of what reached the sandbox runner. Returns true only when that record holds
- * the bootstrap commands alone (run.prepare, an unfinished session.open) with
- * no committed or acknowledged event, so no provider turn can exist. The
+ * of what reached the sandbox runner. Returns which proof holds:
+ * `bootstrap_incomplete` when it holds only run.prepare and an unfinished
+ * session.open with no committed or acknowledged event, or
+ * `session_opened_without_turn` when session.open completed and every committed
+ * event is a session-open event. Either way no provider turn can exist. The
  * sandbox runner journal is not on this host; the proof uses the controller
  * record alone, as for a local root whose runner never journaled.
  */
-export async function nativeRunnerCheckpointProvesIncompleteBootstrap(
+export async function nativeRunnerCheckpointRemoteBootstrapProof(
   db: Pick<Db, "select">, binding: Binding, expected: { runnerInstanceId: string; normalizedSessionId: string },
-): Promise<boolean> {
+): Promise<NativeRemoteBootstrapProof | null> {
   try {
+    const limit = BOOTSTRAP_CHECKPOINT_PARTS.size + MAX_BOOTSTRAP_CHECKPOINT_EVENTS;
     const parts = await db.select({ part: nativeRunnerCheckpoints.part }).from(nativeRunnerCheckpoints).where(and(
       eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
-      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(BOOTSTRAP_CHECKPOINT_PARTS.size + 1);
-    if (!parts.length || parts.length > BOOTSTRAP_CHECKPOINT_PARTS.size
-      || parts.some(row => !BOOTSTRAP_CHECKPOINT_PARTS.has(row.part))) return false;
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(limit + 1);
+    const eventParts = parts.map(row => row.part).filter(part => /^event:\d+$/.test(part));
+    if (!parts.length || parts.length > limit
+      || parts.some(row => !BOOTSTRAP_CHECKPOINT_PARTS.has(row.part) && !/^event:\d+$/.test(row.part))) return null;
     const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
     if (!checkpoint || checkpoint.predecessor !== null
       || checkpoint.recoveryEvidence.runnerInstanceId !== expected.runnerInstanceId
-      || checkpoint.recoveryEvidence.normalizedSessionId !== expected.normalizedSessionId) return false;
+      || checkpoint.recoveryEvidence.normalizedSessionId !== expected.normalizedSessionId) return null;
     // The decoder above validated these canonical v2 records. Rebuild the
-    // controller state in memory; the part check admits no event records.
+    // controller state in memory without writing files under recovery locks.
     const read = (part: string) => {
       const value = checkpoint.records.get(part);
       return value === undefined ? undefined : JSON.parse(value) as Record<string, unknown>;
     };
     const header = read("header");
     const cursor = read("cursor");
-    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor) return false;
+    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor) return null;
     const state: Record<string, unknown> = {
       ...(header.state as Record<string, unknown>),
       ackedSourceSeq: cursor.ackedSourceSeq,
       commands: ["command:1", "command:2"].map(read).filter(command => command !== undefined),
-      committedEvents: [],
+      committedEvents: eventParts.map(part => Number(part.slice("event:".length))).sort((a, b) => a - b)
+        .map(seq => read(`event:${seq}`)),
     };
-    return (state.identity as { runId?: unknown } | undefined)?.runId === binding.runId
-      && runnerdStateIsIncompleteBootstrap(state);
+    if ((state.identity as { runId?: unknown } | undefined)?.runId !== binding.runId) return null;
+    if (runnerdStateIsIncompleteBootstrap(state)) return "bootstrap_incomplete";
+    return runnerdStateHasNoProviderTurn(state) ? "session_opened_without_turn" : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

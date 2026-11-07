@@ -1,7 +1,8 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { codexRunUsage, codexUsageBaselineForNextRun, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
-import { isNativeRestartInterruption, NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -52,7 +53,8 @@ import { pumpNotifications } from "./codex-session-notifications.js";
 import { handleServerRequest } from "./codex-session-server-requests.js";
 import {
   mapTerminalTurn,
-  terminalReplayConflict,
+  settleRestoreLostTurnWithHeldResult,
+  settledTerminalReplayConflict,
 } from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
@@ -799,15 +801,14 @@ export class CodexHarnessSession
       const expectedTurn = turns.find(
         (turn) => text(turn.id) === expectedTurnId,
       );
-      const holdsTurnResult = this.result !== null && this.resultTurnId === expectedTurnId;
-      if (holdsTurnResult && (expectedTurn === undefined || (
-        text(expectedTurn.status) === "failed" && isNativeRestartInterruption(expectedTurn.error)))) {
+      if (expectedTurn === undefined && this.result !== null && this.resultTurnId === expectedTurnId) {
         // Provider history can lose a turn whose process was killed before its
-        // terminal was flushed, or the restored runner can report it lost on
-        // restore. Paperclip already holds the semantic result this exact turn
-        // proposed, so that durable result is the turn's outcome: settle it
-        // rather than fail recovery and rerun finished work. Without such a
-        // result the outcome stays unknown and recovery fails closed.
+        // terminal was flushed. Paperclip already holds the semantic result this
+        // exact turn proposed, so that durable result is the turn's outcome:
+        // settle it rather than fail recovery and rerun finished work. Without
+        // such a result the outcome stays unknown and recovery fails closed.
+        // (A turn reported lost on restore settles the same way in
+        // mapTerminalTurn.)
         reconciledTerminalTurnId = expectedTurnId;
         mapTerminalTurn(this, { id: expectedTurnId, status: "completed", items: [] }, expectedTurnId, true);
       } else if (expectedTurn === undefined) {
@@ -832,12 +833,11 @@ export class CodexHarnessSession
     }
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
-      const observed = turns.find((turn) => text(turn.id) === turnId);
-      if (observed === undefined) continue;
-      // A turn settled from its durable result keeps that outcome when the
-      // restored runner reports the same turn lost on restore.
-      if (this.result !== null && this.resultTurnId === turnId &&
-          text(observed.status) === "failed" && isNativeRestartInterruption(observed.error)) continue;
+      const reported = turns.find((turn) => text(turn.id) === turnId);
+      if (reported === undefined) continue;
+      // A turn settled from its held result keeps that outcome when the
+      // restored runner later reports the same turn lost on restore.
+      const observed = settleRestoreLostTurnWithHeldResult(this, reported, turnId);
       if (
         !["completed", "failed", "interrupted", "cancelled"].includes(
           text(observed.status),
@@ -847,7 +847,7 @@ export class CodexHarnessSession
           `previously terminal turn ${turnId} is no longer terminal in thread/read`,
         );
       }
-      const conflict = terminalReplayConflict(this, observed, fingerprint);
+      const conflict = settledTerminalReplayConflict(this, reported, observed, fingerprint);
       if (conflict !== null) {
         throw new HarnessReconciliationError(
           `previously terminal turn ${turnId} ${conflict.message}`,
@@ -916,6 +916,11 @@ export class CodexHarnessSession
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
     await this.transport.close(input?.reason);
+  }
+
+  async release(): Promise<DurableRecoveryIdentity | false> {
+    this.assertProtocolIntegrity();
+    return this.transport.release?.() ?? false;
   }
 
   async detachControllerForRestart(): Promise<void> {

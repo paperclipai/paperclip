@@ -17,7 +17,6 @@ import { getRecoveryPostgresSupport } from "../../__tests__/helpers/recovery-pos
 import { heartbeatService } from "../heartbeat.js";
 import { flushBudgetEvaluationWork } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { flushBudgetEvaluationWork } from "../budgets.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
 import { errorHandler } from "../../middleware/index.js";
