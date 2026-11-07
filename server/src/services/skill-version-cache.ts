@@ -102,9 +102,6 @@ export async function lastUsedAt(filename: string): Promise<number | null> {
 }
 
 export function skillRunNeedsFilesSql() {
-  // Admission intent has not selected or opened skill files. Preparation and
-  // deletion share the company cache lock, and preparation pins its selection
-  // before releasing it. Requeued or partially prepared execution still pins.
   const unstartedAdmission = and(
     inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]), noRetainedExecutionPredicate(),
     isNull(heartbeatRuns.finishedAt), isNull(heartbeatRuns.runnerInstanceId),
@@ -163,9 +160,6 @@ export async function protectedVersions(db: Db, companyId: string, targetSkill?:
           || input.binding.issueId !== nativeIssueId) return unknown();
         for (const skill of input.runtimeContext.skills) {
           if (skill.versionId === null) {
-            // A validated immutable selection cannot contain a skill created
-            // after this run finished. Keep global eviction conservative, and
-            // never use mutable skill keys as proof of a different identity.
             if (targetSkill && finishedAt && targetSkill.createdAt > finishedAt
               && ["succeeded", "failed", "timed_out", "cancelled", "interrupted"].includes(status)) continue;
             return unknown();
