@@ -8,9 +8,27 @@ import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 
 type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction };
+type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction; active: boolean };
 const sourceLocks = new AsyncLocalStorage<SourceLockScope>();
 export class IsolatedRepositorySourceBusy extends Error {}
+
+// Timers and detached promises keep the async context that created them, so
+// work can see a scope whose transaction has committed and whose dedicated
+// connection is closed. Only a live scope holds locks.
+function heldScope(): SourceLockScope | undefined {
+  const scope = sourceLocks.getStore();
+  return scope?.active ? scope : undefined;
+}
+
+/** Acquires source locks in a new owner scope and ignores an inherited one.
+ * Use it at the root of independent work, such as a run's workspace
+ * preparation, that can start inside another operation's source scope.
+ * Joining that scope would tie these locks to the other transaction. */
+export function withIndependentWorkspaceSourceLocks<T>(db: Db,
+  input: { companyId: string; issueIds?: readonly string[]; projectIds?: readonly string[] },
+  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false): Promise<T> {
+  return sourceLocks.exit(() => withWorkspaceSourceLocks(db, input, action, tryOnly));
+}
 
 export function withIsolatedRepositorySourceLock<T>(db: Db, companyId: string, issueId: string,
   action: () => Promise<T>, tryOnly = false): Promise<T> {
@@ -25,7 +43,7 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     ...(input.projectIds ?? []).map(id => `managed_project_source:${input.companyId}:${id}`),
   ])].sort();
   if (keys.length > 128) throw new Error("workspace_source_scope_limit");
-  const held = sourceLocks.getStore();
+  const held = heldScope();
   const acquire = async (scope: SourceLockScope, nonblocking: boolean) => {
     for (const key of keys) {
       if (scope.keys.has(key)) continue;
@@ -45,11 +63,15 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     return action(held.transaction);
   }
   return withDedicatedDbConnection(db, connection => connection.transaction(async transaction => {
-    const scope = { db, companyId: input.companyId, transaction, keys: new Set<string>() };
-    await acquire(scope, tryOnly);
-    const rows = await transaction.execute(sql`select setting::bigint as idle_timeout_ms from pg_settings where name = 'idle_in_transaction_session_timeout'`);
-    return withWorkspaceLockKeepalive(transaction, Number(rows[0]?.idle_timeout_ms),
-      () => sourceLocks.run(scope, () => action(transaction)));
+    const scope: SourceLockScope = { db, companyId: input.companyId, transaction, keys: new Set<string>(), active: true };
+    try {
+      await acquire(scope, tryOnly);
+      const rows = await transaction.execute(sql`select setting::bigint as idle_timeout_ms from pg_settings where name = 'idle_in_transaction_session_timeout'`);
+      return await withWorkspaceLockKeepalive(transaction, Number(rows[0]?.idle_timeout_ms),
+        () => sourceLocks.run(scope, () => action(transaction)));
+    } finally {
+      scope.active = false;
+    }
   }));
 }
 
@@ -75,7 +97,7 @@ export async function isolatedTaskSourceIdentity(companyId: string, cwd: string)
 export async function retainManagedProjectSource(db: Db, companyId: string, cwd: string): Promise<void> {
   const projectId = await managedProjectSourceIdentity(companyId, cwd);
   if (!projectId) return;
-  if (sourceLocks.getStore()?.db !== db) throw new Error("workspace_source_admission_scope_required");
+  if (heldScope()?.db !== db) throw new Error("workspace_source_admission_scope_required");
   await withWorkspaceSourceLocks(db, { companyId, projectIds: [projectId] }, async () => undefined, true);
 }
 
@@ -96,14 +118,14 @@ export async function workspaceSourceIdentities(companyId: string, cwd: string) 
 }
 
 export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
-  const scope = sourceLocks.getStore();
+  const scope = heldScope();
   if (!scope) return;
   const identities = await workspaceSourceIdentities(scope.companyId, cwd);
   await withWorkspaceSourceLocks(scope.db, { companyId: scope.companyId, ...identities }, async () => undefined, true);
 }
 
 export async function assertCurrentWorkspaceSourceHeld(cwd: string): Promise<void> {
-  const scope = sourceLocks.getStore();
+  const scope = heldScope();
   if (!scope) throw new Error("workspace_source_admission_scope_required");
   const identities = await workspaceSourceIdentities(scope.companyId, cwd);
   if (identities.projectIds.some(id => !scope.keys.has(`managed_project_source:${scope.companyId}:${id}`))

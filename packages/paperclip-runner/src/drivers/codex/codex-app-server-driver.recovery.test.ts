@@ -43,6 +43,7 @@ import {
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
+import { canonicalJson } from "./codex-driver-values.js";
 
 function cursorProviderIdentity(mode: unknown) {
   return {
@@ -1322,6 +1323,93 @@ describe("Codex app-server Codex driver", () => {
       semanticResult: { turnId: "turn-1", result },
       terminalTurns: [expect.objectContaining({ turnId: "turn-1" })],
     });
+  });
+
+  it.each([
+    { held: true, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: false, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: true, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+    { held: false, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+  ])("settles a live restart-lost terminal from its durable result only when one is held ($lost.code, held=$held)", async ({ held, lost }) => {
+    // ACPX reports the lost turn as a live notification after the session
+    // reopens, not through thread/read. When runnerd already recorded the
+    // accepted result, it closes the turn instead of restoring it. An accepted
+    // result for that exact turn must still finalize as a completed turn.
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: `run-live-lost-${held}`,
+      normalizedSessionId: `normalized-live-lost-${held}`,
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    if (held) {
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      });
+    }
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const collecting = collectUntilTerminal(recovery!.session!.events());
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    const events = await collecting;
+    const terminal = events.find((event) => event.eventType.startsWith("turn."));
+    expect(terminal?.eventType).toBe(held ? "turn.completed" : "turn.failed");
+    if (!held) expect(terminal?.payload).toMatchObject({ error: lost });
+    if (held) expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+  });
+
+  it("accepts a stored restart-lost failure for a held result without a replay conflict", async () => {
+    // A runner from before this rule recorded the restart-lost turn as failed
+    // with its held result. Replaying that same terminal is not a conflict.
+    // (A held result plus a committed terminal makes the session terminal, so
+    // the recovery read is the path that can replay it.)
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "failed", error: lost, items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-stored-lost",
+      normalizedSessionId: "normalized-stored-lost",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    await first.invoke({
+      id: "call-before-kill",
+      method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const stored = canonicalJson({ terminalState: "failed", error: lost, result });
+    const recovery = await driver.recoverSession?.({
+      ...snapshot,
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-1", fingerprint: stored }],
+    });
+    expect(recovery).toMatchObject({ recovered: true });
+    await recovery!.session!.reconcile?.();
+    const events: string[] = [];
+    const draining = (async () => { for await (const event of recovery!.session!.events()) events.push(event.eventType); })();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await recovery!.session!.close({ reason: "test complete" });
+    await draining;
+    expect(events).not.toContain("session.failed");
+    expect(events).not.toContain("harness.protocol_failed");
+    expect((await recovery!.session!.snapshot().catch((error: unknown) => error)) instanceof Error).toBe(false);
   });
 
   it.each([true, false])("settles a restore-lost turn from its durable result only when one is held (held=%s)", async (held) => {

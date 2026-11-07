@@ -412,6 +412,53 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     });
   });
 
+  it("runs one attempt for a deleted environment's cleanup during its cooldown, scoped to that environment", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const otherEnvironmentId = randomUUID();
+    await db.insert(environments).values({ id: otherEnvironmentId, name: `Other ${otherEnvironmentId}`, driver: "sandbox",
+      status: "active", config: { provider: "fake", image: "ubuntu:24.04" } });
+    const cooling = { [ATTEMPTS_KEY]: 1, pendingCleanupRetryAfterMs: Date.now() + 4 * 60_000 };
+    const target = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(), metadata: cooling });
+    const other = await insertOrphanEphemeralLease({ companyId, environmentId: otherEnvironmentId, updatedAt: new Date(), metadata: cooling });
+    const inFlight = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(), metadata: {
+      ...cooling, pendingCleanupAttemptId: "live-claim", pendingCleanupInFlight: true,
+      pendingCleanupLeaseExpiresAtMs: Date.now() + 10 * 60_000,
+    } });
+    const teardown = vi.fn(async () => {});
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+
+    expect((await service.sweepPendingCleanupLeases()).swept).toBe(0);
+    const result = await service.sweepPendingCleanupLeases({ environmentRetry: { environmentId, actorId: "admin-1" } });
+
+    expect(result).toMatchObject({ swept: 1, destroyed: 1 });
+    expect(teardown).toHaveBeenCalledOnce();
+    const statuses = Object.fromEntries((await db.select().from(environmentLeases)).map(lease => [lease.id, lease.status]));
+    expect(statuses).toEqual({ [target]: "expired", [other]: "pending_cleanup", [inFlight]: "pending_cleanup" });
+    const [activity] = await db.select().from(activityLog).where(eq(activityLog.entityId, target));
+    expect(activity).toMatchObject({ action: "environment_lease.cleanup_retried", actorId: "admin-1",
+      details: expect.objectContaining({ reason: "environment_deleted" }) });
+  });
+
+  it("tries every cleanup of a deleted environment once, past one sweep page", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const cooling = { [ATTEMPTS_KEY]: 1, pendingCleanupRetryAfterMs: Date.now() + 4 * 60_000 };
+    for (let index = 0; index < SWEEP_PAGE_SIZE + 5; index++) {
+      await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(), metadata: cooling });
+    }
+    const teardown = vi.fn(async () => {});
+    const service = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+
+    const result = await service.sweepPendingCleanupLeases({ environmentRetry: { environmentId, actorId: "admin-1" } });
+
+    expect(result.destroyed).toBe(SWEEP_PAGE_SIZE + 5);
+    expect(teardown).toHaveBeenCalledTimes(SWEEP_PAGE_SIZE + 5);
+    expect((await db.select().from(environmentLeases)).every(lease => lease.status === "expired")).toBe(true);
+  });
+
   it("starts escalation and the long cooldown on the fifth failed attempt", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({ companyId, environmentId,

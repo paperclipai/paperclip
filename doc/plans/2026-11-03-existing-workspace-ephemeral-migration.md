@@ -317,13 +317,25 @@ It starts no scheduler, does not drain tasks, and always reports
 `enrollmentReady: false`. Check serving memory headroom before running a separate
 process on a tenant. Keep the deployment on normal releases.
 
-Only a successful, finished source with a released committed coordinator and an
-accepted result can publish through this path. At both database fences, hold the
+A successful, finished source with a released committed coordinator and an
+accepted result publishes through its normal runtime owner. At both database fences, hold the
 task share lock and recheck its checkout, related queued/running executions,
 recorded session and Runner, exact backup-stamp lease, and unchanged local
 manifest and suspended state. A concurrent turn, moved source, revoked stamp or
 changed owner defers that source. Unrelated executions continue unchanged.
 No lease, result, task or lifecycle state is rewritten to make a source eligible.
+
+The same entry can preserve sealed failed or cancelled backup files through a
+separate source owner. The source must retain its exact selected task/session,
+released committed result or terminal-failure coordinator, and recorded backup
+stamp. Every publication checks the physical finalization lock, task checkout,
+source run and coordinator, source lease, manifest, and payload hashes. A remaining
+coordinator or physical owner blocks the copy even after its deadline expires.
+Historical PID fields are preserved and are not termination proof. A valid
+`previous` tree cannot authenticate a changed `current` tree. Failed publication
+retains the pending encrypted object receipt and every original file. The copy
+does not change the failed outcome, warnings, result, allocation or session.
+It does not prove that an absent backup was recovered or authorize detachment.
 
 Run the controller-only phase separately so it does not re-read provider
 archives that were already verified:

@@ -27,6 +27,45 @@ export function runnerdStateIsUnconnectedBootstrap(state: Record<string, unknown
       RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)));
 }
 
+/** Events a runner commits while opening a provider session, before any turn. */
+const SESSION_OPEN_EVENT_TYPES = new Set([
+  "harness.ready",
+  "session.started",
+  "session.resumed",
+  "session.updated",
+  "session.capabilities.updated",
+  "session.goal.snapshot",
+]);
+
+/**
+ * A remote controller record whose runner opened its provider session but was
+ * never sent a turn. Only the controller issues turn commands, and it writes
+ * each one to this record before sending it, so a record holding just
+ * run.prepare and session.open, with every committed event a session-open
+ * event and every committed event accounted for, proves no provider turn,
+ * tool call or result exists. Use only where the controller record is the
+ * complete authority (a remote runner after its controller's lease expired).
+ */
+export function runnerdStateHasNoProviderTurn(state: Record<string, unknown>): boolean {
+  if (runnerdStateIsIncompleteBootstrap(state)) return true;
+  if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(state.schema))) return false;
+  if (typeof state.connectionCount !== "number" || !Number.isSafeInteger(state.connectionCount) ||
+      state.connectionCount < 0) return false;
+  if (state.warmTransition != null || state.completedWarmTransition != null ||
+      state.stagedRunAttachment != null) return false;
+  if (record(state.bootstrapHistory).adopted === true) return false;
+  if (!Array.isArray(state.commands) || !Array.isArray(state.committedEvents)) return false;
+  const commands = state.commands.map(record);
+  if (!commands.every(command => RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)) &&
+      (command.status === "pending" || command.status === "completed"))) return false;
+  const events = state.committedEvents.map(record);
+  // Every event since the first must still be here, in order, so none is hidden.
+  if (typeof state.ackedSourceSeq !== "number" || !Number.isSafeInteger(state.ackedSourceSeq) ||
+      state.ackedSourceSeq < 0 || state.ackedSourceSeq > events.length) return false;
+  return events.every((event, index) => event.sourceSeq === index + 1 &&
+    SESSION_OPEN_EVENT_TYPES.has(String(event.eventType)));
+}
+
 /**
  * A provider turn can start only after session.open completes and the
  * controller issues a turn command. A root whose controller journal stops

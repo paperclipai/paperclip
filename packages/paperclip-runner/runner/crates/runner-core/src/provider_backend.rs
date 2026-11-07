@@ -2631,6 +2631,26 @@ impl CodexCommandExecutor {
                 ));
                 }
             }
+            if let Some(ended_turn_id) = previous_active_turn_id
+                .as_ref()
+                .filter(|_| recovered_active_turn_id.is_none() && !provider_epoch_requires_rollover)
+            {
+                // Recovery settles the turn that ended while the runner was
+                // offline in the durable ledger below. The live provider must
+                // know it too: a resumed thread can report that turn's usage
+                // after it accepts the restart continuation, which is history,
+                // not a foreign turn that fails the continuation.
+                provider
+                    .restore_settled_turn_identities(
+                        std::iter::once(ended_turn_id.clone()),
+                        settled_provider_turn_filter.clone(),
+                    )
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "failed to restore the ended provider turn identity: {error}"
+                        ))
+                    })?;
+            }
             provider
                 .restore_completed_turn_authority(
                     (completed_turn_authoritative || recovered_turn_ended_with_result)
