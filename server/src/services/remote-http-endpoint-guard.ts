@@ -102,7 +102,9 @@ export async function assertProxiedRemoteHttpEndpoint(
   } catch {
     return;
   }
-  if (results.some((result) => isAlwaysDeniedLinkLocalIp(result.address))) {
+  if (results.some((result) =>
+    isAlwaysDeniedLinkLocalIp(result.address)
+    || (!options.allowPrivateNetwork && isPrivateOrReservedIp(result.address)))) {
     throw error("Remote MCP connection URL cannot resolve to private or reserved network addresses", "remote_http_private_endpoint");
   }
 }

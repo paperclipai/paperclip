@@ -287,6 +287,39 @@ describe("SOCKS5 proxy guard", () => {
     expect(socketFactory).not.toHaveBeenCalled();
   });
 
+  it("denies a target hostname that resolves here to a private address when private networks are not allowed, before opening a socket", async () => {
+    const socketFactory = vi.fn();
+    await expect(
+      guardedRemoteHttpFetch("http://internal.corp.test/mcp", {}, {
+        allowPrivateNetwork: false,
+        error: guardError,
+        proxy: "socks5h://93.184.216.34:1080",
+        lookup: async (hostname) =>
+          hostname === "internal.corp.test" ? [{ address: "10.0.0.5", family: 4 }] : [{ address: "93.184.216.34", family: 4 }],
+        socketFactory,
+      }),
+    ).rejects.toMatchObject({
+      code: "remote_http_private_endpoint",
+      message: "Remote MCP connection URL cannot resolve to private or reserved network addresses",
+    });
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("lets a target hostname that resolves here to a private address reach the proxy when private networks are allowed", async () => {
+    const socketFactory = vi.fn(() => { throw new Error("proxy dialled"); });
+    await expect(
+      guardedRemoteHttpFetch("http://internal.corp.test/mcp", {}, {
+        allowPrivateNetwork: true,
+        error: guardError,
+        proxy: "socks5h://203.0.113.10:1080",
+        lookup: async (hostname) =>
+          hostname === "internal.corp.test" ? [{ address: "10.0.0.5", family: 4 }] : [{ address: "203.0.113.10", family: 4 }],
+        socketFactory,
+      }),
+    ).rejects.toThrow();
+    expect(socketFactory).toHaveBeenCalled();
+  });
+
   it("leaves a target hostname that does not resolve here to the proxy", async () => {
     const socketFactory = vi.fn(() => { throw new Error("proxy dialled"); });
     await expect(
