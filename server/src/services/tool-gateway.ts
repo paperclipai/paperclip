@@ -5922,11 +5922,35 @@ export function createToolGatewayService(
     ) {
       throw responseTooLargeError();
     }
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
-      throw responseTooLargeError();
+    const reader = response.body?.getReader();
+    // Injected HTTP transports can expose a buffered text response rather than a
+    // Web ReadableStream. Keep the same size check for that form.
+    if (!reader) {
+      const body = await response.text();
+      if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+        throw responseTooLargeError();
+      }
+      return body;
     }
-    return body;
+    // A response without a declared length can be larger than the limit or
+    // never end. Stop at the first chunk past the limit and cancel the body,
+    // as the tools/call reader does.
+    const decoder = new TextDecoder();
+    let body = "";
+    let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > MAX_REMOTE_MCP_RESPONSE_BYTES) throw responseTooLargeError();
+        body += decoder.decode(value, { stream: true });
+      }
+      return body + decoder.decode();
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   }
 
   function malformedRemoteMcpResponse(): ToolGatewayHttpError {
