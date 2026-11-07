@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { matchesOwnedProvider } from "./runtime-provider-cleanup.js";
 function fixture() {
-  return { identity: { pid: 987654, parentPid: 987653, uid: 501, startedAt: "2026-10-26T12:00:01Z", executable: "/owned/bin/codex", digest: "a".repeat(64), appServer: true }, expected: { providerPid: 987654, providerStartedAt: "2026-10-26T12:00:01Z", runnerPid: 987653, uid: 501, runStartedAt: "2026-10-26T12:00:00Z" } };
+  return { identity: { pid: 987654, parentPid: 987653, uid: 501, startedAt: "2026-10-26T12:00:01Z", executable: "/owned/bin/codex", digest: "a".repeat(64), appServer: true, openCodeServe: false }, expected: { providerPid: 987654, providerStartedAt: "2026-10-26T12:00:01Z", runnerPid: 987653, uid: 501, runStartedAt: "2026-10-26T12:00:00Z" } };
 }
 it("qualifies only the exact checkpoint provider with the actual direct owned Runner parent", () => {
   expect(matchesOwnedProvider(fixture())).toBe(true);
@@ -22,4 +22,15 @@ it("qualifies the exact OpenCode protocol proxy rather than an SDK server or a C
   }
   const f = openCodeFixture(); expect(matchesOwnedProvider({ ...f, expected: { ...f.expected, proxyDigest: undefined } })).toBe(false);
   expect(matchesOwnedProvider({ ...f, identity: { ...f.identity, executable: "/owned/bin/opencode", proxyScript: undefined } })).toBe(false);
+});
+function openCodeServeFixture() {
+  const f = fixture();
+  return { identity: { ...f.identity, executable: "/owned/runtime/opencode", appServer: false, openCodeServe: true },
+    expected: { ...f.expected, kind: "opencode" as const } };
+}
+it("qualifies the runner's own spawned opencode serve, named by its durable session receipt", () => {
+  expect(matchesOwnedProvider(openCodeServeFixture())).toBe(true);
+  for (const patch of [{ openCodeServe: false }, { parentPid: 888888 }, { uid: 502 }, { startedAt: "2026-10-26T11:00:00Z" }, { pid: 888888 }, { appServer: true }, { proxyScript: "/owned/runner/dist/cli/opencode-app-server-proxy.cjs" }]) {
+    const f = openCodeServeFixture(); expect(matchesOwnedProvider({ ...f, identity: { ...f.identity, ...patch } })).toBe(false);
+  }
 });

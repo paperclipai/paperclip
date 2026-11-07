@@ -8,7 +8,7 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { collectRunEvents } from "../run-observations.js";
 import { readProcessStartedAt } from "../../../server/src/services/hot-restart.js";
 import { verifyOwnedNativeRunner, ownedNativeExecutablePath } from "./runtime-native-fault.js";
-interface ProviderIdentity { pid: number; parentPid: number; uid: number; startedAt: string; executable: string; digest: string; appServer: boolean; proxyScript?: string; proxyDigest?: string }
+interface ProviderIdentity { pid: number; parentPid: number; uid: number; startedAt: string; executable: string; digest: string; appServer: boolean; openCodeServe: boolean; proxyScript?: string; proxyDigest?: string }
 interface SuspendedOwner { identity: ProviderIdentity; runId: string; timer: ReturnType<typeof setTimeout> }
 const suspended = new WeakMap<ChatCatalogContext, SuspendedOwner>();
 const retainedProvider = new WeakMap<ChatCatalogContext, ProviderIdentity>();
@@ -17,7 +17,10 @@ export function matchesOwnedProvider(input: { identity: ProviderIdentity; expect
   return Number.isSafeInteger(p.pid) && p.pid > 1 && p.pid !== process.pid && p.pid === e.providerPid && p.pid !== e.runnerPid && p.parentPid === e.runnerPid && p.uid === e.uid
     && p.startedAt === e.providerStartedAt && Date.parse(p.startedAt) + 1_000 >= Date.parse(e.runStartedAt)
     && /^[a-f0-9]{64}$/.test(p.digest)
-    && (e.kind === "opencode"
+    && (e.kind === "opencode" && !e.proxyScript
+      // Direct OpenCode server: the runner spawns the pinned `opencode serve` itself.
+      ? p.openCodeServe && !p.proxyScript && !p.appServer
+      : e.kind === "opencode"
       ? !!e.executable && !!e.proxyScript && /^[a-f0-9]{64}$/.test(e.digest ?? "") && /^[a-f0-9]{64}$/.test(e.proxyDigest ?? "")
         && p.executable === e.executable && p.digest === e.digest && p.proxyScript === e.proxyScript && p.proxyDigest === e.proxyDigest && !p.appServer
       : p.appServer === true && path.basename(p.executable) === "codex");
@@ -32,7 +35,8 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
     const proxyDigest = proxy ? createHash("sha256").update(await readFile(proxy)).digest("hex") : undefined;
     if (!startedAt) throw new Error("missing start identity");
     return { pid, parentPid: Number(parent), uid: Number(uid), startedAt, executable: canonical,
-      digest: createHash("sha256").update(await readFile(canonical)).digest("hex"), appServer: /(?:^|\s)app-server(?=\s|$)/.test(command), proxyScript: proxy, proxyDigest };
+      digest: createHash("sha256").update(await readFile(canonical)).digest("hex"), appServer: /(?:^|\s)app-server(?=\s|$)/.test(command),
+      openCodeServe: /^opencode/.test(path.basename(canonical)) && args.includes("serve"), proxyScript: proxy, proxyDigest };
   } catch { throw new Error("Provider cleanup fixture could not qualify the exact owned process; private diagnostics withheld"); }
 }
 /** This does not signal any group or control ACK timing. Actual public Stop must immediately follow. */
@@ -41,23 +45,29 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   const { run, identity: runner } = await verifyOwnedNativeRunner(ctx, binding);
   const checkpoint = run.runnerProfileJson?.sessionCheckpoint as { process?: { providerPid?: number; providerProcessStartedAt?: string } } | undefined;
   const provider = run.runnerProfileJson?.nativeExecutionInput as { provider?: { kind?: string } } | undefined;
-  const pid = checkpoint?.process?.providerPid, started = checkpoint?.process?.providerProcessStartedAt;
   const kind = provider?.provider?.kind;
-  if ((kind !== "codex" && kind !== "opencode") || !Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native checkpoint lacks a qualified local provider PID/start identity");
-  const executable = kind === "opencode" ? await realpath(process.execPath) : undefined;
-  const proxyScript = kind === "opencode" ? await realpath(fileURLToPath(new URL("../../../packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs", import.meta.url))) : undefined;
+  const events = await collectRunEvents<{ seq?: number; payload?: { prpEvent?: { runId?: string; normalizedSessionId?: string; sourceKind?: string; sourceInstanceId?: string; eventType?: string; payload?: { processId?: number; processStartedAt?: string | null; providerSessionId?: string; driverSessionId?: string } } } }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+  const sessionReceipts = events.map(row => row.payload?.prpEvent).filter(e => e?.runId === run.id && e.sourceKind === "runner" && e.sourceInstanceId === run.runnerInstanceId && e.normalizedSessionId === run.nativeSessionId
+    && ["session.started", "session.resumed"].includes(e.eventType ?? "") && !!(e.payload?.providerSessionId ?? e.payload?.driverSessionId));
+  // The runnerd transport writes the provider into the checkpoint. The direct OpenCode server
+  // backend names its spawned `opencode serve` only in the durable session receipt.
+  const viaProxy = !!checkpoint?.process?.providerPid;
+  const latest = sessionReceipts.at(-1)?.payload;
+  const pid = viaProxy ? checkpoint!.process!.providerPid : latest?.processId;
+  const started = viaProxy ? checkpoint!.process!.providerProcessStartedAt : latest?.processStartedAt ?? undefined;
+  if ((kind !== "codex" && kind !== "opencode") || !Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native session lacks a qualified local provider PID/start identity");
+  const executable = kind === "opencode" && viaProxy ? await realpath(process.execPath) : undefined;
+  const proxyScript = kind === "opencode" && viaProxy ? await realpath(fileURLToPath(new URL("../../../packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs", import.meta.url))) : undefined;
   const digest = executable ? createHash("sha256").update(await readFile(executable)).digest("hex") : undefined;
   const proxyDigest = proxyScript ? createHash("sha256").update(await readFile(proxyScript)).digest("hex") : undefined;
-  const events = await collectRunEvents<{ seq?: number; payload?: { prpEvent?: { runId?: string; normalizedSessionId?: string; sourceKind?: string; sourceInstanceId?: string; eventType?: string; payload?: { processId?: number; providerSessionId?: string; driverSessionId?: string } } } }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
-  if (!events.some(row => { const e = row.payload?.prpEvent; return e?.runId === run.id && e.sourceKind === "runner" && e.sourceInstanceId === run.runnerInstanceId && e.normalizedSessionId === run.nativeSessionId
-    && ["session.started", "session.resumed"].includes(e.eventType ?? "") && e.payload?.processId === pid && !!(e.payload.providerSessionId ?? e.payload.driverSessionId); })) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
+  if (!sessionReceipts.some(e => e?.payload?.processId === pid)) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
   const expected: Parameters<typeof matchesOwnedProvider>[0]["expected"] = { providerPid: pid, providerStartedAt: started, runnerPid: runner.pid, uid: runner.uid, runStartedAt: String(run.startedAt), kind, executable, digest, proxyScript, proxyDigest };
   const first = await providerIdentity(pid), second = await providerIdentity(pid);
   if (!matchesOwnedProvider({ identity: first, expected }) || !matchesOwnedProvider({ identity: second, expected }) || JSON.stringify(first) !== JSON.stringify(second)) throw new Error("Provider cleanup suspension rejected changed or unowned process identity");
   process.kill(pid, "SIGSTOP"); retainedProvider.set(ctx, second);
   const timer = setTimeout(() => { void releaseOwnedCleanupProvider(ctx).catch(() => undefined); }, 8_000); timer.unref(); suspended.set(ctx, { identity: second, runId: run.id, timer });
   await ctx.input.evidence("runtime-cleanup-owned-provider.json", { runId: run.id, companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, providerPid: pid, providerStartedAt: started,
-    providerKind: kind, cleanupBoundary: kind === "opencode" ? "owned-protocol-proxy-retirement" : "owned-app-server-retirement", sdkServerExitRequired: false, sameUid: true, directOwnedRunnerParent: true, proxyScriptSha256: proxyDigest, executableSha256: second.digest, durableSessionReceipt: true, identityReadTwice: true, signal: "SIGSTOP", groupSignalled: false, maximumSuspensionMs: 8_000 });
+    providerKind: kind, cleanupBoundary: kind === "opencode" ? viaProxy ? "owned-protocol-proxy-retirement" : "owned-opencode-serve-retirement" : "owned-app-server-retirement", sdkServerExitRequired: false, sameUid: true, directOwnedRunnerParent: true, proxyScriptSha256: proxyDigest, executableSha256: second.digest, durableSessionReceipt: true, identityReadTwice: true, signal: "SIGSTOP", groupSignalled: false, maximumSuspensionMs: 8_000 });
   return { providerPid: pid, providerStartedAt: started, runId: run.id };
 }
 export async function releaseOwnedCleanupProvider(ctx: ChatCatalogContext) {
