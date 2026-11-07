@@ -90,12 +90,12 @@ function validateNode(path: string[], candidate: unknown, englishReference: unkn
 
   const englishKeys = Object.keys(englishReference).sort();
   const candidateKeys = Object.keys(candidate).sort();
-  const missingKeys = englishKeys.filter((key) => !candidateKeys.includes(key));
+  // A missing key is not an error. i18next resolves an absent key through
+  // fallbackLng, so the user sees the English text for that key. This lets a
+  // locale file hold only the keys that a translator did. en.json stays the
+  // reference, so it is complete by definition.
   const extraKeys = candidateKeys.filter((key) => !englishKeys.includes(key));
 
-  for (const key of missingKeys) {
-    errors.push(`${formatPath([...path, key])} is missing`);
-  }
   for (const key of extraKeys) {
     errors.push(`${formatPath([...path, key])} is not defined in English`);
   }
@@ -107,6 +107,14 @@ function validateNode(path: string[], candidate: unknown, englishReference: unkn
   }
 }
 
+/**
+ * Validates one locale file against the English reference.
+ *
+ * A locale file can hold a subset of the English keys. It must not add a key
+ * that English does not define, and every key that it does hold must keep the
+ * English interpolation placeholders, add no markup or link, and stay inside
+ * the length limit.
+ */
 export function validateLocaleMessages(candidate: unknown, englishReference: unknown = en) {
   const errors: string[] = [];
   validateNode([], candidate, englishReference, errors);
