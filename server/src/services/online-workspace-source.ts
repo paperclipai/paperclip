@@ -23,6 +23,7 @@ export type OnlineWorkspaceSource = WorkspaceSourceScope & {
     holds: Array<OnlineLegacyWorkspaceRecoveryHold & { actionId: string }> }>;
 };
 const intersects = (values: string[], keys: Set<string>) => values.some(value => keys.has(value));
+type CompanionRun = { id: string; issueId: string | null; state: string };
 
 export async function requiresOnlineWorkspaceSource(workspace: Workspace): Promise<boolean> {
   if (await requiresOnlineOrdinarySource(workspace)) return true;
@@ -39,13 +40,7 @@ export async function requiresOnlineWorkspaceSource(workspace: Workspace): Promi
   return false;
 }
 
-async function companion(db: ReadDb, workspace: Workspace) {
-  const runs = await db.select({ id: heartbeatRuns.id, issueId: heartbeatRuns.nativeIssueId,
-    state: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}'` }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, workspace.companyId),
-    sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'=${workspace.id}`,
-    sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}' in ('prepared','finalized')`,
-  )).orderBy(heartbeatRuns.id);
+async function companion(db: ReadDb, workspace: Workspace, runs: CompanionRun[]) {
   const sources: LegacyWorkspaceRecoverySource[] = [];
   for (const run of runs.filter(run => run.state === "prepared")) {
     const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace, runId: run.id });
@@ -163,9 +158,22 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const recipe = readGitCacheRestoration(workspace);
   if (recipe && (!recipe.restoredAt || recipe.contents && !recipe.contentsRestoredAt
     || recipe.restorePoint && !recipe.restorePoint.expiredAt && !recipe.restorePoint.appliedAt)) return null;
+  const runs = await db.select({ id: heartbeatRuns.id, issueId: heartbeatRuns.nativeIssueId,
+    workspaceId: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`,
+    state: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}'` }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, workspace.companyId),
+    inArray(sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`, included.map(node => node.row.id)),
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}' in ('prepared','finalized')`,
+  )).orderBy(heartbeatRuns.id);
+  const runsByWorkspace = new Map<string, CompanionRun[]>();
+  for (const run of runs) {
+    const group = runsByWorkspace.get(run.workspaceId) ?? [];
+    group.push(run);
+    runsByWorkspace.set(run.workspaceId, group);
+  }
   const companions: OnlineWorkspaceSource["companions"] = [], settledPreparedWorkspaceIds: string[] = [], settledRecoveryIssueIds = new Set<string>();
   for (const node of included) {
-    const proof = await companion(db, node.row);
+    const proof = await companion(db, node.row, runsByWorkspace.get(node.row.id) ?? []);
     if (!proof) return null;
     companions.push({ workspaceId: proof.workspaceId, sources: proof.sources, holds: proof.holds });
     if (proof.sources.length) settledPreparedWorkspaceIds.push(proof.workspaceId);
