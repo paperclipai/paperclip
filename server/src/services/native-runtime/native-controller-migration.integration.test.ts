@@ -379,9 +379,11 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
     expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId)))[0].status).toBe("queued");
     expect(put).not.toHaveBeenCalled();
     expect((await loadNativeRunnerCheckpoint(f.db, binding))?.records).toEqual(checkpoint.records);
+    await f.db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId })
+      .where(eq(heartbeatRuns.id, f.queuedId));
     const recovery = await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
       issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId });
-    expect(recovery.kind).not.toBe("recoverable");
+    expect(recovery).toEqual({ kind: "unsupported", reason: "metadata_format" });
   });
   if (scenario === "durable_failed") it("preserves a failed durable checkpoint without inventing a missing session snapshot", async () => {
     const f = await fixture();
