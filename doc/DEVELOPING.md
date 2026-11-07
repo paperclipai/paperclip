@@ -1278,6 +1278,26 @@ family, including the separate deadline and settlement regressions, with:
 pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
 ```
 
+#### PR Vitest retry
+
+PR CI retries a failing Vitest case once, so a single contention flake does not
+force a re-run of the whole workflow. `scripts/ci/vitest-retry.mjs` owns the gate.
+The default is one retry when `GITHUB_ACTIONS=true` and `GITHUB_WORKFLOW=PR`.
+Reusable workflows inherit the caller's name, so `pr-trusted.yml` gets the retry
+through `pr.yml`. Release, release verify, cloud readiness, master and local runs
+keep zero retries. `PAPERCLIP_VITEST_RETRY` overrides the default in any context.
+For example, set the `CI_VITEST_RETRY` repository variable to `0` to turn the retry
+off, or set `PAPERCLIP_VITEST_RETRY=1` locally to reproduce the CI behavior.
+
+`scripts/run-vitest-stable.mjs` passes `--retry` to every `vitest run`. This
+covers the general, workspace, chat, native Runner and serialized lanes and the
+selected-file path. The Runner package config sets `retry` itself, because its
+lane runs Vitest directly. A test that passes only on a retry is still a flake.
+`scripts/ci/retry-reporter.mjs` adds a `Flaky test passed on retry` warning
+annotation for each such test, and a row to the step summary with the file, test,
+retry count and job. Fix a test that this reporter reports. Do not treat the
+retry as the fix. Playwright retries stay at zero.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
