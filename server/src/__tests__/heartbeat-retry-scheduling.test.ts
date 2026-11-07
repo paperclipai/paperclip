@@ -1578,6 +1578,130 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
   });
 
+  it("coalesces a duplicate max-turn continuation scheduled after the first successor took the issue lock", async () => {
+    // Deterministic reproduction of the two-concurrent-schedule race: run call
+    // #1 to completion first so it commits its successor and moves the issue
+    // execution lock onto that successor, then run call #2 against the exact
+    // post-commit state a genuinely concurrent duplicate would observe. No
+    // sleeps or timing — the ordering is explicit. Before the fix, call #2's
+    // preflight gate reads the moved lock and returns
+    // not_scheduled / issue_execution_lock_changed instead of coalescing.
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+    const retryOptions = {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    };
+
+    const first = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+
+    // Precondition: the execution lock now belongs to the successor, not the
+    // source run. This is the state that used to trip the preflight gate.
+    const lockedBeforeSecond = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockedBeforeSecond?.executionRunId).toBe(first.run.id);
+    expect(lockedBeforeSecond?.executionRunId).not.toBe(runId);
+
+    const second = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(second.outcome).toBe("scheduled");
+    if (second.outcome !== "scheduled") return;
+
+    // The duplicate coalesced onto call #1's successor instead of being dropped.
+    expect(second.run.id).toBe(first.run.id);
+
+    const retryRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.retryOfRunId, runId),
+          eq(
+            heartbeatRuns.scheduledRetryReason,
+            MAX_TURN_CONTINUATION_RETRY_REASON,
+          ),
+          eq(heartbeatRuns.scheduledRetryAttempt, 1),
+        ),
+      );
+    expect(retryRuns).toHaveLength(1);
+    expect(retryRuns[0]?.id).toBe(first.run.id);
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        coalescedCount: agentWakeupRequests.coalescedCount,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, MAX_TURN_CONTINUATION_WAKE_REASON));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      id: retryRuns[0]?.wakeupRequestId,
+      coalescedCount: 1,
+    });
+
+    // The lock still points at the single successor; coalescing did not move it.
+    const lockedAfterSecond = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockedAfterSecond?.executionRunId).toBe(first.run.id);
+  });
+
+  it("still rejects a max-turn continuation when the issue lock moved to an unrelated run", async () => {
+    // The coalescing bypass must only apply when the new lock holder is this
+    // source run's own successor. A lock that genuinely moved to an unrelated
+    // run has no sibling to coalesce onto and must still be rejected, with no
+    // successor created.
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+
+    const unrelatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: unrelatedRunId })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(result).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_execution_lock_changed",
+    });
+
+    const successors = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(0);
+  });
+
   it.each(["schedule", "transaction", "promote", "dispatch"] as const)(
     "suppresses a busy-subscription retry whose task lock was cleared before %s",
     async (phase) => {

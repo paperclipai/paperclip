@@ -616,6 +616,41 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         : baseSchedule;
 
+    // Mirrors the in-transaction coalescing fast-paths below: does a successor
+    // retry this call would reuse (rather than create a duplicate of) already
+    // exist? Dedicated continuation reasons (max-turn, interaction) key on
+    // reason + attempt + live status + issue; every other reason shares a single
+    // predecessor claim keyed only on `retryOfRunId`. Used to distinguish a
+    // concurrent sibling taking the execution lock from a genuine lock change.
+    const hasCoalescibleRetrySuccessor = async (): Promise<boolean> => {
+      const isDedicatedContinuation =
+        retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+      const rows = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.retryOfRunId, run.id),
+            ...(isDedicatedContinuation
+              ? [
+                  eq(heartbeatRuns.scheduledRetryReason, retryReason),
+                  eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                  inArray(heartbeatRuns.status, [
+                    ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
+                  ]),
+                  issueId
+                    ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+                    : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                ]
+              : []),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    };
+
     const requiresIssueGate =
       interruptedPreparation || retryReason === "interrupted_preparation" ||
       (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
@@ -632,24 +667,38 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         now,
       });
       if (!gate.allowed) {
-        await appendRunEvent(run, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: gate.reason,
-          payload: {
-            retryReason,
-            scheduledRetryAttempt: nextAttempt,
-            maxAttempts,
-            ...gate.details,
-          },
-        });
-        return {
-          outcome: "not_scheduled" as const,
-          reason: gate.reason,
-          errorCode: gate.errorCode,
-          issueId: gate.issueId,
-        };
+        // A genuinely concurrent duplicate schedule for the same source run may
+        // have already committed its successor and moved the issue execution
+        // lock onto it. The preflight gate reads that moved lock and reports
+        // `issue_execution_lock_changed`, but this is a coalescing situation,
+        // not a real ownership change: the in-transaction fast-path below will
+        // reuse the sibling successor. Let such a call through to coalesce, but
+        // only when a sibling the transaction would actually reuse exists. A
+        // lock that moved to an unrelated run still has no sibling and is still
+        // rejected here, so the ownership guarantee is preserved.
+        const canCoalesceOntoSibling =
+          gate.errorCode === "issue_execution_lock_changed" &&
+          (await hasCoalescibleRetrySuccessor());
+        if (!canCoalesceOntoSibling) {
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: gate.reason,
+            payload: {
+              retryReason,
+              scheduledRetryAttempt: nextAttempt,
+              maxAttempts,
+              ...gate.details,
+            },
+          });
+          return {
+            outcome: "not_scheduled" as const,
+            reason: gate.reason,
+            errorCode: gate.errorCode,
+            issueId: gate.issueId,
+          };
+        }
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
