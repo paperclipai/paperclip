@@ -5922,9 +5922,14 @@ async function recoverQuiescentRunnerdState(input: {
       const control = record(JSON.parse(controlBytes));
       const provider = record(JSON.parse(providerBytes));
       const events = control.committedEvents;
+      // A warm runner whose controller died exits after its reconnect grace
+      // with settled, preserved state; it is as recoverable as a dead "ready"
+      // runner. Any other recoverable failure stays unproven.
+      const graceExpired = runner.lifecycle === "recoverable_failure"
+        && runner.recoverableFailure === "transport_reconnect_grace_exceeded";
       if (
         runner.schema !== RUNNERD_STATE_SCHEMA ||
-        !["ready", "suspended"].includes(String(runner.lifecycle)) ||
+        (!["ready", "suspended"].includes(String(runner.lifecycle)) && !graceExpired) ||
         (!currentEmpty && runner.lifecycle === "suspended") ||
         [
           "runId",
@@ -6116,7 +6121,9 @@ async function recoverQuiescentRunnerdState(input: {
   const temporary = `${statePath}.${randomUUID()}.tmp`;
   writeFileSync(
     temporary,
-    JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
+    // A grace-expired runner's failure cause is resolved by this proof.
+    JSON.stringify({ ...candidate.runner, lifecycle: "suspended",
+      ...(candidate.runner.recoverableFailure === "transport_reconnect_grace_exceeded" ? { recoverableFailure: null } : {}) }),
     { encoding: "utf8", mode: 0o600, flag: "wx" },
   );
   renameSync(temporary, statePath);
