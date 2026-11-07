@@ -102,7 +102,7 @@ describe.skipIf(!databaseUrl).each(["permission", "lifecycle"] as const)("normal
       callbacks++;
       if (event === "settled" && Array.from(hints ?? []).some(raw => {
         const hint = parseMuseVerificationHint(raw);
-        return hint?.bindingId === bindingId && hint.generation === generation && hint.companyId === companyId;
+        return hint !== undefined && hint.bindingId === bindingId && hint.generation === generation && hint.companyId === companyId;
       })) contactSettled++;
     });
     await migrateCloudConfiguration(owner);
