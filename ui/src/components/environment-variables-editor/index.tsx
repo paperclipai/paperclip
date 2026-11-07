@@ -129,8 +129,15 @@ export interface EnvironmentVariablesEditorProps {
   recentlyUsedSecrets?: readonly CompanySecret[];
   /** Read-only rendering. */
   disabled?: boolean;
+  /** Hide secret sources and keep this editor limited to inline plain values. */
+  plainOnly?: boolean;
   /** Prefixes flagged as reserved/auto-provided. Default `["PAPERCLIP_"]`. */
   reservedPrefixes?: readonly string[];
+  /**
+   * Names bound outside this editor. A row using one is an error and the draft
+   * is not saved, because the outside binding would replace its value.
+   */
+  takenNames?: readonly string[];
   /** Context-specific hint line. `null` hides the default copy; omit for default. */
   footerHint?: ReactNode | null;
   /** Reports editor-local draft changes that are not yet promoted to the parent value. */
@@ -155,7 +162,9 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   onCreateSecret,
   recentlyUsedSecrets,
   disabled,
+  plainOnly = false,
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
+  takenNames,
   footerHint,
   onDirtyChange,
   hideDraftActions = false,
@@ -235,6 +244,11 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }, [value]);
 
   const draftValue = useMemo(() => valueFromRows(rows), [rows]);
+  const takenNameSet = useMemo(() => new Set(takenNames ?? []), [takenNames]);
+  const usesTakenName = useMemo(
+    () => rows.some((row) => takenNameSet.has(row.name.trim())),
+    [rows, takenNameSet],
+  );
   const draftValueKey = useMemo(() => normalizedEnvKey(draftValue), [draftValue]);
   const hasUnsavedChanges = draftValueKey !== committedValueKey;
 
@@ -283,13 +297,13 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }, [disabled, hasUnsavedChanges]);
 
   const flushPendingDraft = useCallback(() => {
-    if (disabled || !hasUnsavedChanges) return null;
+    if (disabled || !hasUnsavedChanges || usesTakenName) return null;
     pendingSaveValueKeyRef.current = draftValueKey;
     flushSync(() => {
       onChange(draftValue);
     });
     return draftValue ?? {};
-  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange, usesTakenName]);
 
   useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
 
@@ -396,7 +410,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   function saveDraft() {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || usesTakenName) return;
     pendingSaveValueKeyRef.current = draftValueKey;
     onChange(draftValue);
   }
@@ -423,11 +437,12 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   );
 
   const quickBind = useMemo(() => {
+    if (plainOnly) return [];
     const boundIds = new Set(rows.filter((row) => row.source === "secret" && row.secretId).map((row) => row.secretId));
     return (recentlyUsedSecrets ?? [])
       .filter((secret) => secret.status === "active" && !boundIds.has(secret.id))
       .slice(0, 8);
-  }, [recentlyUsedSecrets, rows]);
+  }, [plainOnly, recentlyUsedSecrets, rows]);
 
   const hasRows = rows.length > 0;
   const hint = footerHint === undefined ? DEFAULT_HINT : footerHint;
@@ -456,7 +471,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
           </div>
 
           {rows.map((row, index) => {
-            const issue = validateName(row.name, duplicateNames, reservedPrefixes);
+            const issue = validateName(row.name, duplicateNames, reservedPrefixes, takenNameSet);
             const touched = touchedNames.has(row.name.trim());
             return (
               <EnvironmentVariableRow
@@ -467,6 +482,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
+                plainOnly={plainOnly}
                 nameIssue={issue}
                 showNameIssue={touched}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}
@@ -549,7 +565,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
             <button
               type="button"
               onClick={saveDraft}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              disabled={usesTakenName}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
             >
               <Save className="size-4" />
               Save
@@ -559,7 +576,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
       ) : null}
 
       {hint ? <p className="text-(length:--text-micro) text-muted-foreground/70">{hint}</p> : null}
-      {rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
+      {!plainOnly && rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
         <p className="inline-flex items-start gap-1 text-(length:--text-micro) text-muted-foreground/70">
           <UserRound className="mt-0.5 size-3 shrink-0" />
           <span>
