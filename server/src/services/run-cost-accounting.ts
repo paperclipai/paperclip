@@ -272,6 +272,14 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
     const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";
+    // A lost receipt that already carries a provider-reported cost settles at
+    // that cost, as an estimate marked as a lower bound, not as unpriced.
+    const reportedLowerBound = receiptUnavailable && knownCostUsd !== null && billingType !== "subscription_included"
+      && usdToUnits(knownCostUsd) > 0n;
+    const lowerBoundProvenance = reportedLowerBound ? { source: "provider_reported", version: "accounting-receipt/v1",
+      ...object(usage.pricingProvenance),
+      evidence: [text(object(usage.pricingProvenance).evidence), "final receipt lost; provider-reported cost of the observed usage is a lower bound"]
+        .filter(Boolean).join("; ") } : null;
     const costUnits = billingType === "subscription_included" ? 0n : usdToUnits(costUsd ?? 0);
     const costCents = unitsToCents(costUnits);
     const [agent] = await tx.select({ adapterType: agents.adapterType }).from(agents).where(eq(agents.id, run.agentId));
@@ -284,9 +292,9 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       issueId: text(scope.issueId), projectId: text(scope.projectId), billingCode: text(scope.billingCode),
       provider: text(usage.provider) ?? "unknown", biller: text(usage.biller) ?? text(usage.provider) ?? "unknown",
       providerRequestId: text(usage.providerRequestId),
-      pricingProvenance: withClosureTimeoutEvidence(lostReceiptEstimate?.pricingProvenance ?? object(usage.pricingProvenance), closureTimedOut),
+      pricingProvenance: withClosureTimeoutEvidence(lostReceiptEstimate?.pricingProvenance ?? lowerBoundProvenance ?? object(usage.pricingProvenance), closureTimedOut),
       model: text(usage.model) ?? "unknown", billingType,
-      costStatus: lostReceiptEstimate ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
+      costStatus: lostReceiptEstimate || reportedLowerBound ? "estimated" : (costUsd === null || usage.costStatus === "unpriced" || receiptUnavailable) && billingType !== "subscription_included" && hasBillableEvidence ? "unpriced" : usage.costStatus === "estimated" ? "estimated" : "reported",
       inputTokens: amount(usage.inputTokens) ?? 0, cachedInputTokens: amount(usage.cachedInputTokens) ?? 0, outputTokens: amount(usage.outputTokens) ?? 0,
       costCents, occurredAt: run.finishedAt ?? run.createdAt,
     };
@@ -329,11 +337,12 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         // Late reconciliation measures a later receipt from the accepted money.
         ...(lostReceiptEstimate ? { costUsdExact: lostReceiptEstimate.costUsdExact, costStatus: "estimated",
           pricingProvenance: lostReceiptEstimate.pricingProvenance } : {}),
+        ...(lowerBoundProvenance ? { costStatus: "estimated", pricingProvenance: lowerBoundProvenance } : {}),
       })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
     if (closureTimedOut) await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting",
       action: "cost.accounting_closure_timed_out", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
-      details: { reason: "Final usage never arrived and no stop of its provider was verified; the run's known usage was recorded as unpriced.",
+      details: { reason: "Final usage never arrived and no stop of its provider was verified; the run's known usage was recorded as a lower bound, or as unpriced when it had no price.",
         timeoutMinutes: ACCOUNTING_CLOSURE_TIMEOUT_MS / 60_000 } }, publications);
     return true;
   }), { "budget.accounting.owner": "run" });

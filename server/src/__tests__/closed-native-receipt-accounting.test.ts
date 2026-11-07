@@ -630,6 +630,37 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  // s7505 run 3b4721a8 (OpenCode, K2): succeeded, but every receipt stayed
+  // incomplete while carrying an OpenRouter-reported cost. It held company work
+  // for the closure bound, settled as unpriced, and the blocking policy paused
+  // the company a second later.
+  it("settles a timed-out restart receipt at its provider-reported cost, without holding or pausing", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, processPid: 59875, processGroupId: 59875,
+      processStartedAt: new Date(),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ provider: "deepseek", biller: "openrouter",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731", billingType: "metered_api", costStatus: "unpriced",
+        costUsd: 0.00455988, costUsdExact: "0.004559880", inputTokens: 64052, cachedInputTokens: 128000, outputTokens: 2062,
+        cacheWriteTokens: 0, pricingProvenance: { source: "provider_reported", version: "accounting-receipt/v1" },
+        budgetExposure: { sourceId: f.sourceId, sequence: 15, costCents: "0.4559880" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.run.id, agentId: f.agentId, seq: 10,
+      eventType: "native.recovery.transition", stream: "system" });
+    expect(await f.block()).toBeNull();
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, null);
+    await flushBudgetEvaluationWork(db);
+    const charges = await f.charges();
+    expect(charges).toMatchObject([{ costStatus: "estimated", biller: "openrouter", inputTokens: 64052 }]);
+    expect(Number(charges[0].costCents)).toBeCloseTo(0.455988, 6);
+    expect((charges[0].pricingProvenance as { evidence?: string }).evidence).toMatch(/lower bound/);
+    const [company] = await db.select().from(companies).where(eq(companies.id, f.companyId));
+    expect(company).toMatchObject({ status: "active", pauseReason: null });
+    expect(await db.select().from(budgetIncidents).where(eq(budgetIncidents.companyId, f.companyId))).toHaveLength(0);
+    expect(await f.block()).toBeNull();
+  });
+
   it("keeps the blocking policy for a timed-out closure with no restart evidence, since the run may still spend", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11, restart: false });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
