@@ -195,6 +195,7 @@ import {
   buildIndependentTaskWorkspaceSettings,
   isAncestorExecutionWorkspace,
   loadAncestorIssueIds,
+  mergeExplicitWorkspaceSettings,
 } from "./task-workspace-lineage.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { readChatControlChronology } from "./chat-control-chronology.js";
@@ -9733,12 +9734,18 @@ export function issueService(db: Db) {
       // The child keeps the parent's workspace strategy, never its files. The
       // strategy belongs to the parent's project, so it stays behind when the
       // child targets another project.
+      const parentStrategy = childInheritsParentProject
+        ? buildIndependentTaskWorkspaceSettings(parent.executionWorkspaceSettings)
+        : null;
       const inheritedPreRealizationWorkspaceSettings =
-        !hasExplicitExecutionWorkspaceOverride && childInheritsParentProject
-          ? buildIndependentTaskWorkspaceSettings(
-              parent.executionWorkspaceSettings,
-            )
-          : null;
+        !hasExplicitExecutionWorkspaceOverride
+          ? parentStrategy
+          : issueData.executionWorkspaceId === undefined && issueData.executionWorkspaceSettings
+            ? mergeExplicitWorkspaceSettings(
+                parentStrategy,
+                issueData.executionWorkspaceSettings as Record<string, unknown>,
+              )
+            : null;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -10401,6 +10408,7 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
+        let inheritedIndependentSettings: Record<string, unknown> | null = null;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(
             tx,
@@ -10434,13 +10442,23 @@ export function issueService(db: Db) {
           // time, and two writers in one folder lose each other's files. The
           // new task keeps only the source's workspace strategy and realizes
           // its own workspace from the project base on its first run.
-          if (
-            inheritsSourceProject &&
-            !hasExplicitExecutionWorkspaceOverride &&
-            executionWorkspaceSettings == null
-          ) {
-            executionWorkspaceSettings = buildIndependentTaskWorkspaceSettings(
+          if (inheritsSourceProject) {
+            inheritedIndependentSettings = buildIndependentTaskWorkspaceSettings(
               workspaceSource.executionWorkspaceSettings,
+            );
+          }
+          if (!hasExplicitExecutionWorkspaceOverride && executionWorkspaceSettings == null) {
+            executionWorkspaceSettings = inheritedIndependentSettings;
+          } else if (
+            issueData.executionWorkspaceId === undefined &&
+            issueData.executionWorkspaceSettings &&
+            !(workspaceSelection !== undefined && workspaceSelectionSource === "explicit")
+          ) {
+            // A caller that names only a mode keeps the inherited base ref,
+            // branch template, commands and runtime for that mode.
+            executionWorkspaceSettings = mergeExplicitWorkspaceSettings(
+              inheritedIndependentSettings,
+              executionWorkspaceSettings,
             );
           }
         }
@@ -10473,7 +10491,10 @@ export function issueService(db: Db) {
           if (await isAncestorExecutionWorkspace(tx, { companyId, executionWorkspaceId, ancestorIssueIds })) {
             executionWorkspaceId = null;
             executionWorkspacePreference = null;
-            executionWorkspaceSettings = buildIndependentTaskWorkspaceSettings(executionWorkspaceSettings);
+            executionWorkspaceSettings = mergeExplicitWorkspaceSettings(
+              inheritedIndependentSettings,
+              buildIndependentTaskWorkspaceSettings(executionWorkspaceSettings),
+            );
             if (workspaceIntent?.selection.kind === "existing") workspaceIntent = null;
           }
         }

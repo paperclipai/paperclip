@@ -58,6 +58,30 @@ export function buildIndependentTaskWorkspaceSettings(
 }
 
 /**
+ * Lays a task's explicit workspace settings over the strategy it inherited, so
+ * a caller that names only a mode (the New sub-task dialog does) keeps the
+ * inherited base ref, branch template, commands and runtime. A different
+ * explicit mode is a different strategy, so it replaces the inherited one.
+ */
+export function mergeExplicitWorkspaceSettings(
+  inherited: Record<string, unknown> | null,
+  explicit: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!inherited) return explicit;
+  if (!explicit) return inherited;
+  if (explicit.mode && inherited.mode && explicit.mode !== inherited.mode) return explicit;
+  const inheritedStrategy = inherited.workspaceStrategy as Record<string, unknown> | undefined;
+  const explicitStrategy = explicit.workspaceStrategy as Record<string, unknown> | undefined;
+  return {
+    ...inherited,
+    ...explicit,
+    ...(inheritedStrategy || explicitStrategy
+      ? { workspaceStrategy: { ...(inheritedStrategy ?? {}), ...(explicitStrategy ?? {}) } }
+      : {}),
+  };
+}
+
+/**
  * The issues a task must never share a workspace with: its parent chain, plus
  * the requested parent's chain when depth placement put the task beside its
  * requester (recorded as `privacyParentIssueId`).

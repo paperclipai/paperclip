@@ -175,6 +175,24 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
     expect(JSON.stringify(child.executionWorkspaceSettings ?? {})).not.toContain("workspaceRuntime");
   });
 
+  it("keeps the parent's strategy when the New sub-task dialog names only the mode", async () => {
+    const fixture = await seedParentWithRealizedWorkspace();
+    const child = await issueService(db).create(fixture.companyId, {
+      parentId: fixture.parentIssueId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+      title: "Dialog child",
+    });
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+      workspaceRuntime: { profile: "agent" },
+      workspaceStrategy: { type: "git_worktree", baseRef: "origin/main" },
+    });
+  });
+
   it("does not share when inheritExecutionWorkspaceFromIssueId points at the parent", async () => {
     const fixture = await seedParentWithRealizedWorkspace();
     const child = await issueService(db).create(fixture.companyId, {
