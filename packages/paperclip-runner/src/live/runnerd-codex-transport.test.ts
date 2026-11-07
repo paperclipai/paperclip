@@ -1505,6 +1505,26 @@ it("does not hold a pending turn start behind another turn's restore-lost termin
     params: { turn: { id: "provider-turn-raw", status: "failed" } } }] })).toBe("provider-turn-raw");
 });
 
+it("settles a restored turn from the runner's reconciled result terminal", () => {
+  const { runnerdRecoveredTurnTerminal: recovered } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { payload: { payload } } });
+  const reconciled = event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: null });
+  const runTerminal = event("run.terminal", { turnTerminalState: "completed", runTerminalState: "succeeded" });
+  // The runner recovered turn-1's accepted result: no provider turn terminal,
+  // only the reconciliation and the run terminal.
+  expect(recovered([event("turn.started", { providerTurnId: "turn-1" }), reconciled, runTerminal], "turn-1"))
+    .toEqual({ status: "completed", error: null });
+  // An explicit provider terminal keeps its cause.
+  const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+  expect(recovered([reconciled, event("turn.failed", { providerTurnId: "turn-1", error: lost }), runTerminal], "turn-1"))
+    .toEqual({ status: "failed", error: lost });
+  // A run terminal settles only the turn the runner reconciled as ended.
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-0", activeProviderTurnId: null }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([event("session.reconciled", { previousProviderTurnId: "turn-1", activeProviderTurnId: "turn-1" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([reconciled, event("turn.started", { providerTurnId: "turn-2" }), runTerminal], "turn-1")).toBeNull();
+  expect(recovered([runTerminal], "turn-1")).toBeNull();
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({

@@ -788,6 +788,52 @@ function turnStartResponseReady(input: {
   );
 }
 
+type RunnerdRecoveredTurnTerminal = {
+  status: "completed" | "failed" | "interrupted" | "cancelled";
+  error: unknown;
+};
+
+const RUNNERD_TURN_TERMINAL_STATUSES = new Set(["completed", "failed", "interrupted", "cancelled"]);
+
+/**
+ * The terminal the runner recorded for a provider turn that is no longer
+ * active after restore. A provider terminal names the turn explicitly. When the
+ * runner restores a conversation whose turn already ended with the semantic
+ * result Paperclip accepted, it records `session.reconciled` (naming the ended
+ * turn as previous, with no active turn) followed by the run terminal, and no
+ * provider turn terminal. That run terminal settles the reconciled turn.
+ */
+function runnerdRecoveredTurnTerminal(
+  events: readonly Pick<DurableRecoveryCommittedEvent, "eventType" | "envelope">[],
+  turnId: string,
+): RunnerdRecoveredTurnTerminal | null {
+  let terminal: RunnerdRecoveredTurnTerminal | null = null;
+  let reconciledEndedTurn = false;
+  for (const event of events) {
+    const payload = record(record(event.envelope.payload).payload);
+    const providerTurnId = payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id;
+    if (event.eventType === "turn.started") {
+      reconciledEndedTurn = false;
+    } else if (event.eventType === "session.reconciled") {
+      reconciledEndedTurn = payload.previousProviderTurnId === turnId && payload.activeProviderTurnId == null;
+    } else if (event.eventType.startsWith("turn.") && RUNNERD_TURN_TERMINAL_STATUSES.has(event.eventType.slice("turn.".length))) {
+      if (providerTurnId !== turnId) continue;
+      // Reconciliation must retain the cause, including the runner's explicit
+      // process-loss marker, rather than inventing error:null.
+      terminal = { status: event.eventType.slice("turn.".length) as RunnerdRecoveredTurnTerminal["status"],
+        error: payload.error ?? record(payload.turn).error ?? null };
+      reconciledEndedTurn = false;
+    } else if (event.eventType === "run.terminal" && reconciledEndedTurn) {
+      const status = String(payload.turnTerminalState);
+      if (RUNNERD_TURN_TERMINAL_STATUSES.has(status)) {
+        terminal = { status: status as RunnerdRecoveredTurnTerminal["status"], error: null };
+      }
+      reconciledEndedTurn = false;
+    }
+  }
+  return terminal;
+}
+
 /** The provider turn a durable terminal names, when it names one explicitly. */
 function runnerdTerminalProviderTurnId(eventType: string, payload: unknown): string | null {
   const named = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
@@ -4130,48 +4176,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : [{ id: activeProviderTurnId, status: "inProgress" }];
       if (activeProviderTurnId === null && this.#turnId.length > 0) {
         const recoveryDeadline = Date.now() + 5_000;
-        let terminal = (this.#core?.store.state.committedEvents ?? []).find(
-          () => false,
-        );
+        let terminal: RunnerdRecoveredTurnTerminal | null = null;
         while (Date.now() < recoveryDeadline) {
           this.#throwIfFailed();
           this.#pumpEvents();
-          terminal = [...(this.#core?.store.state.committedEvents ?? [])]
-            .reverse()
-            .find((event) => {
-              if (
-                event.eventType !== "turn.completed" &&
-                event.eventType !== "turn.failed" &&
-                event.eventType !== "turn.interrupted" &&
-                event.eventType !== "turn.cancelled"
-              )
-                return false;
-              const payload = record(record(event.envelope.payload).payload);
-              const providerTurnId =
-                payload.providerTurnId ??
-                payload.turnId ??
-                record(payload.turn).id;
-              return providerTurnId === this.#turnId;
-            });
-          if (terminal !== undefined) break;
+          terminal = runnerdRecoveredTurnTerminal(
+            this.#core?.store.state.committedEvents ?? [],
+            this.#turnId,
+          );
+          if (terminal !== null) break;
           await new Promise((resolveWait) => setTimeout(resolveWait, 10));
         }
-        if (terminal !== undefined) {
-          const payload = record(record(terminal.envelope.payload).payload);
-          recoveredTurns.push({
-            id: this.#turnId,
-            // Reconciliation must retain the cause, including the runner's
-            // explicit process-loss marker, rather than inventing error:null.
-            error: payload.error ?? record(payload.turn).error ?? null,
-            status:
-              terminal.eventType === "turn.completed"
-                ? "completed"
-                : terminal.eventType === "turn.interrupted"
-                  ? "interrupted"
-                  : terminal.eventType === "turn.cancelled"
-                    ? "cancelled"
-                    : "failed",
-          });
+        if (terminal !== null) {
+          recoveredTurns.push({ id: this.#turnId, ...terminal });
         }
       }
       if (restoreRuntimeRequests && activeProviderTurnId !== null) {
@@ -8360,6 +8377,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   rotatedRunAttachPayload,
   localRunnerStateArchive,
   rotateAuthorityEpoch,
+  runnerdRecoveredTurnTerminal,
   runnerdTerminalProviderTurnId,
   terminalMayBelongToPendingTurnStart,
   turnStartCommandResultValid,

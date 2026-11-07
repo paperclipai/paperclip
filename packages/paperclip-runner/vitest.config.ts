@@ -6,6 +6,10 @@ import { configDefaults, defineConfig } from "vitest/config";
 import { RunnerSequencer } from "./scripts/vitest-sequencer.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+const ciReporters = [
+  ...(process.env.GITHUB_ACTIONS === "true" ? [resolve(packageRoot, "../../scripts/ci/oversized-test-files.mjs")] : []),
+  ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? [resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] : []),
+];
 
 export default defineConfig({
   resolve: {
@@ -15,9 +19,7 @@ export default defineConfig({
     ],
   },
   test: {
-    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
-      ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
-      : {}),
+    ...(ciReporters.length ? { reporters: [...configDefaults.reporters, ...ciReporters] } : {}),
     environment: "node",
     // Hermetic files also launch Runner and sidecar processes. Reserve CPU
     // capacity for their startup within the original readiness deadlines.

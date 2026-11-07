@@ -774,6 +774,19 @@ durable wake and an admitted successor run. The old run must no longer own the
 task's checkout or execution. This settlement preserves the task and successor
 ownership, and neither re-arms the timer nor starts another provider turn.
 Workspace persistence must still succeed first.
+
+When the old monitor wait is no longer eligible, a newer ordinary user-comment
+wake can supersede that old saved wait.
+The finalizer requires the canonical unedited user comment, the matching user wake,
+and the accepted old result with its server-issued monitor receipt. An admitted
+successor must retain the exact task, comment revision, and source-run lineage.
+The finalizer rechecks this proof under the task lock. Assessment fingerprints
+include the exact superseding request proof, so a prior failed assessment remains
+immutable when the finalization decision changes. It records a passive
+settlement and preserves the current task status, assignment, checkout, schedule,
+and newer request. It does not re-arm the old monitor, publish its old waiting
+summary, or start another provider turn. Missing, cancelled, foreign, or conflicting
+proof keeps the old result held. Source Stop and workspace persistence gates remain.
 If a saved monitor expires during workspace recovery, settlement releases the
 old run into the still-persisted schedule. The scheduler then applies its timeout
 or attempt-limit recovery policy. Expiration still rejects new monitor-wait
@@ -908,7 +921,7 @@ Normal issue-thread feedback can still wake the current assignee according to th
 
 Restart recovery revisits accepted deferred messages through the latest issue run, including historical mention queues for another agent. Ordinary messages for a former owner retain their assignment handoff. Native sources require their matching committed finalization, settled environment leases, and released finalizer and copyback ownership before recovery clears old issue claims. A successful retained warm release can satisfy the lease check. Released local bookkeeping without a provider allocation and a matching SSH bookkeeping release need no provider cleanup receipt. Plugin releases record their successful acknowledgement. Pending or failed cleanup and durable owners still hold work. A successful fenced cleanup completion clears its in-flight claim in the same database write, so a restart before retry bookkeeping cannot strand saved input. The normal release checks preserve cleanup holds, pauses, and operator Stops. Recovery checks for a competing turn under the issue lock before it promotes saved input.
 
-A user can send messages after a run's final turn took its input but before the run settles. A native run can finish its result and status decision before its environment cleanup completes. The messages remain saved while that cleanup holds the source. Releasing or retaining the run's environment lease, or releasing its workspace finalization owner, reconsiders the saved messages through this recovery path. They are delivered once. A task that finalization marked `done` is reopened for them. The release and admission gates above still apply.
+A user can send messages after a run's final turn took its input but before the run settles. A native run can finish its result and status decision before its environment cleanup completes. The messages remain saved while that cleanup holds the source. Releasing or retaining the run's environment lease, or releasing its workspace finalization owner, reconsiders the saved messages through this recovery path. They are delivered once. A task that finalization marked `done` is reopened for them. The release and admission gates above still apply. Explicit Send checks the prospective reopened task against workspace preflight before it consumes the queue. A successful native predecessor must have its accepted result committed and its environment and workspace ownership settled. Pending approvals and questions retain the saved input, including when no recovery action exists. Reopening, queue consumption, and successor creation stay in one admission transaction.
 
 Repeated eligibility notifications must not move an unchecked, ready deferred receipt behind receipts already reconsidered. Paginated reconstruction preserves pending ready receipts' dispatch priority while refreshing their current state. Receipts whose wait deadline has passed join the ready queue on reconstruction. Future wait grace periods, claimed-work deadlines, infrastructure retry backoffs, and current admission checks remain effective.
 
@@ -2039,6 +2052,13 @@ task with a run refused for that hold. That covers a task created under the tree
 after the snapshot, a task moved out before release, and a task whose work an
 overlapping pause refused and released while this one still covered it. The scheduled-retry gate holds the pause row while it saves its
 refusal, so a concurrent release either sees the refusal or the retry sees no pause.
+For an old workspace-wait retry without the JSON marker, a later saved user
+message can continue only when an exact system lifecycle warning records that
+pause refusal. An earlier Retry Now lifecycle record does not invalidate the
+warning. The released pause and its task membership must match.
+The parent must retain its host-issued pre-provider workspace-wait proof.
+Provider activity, retained execution, an unmatched pause, or an operator Stop
+keeps the old run held. The historical cancellation remains unchanged.
 The queued-run gate checks the hold again after saving its refusal and resumes the
 task itself if release already finished. A resume restores the assignee's
 execution only; like a wake that admission refuses during a hold, a non-assignee
@@ -2491,6 +2511,15 @@ is checkpointed before submission. Real provider failures, accepted semantic
 results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
+
+A restart can also land after the agent proposed its result but before the
+provider turn ended. When the restored runner proves that turn ended with the
+result Paperclip accepted, it records a reconciliation and the run terminal,
+which settle that turn. When provider history no longer contains the checkpointed
+turn, or the runner reports it lost on restore, but Paperclip durably holds the
+result that exact turn proposed, recovery also settles the turn with that result. Either way, recovery finalizes the
+accepted result instead of failing and rerunning finished work. A missing turn
+without such a result still fails closed, because its outcome is unknown.
 
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
 
@@ -3342,6 +3371,23 @@ The controller persists a newly spawned runner's process identity before
 waiting for provider startup. An abrupt controller exit during session opening
 can then recover through the same exact process-identity checks as an active turn.
 
+A provider checkpoint copied from a completed run retains conversation history;
+its normalized current run ID does not prove that the current controller attached.
+Fenced remote Runner recovery requires a matching database controller checkpoint
+or a valid staged attachment for the target run before selecting exact-checkpoint
+resume. Local Runner recovery keeps its existing local controller checks.
+If the first attachment finds the retained runner gone, or replacement cannot
+archive its remote state before the new turn starts, ordinary failure settlement
+requests one normal Retry under the
+original user's saved wake and comment authority. Current authorization, Stop,
+provider-turn settlement, workspace preservation and cleanup gates still apply.
+The same request remains idempotent, and an automatic successor does not request
+another automatic Retry. System wakes and unsettled provider turns remain held.
+
+Continuity replacement confirms remote state archiving before moving the local
+controller journal and provider checkpoint. A failed or timed-out remote archive
+retains those local recovery files and does not start a replacement provider.
+
 Both graceful and hot restarts detach the old controller from native sessions.
 A graceful shutdown can also suspend a restart-recovery claim whose execution
 has not yet reached provider dispatch. That execution has lost its authority:
@@ -3824,7 +3870,13 @@ Only a persisted Agent Chat `/new` authored by the requesting user retains the
 conversation-reset exception. Ordinary follow-ups still wait for an accepted
 result to finish committing, even after workspace export recovery clears its
 execution blocker. Committed successful results no longer create continuation
-waits from recovered-export history. Applied conversation resets retire older
+waits from recovered-export history. A saved Send intent can also continue a task
+that this result marked `done`. Admission reopens that task in the same transaction
+that creates its successor and consumes the queue. If a person marked the task
+`done` after a failed or cancelled run, the history preflight validates the
+prospective reopened status only after verifying the saved Send intent and
+settled source; it does not reopen the task during a dry run. Automatic stale input and
+cancelled tasks keep their existing status gates. Applied conversation resets retire older
 non-workspace holds; active workspace holds remain authoritative across the
 boundary. Workspace recovery holds still block the reset. Queue authorization
 is read again at dispatch for both cancelled and failed native predecessors.

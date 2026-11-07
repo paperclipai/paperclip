@@ -29,6 +29,8 @@ Work in this order.
 
    - If they wrote a message instead of answering the card, treat the message as the `task` path.
 
+   - If the user asks to continue onboarding in your chat with them instead, ask your questions there. Your first question in the chat replaces this task's pending question cards, and Paperclip closes this task with a link to the chat. From then on the chat replaces this task for the rest of this workflow: save the plan and post proposal cards in the chat, create accepted child tasks from the chat, and report their results there. Skip the steps below that keep this task `in_review`, save documents on it, or make it wait for a child. Do not reopen this task or ask the user what should happen to it.
+
 2. Propose, then wait for acceptance.
 
    - Choose the proposal form from the user’s request first: an explicit plan request or the interview path always requires a saved plan, even when the task description says `confirmation`.

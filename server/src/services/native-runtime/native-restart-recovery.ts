@@ -453,8 +453,9 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerGroupAlive: boolean;
   remoteSandbox?: boolean;
   unclaimedBootstrap?: boolean;
-  /** The durable controller checkpoint of a claimed remote bootstrap proves no provider work. */
+  /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
+  remoteBootstrapIncompleteReason?: "remote_runner_never_launched";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -487,7 +488,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       // Each same-run bootstrap is another provider attempt; keep restarts bounded.
       if ((input.providerAttempt ?? 0) >= 3)
         return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
-      return { claimKind: "bootstrap_incomplete", reason: "remote_bootstrap_proven_incomplete" };
+      return { claimKind: "bootstrap_incomplete",
+        reason: input.remoteBootstrapIncompleteReason ?? "remote_bootstrap_proven_incomplete" };
     }
     return input.hasCheckpoint &&
       input.checkpointIdentityMatches === true &&
@@ -545,6 +547,31 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     };
   }
   return { claimKind: null, reason: "ambiguous_provider_recovery_evidence" };
+}
+
+/** Any record that execution reached a runner: a requested or identified
+ * process, an adapter invocation, a tool start, or a runner-sourced event. */
+async function hasNativeExecutionStartEvidence(
+  tx: Pick<Db, "select">, run: { companyId: string; id: string },
+): Promise<boolean> {
+  const [executionEvent] = await tx
+    .select({ id: heartbeatRunEvents.id })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId),
+      eq(heartbeatRunEvents.runId, run.id),
+      or(
+        isNotNull(heartbeatRunEvents.sourceEventId),
+        inArray(heartbeatRunEvents.eventType, [
+          "adapter.invoke",
+          PROCESS_START_REQUESTED,
+          PROCESS_IDENTITY_RECORDED,
+          "tool.execution.started",
+        ]),
+      ),
+    ))
+    .limit(1);
+  return executionEvent !== undefined;
 }
 
 function historyEntry(input: {
@@ -1051,25 +1078,26 @@ export async function claimNativeRestartRecoveries(input: {
             controller.bootId === (await currentNativeControllerIdentity()).bootId) {
           return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
         }
-        const [executionEvent] = await tx
-          .select({ id: heartbeatRunEvents.id })
-          .from(heartbeatRunEvents)
-          .where(and(
-            eq(heartbeatRunEvents.companyId, row.run.companyId),
-            eq(heartbeatRunEvents.runId, row.run.id),
-            or(
-              isNotNull(heartbeatRunEvents.sourceEventId),
-              inArray(heartbeatRunEvents.eventType, [
-                "adapter.invoke",
-                PROCESS_START_REQUESTED,
-                PROCESS_IDENTITY_RECORDED,
-                "tool.execution.started",
-              ]),
-            ),
-          ))
-          .limit(1);
-        unclaimedBootstrap = !executionEvent;
+        unclaimedBootstrap = !(await hasNativeExecutionStartEvidence(tx, row.run));
       }
+
+      // A claimed remote run whose executor died while still preparing. The
+      // executor durably records native.process_start_requested before any
+      // backend may spawn a runner, and a remote runner exchanges commands only
+      // through a Postgres controller checkpoint. With neither, nothing reached
+      // a runner. The previous controller is gone (takeover was allowed above).
+      const remoteRunnerNeverLaunched = !unclaimedBootstrap && remoteWorkspace?.state === "prepared" && !pluginTask
+        && !durableAuthority && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "observed" && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
+        && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid
+          && row.coordinator.controllerProcessStartedAt && row.coordinator.leaseOwner)
+        && !row.coordinator.failureDetail?.successorRunId
+        && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
+        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && !hasCheckpoint && !hasProviderEvidence
+        && !(await hasNativeExecutionStartEvidence(tx, row.run));
 
       // A claimed remote bootstrap (runner launched, perhaps connected) has no
       // provider evidence when its controller dies before session.open
@@ -1087,7 +1115,8 @@ export async function claimNativeRestartRecoveries(input: {
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
-        remoteBootstrapProvenIncomplete,
+        remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched,
+        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,

@@ -604,6 +604,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const evidence = await nativeProviderRecoveryEvidence({
       db: tx as unknown as Db,
       runId: run.id,
+      metadataOnly: true,
       sourceFailureCode: detail.originalFailureCode as Parameters<
         typeof nativeProviderRecoveryEvidence
       >[0]["sourceFailureCode"],

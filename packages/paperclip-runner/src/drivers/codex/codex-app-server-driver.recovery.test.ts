@@ -1224,6 +1224,110 @@ describe("Codex app-server Codex driver", () => {
     }
   });
 
+  it("settles a missing persisted turn with the durable result it already proposed", async () => {
+    // Provider history lost the turn (for example, it was killed before the
+    // turn terminal was flushed), but Paperclip durably holds the result that
+    // turn proposed. That result is the turn's outcome: finalize it instead of
+    // failing recovery and re-running finished work.
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-missing-proposed-turn",
+      normalizedSessionId: "normalized-missing-proposed-turn",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      }),
+    ).toMatchObject({ success: true });
+    const snapshot = await original.snapshot();
+    expect(snapshot).toMatchObject({ activeTurnId: "turn-1", semanticResult: { turnId: "turn-1", result } });
+    await original.close({ reason: "killed before the turn terminal" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const events = await collectUntilTerminal(recovery!.session!.events());
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+    expect(await recovery!.session!.snapshot()).toMatchObject({
+      activeTurnId: null,
+      semanticResult: { turnId: "turn-1", result },
+      terminalTurns: [expect.objectContaining({ turnId: "turn-1" })],
+    });
+  });
+
+  it.each([true, false])("settles a restore-lost turn from its durable result only when one is held (held=%s)", async (held) => {
+    // The runner can report the checkpointed turn lost on restore when it
+    // cannot prove the accepted result itself, while Paperclip already holds it.
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "failed", error: lost, items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: `run-lost-proposed-${held}`,
+      normalizedSessionId: `normalized-lost-proposed-${held}`,
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    if (held) {
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      });
+    }
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const events = await collectUntilTerminal(recovery!.session!.events());
+    const terminal = events.find((event) => event.eventType.startsWith("turn."));
+    expect(terminal?.eventType).toBe(held ? "turn.completed" : "turn.failed");
+    if (!held) expect(terminal?.payload).toMatchObject({ error: lost });
+  });
+
+  it("does not settle a missing persisted turn with a result another turn proposed", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-missing-other-turn",
+      normalizedSessionId: "normalized-missing-other-turn",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    await first.invoke({
+      id: "call-before-kill",
+      method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.({
+      ...snapshot,
+      semanticResult: { ...snapshot.semanticResult!, turnId: "turn-older" },
+    });
+    expect(recovery).toMatchObject({
+      recovered: false,
+      reason: expect.stringContaining("persisted active turn turn-1 is missing"),
+    });
+  });
+
   it("reconciles a turn completed during transport loss without replacing either session identity", async () => {
     const first = new FakeCodexTransport(
       "driver-thread-loss",

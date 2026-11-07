@@ -69,12 +69,15 @@ describe("retained native cleanup scheduled lifecycle", () => {
     worker = retainedNativeSessionCleanupWork(db, cleanup).register(coordinator, () => admitted);
     await worker.ready;
   }
-  async function flush() {
+  // `interval` is the real-time gap between polls. Each poll advances fake time
+  // by one second, which admits at most one cleanup pass (batch size 1, one
+  // second minimum pass interval), so a long backlog drains one entry per poll.
+  async function flush(interval = 50) {
     await vi.waitFor(async () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(idleWorkSnapshot().active).toBe(0);
       expect(coordinator!.nextWakeAt()).toBeNull();
-    }, { timeout: 15_000 });
+    }, { timeout: 15_000, interval });
   }
   async function quiet(ms = 120_000) {
     const previous = db.$client.options.debug;
@@ -614,7 +617,12 @@ describe("retained native cleanup scheduled lifecycle", () => {
   it("drains a backlog across discovery pages and becomes quiet with the completed history retained", async () => {
     const runIds: string[] = [];
     for (let index = 0; index < 103; index++) runIds.push(await candidate());
-    await start(); await flush();
+    // 103 serial passes at the default 50ms poll spend ~4.7s of a ~5s local run
+    // waiting between polls, and contended CI runners pushed it past 15s. A 5ms
+    // poll drains the same passes in under a second; the wake schedule is set
+    // before a pass releases its idle-work hold, so polling faster cannot
+    // observe a false quiet state.
+    await start(); await flush(5);
     expect(cleanup.mock.calls.map(([input]) => input.runId).sort()).toEqual(runIds.sort());
     expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, companyId))).toHaveLength(103);
     await quiet();
