@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "join_requests_pending_retention_idx" ON "join_requests" USING btree ("updated_at","id") WHERE "join_requests"."status" = 'pending_approval';

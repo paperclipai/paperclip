@@ -278,12 +278,15 @@ describe("App Activity routing (PAP-16302)", () => {
     flushSync(() => costsRoot.unmount());
   });
 
-  it("omits streamlined-only Audit routes when Streamlined UI is disabled", async () => {
-    streamlinedUiState.enabled = false;
-    const root = renderAppAt(container, "/PAP/activity/runs");
-    await waitForRoute(container, "PRODUCTION_PLUGIN_FALLBACK");
-    expect(container.textContent).not.toContain("AUDIT_RUNS");
-    flushSync(() => root.unmount());
+  it.each([true, false])("serves all Audit tab destinations with Streamlined UI set to %s", async (enabled) => {
+    streamlinedUiState.enabled = enabled;
+    for (const section of ["runs", "costs", "budgets", "timeline", "commentary"]) {
+      const path = `/PAP/activity/${section}?agentId=agent-1`;
+      const root = renderAppAt(container, path);
+      await waitForRoute(container, `AUDIT_${section.toUpperCase()}@${path}`);
+      expect(container.textContent).not.toContain("NOT_FOUND");
+      flushSync(() => root.unmount());
+    }
   });
 
   it("does not mount streamlined routes before the experiment setting loads", async () => {

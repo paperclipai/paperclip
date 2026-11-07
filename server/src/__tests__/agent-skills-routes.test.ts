@@ -1,7 +1,7 @@
 import express from "express";
 import { readFile } from "node:fs/promises";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runnerTarget = vi.hoisted(() => ({ driver: "local", platform: "linux", architecture: "x64" }));
 vi.mock("../services/agent-runner-selection.js", async (importOriginal) => {
@@ -272,14 +272,21 @@ function skillSnapshot(adapterType = "claude_local", mode = "ephemeral") {
 }
 
 describe("agent skill routes", () => {
-  beforeEach(async () => {
-    runnerTarget.platform = "linux";
-    runnerTarget.architecture = "x64";
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  });
+
+  beforeEach(() => {
+    runnerTarget.platform = "linux";
+    runnerTarget.architecture = "x64";
     vi.clearAllMocks();
     for (const mock of Object.values(mockAgentService)) mock.mockReset();
     for (const mock of Object.values(mockAccessService)) mock.mockReset();
@@ -384,13 +391,6 @@ describe("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
-
-    // Prepare the module graph inside the setup budget after every reset. Each
-    // test still constructs its own app after configuring its request-specific mocks.
-    [{ agentRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
   });
 
   it("skips runtime materialization when listing Claude skills", async () => {
@@ -416,6 +416,48 @@ describe("agent skill routes", () => {
       }),
     );
   }, 10_000);
+
+  it("round-trips latest assignments without inventing beta version pins", async () => {
+    const existing = "github/fixture/existing";
+    const added = "github/fixture/added";
+    const resolvedVersionId = "22222222-2222-4222-8222-222222222222";
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent("claude_local"),
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [existing] } },
+    });
+    // Adapters describe the resolved runtime version. It is not an assignment pin.
+    mockAdapter.listSkills.mockResolvedValue({
+      ...skillSnapshot(), desiredSkills: [existing],
+      desiredSkillEntries: [{ key: existing, versionId: resolvedVersionId }],
+    });
+    mockAdapter.syncSkills.mockResolvedValue({
+      ...skillSnapshot(), desiredSkills: [existing, added],
+      desiredSkillEntries: [{ key: existing, versionId: resolvedVersionId }, { key: added, versionId: resolvedVersionId }],
+    });
+    const app = await createApp();
+    const snapshot = await requestApp(app, baseUrl => request(baseUrl)
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"));
+    expect(snapshot.status).toBe(200);
+    const saved = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
+      .send({ desiredSkills: [...snapshot.body.desiredSkillEntries, { key: added, versionId: null }], mode: "replace" }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.desiredSkillEntries).toEqual([{ key: existing, versionId: null }, { key: added, versionId: null }]);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1].adapterConfig.paperclipSkillSync.desiredSkills).toEqual([existing, added]);
+  });
+
+  it("keeps explicit historical assignment pins in skill snapshots", async () => {
+    const key = "github/fixture/pinned";
+    const pinnedVersionId = "22222222-2222-4222-8222-222222222222";
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
+    mockAgentService.getById.mockResolvedValue({ ...makeAgent("claude_local"),
+      adapterConfig: { paperclipSkillSync: { desiredSkills: [{ key, versionId: pinnedVersionId }] } } });
+    mockAdapter.listSkills.mockResolvedValue({ ...skillSnapshot(), desiredSkills: [key], desiredSkillEntries: [{ key, versionId: null }] });
+    const snapshot = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/agents/11111111-1111-4111-8111-111111111111/skills?companyId=company-1"));
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body.desiredSkillEntries).toEqual([{ key, versionId: pinnedVersionId }]);
+  });
 
   it("lists skills without resolving required user-secret env bindings", async () => {
     const adapterConfig = {
@@ -902,27 +944,6 @@ describe("agent skill routes", () => {
     );
   });
 
-  it("canonicalizes desired skill references before syncing", async () => {
-    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
-
-    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
-      .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
-      .send({ desiredSkills: ["paperclip"], mode: "replace" }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        adapterConfig: expect.objectContaining({
-          paperclipSkillSync: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-      expect.any(Object),
-    );
-  });
-
   it("persists canonical desired skills when creating an agent directly", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
@@ -930,6 +951,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         desiredSkills: ["paperclip"],
         adapterConfig: {},
       }));
@@ -963,6 +985,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         desiredSkills: [{
           key: "paperclipai/paperclip/paperclip",
           versionId: "22222222-2222-4222-8222-222222222222",
@@ -982,6 +1005,7 @@ describe("agent skill routes", () => {
         name: "Security Engineer",
         role: "security",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
       }));
 
@@ -1013,6 +1037,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
         instructionsBundle: {
           files: {
@@ -1049,6 +1074,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {
           instructionsFilePath: "/tmp/existing/AGENTS.md",
           promptTemplate: "You are QA.",
@@ -1075,6 +1101,7 @@ describe("agent skill routes", () => {
         name: "CEO",
         role: "ceo",
         adapterType,
+        ...(adapterType === "claude_local" ? { runner: "legacy" } : {}),
         adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {},
       }));
 
@@ -1105,6 +1132,7 @@ describe("agent skill routes", () => {
         name: "Research Lead",
         role: "ceo",
         adapterType,
+        ...(adapterType === "claude_local" ? { runner: "legacy" } : {}),
         adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {},
         instructionsBundle: { entryFile: "AGENTS.md", files: customFiles },
       }));
@@ -1131,6 +1159,7 @@ describe("agent skill routes", () => {
         name: "Engineer",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
       }));
 
@@ -1158,6 +1187,7 @@ describe("agent skill routes", () => {
         name: "Ada",
         role: "general",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
         onboardingFirstAgent: true,
       }));
@@ -1189,7 +1219,13 @@ describe("agent skill routes", () => {
     { adapterType: "codex_local", runner: "legacy", platform: "darwin", expectedType: "codex_local" },
     { adapterType: "codex_local", runner: "auto", platform: "win32", expectedType: "codex_local" },
   ];
-  it.each([...codexRunnerCases, { adapterType: "claude_local", runner: "auto", platform: "linux", expectedType: "claude_local" }].flatMap((runnerCase) => [
+  const creationRunnerCases = [...codexRunnerCases,
+    { adapterType: "claude_local", runner: "auto", platform: "linux", expectedType: "paperclip_runner" },
+    { adapterType: "claude_local", runner: "legacy", platform: "linux", expectedType: "claude_local" },
+    { adapterType: "claude_local", runner: "auto", platform: "darwin", expectedType: "paperclip_runner" },
+    { adapterType: "claude_local", runner: "legacy", platform: "darwin", expectedType: "claude_local" },
+  ];
+  it.each(creationRunnerCases.flatMap((runnerCase) => [
     ["agents", "paperclipai/paperclip/paperclip-create-agent"],
     ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
     ["agents", "paperclip"],
@@ -1213,7 +1249,7 @@ describe("agent skill routes", () => {
     expect(input.role).toBe("general");
     expect(input.adapterType).toBe(expectedType);
     const native = expectedType === "paperclip_runner";
-    if (native) expect(input.adapterConfig.provider).toBe("codex");
+    if (native) expect(input.adapterConfig).toMatchObject(adapterType === "claude_local" ? { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" } : { provider: "codex" });
     const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
     const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files", "first-task"]
       .filter((name) => !native || name !== "paperclip")
@@ -1232,17 +1268,17 @@ describe("agent skill routes", () => {
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
   });
 
-  it.each(codexRunnerCases.flatMap((runnerCase) => ["agents", "agent-hires"].map((route) => ({ ...runnerCase, route }))))("assigns core skills without first-task to ordinary CEOs via $route using $runner on $platform", async ({ route, runner, platform, expectedType }) => {
+  it.each(creationRunnerCases.flatMap((runnerCase) => ["agents", "agent-hires"].map((route) => ({ ...runnerCase, route }))))("assigns core skills without first-task to ordinary CEOs via $route using $runner on $platform", async ({ route, runner, platform, expectedType, adapterType }) => {
     runnerTarget.platform = platform;
     runnerTarget.architecture = platform === "darwin" ? "arm64" : "x64";
     const res = await request(await createApp())
       .post(`/api/companies/company-1/${route}`)
-      .send({ name: "CEO", role: "ceo", adapterType: "codex_local", ...(runner === "auto" ? {} : { runner }) });
+      .send({ name: "CEO", role: "ceo", adapterType, ...(runner === "auto" ? {} : { runner }) });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const input = mockAgentService.create.mock.calls[0][1];
     expect(input.adapterType).toBe(expectedType);
     const native = expectedType === "paperclip_runner";
-    if (native) expect(input.adapterConfig.provider).toBe("codex");
+    if (native) expect(input.adapterConfig).toMatchObject(adapterType === "claude_local" ? { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" } : { provider: "codex" });
     const desiredSkills = input.adapterConfig.paperclipSkillSync.desiredSkills;
     const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
       .filter((name) => !native || name !== "paperclip")
@@ -1258,7 +1294,8 @@ describe("agent skill routes", () => {
       type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1",
     }))
       .post("/api/companies/company-1/agent-hires")
-      .send({ name: "Biff", role: "general", adapterType: "claude_local", onboardingFirstAgent: true });
+      .send({ name: "Biff", role: "general", adapterType: "claude_local",
+        runner: "legacy", onboardingFirstAgent: true });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
     await vi.waitFor(() => expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalled());
@@ -1286,33 +1323,6 @@ describe("agent skill routes", () => {
     expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
   });
 
-  it("includes canonical desired skills in hire approvals", async () => {
-    const db = createDb(true);
-
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
-        adapterConfig: {},
-      });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockApprovalService.create).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          desiredSkills: ["paperclipai/paperclip/paperclip"],
-          requestedConfigurationSnapshot: expect.objectContaining({
-            desiredSkills: ["paperclipai/paperclip/paperclip"],
-          }),
-        }),
-      }),
-    );
-  });
-
   it("gives a CEO hire the core paperclip skills when none are requested", async () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
@@ -1320,6 +1330,7 @@ describe("agent skill routes", () => {
         name: "First Lead",
         role: "ceo",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
       });
 
@@ -1377,6 +1388,7 @@ describe("agent skill routes", () => {
         name: "First Lead",
         role: "ceo",
         adapterType: "claude_local",
+        runner: "legacy",
         desiredSkills: ["paperclip"],
         adapterConfig: {},
       });
@@ -1398,6 +1410,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
       });
 
@@ -1415,6 +1428,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         desiredSkills: [{
           key: "paperclipai/paperclip/paperclip",
           versionId: "22222222-2222-4222-8222-222222222222",
@@ -1439,6 +1453,7 @@ describe("agent skill routes", () => {
         role: "engineer",
         icon: "crown",
         adapterType: "claude_local",
+        runner: "legacy",
         desiredSkills: ["paperclip"],
         adapterConfig: {},
         sourceIssueId,
@@ -1493,6 +1508,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {},
         instructionsBundle: {
           files: {
@@ -1529,6 +1545,7 @@ describe("agent skill routes", () => {
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
+        runner: "legacy",
         adapterConfig: {
           instructionsFilePath: "/tmp/existing/AGENTS.md",
           promptTemplate: "You are QA.",

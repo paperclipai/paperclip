@@ -5,9 +5,70 @@ import {
   evaluateNativeControllerTakeover,
   evaluateNativeProviderProcesses,
   nextNativeProviderAttempt,
+  proveNativeLocalRunnerStopped,
 } from "./native-restart-recovery.js";
 
+describe("local runner stop proof", () => {
+  const startedAt = new Date("2026-11-06T17:58:54.000Z");
+  const base = { processPid: 72454, processGroupId: 72454, processStartedAt: startedAt };
+  const probe = (alive: number[], starts: Record<number, Date | null>, groups: number[] = []) => ({
+    isProcessAlive: (pid: number) => alive.includes(pid),
+    isProcessGroupAlive: (group: number) => groups.includes(group),
+    readProcessStartedAt: async (pid: number) => starts[pid] ?? null,
+  });
+
+  it.each([
+    ["the runner and its group exited", base, probe([], {}), { stopped: true }],
+    ["the runner PID now belongs to another process", base,
+      probe([72454], { 72454: new Date(startedAt.getTime() + 60_000) }), { stopped: true }],
+    ["the recorded runner is alive", base, probe([72454], { 72454: startedAt }),
+      { stopped: false, reason: "runner_process_alive" }],
+    ["the live PID start time is unknown", base, probe([72454], {}),
+      { stopped: false, reason: "runner_process_identity_unverifiable" }],
+    ["the runner group is alive", base, probe([], {}, [72454]),
+      { stopped: false, reason: "runner_process_group_alive" }],
+    ["no runner PID was recorded", { ...base, processPid: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["no runner start time was recorded", { ...base, processStartedAt: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["no runner process group was recorded", { ...base, processGroupId: null }, probe([], {}),
+      { stopped: false, reason: "runner_process_identity_missing" }],
+    ["a stop receipt proved the runner absent", { ...base, processStartedAt: null, runnerStopRecorded: true },
+      probe([], {}), { stopped: true }],
+  ] as const)("decides when %s", async (_case, identity, checks, expected) => {
+    await expect(proveNativeLocalRunnerStopped({ ...identity, ...checks })).resolves.toEqual(expected);
+  });
+
+  it("refuses while a recorded provider process is alive", async () => {
+    const providerStartedAt = new Date("2026-11-06T17:58:56.000Z");
+    await expect(proveNativeLocalRunnerStopped({ ...base,
+      providerProcesses: [{ pid: 72460, processStartedAt: providerStartedAt }],
+      ...probe([72460], { 72460: providerStartedAt }) })).resolves.toEqual({ stopped: false, reason: "provider_process_alive" });
+  });
+});
+
 describe("native restart recovery classification", () => {
+  it.each([false, true])("recognizes verified staged remote evidence with target snapshot=%s", hasCheckpoint => {
+    const evidence = { remoteSandbox: true, runnerPidAlive: false, runnerGroupAlive: false,
+      processStartMatches: false, hasCheckpoint, hasProviderEvidence: false };
+    expect(classifyNativeRunnerRecoveryEvidence(evidence).claimKind).toBeNull();
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, stagedAttachmentVerified: true })).toEqual({
+      claimKind: "reattach_remote_runner", reason: "staged_remote_attachment_requires_sandbox_verification",
+    });
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, stagedAttachmentVerified: true,
+      checkpointFailed: true }).claimKind).toBeNull();
+    expect(classifyNativeRunnerRecoveryEvidence({ ...evidence, remoteSandbox: false,
+      stagedAttachmentVerified: true }).claimKind).toBe(hasCheckpoint ? null : "bootstrap_incomplete");
+  });
+  it.each([true, false])("uses the remote fenced lease instead of the old container PID (live=%s)", async live => {
+    const now = new Date();
+    const probe = vi.fn(() => { throw new Error("must not probe another container's PID"); });
+    const result = await evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true,
+      owner: { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + (live ? 1000 : -1000)),
+        controllerPid: process.pid, controllerProcessStartedAt: now }, isProcessAlive: probe });
+    expect(result.allowed).toBe(!live);
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
     const evidence = {
       runnerPidAlive: false,
@@ -206,6 +267,13 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
+    await expect(evaluateNativeControllerTakeover({
+      owner: owner({ leaseOwner: null, leaseExpiresAt: null }), now, requireStoppedController: true,
+      isProcessAlive: () => alive, readProcessStartedAt: async () => recordedStart,
+    })).resolves.toEqual({ allowed: !alive, reason: alive ? "controller_still_alive" : "controller_process_dead" });
   });
 
   it("takes over a recycled controller PID", async () => {

@@ -6,27 +6,48 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":30}
 
 People find work that needs their attention, distinguish unread activity from required decisions, archive handled items, and search across the company.
 
+Feature ID: `inbox-search`.
+
 Implementation: [inbox](../../ui/src/pages/Inbox.tsx), [decisions](../../ui/src/pages/WhatNeedsMe.tsx), [search](../../ui/src/pages/Search.tsx).
 
 Agent access: [companion](../agent-access-map/inbox-search.md).
 
 ## Sub-features
 
-- `views`: use Mine, Recent, Unread, Blocked, and broader task views.
-- `triage`: read or archive attention items without pretending the underlying task is complete.
-- `decisions`: open the source of a decision and act in the right context.
-- `search`: query company work and follow a result to its original record.
-- `toasts`: receive live task notifications only for personal participation or explicit mentions.
+- `views`: `inbox-search/views` — use Mine, Recent, Unread, Blocked, and broader task views.
+- `triage`: `inbox-search/triage` — read or archive attention items without pretending the underlying task is complete.
+- `decisions`: `inbox-search/decisions` — open the source of a decision and act in the right context.
+- `search`: `inbox-search/search` — query company work and follow a result to its original record.
+- `toasts`: `inbox-search/toasts` — receive live task notifications only for personal participation or explicit mentions.
 
 ## How to get to it (user POV)
 
 ### `inbox`
 
-Use Inbox links or the corresponding task views when the combined list is enabled.
+In Coordinator, open Tasks → Mine, Unread, Blocked, Recent, or Everything. Old `/inbox/*` links redirect to the matching task view. Classic uses Inbox links or the task views when its combined list is enabled.
 
 ### `decisions`
 
 Open `/decisions`, then a queue at `/decisions/queues/:key` and its source item.
+
+In Coordinator, `/decisions` is **Inbox**. Pending cards use the existing attention feed and canonical
+resolvers. **Tasks → Needs attention** projects the same feed as distinct tasks.
+Search, filter by agent/project, sort, and group by task/agent/project apply to
+both open decisions and the visible Recent Decisions receipts. Successful
+resolutions resize into compact receipts while the same contained Gather Light
+effect used for task creation runs concurrently. The receipt stays in its card
+position until that treatment finishes, then settles under **Recent Decisions**.
+Motion follows the saved history result; failed saves retain the actionable card,
+reduced motion settles immediately, and revisiting history does not replay it. The initial
+24-hour display window is an experimental assumption, not data deletion.
+Resolving an artifact decision does not itself complete its task. If the task
+remains in review without a maintained reviewer or continuation, its separate
+canonical stalled-review item stays in Inbox and Tasks → Needs attention.
+Coordinator presents the existing recovery actions with **Mark task done** as
+the task-level verdict, distinct from the saved artifact receipt.
+
+Open **Decision history** on this surface for the paginated history sidebar;
+it merges answered questions and confirmations with Decisions-v1 outcomes.
 
 ### `search`
 
@@ -43,14 +64,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 ### `inbox`
 
-Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
+Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. [Coordinator Tasks browser checks](../../tests/e2e/coordinator-inbox-views.spec.ts) exercise personal views, read state, archive, keyboard undo, mobile swipes, and saved columns.
 
 Automated: [Issue service regressions](../../server/src/__tests__/issues-service.test.ts)
 cover exclusion of historical automatic read cleanup from user participation,
 unread counts, and activity timestamps while retaining explicit user decisions
 and audit history.
 
-Manual: Seed a scheduled routine execution owned by the current human. It stays out of Mine until an existing participation rule admits it. Verify comments, assignment, and manual routine runs admit automated tasks while reading alone does not. Inbox discovery and Blocked hide unrelated automation by default; the **show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
+Automated: [Source regressions](../../server/src/__tests__/issues-creation-visibility.test.ts) cover channel attribution, imported comments, direct participation, addressed requests, unread results, and access checks. [Routine regressions](../../server/src/__tests__/routines-service.test.ts) cover fresh, coalesced, and skipped manual runs.
+The source regressions also create an addressed request through the service for a
+human assignee. They check unread lists, flags, and counts, plus exclusion of
+historical questions and closed requests while preserving authorization requests.
+
+Manual: Seed GitHub, Slack, scheduled routine, and manual routine tasks. Attribution, imported comments, and reading alone keep them outside Mine. Direct board/API comments, human assignment, and open addressed requests admit them. Resolve the request and check that another valid reason is needed. Inbox discovery and Blocked hide unrelated automation by default; the **Show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
 
 Manual: Read an unread task, return to Unread, archive a handled item, and reload. Verify personal triage state changes while task status stays correct. Switch users and companies to check isolation.
 
@@ -60,11 +86,40 @@ participation, while the cleanup remains in activity history. Record an explicit
 user recovery decision on a separate task and verify it still counts. This
 browser journey remains manual.
 
+Cold-open verification: load Mine with its snapshot response delayed while
+approvals resolve. Only the stable list placeholder should appear until the
+initial sources settle; a failed-run row must not jump when tasks arrive. Release
+visible-row details separately and compare row/title bounds. Mine reads its own
+100-row snapshot with parent/run context; sidebar badges use the count endpoint.
+The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
+barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
+cover unread counts. Browser timing and layout proof remain separate from these tests.
+
 ### `decisions`
 
 Automated: [decision queues](../../server/src/__tests__/decision-queues-routes.test.ts) covers route behavior. End-to-end queue-to-source navigation is manual.
 
 Manual: Open a pending decision, follow its source, resolve it through the supported control, and reload the queue. Confirm it retires only after the decision persisted and unrelated pending items remain.
+
+Coordinator regression sources: [canonical history](../../server/src/__tests__/decision-history.test.ts)
+exercises real PostgreSQL cross-source pagination, answered-question retention,
+company/private-task isolation, and private v1 targets.
+[Attention service regressions](../../server/src/__tests__/attention-service.test.ts)
+cover pending question forms and confirmations in persistent agent chats, removal
+after an answer with retained history, and company/task-visibility/addressee checks.
+Idle chats without structured requests remain absent. The
+[Inbox component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
+checks that a chat-sourced canonical question reaches its original resolver and context.
+It also checks simultaneous resize/light and delayed movement to Recent Decisions.
+[Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
+cover reduced-motion settlement and returning to a resolved card without replay.
+The [decision-motion stories](../../ui/storybook/stories/design-proposals/coordinator-decision-motion.stories.tsx)
+exercise real Inbox/resolver components with isolated approval, question, and failed-save responses.
+[Projection helpers](../../ui/src/lib/coordinator-attention.test.ts) cover distinct
+pending task membership and presentation-only recency decay. Browser verification
+must additionally approve copy, approve a visual, and answer a question; confirm
+three retained receipts, task/chat consistency, resize/collapse motion, and exact
+task context on receipt click. Turning the setting off restores the classic surface.
 
 ### `search`
 
@@ -101,6 +156,7 @@ after switching company/account to verify suppression and isolation.
 
 ## Gotchas
 
+- [Command-palette and keyboard entry points](./navigation-preferences.md#palette-shortcuts) also reach search. Verify quick-filter/query handoff separately from opening the full search route.
 - Notifications do not grant task access or change Mine membership.
 - A feature-map recipe and mocked UI tests do not prove live multiplayer behavior.
 
@@ -116,12 +172,16 @@ after switching company/account to verify suppression and isolation.
 
 #### `views`
 
+Capability ID: `inbox-search/views`.
+
 Scope: ui
 Storybook: Mine/Recent/Unread/Blocked and broader task views; combined versus standalone host; loading/empty/error/filter states.
 Production: Use persisted personal participation/read data; verify scoped counts and list navigation/reload; automatic read cleanup must not create Mine membership.
 Sources: Source: [Inbox.tsx](../../ui/src/pages/Inbox.tsx), [Issues.tsx](../../ui/src/pages/Issues.tsx). Tests: [Inbox.test.tsx](../../ui/src/pages/Inbox.test.tsx), [Issues.test.tsx](../../ui/src/pages/Issues.test.tsx), [issues-service.test.ts](../../server/src/__tests__/issues-service.test.ts)
 
 #### `toasts`
+
+Capability ID: `inbox-search/toasts`.
 
 Scope: ui
 Storybook: Eligible live task toast, explicit mention, quiet unrelated event, own-action/visible-task suppression, dedupe and company/account switch.

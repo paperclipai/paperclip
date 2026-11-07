@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -93,6 +93,52 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await stopDb?.();
   });
 
+  it("refuses a plugin Runner-task run without a managed AI connection before any plugin call", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
+    const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);
+    await db.insert(companies).values({ id: companyId, name: "Task fixture", issuePrefix: "TASK", defaultResponsibleUserId: "task-user" });
+    await grantResponsibleUser(companyId, "task-user");
+    await db.insert(projects).values({ id: projectId, companyId, name: "Task fixture", status: "active",
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } });
+    const pluginOnlyCwd = path.join(root, "plugin-only", "project");
+    await db.insert(projectWorkspaces).values([
+      { id: sourceId, companyId, projectId, name: "Primary", cwd: pluginOnlyCwd, isPrimary: true },
+      { companyId, projectId, name: "Extra", cwd: null, repoUrl: "/unavailable-controller-repository.git", isPrimary: false },
+    ]);
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Tasks", description: "Task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register", "workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+        workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
+        entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
+    await db.insert(environments).values({ id: environmentId, name: "Tasks", driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {},
+      defaultEnvironmentId: environmentId, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId: sourceId, title: "Task-only dispatch", status: "in_progress",
+      assigneeAgentId: agentId, issueNumber: 1, identifier: "TASK-1" });
+    const call = vi.fn(async (_id: string, method: string) => { throw new Error(`Unexpected task provider call: ${method}`); });
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager, nativeSessionBackendFactory: entered });
+    heartbeats.push(heartbeat);
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => { expect((await heartbeat.getRun(run!.id))?.status).toBe("failed"); }, { timeout: 10_000 });
+    await heartbeat.drainActiveRunExecutions();
+    const failed = await heartbeat.getRun(run!.id);
+    expect(failed).toMatchObject({ errorCode: "configuration_incomplete", error: expect.stringContaining("requires a managed AI connection"),
+      resultJson: { configurationIncomplete: { reason: "ai_connection_required", actionUrl: `/agents/${agentId}/runtime` } } });
+    // No workspace, lease, task, or native Runner work starts.
+    expect(call).not.toHaveBeenCalled();
+    expect(entered).not.toHaveBeenCalled();
+    expect(adapterExecute).not.toHaveBeenCalled();
+    await expect(stat(pluginOnlyCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
   it("acquires plugin environment leases through the heartbeat execution path", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -180,7 +226,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     } as any);
     await db.insert(environments).values({
       id: environmentId,
-      companyId,
       name: "Plugin Sandbox",
       driver: "plugin",
       status: "active",
@@ -224,6 +269,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     }, { timeout: 5_000 });
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentAcquireLease", {
+      creationOperationId: expect.any(String),
       driverKey: "sandbox",
       companyId,
       environmentId,
@@ -473,7 +519,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       expect(latestOverride?.status).toBe("succeeded");
     }, { timeout: 5_000 });
 
-    const acquireCalls = workerManager.call.mock.calls
+    const acquireCalls = vi.mocked(workerManager.call).mock.calls
       .filter(([, method]) => method === "environmentAcquireLease");
     const acquirePayloads = acquireCalls.map(([, , payload]) => payload);
 
@@ -593,7 +639,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.insert(environments).values([
       {
         id: oldEnvironmentId,
-        companyId,
         name: "QA SSH",
         driver: "plugin",
         status: "active",
@@ -609,7 +654,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       },
       {
         id: newEnvironmentId,
-        companyId,
         name: "QA E2B",
         driver: "plugin",
         status: "active",
@@ -691,6 +735,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     }, { timeout: 5_000 });
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentAcquireLease", {
+      creationOperationId: expect.any(String),
       driverKey: "sandbox",
       companyId,
       environmentId: newEnvironmentId,
