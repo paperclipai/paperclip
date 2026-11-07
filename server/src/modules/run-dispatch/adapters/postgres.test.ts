@@ -1142,6 +1142,49 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       });
     });
 
+    it("keeps a scheduled retry that carries a comment admitted through unresolved blockers", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const blockerId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "todo", assigneeAgentId: agentId });
+      await seedIssue({ companyId, issueId: blockerId, status: "in_review" });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+
+      // A transient-failure retry was waiting when a board comment arrived.
+      // Enqueue admitted the comment as a bounded interaction and merged it
+      // into the retry, so suppressing the retry would drop the comment.
+      const commentId = randomUUID();
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          source: "issue.comment",
+          wakeReason: "issue_commented",
+          commentId,
+          wakeCommentId: commentId,
+          wakeCommentIds: [commentId],
+          retryReason: "transient_failure",
+          dependencyBlockedInteraction: true,
+          unresolvedBlockerIssueIds: [blockerId],
+        },
+      });
+      const result = await adapter.evaluateScheduledRetryGate({
+        runId,
+        companyId,
+        retryReasonOverride: "transient_failure",
+        now: new Date(),
+      });
+
+      expect(result).toEqual({ allowed: true });
+    });
+
     it("maps a changed review participant into a blocked scheduled-retry gate decision", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const reviewerAgentId = randomUUID();

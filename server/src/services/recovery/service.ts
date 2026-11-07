@@ -2982,6 +2982,9 @@ export function recoveryService(
 
   async function resolveContinuationWaitingOnReview(
     issue: RecoveryIssue,
+    cause:
+      | "continuation_waiting_on_review"
+      | "dispatch_cancelled_by_dependencies" = "continuation_waiting_on_review",
   ) {
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
@@ -3009,8 +3012,11 @@ export function recoveryService(
       issue.id,
       `This task is waiting on ${waitingOn} to finish. ` +
         "It will continue automatically when that work is done — there's nothing you need to do. " +
-        "(It was paused because the latest run reported it was waiting for review/approval; " +
-        "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
+        (cause === "dispatch_cancelled_by_dependencies"
+          ? "(Its latest run was not started because those blockers are still open; " +
+            "Paperclip recorded that as a normal dependency wait instead of flagging it as stuck.)"
+          : "(It was paused because the latest run reported it was waiting for review/approval; " +
+            "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)"),
       {},
       {
         authorType: "system",
@@ -3026,7 +3032,7 @@ export function recoveryService(
                 {
                   type: "key_value",
                   label: "Cause",
-                  value: "continuation_waiting_on_review",
+                  value: cause,
                 },
                 {
                   type: "key_value",
@@ -3057,7 +3063,10 @@ export function recoveryService(
         identifier: issue.identifier,
         status: "blocked",
         previousStatus: issue.status,
-        source: "recovery.reconcile_continuation_waiting_on_review",
+        source:
+          cause === "dispatch_cancelled_by_dependencies"
+            ? "recovery.reconcile_dispatch_cancelled_by_dependencies"
+            : "recovery.reconcile_continuation_waiting_on_review",
         blockedByIssueIds,
       },
     });
@@ -4547,6 +4556,7 @@ export function recoveryService(
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
+      dependencyWaitResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
@@ -4789,6 +4799,27 @@ export function recoveryService(
       ) {
         result.skipped += 1;
         continue;
+      }
+
+      // Dispatch refused the latest run because the issue still has open
+      // blockers. That is a known wait, not a lost execution path: record it
+      // as one so the blocker resolution wakes the assignee, instead of
+      // retrying into the same refusal or asking the board to decide.
+      if (
+        issue.status !== "in_review" &&
+        latestRun?.agentId === agentId &&
+        latestRun.status === "cancelled" &&
+        latestRun.errorCode === "issue_dependencies_blocked"
+      ) {
+        const resolved = await resolveContinuationWaitingOnReview(
+          issue,
+          "dispatch_cancelled_by_dependencies",
+        );
+        if (resolved) {
+          result.dependencyWaitResolved += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
       }
 
       const participantLatestRunForRecovery =

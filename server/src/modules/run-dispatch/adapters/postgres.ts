@@ -477,6 +477,12 @@ export function createPostgresRunDispatchAdapter(
       : null;
     if (isBlocked()) return { agentFound: true, facts };
 
+    // A comment wake that coalesced into this retry was admitted through the
+    // blockers as a bounded interaction. Claim lets that run through, so the
+    // retry gate must too, or the comment is dropped with the retry.
+    if (allowsIssueInteractionWake(input.contextSnapshot, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS)) {
+      return { agentFound: true, facts };
+    }
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
     facts.dependenciesBlocked =

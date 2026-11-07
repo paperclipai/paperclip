@@ -7865,6 +7865,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  it.each([
+    { status: "todo" as const, retryReason: "assignment_recovery" as const },
+    { status: "todo" as const, retryReason: null },
+    { status: "in_progress" as const, retryReason: null },
+  ])(
+    "turns a $status run cancelled by unresolved blockers (retry: $retryReason) into a dependency wait, not a board recovery",
+    async ({ status, retryReason }) => {
+      const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+        status,
+        runStatus: "cancelled",
+        retryReason,
+        runErrorCode: "issue_dependencies_blocked",
+        runError: "Scheduled retry suppressed because issue dependencies are still blocked",
+      });
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+      const blockerId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerId,
+        companyId,
+        title: "Blocking issue in review",
+        status: "in_review",
+        priority: "medium",
+        issueNumber: 20,
+        identifier: `${issuePrefix}-20`,
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.escalated).toBe(0);
+      expect(result.dispatchRequeued).toBe(0);
+      expect(result.issueIds).toEqual([issueId]);
+      const blocked = await selectRecoveryIssueById(issueId);
+      expect(blocked?.status).toBe("blocked");
+      expect(blocked?.assigneeAgentId).toBe(agentId);
+      expect(await sourceBlockerIssueIds(companyId, issueId)).toEqual([blockerId]);
+      expect(await selectStrandedRecoveryIssuesForCompany(companyId)).toHaveLength(0);
+      expect(
+        await db
+          .select({ id: issueRecoveryActions.id })
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+      ).toHaveLength(0);
+      const comments = await selectRecoveryCommentsForIssue(issueId);
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain(`${issuePrefix}-20`);
+      expect(comments[0]?.body).toContain("continue automatically");
+      expect(comments[0]?.body).not.toContain("review/approval");
+    },
+  );
+
   it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
