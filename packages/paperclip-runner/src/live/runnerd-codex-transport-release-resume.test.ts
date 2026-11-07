@@ -75,7 +75,7 @@ async function nativeWire(port: number, path: string): Promise<PrpWireConnection
   });
 }
 
-it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline"] as const)(
+it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close"] as const)(
   "releases and resumes the native Codex source before attachment (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "runner-release-resume-"));
     const acpx = mode === "acpx cache adoption";
@@ -102,12 +102,15 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
     let claimantRunId = identity.runId;
     let handle: RunnerProcessHandle | undefined;
     let loseReply = mode === "lost claim reply";
-    let closeCheckpoint = 0, claimAccepted = false;
+    let closeCheckpoint = 0, claimAccepted = false, adopting = false;
     let acceptClaim!: () => void;
     const acceptedClaim = new Promise<void>(resolve => { acceptClaim = resolve; });
     let releaseClaim!: () => void;
     const claimReceipt = new Promise<void>(resolve => { releaseClaim = resolve; });
     let expireClock: ReturnType<typeof vi.spyOn> | undefined;
+    let holdMeasuredTurn = false, enterMeasuredTurn!: () => void, finishMeasuredTurn!: () => void;
+    const measuredTurn = new Promise<void>(resolve => { enterMeasuredTurn = resolve; });
+    const heldMeasuredTurn = new Promise<void>(resolve => { finishMeasuredTurn = resolve; });
     const sockets = new Set<PrpWireConnection>();
     const registration = async (core: DurablePrpControlPlane, source = core.store.state.identity) => {
       if ((mode === "late claim reply" || mode === "held past deadline") && claimAccepted) throw new Error("Fixture source authentication started after expiry");
@@ -130,7 +133,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
           }
           throw new Error("Fixture source authentication timed out");
         },
-        checkpoint: async (settlement: "settled" | "unsettled") => {
+        checkpoint: mode === "no cleanup callback" || mode === "deferred turn after close" || (mode === "adoption no cleanup callback" && adopting) || (mode === "resume no cleanup callback" && claimAccepted) ? undefined : async (settlement: "settled" | "unsettled") => {
           expect(settlement).toBe("unsettled");
           closeCheckpoint += 1;
           await fixture.close();
@@ -172,6 +175,10 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root), prpIdentity: identity,
       get authorityRunId() { return claimantRunId; }, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
       runnerProcessLauncher: launch, controlPlaneRegistration: registration, releaseResume: pair,
+      ...((mode === "release admission" || mode === "deferred turn after close") ? { measureOperation: async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+        if (phase === "runner.transport.turn_start" && holdMeasuredTurn) { enterMeasuredTurn(); await heldMeasuredTurn; }
+        return work();
+      } } : {}),
       ...(acpx ? { provider: "acpx" as const, acpxAgent: "claude" as const, acpxRuntimeDirectory: join(root, "acpx"),
         prepareLaunch: async (input: RunnerProviderLaunchRequirements) => ({ configurationId: `fixture-${input.identity.runId}`, requirementsDigest: runnerLaunchRequirementsDigest(input),
           provider: createRunnerProviderLaunch(input, { options: {}, root, cwd: root, codexHome: root, codexCommand: "", providerNodeCommand: sidecar, opencodeProxyPath: "", acpxSidecarPath: sidecarScript }) }) } : {}) };
@@ -200,6 +207,19 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       const opened = await bundle.transport.request("thread/start", { cwd: root, dynamicTools: [], ...(acpx ? { model: "explicit-source-model" } : {}) });
       const threadId = String((opened.thread as { id: string }).id);
       await complete();
+      if (mode === "deferred turn after close") {
+        holdMeasuredTurn = true;
+        const starting = bundle.transport.request("turn/start", { input: [{ type: "text", text: "Must not start after close" }] });
+        void starting.catch(() => undefined);
+        await measuredTurn;
+        await bundle.transport.close();
+        const commands = authority!.store.state.commands.length;
+        expect(handle!.isExitConfirmed?.()).toBe(true);
+        finishMeasuredTurn();
+        await expect(starting).rejects.toThrow("closed");
+        expect(authority!.store.state.commands).toHaveLength(commands);
+        return;
+      }
       if (mode === "cached") {
         const core = authority!, events = core.store.state.committedEvents, last = events.at(-1)!;
         for (const [eventType, payload] of [["turn.started", {}], ["session.goal.updated", { goal: { status: "active" } }],
@@ -215,6 +235,46 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         try { expect(await bundle.transport.release!()).toBe(false); }
         finally { unsettled.mockRestore(); }
         expect(pair.release).not.toHaveBeenCalled();
+        await complete();
+      }
+      if (mode === "no cleanup callback") {
+        const released = await bundle.transport.release!();
+        if (released === false) await complete();
+        await expect(bundle.transport.close()).resolves.toBeUndefined();
+        expect(released).toBe(false);
+        expect(pair.release).not.toHaveBeenCalled();
+        expect(closeCheckpoint).toBe(0);
+        expect(handle!.isExitConfirmed?.()).toBe(true);
+        return;
+      }
+      if (mode === "release admission") {
+        holdMeasuredTurn = true;
+        const earlierStart = bundle.transport.request("turn/start", { input: [{ type: "text", text: "Deferred measured turn" }] });
+        void earlierStart.catch(() => undefined);
+        await measuredTurn;
+        const core = authority!, originalFlush = core.flushCheckpoint.bind(core);
+        let entered!: () => void, finish!: () => void;
+        const flushing = new Promise<void>(resolve => { entered = resolve; });
+        const held = new Promise<void>(resolve => { finish = resolve; });
+        const flush = vi.spyOn(core, "flushCheckpoint").mockImplementationOnce(async () => {
+          entered(); await held; await originalFlush();
+        });
+        const releasing = bundle.transport.release!();
+        try {
+          await flushing;
+          const commands = core.store.state.commands.length;
+          finishMeasuredTurn();
+          await expect(earlierStart).rejects.toThrow("run_attachment_in_progress");
+          for (const method of ["thread/read", "thread/resume", "thread/turns/list", "thread/goal/get"]) {
+            await expect(bundle.transport.request(method, { threadId })).rejects.toThrow("run_attachment_in_progress");
+          }
+          await expect(bundle.transport.request("initialize", {})).resolves.toEqual({ user: {} });
+          await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: "Must stay fenced" }] }))
+            .rejects.toThrow("run_attachment_in_progress");
+          await expect(bundle.transport.request("thread/goal/set", { threadId, objective: "Must stay fenced" }))
+            .rejects.toThrow("run_attachment_in_progress");
+          expect(core.store.state.commands).toHaveLength(commands);
+        } finally { finishMeasuredTurn(); finish(); flush.mockRestore(); await Promise.allSettled([earlierStart, releasing]); }
       }
       await vi.waitFor(async () => expect(await bundle.transport.release!()).toEqual(identity), { timeout: 5_000 });
       if (mode === "cached") {
@@ -230,8 +290,9 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       await expect(bundle.transport.request("turn/start", { input: [] })).rejects.toThrow("release_resume_pending");
       await expect(bundle.transport.request("thread/resume", { threadId })).rejects.toThrow("release_resume_pending");
       claimantRunId = "claimant-run";
-      if (mode === "cache adoption" || mode === "acpx cache adoption") {
+      if (mode === "cache adoption" || mode === "acpx cache adoption" || mode === "adoption no cleanup callback") {
         await bundle.transport.detachControllerForRestart!();
+        adopting = true;
         bundle = createCapabilityRunnerdCodexTransport({ ...options, get authorityRunId() { return claimantRunId; },
           releaseResume: { ...pair, releasedSource: identity },
           adoptExistingRunner: { pid: handle!.child.pid ?? null, processGroupId: handle!.processGroupId ?? null,
@@ -248,6 +309,15 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         const recovered = await driver.recoverSession({ driverKind: acpx ? "acpx_runtime" : "codex_app_server",
           driverSessionId: threadId, providerSessionId: original.sessionId, providerIdentity: original.providerIdentity,
           runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
+        if (mode === "adoption no cleanup callback") {
+          expect(recovered.recovered).toBe(false);
+          expect(recovered.reason).toContain("released_cleanup_unavailable");
+          expect(pair.resume).not.toHaveBeenCalled();
+          await bundle.transport.close();
+          expect(closeCheckpoint).toBe(0);
+          expect(handle!.isExitConfirmed?.()).toBe(false);
+          return;
+        }
         expect(recovered.recovered, recovered.reason).toBe(true);
         recoveredSession = recovered.session;
         expect(request.mock.calls.map(([method]) => method)).toEqual(expect.arrayContaining(["thread/read", "thread/turns/list", "thread/resume"]));
@@ -282,13 +352,13 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         releaseClaim();
         await expect(attaching).rejects.toThrow("closed");
         await closing;
-      } else if (mode === "unavailable" || mode === "expired ticket" || mode === "late claim reply") {
-        await expect(attaching).rejects.toThrow(mode === "unavailable" ? "reuse_unavailable" : "reconciliation_expired");
+      } else if (mode === "unavailable" || mode === "expired ticket" || mode === "late claim reply" || mode === "resume no cleanup callback") {
+        await expect(attaching).rejects.toThrow(mode === "unavailable" ? "reuse_unavailable" : mode === "resume no cleanup callback" ? "released_cleanup_unavailable" : "reconciliation_expired");
         expireClock?.mockRestore(); expireClock = undefined;
         await bundle.transport.close();
       } else await attaching;
       expect(new Set(claimTicketDigests).size).toBe(1);
-      if (["unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline"].includes(mode)) {
+      if (["unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "resume no cleanup callback"].includes(mode)) {
         expect(pair.resume).toHaveBeenCalledOnce();
         expect(authority!.store.state.identity.runId).toBe(identity.runId);
         expect(launch).toHaveBeenCalledOnce();
@@ -310,7 +380,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
       expect(handle!.isExitConfirmed?.()).toBe(true);
     } finally {
       if (mode === "held past deadline") vi.useRealTimers();
-      expireClock?.mockRestore(); releaseClaim();
+      expireClock?.mockRestore(); releaseClaim(); finishMeasuredTurn();
       try {
         for (const socket of sockets) socket.close();
         await fixture.close();

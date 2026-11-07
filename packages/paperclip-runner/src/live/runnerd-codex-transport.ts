@@ -3974,6 +3974,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     };
   }
 
+  #assertRunWorkAdmission(commandType?: string): void {
+    const held = this.#attachmentOperation !== null || (commandType !== undefined && this.#releaseEpisode !== null);
+    if (this.options.releaseResume && held && (commandType === undefined || !isRunnerRecoveryMaintenanceCommand(commandType))) {
+      throw new Error("native_runner_run_attachment_in_progress");
+    }
+  }
+
   #retainsSourceInputs(): boolean {
     const identity = this.#eventIdentity ?? this.options.prpIdentity;
     return this.#authorityRunId() !== undefined && identity !== undefined && identity !== null
@@ -3990,6 +3997,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   ): Promise<Record<string, unknown>> {
     if (this.#closed) throw new Error("PRP Codex transport is closed");
     this.#throwIfFailed();
+    if (!["initialize", "collaborationMode/list"].includes(method)) this.#assertRunWorkAdmission();
     if (this.#releaseEpisode && !(this.#releaseEpisode.claimed && ["initialize", "collaborationMode/list", "thread/read", "thread/resume", "thread/turns/list", "thread/items/list"].includes(method))) {
       throw new Error("native_runner_release_resume_pending");
     }
@@ -4393,6 +4401,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     this.#throwIfFailed();
     if (!core || !this.#startupComplete) throw new Error("native_runner_release_unavailable");
+    if (!this.#controlPlaneCheckpoint) return false;
     if (!this.#releaseEpisode) {
       const knownBusy = () => {
         const events = core.store.state.committedEvents;
@@ -4426,7 +4435,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   release(): Promise<DurableRecoveryIdentity | false> {
     if (this.#attachmentOperation) return Promise.reject(new Error("native_runner_run_attachment_in_progress"));
-    const operation = this.#releaseSettledRunner();
+    const operation = Promise.resolve().then(() => this.#releaseSettledRunner());
     const pending = operation.then(() => {});
     this.#attachmentOperation = pending;
     void pending.catch(() => undefined);
@@ -4494,8 +4503,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const core = this.#core!;
     if (core.activeRunnerConnectionCount() !== 1) {
       const registration = await this.options.controlPlaneRegistration?.(core, this.#releaseEpisode!.source);
-      this.#assertStartupOpen();
-      this.#controlPlaneCheckpoint = registration?.checkpoint ?? null;
+      try {
+        this.#assertStartupOpen();
+        if (!registration?.checkpoint) throw new Error("native_runner_released_cleanup_unavailable");
+      } catch (error) {
+        await Promise.resolve().then(() => registration?.release()).catch(() => undefined);
+        throw error;
+      }
+      this.#controlPlaneCheckpoint = registration.checkpoint;
       this.#controlPlaneRelease = registration?.release ?? null;
       await registration?.activate?.();
       await this.#awaitRegistrationReady(registration?.ready);
@@ -6548,6 +6563,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (adoptedRunner && this.options.releaseResume?.releasedSource) {
       const source = this.options.releaseResume.releasedSource;
       if (!recoveryIdentityMatches(source, core.store.state.identity)) throw new Error("native_runner_released_source_mismatch");
+      if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
       this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
     }
@@ -6897,6 +6913,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #startTurnWork(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    this.#assertStartupOpen();
+    this.#throwIfFailed();
+    this.#assertRunWorkAdmission("turn.start");
     const turnStartTimeoutMs = this.options.turnStartTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
@@ -7051,6 +7070,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     payload: Record<string, unknown>,
     correlationId?: string,
   ): Promise<void> {
+    this.#assertRunWorkAdmission(type);
     const core = this.#core;
     if (core === null) throw new Error("PRP provider thread is not started");
     const commandId = correlationId
@@ -7084,6 +7104,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     deadline?: number,
     abortOnClose = false,
   ): Promise<Record<string, unknown>> {
+    this.#assertRunWorkAdmission(type);
     const core = this.#core;
     if (core === null) throw new Error("PRP provider thread is not started");
     const commandId = `command_lab_${randomUUID().replaceAll("-", "")}`;

@@ -223,7 +223,9 @@ implementation remain ineligible.
 
 An explicit session `release()` returns a copy of A's confirmed six-field source
 identity. It returns `false` when support is absent or work is still active.
-Those refusals leave active work and its controller route in place.
+Those refusals leave active work and its controller route in place. Release and
+released-source adoption require a registration checkpoint hook that owns process
+cleanup. Without it, release returns `false` and adoption fails before claim.
 
 For an eligible release, the controller first makes its existing route quiet,
 then waits for the host acknowledgement before it closes that route. A failed
