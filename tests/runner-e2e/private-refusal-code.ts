@@ -22,7 +22,11 @@ export function fixedRefusalMessages(): ReadonlySet<string> {
  * message from the trusted modules is named (as a slug); otherwise a Node error code, an error type,
  * or "dynamic". The message text of anything else is never returned.
  */
-export function privateRefusalCode(error: unknown, fixed: ReadonlySet<string> = fixedRefusalMessages()): string {
+export function privateRefusalCode(error: unknown, fixed?: ReadonlySet<string>): string {
+  // Naming must never prevent the fixed failure line: a module read failure degrades to "unnamed".
+  try { return refusalCode(error, fixed ?? fixedRefusalMessages()); } catch { return "unnamed"; }
+}
+function refusalCode(error: unknown, fixed: ReadonlySet<string>): string {
   if (!(error instanceof Error)) return "non-error-thrown";
   if (fixed.has(error.message)) return error.message.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 96);
   const code = (error as NodeJS.ErrnoException).code;

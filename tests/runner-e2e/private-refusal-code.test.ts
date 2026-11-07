@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { fixedRefusalMessages, privateRefusalCode } from "./private-refusal-code.js";
+import { fixedRefusalMessages, privateRefusalCode, PRIVATE_REFUSAL_MODULES } from "./private-refusal-code.js";
 
 it("names only fixed literal refusals from the trusted evidence modules", () => {
   const fixed = fixedRefusalMessages();
@@ -25,4 +25,17 @@ it("names refusals from the dispatch-authority and admission modules the transfe
     expect(literals.length, file).toBeGreaterThan(0);
     for (const message of literals) expect(privateRefusalCode(new Error(message), fixed), message).not.toBe("dynamic");
   }
+});
+
+it("covers every local module the trusted transfer imports that has fixed refusals", () => {
+  const transfer = readFileSync(new URL("./manual-private-transfer.ts", import.meta.url), "utf8");
+  const imported = [...transfer.matchAll(/from "\.\/([a-z0-9-]+)\.js"/g)].map(match => `${match[1]}.ts`);
+  for (const file of imported.filter(name => name !== "private-refusal-code.ts")) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+    if (/new Error\("[^"$`\\]+"\)/.test(source)) expect(PRIVATE_REFUSAL_MODULES as readonly string[], file).toContain(file);
+  }
+});
+it("never throws while naming a refusal", () => {
+  const broken = new Proxy(new Set<string>(), { get() { throw new Error("read failed /private/path"); } });
+  expect(privateRefusalCode(new Error("x"), broken)).toBe("unnamed");
 });
