@@ -23,6 +23,11 @@ export interface TransitionHeartbeatRunStatusOptions {
   toStatus: string;
   patch?: HeartbeatRunStatusPatch;
   where?: SQL;
+  /**
+   * The caller already holds the run row lock in this transaction and read this status under it.
+   * The transition then does not select the row again; `where` applies to the update.
+   */
+  locked?: { status: string };
 }
 
 export async function transitionHeartbeatRunStatus(
@@ -35,6 +40,7 @@ export async function transitionHeartbeatRunStatus(
   }
   const runInTransaction = async (tx: DbTransaction) => {
     const where = options.where ? and(eq(heartbeatRuns.id, runId), options.where) : eq(heartbeatRuns.id, runId);
+    if (options.locked) return transitionLockedRun(tx, runId, where, options, options.locked.status);
     const [locked] = await tx
       .select({
         status: heartbeatRuns.status,
@@ -72,4 +78,40 @@ export async function transitionHeartbeatRunStatus(
   return "rollback" in dbOrTx || typeof dbOrTx.transaction !== "function"
     ? runInTransaction(dbOrTx as DbTransaction)
     : dbOrTx.transaction(runInTransaction);
+}
+
+async function transitionLockedRun(
+  tx: DbTransaction,
+  runId: string,
+  where: SQL | undefined,
+  options: TransitionHeartbeatRunStatusOptions,
+  fromStatus: string,
+): Promise<{ run: HeartbeatRun; transition: HeartbeatRunStatusTransition | null } | null> {
+  const sameStatus = fromStatus === options.toStatus;
+  const hasPatch = Boolean(options.patch && Object.keys(options.patch).length > 0);
+  if (sameStatus && !hasPatch) {
+    const [run] = await tx.select().from(heartbeatRuns).where(where);
+    return run ? { run, transition: null } : null;
+  }
+  const [clock] = (await tx.execute(
+    sql`select (extract(epoch from clock_timestamp()) * 1000000)::bigint::text as "transitionedAtEpochUs"`,
+  )) as unknown as Array<{ transitionedAtEpochUs: string }>;
+  const [run] = await tx
+    .update(heartbeatRuns)
+    .set(sameStatus ? { ...options.patch } : { ...options.patch, status: options.toStatus })
+    .where(where)
+    .returning();
+  if (!run) return null;
+  if (sameStatus) return { run, transition: null };
+  const transitionedAtEpochUs = String(clock?.transitionedAtEpochUs);
+  return {
+    run,
+    transition: {
+      eventId: `run:${runId}:${transitionedAtEpochUs}:${options.toStatus}`,
+      runId,
+      fromStatus,
+      toStatus: options.toStatus,
+      transitionedAtEpochUs,
+    },
+  };
 }
