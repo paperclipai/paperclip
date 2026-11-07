@@ -507,6 +507,27 @@ type RemoteHttpErrorEvidence = {
   cause: RemoteHttpErrorEvidence | null;
 };
 
+// Deliberate stops of a remote tool call. They are not failures, and a deadline
+// that passes while they are recorded must not turn them into a timeout.
+const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
+  "elicitation_required",
+  "provider_interaction_required",
+  "oauth_insufficient_scope",
+]);
+
+const REMOTE_TOOL_CALL_PROTOCOL_REASON_CODES = new Set([
+  "mcp_remote_invalid_json",
+  "remote_mcp_malformed_response",
+  "mcp_remote_response_too_large",
+]);
+
+function remoteToolCallFailureKind(reasonCode: string): RemoteHttpExecutionAudit["failureKind"] {
+  if (reasonCode === "tool_timeout") return "invocation_timeout";
+  if (REMOTE_TOOL_CALL_PROTOCOL_REASON_CODES.has(reasonCode)) return "protocol_failure";
+  if (reasonCode === "mcp_remote_fetch_failed" || reasonCode.startsWith("remote_http_")) return "transport_failure";
+  return undefined;
+}
+
 function remoteHttpErrorEvidence(error: unknown, seen = new Set<unknown>()): RemoteHttpErrorEvidence {
   if (seen.has(error)) return { name: null, message: "[Circular cause]", code: null, stack: null, cause: null };
   const record = asRecord(error);
@@ -5942,6 +5963,7 @@ export function createToolGatewayService(
 
   async function readBoundedRemoteResponse(
     response: Response,
+    onBytes?: (bytes: number) => void,
   ): Promise<string> {
     const contentLength = response.headers.get("content-length");
     if (
@@ -5950,11 +5972,36 @@ export function createToolGatewayService(
     ) {
       throw responseTooLargeError();
     }
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
-      throw responseTooLargeError();
+    const reader = response.body?.getReader();
+    // Injected HTTP transports can expose a buffered text response rather than a
+    // Web ReadableStream. Keep the same size check for that form.
+    if (!reader) {
+      const body = await response.text();
+      onBytes?.(Buffer.byteLength(body, "utf8"));
+      if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+        throw responseTooLargeError();
+      }
+      return body;
     }
-    return body;
+    // Count each chunk as it arrives, so a body that fails partway still
+    // reports the bytes that were read.
+    const decoder = new TextDecoder();
+    let body = "";
+    let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        onBytes?.(bytes);
+        if (bytes > MAX_REMOTE_MCP_RESPONSE_BYTES) throw responseTooLargeError();
+        body += decoder.decode(value, { stream: true });
+      }
+      return body + decoder.decode();
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   }
 
   function malformedRemoteMcpResponse(): ToolGatewayHttpError {
@@ -6552,7 +6599,9 @@ export function createToolGatewayService(
               if (request) await requestElicitationForRecordedToolCall({ session, tool, invocationId, request });
             },
           }))
-        : await readBoundedRemoteResponse(response);
+        : await readBoundedRemoteResponse(response, (bytes) => {
+            execution.response!.bodySizeBytes = bytes;
+          });
       execution.response.bodySizeBytes = Buffer.byteLength(body, "utf8");
       if (isInsufficientConnectionScope(response, body)) {
         await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
@@ -6657,6 +6706,14 @@ export function createToolGatewayService(
       execution.error = remoteHttpErrorEvidence(error);
       execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
       if (execution.response && execution.stream) execution.response.bodySizeBytes = execution.stream.bytesReceived;
+      // A deliberate workflow stop, such as a tool question for the user, keeps
+      // its own reason even when the deadline passes while it is recorded.
+      if (error instanceof ToolGatewayHttpError && REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES.has(error.reasonCode)) {
+        throw new ToolGatewayHttpError(error.status, error.message, error.reasonCode, {
+          ...error.details,
+          execution: error.details.execution ?? execution,
+        });
+      }
       if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
         execution.failureKind = "invocation_timeout";
@@ -6683,6 +6740,8 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(error.status, error.message, error.code, { connectionId: connection.id, catalogEntryId: entry.id, execution });
       }
       if (error instanceof ToolGatewayHttpError) {
+        const failureKind = remoteToolCallFailureKind(error.reasonCode);
+        if (failureKind) execution.failureKind = failureKind;
         throw new ToolGatewayHttpError(
           error.status,
           error.message,

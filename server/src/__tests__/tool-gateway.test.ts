@@ -4651,6 +4651,76 @@ rl.on("line", (line) => {
     });
   }
 
+  async function startRemoteCallWithControlledBody(respond: (body: ReadableStream<Uint8Array>) => Response, waitForRead = true) {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createRemoteMcpTool(db, company.id);
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const reading = Promise.withResolvers<void>();
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    let requestId!: string;
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        requestId = JSON.parse(String(init.body)).id;
+        return respond(new ReadableStream<Uint8Array>({
+          start(controller) { bodyController = controller; },
+          pull() { reading.resolve(); },
+        }, { highWaterMark: 0 }));
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const call = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" }, timeoutMs: 1500 })
+      .then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+    if (waitForRead) await reading.promise;
+    const failedEvent = async () => (await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, "call_failed")))[0];
+    return { call, failedEvent, body: () => bodyController, requestId: () => requestId };
+  }
+
+  it("keeps a tool question when the call deadline passes while the question is recorded", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { headers: { "content-type": "text/event-stream" } }));
+    try {
+      await vi.advanceTimersByTimeAsync(1500);
+      const question = { jsonrpc: "2.0", id: "question-1", method: "elicitation/create", params: { message: "Which folder?", requestedSchema: { type: "object" } } };
+      remote.body().enqueue(new TextEncoder().encode(`data: ${JSON.stringify(question)}\n\n`));
+      expectGatewayError((await remote.call).error, 409, "elicitation_required");
+    } finally {
+      vi.useRealTimers();
+      remote.body().error(new Error("fixture cleanup"));
+      await remote.call;
+    }
+  });
+
+  it("records a transport failure kind when the remote hostname does not resolve", async () => {
+    const remote = await startRemoteCallWithControlledBody(() => {
+      throw new ToolGatewayHttpError(502, "Remote MCP connection hostname did not resolve", "remote_http_dns_failed");
+    }, false);
+    try {
+      expectGatewayError((await remote.call).error, 502, "remote_http_dns_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: { failureKind: "transport_failure" } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records the bytes of an error response body that fails partway", async () => {
+    const remote = await startRemoteCallWithControlledBody((body) => new Response(body, { status: 503, headers: { "content-type": "text/plain" } }));
+    try {
+      const partial = "upstream overloaded, partial";
+      remote.body().enqueue(new TextEncoder().encode(partial));
+      remote.body().error(Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+      expectGatewayError((await remote.call).error, 502, "mcp_remote_fetch_failed");
+      expect((await remote.failedEvent()).metadata).toMatchObject({ execution: {
+        failureKind: "transport_failure",
+        response: { httpStatus: 503, bodySizeBytes: Buffer.byteLength(partial) },
+      } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   const remoteFailureCases = [
     {
       name: "HTTP status",
