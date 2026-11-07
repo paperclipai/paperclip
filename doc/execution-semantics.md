@@ -2643,7 +2643,10 @@ session's own protocol failure ends a pending turn start, the run reports
 
 The continuation tells the agent to finish in that turn, not to end it while
 waiting for a background command or a notification, and to report one
-`paperclip_finish` or `paperclip_block`. The continuation only borrows the
+`paperclip_finish` or `paperclip_block`. It also says that processes started in
+earlier turns may no longer run after the restart: the agent checks the
+workspace for their outputs and re-runs a command when its expected output is
+missing, instead of blocking on the lost process. The continuation only borrows the
 one-shot disposition marker so a crash can adopt its accepted turn. If the
 continuation completes without a semantic result, the driver returns the marker
 and the same attempt sends one disposition request. That request does not use

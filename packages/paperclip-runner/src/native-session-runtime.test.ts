@@ -212,6 +212,20 @@ function canonicalTestJson(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
+// A restart can kill processes that earlier turns started. The continuation
+// must point the agent at workspace outputs instead of the lost process.
+const RESTART_LOST_PROCESS_GUIDANCE = "may no longer be running";
+function expectRestartContinuationGuidance(text: string) {
+  const events = String(JSON.parse(text).events);
+  expect(events).toContain("This is a resumed session after a Paperclip control-plane restart.");
+  expect(events).toContain("Shell commands and background processes started in earlier turns " + RESTART_LOST_PROCESS_GUIDANCE);
+  expect(events).toContain("check the workspace for the outputs or artifacts");
+  expect(events).toContain("If the expected output is missing, re-run the command.");
+  expect(events).toContain("Do not block only because such a process or its tool session cannot be found or inspected.");
+  expect(events).not.toContain("blindly rerun");
+  expect(events).toContain("Reconcile any unfinished tool or command");
+}
+
 function runnerEvent(
   sourceSeq: number,
   eventType: PrpEvent["eventType"],
@@ -334,6 +348,8 @@ describe("executeNativeSession recovery", () => {
     await executeNativeSession({ input: executionInput, backend, controlPlane: port,
       runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
     expect(JSON.parse(startTurn.mock.calls[0]![0].message.text).workspace).toEqual({ cwd: cwd ?? originalWorkspace.cwd });
+    // Fresh and ordinary resumed turns do not carry restart-continuation guidance.
+    expect(startTurn.mock.calls[0]![0].message.text).not.toContain(RESTART_LOST_PROCESS_GUIDANCE);
     expect(executionInput.workspace).toEqual(originalWorkspace);
   });
 
@@ -563,7 +579,7 @@ describe("executeNativeSession recovery", () => {
     expect(startTurn).toHaveBeenCalledOnce();
     const submitted = startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0];
     expect(submitted.continuation).toBe(true);
-    expect(submitted.message.text).toContain("Reconcile any unfinished tool or command");
+    expectRestartContinuationGuidance(submitted.message.text);
     expect(submitted.message.text).not.toContain(input.task.prompt);
     expect(events.filter(event => event.eventType === "turn.failed")).toHaveLength(1);
     expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
@@ -631,7 +647,7 @@ describe("executeNativeSession recovery", () => {
     expect(startTurn).toHaveBeenCalledOnce();
     const submitted = startTurn.mock.calls[0]![0] as Parameters<NativeSession["startTurn"]>[0];
     expect(submitted.continuation).toBe(true);
-    expect(submitted.message.text).toContain("Reconcile any unfinished tool or command");
+    expectRestartContinuationGuidance(submitted.message.text);
     expect(nativeRestartInterruptedTurnId(interrupted)).toBe("turn-recovery");
   });
 
