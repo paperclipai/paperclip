@@ -18,6 +18,13 @@ test("release package manifest covers all public packages with explicit CI enrol
   assert.ok(packages.every((pkg) => typeof pkg.publishFromCi === "boolean"));
 });
 
+test("discovered package dirs use forward slashes on every platform", () => {
+  // On win32 the walk joins with backslashes; a dir that keeps them never
+  // matches the forward-slash manifest, so every entry reports as missing.
+  const packages = buildReleasePackagePlan();
+  assert.ok(packages.every((pkg) => !pkg.dir.includes("\\")));
+});
+
 test("release package list only contains CI-enrolled packages", () => {
   const enabledPackages = getReleasePackages();
   assert.ok(enabledPackages.length > 0);
