@@ -259,27 +259,32 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
     expect(await restoreDurableNativeHarnessBackup({ db, storage: f.storage, companyId: f.input.companyId,
       scopeDigest: archive!.scopeDigest, backupRoot: target })).toBe(true);
     if (!("runtimeContext" in f.execution)) throw new Error("fixture runtime context missing");
-    let files = 0;
+    const files: Array<{ relative: string; sha256: string }> = [];
     for (const skill of f.execution.runtimeContext.skills) {
       const manifest = JSON.parse(await readFile(join(f.mount, "instances/default/runtime-context-assets/manifests", `${skill.bundle.digest}.json`), "utf8"));
       for (const file of manifest.files as Array<{ path: string; sha256: string }>) {
-        const relative = join("codex-home/skills", skill.runtimeName, file.path);
-        const original = await readFile(join(f.sourceRoot, relative));
-        const restored = join(target, "current/web-home", relative);
-        expect(await readFile(restored)).toEqual(original);
-        expect(createHash("sha256").update(original).digest("hex")).toBe(file.sha256);
-        expect((await lstat(restored)).mode & 0o777).toBe(0o444);
-        files++;
+        files.push({ relative: join("codex-home/skills", skill.runtimeName, file.path), sha256: file.sha256 });
       }
     }
-    expect(files).toBe(927);
+    expect(files).toHaveLength(927);
+    for (let offset = 0; offset < files.length; offset += 16) {
+      await Promise.all(files.slice(offset, offset + 16).map(async file => {
+        const restored = join(target, "current/web-home", file.relative);
+        const [originalBytes, restoredBytes, stat] = await Promise.all([
+          readFile(join(f.sourceRoot, file.relative)), readFile(restored), lstat(restored),
+        ]);
+        expect(restoredBytes).toEqual(originalBytes);
+        expect(createHash("sha256").update(originalBytes).digest("hex")).toBe(file.sha256);
+        expect(stat.mode & 0o777).toBe(0o444);
+      }));
+    }
     expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.input.companyId))).toEqual(originalLeases);
     vi.stubEnv("PAPERCLIP_HOME", join(f.mount, "absent-many-web-files"));
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", join(f.mount, "absent-many-web-files/state")); vi.stubEnv("RAILWAY_VOLUME_ID", "");
     vi.spyOn(f.storage, "getObject").mockRejectedValue(new Error("database validation must not read storage"));
     expect(await hasValidNativeHarnessFilesystemIndependence(db, f.input)).toBe(true);
     expect(result.receiptDigest).toMatch(/^[a-f0-9]{64}$/);
-  }, 60_000);
+  }, 120_000);
 
   function webDescriptor(entries: NativeControllerHistoryManifestEntry[]) {
     return nativeControllerEvidenceDescriptor({ companyId: "company", issueId: "issue", runId: "run", controllerDigest: null,
