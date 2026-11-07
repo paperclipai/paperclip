@@ -77,4 +77,37 @@ describe("native controller rows saved before their host was recorded", () => {
     await expect(confirmNativeControllerStopped({ db, companyId, issueId, actionId: actions[0]!.id, runId,
       stopEvidence, actorId: "board-user" })).rejects.toMatchObject({ status: 409 });
   });
+  it("keeps an observed no-checkpoint source recoverable after a controller-only confirmation", async () => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    const { companyId, agentId, issueId, runId, coordinator } = await seed();
+    // Historical initial state: the previous release published its real
+    // controller-only action for an observed run with no checkpoint. There
+    // is no accepted provider result and no fabricated terminal outcome.
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.update(nativeRunFinalizations).set({ recoveryState: "awaiting_evidence" })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    await requestNativeControllerStopConfirmation(db, coordinator);
+    const [originalAction] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    await expect(confirmNativeControllerStopped({ db, companyId, issueId, actionId: originalAction!.id, runId,
+      stopEvidence: "The original server container is stopped; provider effects are not yet verified.",
+      actorId: "board-user" })).resolves.toEqual({ runId, status: "queued" });
+    const [original] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, originalAction!.id));
+    expect(original).toMatchObject({ status: "resolved", evidence: { controllerStop: { actorId: "board-user" } } });
+    const [held] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    expect(held).toMatchObject({ phase: "observed", resultId: null, leaseOwner: coordinator.leaseOwner,
+      controllerGeneration: coordinator.controllerGeneration, attempt: coordinator.attempt });
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(source).toMatchObject({ status: "running", resultJson: null });
+    const active = await db.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.status, "active")));
+    expect(active).toEqual([expect.objectContaining({ cause: "native_restart_recovery_blocked", ownerType: "board",
+      returnOwnerAgentId: agentId, attemptCount: 0, wakePolicy: null, monitorPolicy: null,
+      evidence: expect.objectContaining({ runId, reason: "controller_process_space_unverified",
+        controllerAuthority: expect.objectContaining({ schema: "paperclip.native-controller-authority.v1",
+          digest: expect.stringMatching(/^[a-f0-9]{64}$/) }) }) })]);
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId)))
+      .toEqual([]);
+  });
+
 });
