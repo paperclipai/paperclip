@@ -27,6 +27,10 @@ use sha2::{Digest, Sha256};
 use crate::local_runner::LocalRunnerError;
 
 const PROCESS_OUTPUT_QUEUE_CAPACITY: usize = 256;
+/// How long, after the shutdown grace, teardown keeps sending KILL to the
+/// processes a supervised process started before it reports them as alive.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const LINEAGE_KILL_PROOF_WINDOW: Duration = Duration::from_secs(5);
 const VERIFIED_RUNTIME_EXECUTABLE_ENV: &str = "PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE";
 const VERIFIED_COMMONJS_ARTIFACT_LOADER: &str = r#"const fs=require("node:fs");const Module=require("node:module");const filename=process.argv[1];const source=fs.readFileSync(filename,"utf8").replace(/^#![^\r\n]*(?:\r?\n|$)/,"");const artifact=new Module(filename);artifact.filename=filename;artifact.paths=[];artifact._compile(source,filename);"#;
 
@@ -913,6 +917,9 @@ pub struct SupervisedProcess {
     process_group_id: u32,
     shutdown_grace: Duration,
     finished: bool,
+    /// Every process this one starts, including tools that leave its group.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    lineage: Option<crate::process_lineage::LineageTracker>,
     #[cfg(target_os = "macos")]
     _temporary_executables: Vec<TemporaryExecutable>,
     #[cfg(target_os = "macos")]
@@ -1105,6 +1112,8 @@ impl SupervisedProcess {
             process_group_id,
             shutdown_grace,
             finished: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            lineage: crate::process_lineage::LineageTracker::start(process_group_id),
             #[cfg(target_os = "macos")]
             _temporary_executables: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -1221,21 +1230,51 @@ impl SupervisedProcess {
 
     pub fn wait(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
         if self.finished {
-            return self.child.wait().map(exit_fact).map_err(|error| {
+            let fact = self.child.wait().map(exit_fact).map_err(|error| {
                 LocalRunnerError::invalid(format!("failed to inspect retired child: {error}"))
-            });
+            })?;
+            self.terminate_lineage(self.shutdown_grace)?;
+            return Ok(fact);
         }
         let status = self.child.wait().map_err(|error| {
             LocalRunnerError::invalid(format!("failed to wait for process: {error}"))
         })?;
         // The group leader can exit while descendants remain alive. Reap the
-        // leader first, then clear any remaining members of its private group.
-        // A caller that must exclude escaped or re-parented descendants still
-        // needs a separately inherited lifetime fence.
+        // leader first, then clear any remaining members of its private group,
+        // then every recorded process that left the group.
         #[cfg(unix)]
         signal_process_group(self.process_group_id, "KILL");
         self.finished = true;
+        self.terminate_lineage(self.shutdown_grace)?;
         Ok(exit_fact(status))
+    }
+
+    /// Stops the processes this one started outside its own group, such as a
+    /// tool that a provider ran in a new session and that outlived its
+    /// wrapper. Fails while any recorded process is still alive, so a caller
+    /// never treats the provider as stopped while its tools still run.
+    fn terminate_lineage(&mut self, grace: Duration) -> Result<(), LocalRunnerError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(lineage) = self.lineage.as_ref() {
+            lineage
+                .terminate(grace, grace + LINEAGE_KILL_PROOF_WINDOW)
+                .map_err(|reason| {
+                    LocalRunnerError::invalid(format!(
+                        "processes started by the supervised process were not proven stopped: {reason}"
+                    ))
+                })?;
+            self.lineage = None;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = grace;
+        Ok(())
+    }
+
+    fn sample_lineage(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(lineage) = self.lineage.as_ref() {
+            lineage.sample();
+        }
     }
 
     pub fn terminate_group(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
@@ -1243,6 +1282,8 @@ impl SupervisedProcess {
             return self.wait();
         }
         self.stdin.take();
+        // Record the lineage visible now, before signals start re-parenting it.
+        self.sample_lineage();
         #[cfg(unix)]
         signal_process_group(self.process_group_id, "TERM");
         #[cfg(not(unix))]
@@ -1254,6 +1295,7 @@ impl SupervisedProcess {
                 #[cfg(unix)]
                 signal_process_group(self.process_group_id, "KILL");
                 self.finished = true;
+                self.terminate_lineage(self.shutdown_grace)?;
                 return Ok(fact);
             }
             if Instant::now() >= deadline {
@@ -1271,10 +1313,17 @@ impl SupervisedProcess {
 
     /// Fence this owned process group when an existing deadline leaves no grace.
     pub fn terminate_group_immediately(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        let fact = self.fence_group_immediately()?;
+        self.terminate_lineage(Duration::ZERO)?;
+        Ok(fact)
+    }
+
+    fn fence_group_immediately(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
         if self.finished {
             return self.wait();
         }
         self.stdin.take();
+        self.sample_lineage();
         #[cfg(unix)]
         let signal = {
             use rustix::process::{kill_process_group, Pid, Signal};
@@ -1294,6 +1343,19 @@ impl SupervisedProcess {
                     Err(LocalRunnerError::invalid(
                         "owned process group disappeared before leader exit was observed",
                     ))
+                }
+                // macOS refuses to signal a group whose only member is the
+                // exited, unreaped leader. Reaping it settles the group; the
+                // lineage pass that follows proves no other member remains.
+                Err(rustix::io::Errno::PERM) => {
+                    if let Some(exit) = self.try_wait()? {
+                        self.finished = true;
+                        return Ok(exit);
+                    }
+                    Err(LocalRunnerError::invalid(format!(
+                        "failed to signal owned process group: {}",
+                        rustix::io::Errno::PERM
+                    )))
                 }
                 Err(error) => Err(LocalRunnerError::invalid(format!(
                     "failed to signal owned process group: {error}"
@@ -1345,6 +1407,8 @@ impl Drop for SupervisedProcess {
     fn drop(&mut self) {
         if !self.finished {
             let _ = self.terminate_group();
+        } else {
+            let _ = self.terminate_lineage(self.shutdown_grace);
         }
     }
 }
@@ -1387,6 +1451,99 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Plays a provider whose tool runs `nohup job &` in a new session, the
+    /// way Claude Code runs a Bash tool command. The wrapper reports the job's
+    /// PID and exits, so the job is re-parented and outside the owned group.
+    fn spawn_provider_with_escaped_tool_job(
+        name: &str,
+    ) -> (
+        SupervisedProcess,
+        PathBuf,
+        paperclip_process_table::ProcessEntry,
+    ) {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-escaped-tool-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let pid_file = directory.join("job.pid");
+        let tool = r#"sleep 0.3; nohup /bin/sh -c 'while :; do sleep 1; done' >/dev/null 2>&1 & echo $! > "$0.tmp"; mv "$0.tmp" "$0"; exit 0"#;
+        let wrapper = format!(
+            "use POSIX (); POSIX::setsid() or die; exec '/bin/sh', '-c', q{{{tool}}}, $ARGV[0];"
+        );
+        let provider = r#"perl -e "$1" "$2" & printf 'ready\n'; while :; do sleep 1; done"#;
+        let process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_owned(),
+                provider.to_owned(),
+                "provider".to_owned(),
+                wrapper,
+                pid_file.display().to_string(),
+            ],
+            Duration::from_millis(500),
+            1024,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let job = loop {
+            if let Some(pid) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                let job = paperclip_process_table::read(pid).expect("tool job is running");
+                // Wait until the wrapper has exited and the job is orphaned.
+                if paperclip_process_table::read(job.ppid)
+                    .is_none_or(|parent| parent.pgid != job.pgid)
+                {
+                    break job;
+                }
+            }
+            assert!(Instant::now() < deadline, "tool job did not start");
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert_ne!(job.pgid, i32::try_from(process.process_group_id()).unwrap());
+        (process, directory, job)
+    }
+
+    fn assert_stopped_and_clean_up(job: paperclip_process_table::ProcessEntry, directory: &Path) {
+        let alive = paperclip_process_table::read(job.pid)
+            .is_some_and(|current| current.started == job.started && !current.zombie);
+        if alive {
+            // Never leave the escaped job behind when the assertion fails.
+            if let Some(group) = rustix::process::Pid::from_raw(job.pgid) {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+        }
+        let _ = fs::remove_dir_all(directory);
+        assert!(!alive, "tool job {} outlived its provider", job.pid);
+    }
+
+    #[test]
+    fn terminating_the_group_stops_a_tool_job_that_left_its_session() {
+        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("terminate");
+        process.terminate_group().unwrap();
+        assert_stopped_and_clean_up(job, &directory);
+    }
+
+    #[test]
+    fn immediate_fence_stops_a_tool_job_that_left_its_session() {
+        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("immediate");
+        process.terminate_group_immediately().unwrap();
+        assert_stopped_and_clean_up(job, &directory);
+    }
+
+    #[test]
+    fn dropping_the_provider_stops_a_tool_job_that_left_its_session() {
+        let (process, directory, job) = spawn_provider_with_escaped_tool_job("drop");
+        drop(process);
+        assert_stopped_and_clean_up(job, &directory);
+    }
 
     #[test]
     #[cfg(unix)]
