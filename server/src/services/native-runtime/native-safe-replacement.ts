@@ -1,13 +1,18 @@
+import { NATIVE_POOL_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { stat } from "node:fs/promises";
-import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
+  agents,
+  aiConnectionPools,
+  aiConnectionQuotaCooldowns,
   environmentLeases,
   executionWorkspaces,
   executionWorkspaceSnapshots,
@@ -27,6 +32,8 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { aiConnectionRouterService } from "../ai-connection-router.js";
+import type { AiConnectionRouterSelection } from "@paperclipai/shared";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 
@@ -177,11 +184,17 @@ export function nativeReplacementPending() {
     eq(nativeRunFinalizations.phase, "terminal_failure"),
     or(inArray(
       nativeRunFinalizations.failureCode,
-      ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed"],
+      ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed", ...NATIVE_POOL_FAILURE_CODES],
     ), historicalListenerGuardPending()),
+    sql`(${nativeRunFinalizations.failureCode} not in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed') or exists (
+      select 1 from heartbeat_run_events e where e.company_id = ${heartbeatRuns.companyId}
+        and e.run_id = ${heartbeatRuns.id} and e.event_type = 'ai_connection.' || case ${nativeRunFinalizations.failureCode} when 'native_provider_auth_failed' then 'auth' when 'native_provider_runner_failed' then 'runner' else 'quota' end || '_attributed'
+        and e.source_event_id = 'ai-connection-' || case ${nativeRunFinalizations.failureCode} when 'native_provider_auth_failed' then 'auth' when 'native_provider_runner_failed' then 'runner' else 'quota' end || '-attributed:' || ${heartbeatRuns.id}::text
+    ))`,
     isNull(nativeRunFinalizations.resultId),
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
+    sql`(${nativeRunFinalizations.failureCode} not in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed') or coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'state', '') not in ('requested', 'acknowledged'))`,
   );
 }
 
@@ -220,7 +233,7 @@ async function discoverNativeReplacements(db: Db, after: string | undefined, lim
   for (;;) {
     const rows = await db.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations }).from(heartbeatRuns)
       .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-      .where(and(nativeReplacementPending(), after ? gt(heartbeatRuns.id, after) : undefined))
+      .where(and(nativeReplacementPending(), notInArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES), after ? gt(heartbeatRuns.id, after) : undefined))
       .orderBy(asc(heartbeatRuns.id)).limit(Math.min(25, REPLACEMENT_SCAN_LIMIT - scanned));
     if (!rows.length) return { candidates, scanned, after: undefined };
     for (const row of rows) {
@@ -274,24 +287,63 @@ export async function reconcileSafeNativeReplacements(
       retire: () => boolean;
     } | null>;
     /** Test fault injection at durability boundaries; never exposed by an API. */
-    failpoint?: (phase: "successor_inserted" | "lineage_committed") => void;
+    failpoint?: (phase: "successor_inserted" | "lineage_committed") => void | Promise<void>;
   } = {},
 ) {
+  const quotaCandidates = await db
+    .select({ run: heartbeatRuns, coordinator: nativeRunFinalizations })
+    .from(heartbeatRuns)
+    .innerJoin(
+      nativeRunFinalizations,
+      eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+    )
+    .where(
+      and(nativeReplacementPending(), inArray(nativeRunFinalizations.failureCode, NATIVE_POOL_FAILURE_CODES)),
+    )
+    .orderBy(sql`case when ${nativeRunFinalizations.failureCode} in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed') and
+        coalesce(${nativeRunFinalizations.failureDetail}->>'replacementWaitingForCleanup', 'false') = 'true' and
+        exists (select 1 from environment_leases l where l.company_id = ${heartbeatRuns.companyId}
+          and l.heartbeat_run_id = ${heartbeatRuns.id} and l.released_at is null
+          and l.status in ('active', 'pending_cleanup') and coalesce(l.cleanup_status, '') not in ('failed', 'success')) then 2
+      when ${nativeRunFinalizations.failureCode} in ('native_provider_usage_limit', 'native_provider_auth_failed', 'native_provider_runner_failed') and
+        ${nativeRunFinalizations.nextAttemptAt} > ${now.toISOString()}::timestamptz then 1 else 0 end`,
+      nativeRunFinalizations.nextAttemptAt, heartbeatRuns.createdAt, heartbeatRuns.id)
+    .limit(25);
   const discovery = replacementDiscoveryState(db);
   if (discovery.complete) discovery.after = undefined;
   discovery.complete = false;
   if (!discovery.after) discovery.rescan = false;
   const generation = discovery.generation;
   const selection = await discoverNativeReplacements(db, discovery.after);
-  const candidates = selection.candidates;
+  const candidates = [...quotaCandidates, ...selection.candidates];
   let scheduled = 0, pendingFailures = 0;
   for (const { run, coordinator } of candidates) {
+    const poolFailure = nativePoolFailureKind(coordinator.failureCode);
+    const holdQuotaForOperator = async (cause: string, nextAction: string) => {
+        await db.transaction(async tx => {
+          const [task] = await tx.select().from(issues).where(and(
+            eq(issues.id, coordinator.issueId), eq(issues.companyId, run.companyId),
+          )).for("update");
+          const [current] = await tx.select().from(nativeRunFinalizations).where(and(
+            eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
+          )).for("update");
+          if (!current || current.phase !== "terminal_failure" || current.failureCode !== coordinator.failureCode ||
+              current.failureDetail?.successorRunId || current.failureDetail?.replacementDenied) return;
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await tx.update(nativeRunFinalizations).set({ nextAttemptAt: null, updatedAt: now,
+            failureDetail: { ...current.failureDetail, replacementWaitingForCleanup: false, replacementDenied: cause, nextAction },
+          }).where(eq(nativeRunFinalizations.runId, run.id));
+          if (!task || task.assigneeAgentId !== run.agentId || ["done", "cancelled"].includes(task.status)) return;
+          await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
+            companyId: run.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+            ownerType: "board", ownerAgentId: null, returnOwnerAgentId: run.agentId,
+            cause, fingerprint: `native-replacement:${run.id}`, evidence: { runId: run.id, attempts: current.attempt },
+            nextAction, wakePolicy: null, maxAttempts: 3, supersedeOnIdentityChange: true,
+          });
+        });
+    };
     try {
-      if (
-        coordinator.failureDetail?.successorRunId ||
-        coordinator.failureDetail?.replacementDenied
-      )
-        continue;
+      if (coordinator.failureDetail?.successorRunId || coordinator.failureDetail?.replacementDenied) continue;
       const execution = record(
         record(run.runnerProfileJson).nativeExecutionInput,
       );
@@ -306,14 +358,42 @@ export async function reconcileSafeNativeReplacements(
           ),
         );
       // Teardown is still in progress. The next sweep rechecks its durable outcome.
-      if (leases.some((lease) => lease.releasedAt === null)) continue;
+      if (leases.some((lease) => lease.releasedAt === null)) {
+        if (Boolean(poolFailure)) {
+          if (leases.some(lease => lease.releasedAt === null &&
+              (!['active', 'pending_cleanup'].includes(lease.status) || ['failed', 'success'].includes(lease.cleanupStatus ?? '')))) {
+            await holdQuotaForOperator("provider_ownership_unverified", "Verify the previous provider and its workspace have stopped before continuing.");
+          } else {
+            await db.transaction(async tx => {
+              await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, coordinator.issueId), eq(issues.companyId, run.companyId))).for("update");
+              const [current] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).for("update");
+              if (!current || current.phase !== "terminal_failure" || current.failureCode !== coordinator.failureCode || current.failureDetail?.successorRunId || current.failureDetail?.replacementDenied) return;
+              const currentLeases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id))).for("update");
+              if (!currentLeases.some(lease => lease.releasedAt === null) || currentLeases.some(lease => lease.releasedAt === null &&
+                  (!['active', 'pending_cleanup'].includes(lease.status) || ['failed', 'success'].includes(lease.cleanupStatus ?? '')))) {
+                await tx.update(nativeRunFinalizations).set({ nextAttemptAt: null, updatedAt: now,
+                  failureDetail: { ...current.failureDetail, replacementWaitingForCleanup: false },
+                }).where(eq(nativeRunFinalizations.runId, run.id));
+                return;
+              }
+              await tx.update(nativeRunFinalizations).set({ nextAttemptAt: null, updatedAt: now,
+                failureDetail: { ...current.failureDetail, replacementWaitingForCleanup: true },
+              }).where(eq(nativeRunFinalizations.runId, run.id));
+            });
+          }
+        }
+        continue;
+      }
       const historicalListener = coordinator.failureCode === "native_session_interrupted";
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
       const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener
         ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
       // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !stoppedSession) continue;
+      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !stoppedSession) {
+        if (Boolean(poolFailure)) await holdQuotaForOperator("provider_ownership_unverified", "Verify the previous provider stopped and reconcile its complete action history before continuing.");
+        continue;
+      }
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -335,7 +415,11 @@ export async function reconcileSafeNativeReplacements(
             eq(heartbeatRunEvents.runId, run.id),
             inArray(heartbeatRunEvents.eventType, [
               "harness.diagnostic",
+              "semantic_tool.input",
+              "semantic_tool.result",
               "tool.execution.started",
+              "tool.execution.completed",
+              "item.completed",
               "workspace.changed",
               "workspace.change.updated",
               "delegation.started",
@@ -345,6 +429,18 @@ export async function reconcileSafeNativeReplacements(
             ]),
           ),
         );
+      const freshConversation = Boolean(poolFailure);
+      const eventPayload = (event: { payload: unknown }) => {
+        const envelope = record(event.payload);
+        return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
+      };
+      const completedProviderActions = freshConversation ? events
+        .filter(event => event.eventType === "tool.execution.completed")
+        .filter(event => {
+          const p = eventPayload(event);
+          return typeof p.executionId === "string" && typeof p.name === "string" &&
+            ["succeeded", "completed"].includes(String(p.status));
+        }) : [];
       const safeControlReads = new Set([
         "connections_search",
         "connection_request",
@@ -354,10 +450,19 @@ export async function reconcileSafeNativeReplacements(
         "paperclip_read_document",
       ]);
       const uncertainProviderActions = events.flatMap((event) => {
-        const envelope = record(event.payload);
-        const p = envelope.prpEvent
-          ? record(record(envelope.prpEvent).payload)
-          : envelope;
+        const p = eventPayload(event);
+        if (["tool.execution.completed", "item.completed", "semantic_tool.result"].includes(event.eventType)) return [];
+        if (event.eventType === "semantic_tool.input") {
+          if (!freshConversation) return [];
+          const call = record(p.semantic_tool);
+          const settled = typeof call.callId === "string" && events.some(done => {
+            const result = record(eventPayload(done).semantic_tool);
+            return done.eventType === "semantic_tool.result" && result.callId === call.callId &&
+              result.operationId === call.operationId && result.outcome === "succeeded";
+          });
+          return settled ? [] : [String(call.callId ?? "unconfirmed semantic tool")];
+        }
+        if (freshConversation && ["workspace.changed", "workspace.change.updated", "artifact.generated"].includes(event.eventType)) return [];
         if (event.eventType === "harness.diagnostic")
           return p.classification === "descendant"
             ? [`descendant ${String(p.receivedThreadId ?? "unknown")}`]
@@ -374,6 +479,16 @@ export async function reconcileSafeNativeReplacements(
           return [event.eventType];
         if (event.eventType === "tool.execution.started") {
           const name = typeof p.name === "string" ? p.name : "unknown tool";
+          if (freshConversation && completedProviderActions.some(done => {
+            const completed = eventPayload(done);
+            const startSource = record(record(event.payload).prpEvent);
+            const completedSource = record(record(done.payload).prpEvent);
+            return completed.executionId === p.executionId && completed.name === name &&
+              (startSource.sourceInstanceId === undefined ||
+                completedSource.sourceInstanceId === startSource.sourceInstanceId &&
+                Number(completedSource.sourceSeq) > Number(startSource.sourceSeq));
+          })) return [];
+
           const completedTaskControlCallIds = stoppedSession?.evidence.completedTaskControlCallIds;
           if (name === "paperclip_finish" && Array.isArray(completedTaskControlCallIds) &&
               completedTaskControlCallIds.includes(p.executionId)) return [];
@@ -391,6 +506,14 @@ export async function reconcileSafeNativeReplacements(
             ? [String(p.executionId ?? name)]
             : [];
         }
+        if (freshConversation && event.eventType === "item.started") {
+          const source = record(record(event.payload).prpEvent);
+          if (typeof source.itemId === "string" && events.some(done => {
+            const terminal = record(record(done.payload).prpEvent);
+            return done.eventType === "item.completed" && terminal.itemId === source.itemId &&
+              terminal.sourceInstanceId === source.sourceInstanceId && eventPayload(done).status === "completed";
+          })) return [];
+        }
         return [
           "command_execution",
           "commandExecution",
@@ -403,12 +526,16 @@ export async function reconcileSafeNativeReplacements(
           : [];
       });
       const history = await replacementHistoryReady(db, run, coordinator.issueId);
-      if (history === false) continue;
+      if (history === false) {
+        if (Boolean(poolFailure)) await holdQuotaForOperator("continuation_evidence_incomplete", "Resolve the outstanding task interactions before continuing.");
+        continue;
+      }
       const historyComplete = history === true;
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
       const decision = decideNativeReplacement({
         failedSession: true,
+        freshConversation,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
         failureMeaningKnown:
@@ -434,14 +561,14 @@ export async function reconcileSafeNativeReplacements(
         effectInventoryComplete:
           Boolean(stoppedSession) || (record(run.runnerProfileJson).recoveryEventInventoryVersion === 1 &&
           record(execution.provider).kind === "codex"),
-        attempts: coordinator.attempt,
+        attempts: poolFailure ? 0 : coordinator.attempt,
         invocations,
         apiReceipts: record(record(run.resultJson).apiToolReceipts),
         uncertainProviderActions,
       });
       if (!decision.allowed) {
         // Lack of containment can be temporary; do not prevent the next proof.
-        if (decision.cause === "provider_ownership_unverified") continue;
+        if (decision.cause === "provider_ownership_unverified" && !poolFailure) continue;
         await db.transaction(async (tx) => {
           await tx.execute(
             sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -472,8 +599,10 @@ export async function reconcileSafeNativeReplacements(
           await tx
             .update(nativeRunFinalizations)
             .set({
+              nextAttemptAt: null,
               failureDetail: {
                 ...current.failureDetail,
+                replacementWaitingForCleanup: false,
                 replacementDenied: decision.cause,
                 nextAction: decision.nextAction,
               },
@@ -506,6 +635,8 @@ export async function reconcileSafeNativeReplacements(
         });
         continue;
       }
+      let cooling = false;
+      let stopFenced = false;
       const created = await db.transaction(async (tx) => {
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -537,7 +668,7 @@ export async function reconcileSafeNativeReplacements(
           current.failureCode !== coordinator.failureCode ||
           current.failureDetail?.successorRunId ||
           current.failureDetail?.replacementDenied ||
-          current.attempt >= 3
+          (!poolFailure && current.attempt >= 3)
         )
           return false;
         let historicalRun: typeof heartbeatRuns.$inferSelect | undefined;
@@ -577,8 +708,144 @@ export async function reconcileSafeNativeReplacements(
           const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
           )).for("update");
+          if (Boolean(nativePoolFailureKind(current.failureCode)) && currentRun &&
+              ["requested", "acknowledged"].includes(String(record(record(currentRun.resultJson).executionCancellation).state))) {
+            stopFenced = true;
+            return false;
+          }
           if (!currentRun || currentRun.status !== "failed" || currentRun.runnerInstanceId !== run.runnerInstanceId ||
-              currentRun.nativeSessionId !== run.nativeSessionId || currentRun.processPid || currentRun.processGroupId) return false;
+              currentRun.nativeSessionId !== run.nativeSessionId || currentRun.processPid || currentRun.processGroupId ||
+              currentRun.retryOfRunId !== run.retryOfRunId || currentRun.issueId !== run.issueId ||
+              ["requested", "acknowledged"].includes(String(record(record(currentRun.resultJson).executionCancellation).state)) ||
+              !isDeepStrictEqual(currentRun.contextSnapshot, run.contextSnapshot)) return false;
+        }
+        let quotaSelection: AiConnectionRouterSelection | undefined;
+        let quotaCycleReset = false;
+        if (Boolean(nativePoolFailureKind(current.failureCode))) {
+          // The cooldown is account-wide; only the run-bound attribution receipt
+          // proves that this particular execution exhausted its selected account.
+          const context = record(run.contextSnapshot);
+          const selection = record(context.aiRouterSelection);
+          const binding = record(selection.binding);
+          const taskKey = context.aiRouterTaskKey;
+          const poolId = selection.poolId;
+          if (run.scopeKind !== "issue" || run.issueId !== task.id ||
+              typeof taskKey !== "string" || (taskKey !== task.id && taskKey !== task.identifier) ||
+              typeof poolId !== "string" || typeof selection.memberId !== "string" ||
+              typeof binding.connectionId !== "string" || typeof binding.grantId !== "string") return false;
+          const [receipt] = await tx.select().from(heartbeatRunEvents).where(and(
+            eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+            eq(heartbeatRunEvents.agentId, run.agentId), isNull(heartbeatRunEvents.sourceInstanceId),
+            eq(heartbeatRunEvents.eventType, `ai_connection.${poolFailure}_attributed`),
+            eq(heartbeatRunEvents.sourceEventId, `ai-connection-${poolFailure}-attributed:${run.id}`),
+          ));
+          const attribution = record(receipt?.payload);
+          if (attribution.schema !== `paperclip.ai-connection-${poolFailure}-attribution.v1` ||
+              attribution.companyId !== run.companyId || attribution.runId !== run.id ||
+              attribution.agentId !== run.agentId || attribution.poolId !== poolId ||
+              attribution.taskKey !== taskKey || attribution.memberId !== selection.memberId ||
+              attribution.connectionId !== binding.connectionId || attribution.grantId !== binding.grantId ||
+              !isDeepStrictEqual(attribution.selection, selection) ||
+              typeof attribution.retryAt !== "string" || !Number.isFinite(Date.parse(attribution.retryAt))) return false;
+          const attemptedMemberIds = [selection.memberId];
+          const attemptedRuns = [run];
+          const seenRuns = new Set([run.id]);
+          let predecessorId = run.retryOfRunId;
+          let childId = run.id;
+          while (predecessorId) {
+            if (seenRuns.has(predecessorId) || seenRuns.size >= 100) return false;
+            seenRuns.add(predecessorId);
+            const [predecessor] = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, predecessorId), eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.agentId, run.agentId),
+            ));
+            if (!predecessor || predecessor.issueId !== run.issueId) return false;
+            const [predecessorFinalization] = await tx.select().from(nativeRunFinalizations).where(and(
+              eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, predecessor.id),
+            ));
+            if (predecessorFinalization?.failureDetail?.quotaCycleResetSuccessorRunId === childId &&
+                predecessorFinalization.failureDetail.successorRunId === childId) break;
+            const previous = record(record(predecessor.contextSnapshot).aiRouterSelection);
+            if (previous.poolId !== poolId || typeof previous.memberId !== "string") return false;
+            if (attemptedMemberIds.includes(previous.memberId)) return false;
+            attemptedMemberIds.push(previous.memberId);
+            attemptedRuns.push(predecessor);
+            childId = predecessor.id;
+            predecessorId = predecessor.retryOfRunId;
+          }
+          const [agent] = await tx.select().from(agents).where(and(
+            eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
+          )).for("share");
+          const configured = record(record(agent?.runtimeConfig).aiConnection);
+          if (!agent || configured.mode !== "router" || configured.connectionId !== poolId) return false;
+          const router = aiConnectionRouterService(tx as unknown as Db);
+          const transitionInput = {
+            companyId: run.companyId, poolId, agentId: run.agentId, taskKey,
+            expectedSelection: selection as unknown as AiConnectionRouterSelection,
+            userId: run.responsibleUserId, adapterType: agent.adapterType, attemptedMemberIds,
+            failureKind: poolFailure!,
+            sourceAdapterConfig: { ...record(agent.adapterConfig), ...record(record(task.assigneeAdapterOverrides).adapterConfig) },
+          };
+          let transition = await router.transitionQuotaPin(transitionInput);
+          if (transition.kind !== "selected") {
+            const [pool] = await tx.select().from(aiConnectionPools).where(and(
+              eq(aiConnectionPools.companyId, run.companyId), eq(aiConnectionPools.id, poolId),
+            ));
+            if (!pool) return false;
+            const eligible = new Set<string>();
+            const future: Date[] = transition.kind === "cooldown" ? [transition.retryAt] : [];
+            for (const attempted of attemptedRuns) {
+              const attemptedSelection = record(record(attempted.contextSnapshot).aiRouterSelection);
+              const attemptedBinding = record(attemptedSelection.binding);
+              const [attemptedOwner] = await tx.select().from(nativeRunFinalizations).where(and(
+                eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, attempted.id)));
+              const attemptedKind = nativePoolFailureKind(attemptedOwner?.failureCode);
+              if (!attemptedKind) continue;
+              const [proof] = await tx.select().from(heartbeatRunEvents).where(and(
+                eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, attempted.id),
+                eq(heartbeatRunEvents.agentId, run.agentId), isNull(heartbeatRunEvents.sourceInstanceId),
+                eq(heartbeatRunEvents.eventType, `ai_connection.${attemptedKind}_attributed`),
+                eq(heartbeatRunEvents.sourceEventId, `ai-connection-${attemptedKind}-attributed:${attempted.id}`),
+              ));
+              const p = record(proof?.payload);
+              if (p.schema !== `paperclip.ai-connection-${attemptedKind}-attribution.v1` || p.companyId !== run.companyId ||
+                  p.runId !== attempted.id || p.agentId !== run.agentId || p.poolId !== poolId || p.taskKey !== taskKey ||
+                  p.memberId !== attemptedSelection.memberId || p.connectionId !== attemptedBinding.connectionId ||
+                  p.grantId !== attemptedBinding.grantId || !isDeepStrictEqual(p.selection, attemptedSelection) ||
+                  typeof p.quotaIdentityHash !== "string" || typeof p.retryAt !== "string" ||
+                  !Number.isFinite(Date.parse(p.retryAt)) || typeof attemptedBinding.connectionId !== "string" ||
+                  typeof attemptedSelection.memberId !== "string") continue;
+              const matchingMember = pool.config.members.find(member => member.id === attemptedSelection.memberId &&
+                isDeepStrictEqual(member.binding, attemptedBinding));
+              if (!matchingMember) continue;
+              const rows = await tx.select().from(aiConnectionQuotaCooldowns).where(and(
+                eq(aiConnectionQuotaCooldowns.companyId, run.companyId),
+                sql`encode(sha256(convert_to(${aiConnectionQuotaCooldowns.credentialIdentity}, 'UTF8')), 'hex') = ${p.quotaIdentityHash}`,
+              ));
+              const cooldown = rows.sort((a, b) => b.retryAt.getTime() - a.retryAt.getTime())[0];
+              if (!cooldown) continue;
+              const deadline = Math.max(cooldown.retryAt.getTime(), Date.parse(p.retryAt));
+              if (deadline > now.getTime()) future.push(new Date(deadline));
+              else eligible.add(attemptedSelection.memberId);
+            }
+            if (eligible.size) {
+              transition = await router.transitionQuotaPin({ ...transitionInput,
+                attemptedMemberIds: pool.config.members.filter(member => !eligible.has(member.id)).map(member => member.id),
+              });
+              quotaCycleReset = transition.kind === "selected";
+            } else if (future.length) {
+              transition = { kind: "cooldown", retryAt: new Date(Math.min(...future.map(date => date.getTime()))) };
+            }
+          }
+          if (transition.kind === "cooldown") {
+            await tx.update(nativeRunFinalizations).set({ nextAttemptAt: transition.retryAt, updatedAt: now,
+              failureDetail: { ...current.failureDetail, replacementWaitingForCleanup: false, nextAction: `Wait for an eligible account to become available at ${transition.retryAt.toISOString()}.` },
+            }).where(eq(nativeRunFinalizations.runId, run.id));
+            cooling = true;
+            return false;
+          }
+          if (transition.kind !== "selected") return false;
+          quotaSelection = transition.selection;
         }
         if (task.status === "blocked") {
           // Restore only this failure's unchanged projection. The normal issue
@@ -590,14 +857,21 @@ export async function reconcileSafeNativeReplacements(
           if (!stoppedSession.retire()) throw new Error("native_replacement_stopped_session_changed");
           await appendHeartbeatRunEvent(tx as unknown as Db, {
             companyId: run.companyId, runId: run.id, agentId: run.agentId,
-            eventType: "native.stopped_text_turn_verified", stream: "system", level: "info",
-            message: "The previous runner and provider stopped. The interrupted turn had no external actions; any completion bookkeeping has a verified receipt.",
+            eventType: freshConversation ? "native.stopped_conversation_verified" : "native.stopped_text_turn_verified", stream: "system", level: "info",
+            message: freshConversation
+              ? "The previous runner and provider stopped. A fresh conversation will preserve completed actions without replaying them."
+              : "The previous runner and provider stopped. The interrupted turn had no external actions; any completion bookkeeping has a verified receipt.",
             payload: stoppedSession.evidence,
           });
         }
         const successorRunId = randomUUID();
-        const dueAt = new Date(now.getTime() + 30_000);
+        const dueAt = quotaSelection ? now : new Date(now.getTime() + 30_000);
         const predecessorContext = { ...record(run.contextSnapshot) };
+        if (quotaSelection) {
+          predecessorContext.aiRouterSelection = quotaSelection;
+          predecessorContext.aiPoolFailover = { sourceRunId: run.id, reason: poolFailure };
+          delete predecessorContext.aiConnection;
+        }
         // History comes from the failed source run. Consumed wake fields must
         // not grant this automatic retry fresh comment/resume authority.
         for (const key of [
@@ -636,6 +910,7 @@ export async function reconcileSafeNativeReplacements(
           id: successorRunId,
           companyId: run.companyId,
           agentId: run.agentId,
+          ...(quotaSelection ? { scopeKind: "issue" as const, issueId: task.id } : {}),
           invocationSource: "automation",
           triggerDetail: "system",
           status: "scheduled_retry",
@@ -645,10 +920,10 @@ export async function reconcileSafeNativeReplacements(
           contextSnapshot: context,
           retryOfRunId: run.id,
           scheduledRetryAt: dueAt,
-          scheduledRetryAttempt: current.attempt,
+          scheduledRetryAttempt: poolFailure ? run.scheduledRetryAttempt + 1 : current.attempt,
           scheduledRetryReason: NATIVE_SAFE_REPLACEMENT_REASON,
         });
-        options.failpoint?.("successor_inserted");
+        await options.failpoint?.("successor_inserted");
         await tx
           .update(agentWakeupRequests)
           .set({ runId: successorRunId })
@@ -658,7 +933,11 @@ export async function reconcileSafeNativeReplacements(
           .set({
             failureDetail: {
               ...current.failureDetail,
-              ...(stoppedSession ? { stoppedTextTurn: stoppedSession.evidence } : {}),
+              ...(quotaCycleReset ? { quotaCycleResetSuccessorRunId: successorRunId } : {}),
+              ...(quotaSelection ? { poolFailover: { sourceRunId: run.id, reason: poolFailure, selection: quotaSelection } } : {}),
+              ...(stoppedSession ? freshConversation
+                ? { stoppedConversation: stoppedSession.evidence }
+                : { stoppedTextTurn: stoppedSession.evidence } : {}),
               successorRunId,
               nextAction:
                 "Continue in the linked fresh provider session after the retry delay.",
@@ -725,12 +1004,22 @@ export async function reconcileSafeNativeReplacements(
         return true;
       });
       if (created) {
-        options.failpoint?.("lineage_committed");
+        await options.failpoint?.("lineage_committed");
         scheduled += 1;
+      } else if (!cooling && !stopFenced && Boolean(poolFailure)) {
+        await holdQuotaForOperator("quota_failover_unavailable", "Inspect account permissions, pool configuration, and the original run before choosing a recovery action.");
       }
     } catch (error) {
       if (options.failpoint) throw error;
-      pendingFailures++;
+      if (Boolean(poolFailure)) {
+        try {
+          await holdQuotaForOperator("quota_failover_reconciliation_failed", "Inspect the failed quota recovery and reconcile the original run before continuing.");
+        } catch (holdError) {
+          pendingFailures++;
+          logger.warn({ err: holdError, runId: run.id }, "Could not persist the quota recovery operator action");
+        }
+      }
+      else pendingFailures++;
       logger.warn(
         { runId: run.id },
         "Native replacement remains pending; another sweep will retry its durable decision",
@@ -742,5 +1031,5 @@ export async function reconcileSafeNativeReplacements(
     discovery.complete = false; discovery.rescan = true;
     throw new Error("native_replacement_decision_retry_required");
   }
-  return { scanned: selection.scanned, scheduled };
+  return { scanned: quotaCandidates.length + selection.scanned, scheduled };
 }

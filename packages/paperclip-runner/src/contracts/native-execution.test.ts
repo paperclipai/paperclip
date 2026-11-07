@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
-import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, type NativeExecutionInputV1 } from "./native-execution.js";
+import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V6, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, NATIVE_EXECUTION_INPUT_SCHEMA_V11, type NativeExecutionInputV1 } from "./native-execution.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -867,6 +867,16 @@ describe("Grok effort input v10", () => {
     runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     session: { ...input.session, driverKind: "acpx_runtime" },
     provider: { kind: "acpx", agent: "grok", model: "grok-4.7", permissionMode: "approve-all", profile } };
+  it("accepts a quota capability only for the exact native run and new input version", () => {
+    const capability = { schema: "paperclip.native-quota-failover.v1", ...input.binding,
+      poolId: "pool-1", taskKey: "task-1", memberId: "member-1" };
+    delete (capability as Partial<typeof capability>).executionWorkspaceId;
+    const value = { ...current, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V11, builtinQuotaPoolCapability: capability };
+    expect(parseNativeExecutionInput(value)).toMatchObject({ builtinQuotaPoolCapability: capability });
+    expect(() => parseNativeExecutionInput({ ...value, builtinQuotaPoolCapability: { ...capability, runId: "other-run" } })).toThrow("does not match");
+    expect(() => parseNativeExecutionInput({ ...value, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10 })).toThrow("builtinQuotaPoolCapability");
+    expect(JSON.stringify(buildNativeModelEnvelope(parseNativeExecutionInput(value)))).not.toContain("pool-1");
+  });
   it.each([undefined, true, false])("round trips Grok search policy %s and rejects it on other providers", grokDisableWebSearch => {
     expect(parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokDisableWebSearch } }).provider)
       .toMatchObject(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch });

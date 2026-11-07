@@ -485,13 +485,18 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.insert(heartbeatRuns).values({
       id: sourceRunId, companyId, agentId, status: "failed", errorCode: "provider_quota",
       finishedAt: new Date("2026-04-11T12:00:00.000Z"), contextSnapshot: { issueId },
-      scheduledRetryAttempt: kind === "exhausted" ? 2 : 0,
+      scheduledRetryAttempt: kind === "exhausted" ? 4 : 0,
       resultJson: kind === "exhausted" ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } : null,
     });
     await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
-    expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
+    if (kind === "unknown") {
+      expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
+    } else {
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, sourceRunId)))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ payload: expect.objectContaining({ scheduledRetryAttempt: 4, maxAttempts: 4 }) })]));
+    }
   });
 
   it("wakes a cross-agent review participant for provider quota monitors", async () => {

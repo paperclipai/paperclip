@@ -1,3 +1,4 @@
+import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -538,6 +539,7 @@ export function accessService(db: Db) {
     grantedByUserId: string | null,
   ) {
     return memberAccessTransaction(async (tx) => {
+      if (data.status !== undefined) await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId });
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}
@@ -696,6 +698,7 @@ export function accessService(db: Db) {
 
   async function archiveMember(companyId: string, memberId: string, input: MemberArchiveInput = {}) {
     return memberAccessTransaction(async (tx) => {
+      await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId });
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}
@@ -836,6 +839,11 @@ export function accessService(db: Db) {
     const target = new Set(companyIds);
 
     await memberAccessTransaction(async (tx) => {
+      const observed = await tx.select({ companyId: companyMemberships.companyId }).from(companyMemberships)
+        .where(and(eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId)));
+      for (const companyId of [...new Set([...target, ...observed.map(row => row.companyId)])].sort()) {
+        await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId });
+      }
       // Serialize every company-access removal/reactivation with personal OAuth
       // completion, which locks the same membership row before writing secrets.
       const existing = await tx
@@ -844,6 +852,10 @@ export function accessService(db: Db) {
         .where(and(eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId)))
         .orderBy(companyMemberships.companyId, companyMemberships.id)
         .for("update");
+      const observedCompanies = new Set([...target, ...observed.map(row => row.companyId)]);
+      if (existing.some(row => !observedCompanies.has(row.companyId))) {
+        throw Object.assign(new Error("Company membership changed during access update"), { code: "55P03" });
+      }
       const existingByCompany = new Map(existing.map((row) => [row.companyId, row]));
       const toArchive = existing.filter((row) => !target.has(row.companyId) && row.status !== "archived");
       if (toArchive.length > 0 && options.actorUserId && options.actorUserId === userId) {
@@ -937,6 +949,7 @@ export function accessService(db: Db) {
     status: "pending" | "active" | "suspended" = "active",
   ) {
     return db.transaction(async tx => {
+      if (principalType === "user") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId });
       const existing = await tx.select().from(companyMemberships).where(and(
         eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, principalType),
         eq(companyMemberships.principalId, principalId),
@@ -1131,6 +1144,7 @@ export function accessService(db: Db) {
     },
   ) {
     return memberAccessTransaction(async (tx) => {
+      if (data.status !== undefined) await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId });
       await tx.execute(sql`
         select ${companyMemberships.id}
         from ${companyMemberships}

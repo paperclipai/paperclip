@@ -28,6 +28,8 @@ pub fn classify_generated_acpx_tool_operation(kind: &str, title: &str) -> &'stat
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeneratedAcpxSidecarCommand {
     Initialize,
+    SessionPrepare,
+    SessionCommit,
     SessionOpen,
     RunAttach,
     TurnStart,
@@ -49,6 +51,8 @@ impl GeneratedAcpxSidecarCommand {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Initialize => "initialize",
+            Self::SessionPrepare => "session.prepare",
+            Self::SessionCommit => "session.commit",
             Self::SessionOpen => "session.open",
             Self::RunAttach => "run.attach",
             Self::TurnStart => "turn.start",
@@ -89,3 +93,7 @@ pub enum GeneratedAcpxSidecarEventType {
     #[serde(rename = "runtime.goal")]
     RuntimeGoal,
 }
+
+pub const GENERATED_ACPX_PROVIDER_PREPARATION_SCHEMA: &str =
+    "paperclip.acpx-provider-preparation.v1";
+pub const GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA: &str = "paperclip.native-quota-failover.v1";

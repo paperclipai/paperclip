@@ -408,10 +408,13 @@ import {
   nativeSessionFailureDisposition,
   nativeFailedRunRetryStateIsSafe,
   verifyStoppedNativeSessionForContinuation,
+  verifyStoppedNativeSessionForReplacement,
   nativePreProviderRetryAfterCleanupStateIsSafe,
   reconcileRetainedNativeSessionCleanup,
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
+  nativeProviderQuotaFailureFromEvent,
+  nativeProviderAuthenticationFailureFromEvent,
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
@@ -6555,7 +6558,7 @@ describe("retained native cleanup activation", () => {
 describe("stopped native conversation physical cleanup", () => {
   it.each(["codex", "acpx"].flatMap(provider => [
     "stopped", "provider_alive", "worker_alive", "missing_receipt", "wrong_receipt", "new_launch",
-    "foreign_run", "foreign_company", "foreign_runner", "remote", "unreleased", "changed_state", "changed_pid", "symlink", "startup_intent", "pending_identity", "wrong_schema", "replacement", "replacement_alive", "agent_alive", "checkpoint_owner_alive", "diagnostic_owner_alive", "normalized_session_receipt",
+    "foreign_run", "foreign_company", "foreign_runner", "remote", "unreleased", "changed_state", "changed_pid", "symlink", "startup_intent", "pending_identity", "wrong_schema", "replacement", "replacement_alive", "agent_alive", "checkpoint_owner_alive", "diagnostic_owner_alive", "normalized_session_receipt", "quota_stopped",
   ].map(mode => ({ provider, mode }))))("$provider $mode", async ({ provider, mode }) => {
     const base = await mkdtemp(join(tmpdir(), "native-conversation-cleanup-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -6621,12 +6624,14 @@ describe("stopped native conversation physical cleanup", () => {
       await writeFile(runnerPath, JSON.stringify(durableRunnerState({ ...identity, ...(mode === "foreign_run" ? { runId: "foreign" } : {}) }, "ready")));
       await writeFile(join(root, `runner/${provider}-provider-state.json`), JSON.stringify(providerState));
       if (mode === "symlink") { await rename(runnerPath, join(base, "external")); await symlink(join(base, "external"), runnerPath); }
-      const proof = await verifyStoppedNativeSessionForContinuation(db, run);
-      if (["stopped", "changed_state", "changed_pid", "replacement", "normalized_session_receipt"].includes(mode)) {
+      const proof = mode === "quota_stopped"
+        ? await verifyStoppedNativeSessionForReplacement(db, { ...run, errorCode: "native_provider_usage_limit" })
+        : await verifyStoppedNativeSessionForContinuation(db, run);
+      if (["stopped", "changed_state", "changed_pid", "replacement", "normalized_session_receipt", "quota_stopped"].includes(mode)) {
         expect(proof).not.toBeNull();
         if (mode === "changed_state") await writeFile(runnerPath, "{}");
         const kill = mode === "changed_pid" ? vi.spyOn(process, "kill").mockReturnValue(true) : null;
-        try { expect(proof!.retire()).toBe(["stopped", "replacement", "normalized_session_receipt"].includes(mode)); } finally { kill?.mockRestore(); }
+        try { expect(proof!.retire()).toBe(["stopped", "replacement", "normalized_session_receipt", "quota_stopped"].includes(mode)); } finally { kill?.mockRestore(); }
         expect(await readFile(join(root, `runner/${provider}-provider-state.json`), "utf8")).toBe(JSON.stringify(providerState));
       } else expect(proof).toBeNull();
     } finally {
@@ -13820,6 +13825,20 @@ describe("native session bounded recovery", () => {
     });
   });
 
+  it("normalizes only authoritative exact provider authentication failures", () => {
+    const event = { sourceKind: "runner" as const, eventType: "turn.failed" as const,
+      payload: { status: "failed", error: { codexErrorInfo: "unauthorized", message: "Private account metadata" } } };
+    expect(nativeProviderAuthenticationFailureFromEvent(event)).toMatchObject({ category: "authentication", providerCode: "unauthorized" });
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, sourceKind: "control_plane" })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, eventType: "tool.execution.completed" })).toBeNull();
+    for (const code of ["model_not_found", "invalid_request", "unknown"]) expect(nativeProviderAuthenticationFailureFromEvent({
+      ...event, payload: { status: "failed", error: { codexErrorInfo: code, message: "unauthorized" } } })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, payload: { status: "failed", error: { message: "unauthorized" } } })).toBeNull();
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_provider_auth_failed").phase).toBe("terminal_failure");
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(2, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(3, new Date(), "native_runner_process_exited")).toMatchObject({ phase: "terminal_failure", failureCode: "native_provider_runner_failed" });
+  });
   it("stops retries only for an authenticated provider usage-limit terminal", () => {
     const event = {
       sourceKind: "runner" as const,
@@ -20144,4 +20163,19 @@ describe("HTTP Stop during remote runner staging", () => {
       expect(dispatches).toBe(0);
     } finally { release(); await outcome; await stopping; await bundle.transport.detachControllerForRestart?.().catch(() => {}); await temporary.cleanup(); await rm(root, { recursive: true, force: true }); }
   }, 120000);
+});
+
+
+describe("native quota event normalization", () => {
+  it("normalizes an exact runner terminal code and holds arbitrary error prose", () => {
+    const event = { sourceKind: "runner", eventType: "turn.failed", payload: {
+      status: "failed", error: { codexErrorInfo: "usageLimitExceeded", message: "private account details" },
+    } } as Parameters<typeof nativeProviderQuotaFailureFromEvent>[0];
+    expect(nativeProviderQuotaFailureFromEvent(event)).toMatchObject({
+      provider: "openai", category: "quota_exhausted", providerCode: "usageLimitExceeded",
+    });
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, payload: { status: "failed", error: { message: "usage limit exceeded" } } })).toBeNull();
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, eventType: "tool.execution.completed" })).toBeNull();
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, sourceKind: "control_plane" })).toBeNull();
+  });
 });

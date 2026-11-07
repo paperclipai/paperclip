@@ -203,6 +203,50 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it("holds the provider until the lifetime-registration boundary commits", async () => {
+    const fixture = await hostFixture();
+    const gate = deferred<void>();
+    const reached = deferred<readonly [number, number, number]>();
+    const openRuntime = vi.fn(async () => runtimePort({ getStatus: async () => ({ models: { currentModelId: "explicit-test-model" } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }) }));
+    const opening = AcpxRuntimeHost.open({ ...fixture.options, agent: "cursor", model: "explicit-test-model", permissionMode: "approve-all", environment: { CURSOR_API_KEY: "test" } }, {
+      ...fixture.dependencies({ openRuntime }),
+      beforeProviderStart: async candidates => { reached.resolve(candidates); await gate.promise; },
+    });
+    const candidates = await reached.promise;
+    expect(new Set(candidates).size).toBe(3);
+    expect(openRuntime).not.toHaveBeenCalled();
+    gate.resolve();
+    const host = await opening;
+    expect(openRuntime).toHaveBeenCalledOnce();
+    await host.close({ reason: "registration boundary verified" });
+  });
+
+  it("does not launch a provider if lifetime registration fails", async () => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "cursor", model: "explicit-test-model", permissionMode: "approve-all", environment: { CURSOR_API_KEY: "test" } }, {
+      ...fixture.dependencies({ openRuntime }),
+      beforeProviderStart: async () => { throw new Error("registration failed"); },
+    })).rejects.toThrow("registration failed");
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("does not launch a provider when the registration boundary is cancelled", async () => {
+    const fixture = await hostFixture();
+    const gate = deferred<void>();
+    const reached = deferred<void>();
+    const controller = trackedAdmissionController();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const opening = AcpxRuntimeHost.open({ ...fixture.options, agent: "cursor", model: "explicit-test-model", permissionMode: "approve-all", environment: { CURSOR_API_KEY: "test" }, signal: controller.signal }, {
+      ...fixture.dependencies({ openRuntime }),
+      beforeProviderStart: async () => { reached.resolve(); await gate.promise; },
+    });
+    await reached.promise;
+    controller.abort(new Error("registration cancelled"));
+    gate.reject(new Error("registration cancelled"));
+    await expect(opening).rejects.toThrow("registration cancelled");
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
   it.each(["copilot", "cursor"] as const)("reports missing %s credentials as credential admission", async agent => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn(async () => runtimePort());

@@ -1,3 +1,4 @@
+import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -9,6 +10,8 @@ import {
   companySecrets,
   companySecretVersions,
   companyMemberships,
+  connectionGrants,
+  toolConnections,
   environments,
   heartbeatRuns,
   issues,
@@ -971,6 +974,13 @@ function assertSelectableProviderConfig(config: {
 }
 
 export function secretService(db: Db | DbTransaction) {
+  async function reopenForAiSecret(tx: Db, companyId: string, secretId: string) {
+    const [referenced] = await tx.select({ id: toolConnections.id }).from(connectionGrants)
+      .innerJoin(toolConnections, and(eq(toolConnections.id, connectionGrants.connectionId), eq(toolConnections.companyId, connectionGrants.companyId)))
+      .where(and(eq(connectionGrants.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"),
+        sql`${connectionGrants.credentialSecretRefs} @> ${JSON.stringify([{ secretId }])}::jsonb`)).limit(1);
+    if (referenced) await reopenNativeQuotaPoolWaits(tx, { companyId, connectionId: referenced.id });
+  }
   const authorization = authorizationService(db);
 
   type NormalizeEnvOptions = {
@@ -2563,6 +2573,7 @@ export function secretService(db: Db | DbTransaction) {
       // that risk: every caller now locks the parent row before the version
       // rows, so a lock cycle between the two tables cannot form.
       return await db.transaction(async (tx) => {
+        if (!input.preserveAiSessionEpoch) await reopenForAiSecret(tx as unknown as Db, secret.companyId, secret.id);
         const updated = await tx
           .update(companySecrets)
           .set({
@@ -2720,7 +2731,9 @@ export function secretService(db: Db | DbTransaction) {
       );
     }
 
-    return db
+    return db.transaction(async (tx) => {
+      if (patch.status !== undefined && patch.status !== secret.status) await reopenForAiSecret(tx as unknown as Db, secret.companyId, secret.id);
+      return tx
       .update(companySecrets)
       .set({
         key: deleting ? `${secret.key}__deleted__${secret.id}` : nextKey,
@@ -2740,6 +2753,7 @@ export function secretService(db: Db | DbTransaction) {
       .where(eq(companySecrets.id, secret.id))
       .returning()
       .then((rows) => rows[0] ?? null);
+    });
   }
 
   function collectTargetIds(
@@ -3417,7 +3431,9 @@ export function secretService(db: Db | DbTransaction) {
     const providerId = secret.provider as SecretProvider;
     const provider = getSecretProvider(providerId);
     if (secret.status !== "deleted") {
-      await db
+      await db.transaction(async tx => {
+        await reopenForAiSecret(tx as unknown as Db, secret.companyId, secret.id);
+        await tx
         .update(companySecrets)
         .set({
           key: `${secret.key}__deleted__${secret.id}`,
@@ -3427,6 +3443,7 @@ export function secretService(db: Db | DbTransaction) {
           updatedAt: new Date(),
         })
         .where(eq(companySecrets.id, secretId));
+      });
     }
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)

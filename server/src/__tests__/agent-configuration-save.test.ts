@@ -6,9 +6,12 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, agentConfigRevisions, activityLog, builtInManagedResources, companies, companyMemberships, connectionGrants, createDb, environments, heartbeatRuns, issues, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
+import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { fenceLegacyQuotaPrestartStop } from "../services/heartbeat/quota-prestart-fence.js";
 import * as environmentTests from "../services/agent-environment-test.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -59,7 +62,7 @@ describePostgres("agent configuration save latency", () => {
     }));
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("A save must not contact the provider"));
     app = express(); app.use(express.json());
-    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId, companyIds: [companyId] }; next(); });
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: req.header("x-test-user") ?? userId, companyIds: [companyId] }; next(); });
     app.use("/api", agentRoutes(db));
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
       res.status(error.status ?? 500).json({ error: error.message });
@@ -69,6 +72,73 @@ describePostgres("agent configuration save latency", () => {
   afterAll(async () => {
     await database?.cleanup(); vi.unstubAllEnvs();
     if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  it("rejects a Codex-only pool for a legacy Claude adapter", async () => {
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account },
+      profile: { provider: "codex" as const, model: "gpt-5.6-sol" } };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
+      config: { name: "Failover", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, userId);
+    await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toMatch(/no compatible harness/i);
+    expect((await readAgent()).runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it("allows a legacy Claude agent to bind a pool containing a permitted Claude account", async () => {
+    const claude = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude account", loginSessionId: "fixture", agentIds: [agent.id], allAgents: false,
+    }, "fixture-claude-key");
+    const member = { id: randomUUID(), binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, ...claude },
+      profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } };
+    const pool = await aiConnectionRouterService(db).save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: agent.companyId,
+      config: { name: "Claude pool", enabled: true, mode: "failover", thresholdPercent: 90, members: [member] } }, userId);
+    await db.update(agents).set({ adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual({ mode: "router", connectionId: pool.id });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns success and audits a user Stop that fences a pending legacy pool retry", async () => {
+    const [issue] = await db.insert(issues).values({ companyId: agent.companyId, title: "Stop pool retry", status: "in_progress", assigneeAgentId: agent.id }).returning();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: agent.companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
+      status: "cancelled", errorCode: "ai_connection_pool_exhausted", finishedAt: new Date(),
+      runnerProfileJson: { legacyQuotaPrestartFence: { schema: "paperclip.legacy-quota-prestart.v1", companyId: agent.companyId, agentId: agent.id, runId, state: "preparing" } },
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } });
+    const requestId = randomUUID();
+    const response = await request(app).post(`/api/heartbeat-runs/${runId}/cancel`).send({ cancellationRequestId: requestId });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(saved?.resultJson?.legacyQuotaStopRequested).toMatchObject({ requestId, userId, acknowledgedAt: expect.any(String) });
+    expect((await request(app).post(`/api/heartbeat-runs/${runId}/cancel`).send({ cancellationRequestId: requestId })).status).toBe(200);
+    expect((await request(app).post(`/api/heartbeat-runs/${runId}/cancel`).set("x-test-user", randomUUID()).send({ cancellationRequestId: requestId })).status).toBe(409);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, runId), eq(activityLog.action, "heartbeat.cancelled")))).toHaveLength(2);
+  });
+
+  it("lets another authorized operator finish a correlated Stop interrupted after the fence", async () => {
+    const [issue] = await db.insert(issues).values({ companyId: agent.companyId, title: "Interrupted Stop", status: "in_progress", assigneeAgentId: agent.id }).returning();
+    const runId = randomUUID(), successorId = randomUUID(), firstRequest = randomUUID(), secondRequest = randomUUID(), secondUser = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: agent.companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
+      status: "cancelled", errorCode: "ai_connection_pool_exhausted", finishedAt: new Date(),
+      runnerProfileJson: { legacyQuotaPrestartFence: { schema: "paperclip.legacy-quota-prestart.v1", companyId: agent.companyId, agentId: agent.id, runId, state: "preparing" } },
+      resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } } });
+    await db.insert(heartbeatRuns).values({ id: successorId, companyId: agent.companyId, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "scheduled_retry", retryOfRunId: runId });
+    expect(await fenceLegacyQuotaPrestartStop(db, { companyId: agent.companyId, issueId: issue.id, runId, requestId: firstRequest, userId })).toMatchObject({ kind: "successor" });
+    const reused = await request(app).post(`/api/heartbeat-runs/${runId}/cancel`).set("x-test-user", secondUser).send({ cancellationRequestId: firstRequest });
+    expect(reused.status, JSON.stringify(reused.body)).toBe(409);
+    const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successorId));
+    expect(pending?.status).toBe("scheduled_retry");
+    const response = await request(app).post(`/api/heartbeat-runs/${runId}/cancel`).set("x-test-user", secondUser).send({ cancellationRequestId: secondRequest });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(source?.resultJson?.legacyQuotaStopRequested).toMatchObject({ requestId: firstRequest, userId, acknowledgedAt: expect.any(String), attempts: expect.arrayContaining([
+      expect.objectContaining({ requestId: firstRequest, userId }), expect.objectContaining({ requestId: secondRequest, userId: secondUser }),
+    ]) });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successorId));
+    expect(successor?.status).toBe("cancelled");
   });
 
   it("saves an installed healthy account without allocating a computer or sending a prompt", async () => {

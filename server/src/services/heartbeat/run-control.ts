@@ -1,4 +1,6 @@
+import { nativePoolFailureKind } from "../native-runtime/native-pool-failure.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { acknowledgeLegacyQuotaPrestartStop, fenceLegacyQuotaPrestartStop, isLegacyQuotaPrestartStopCandidate } from "./quota-prestart-fence.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
@@ -28,6 +30,7 @@ import {
   nativeRetryCancellationCommitCondition,
   nativeRetryCancellationEligible,
   claimCancellationRequest,
+  fenceQuotaReplacementStop,
   rethrowNativeCancellationLockConflict,
 } from "../native-runtime/native-cancellation-request.js";
 import {
@@ -1218,10 +1221,41 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     reason: string,
     options: CancelRunOptions,
     committedBudgetCancellation = false,
-  ) {
+    quotaLineage = new Set<string>(),
+  ): Promise<typeof heartbeatRuns.$inferSelect | null> {
     let run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (options.expectedStatus && run.status !== options.expectedStatus) return null;
+
+    if (!committedBudgetCancellation && !options.expectedStatus && options.resultJson?.cancelledByActorType === "user") {
+      if (quotaLineage.has(runId) || quotaLineage.size >= 100) throw conflict("Invalid quota replacement lineage");
+      if (isLegacyQuotaPrestartStopCandidate(run)) {
+        const actor = options.cancellationRequestedByUserId ?? (typeof options.resultJson?.cancelledByUserId === "string" ? options.resultJson.cancelledByUserId : null);
+        const correlation = { companyId: run.companyId, runId, requestId: options.cancellationRequestId, userId: actor };
+        const legacyStop = await fenceLegacyQuotaPrestartStop(db, { ...correlation, issueId: run.issueId });
+        if (legacyStop?.kind === "successor") {
+          quotaLineage.add(runId);
+          const { cancellationRequestId: _requestId, cancellationRequestedByUserId: _userId, ...successorOptions } = options;
+          const stopped = await cancelRun(legacyStop.run.id, reason, successorOptions, false, quotaLineage);
+          if (stopped && isHeartbeatRunTerminalStatus(stopped.status) &&
+              (!stopped.startedAt || parseObject(stopped.resultJson?.executionCancellation).state === "acknowledged" ||
+                parseObject(stopped.resultJson?.nativeCancellation).dispatchState === "acknowledged"))
+            await acknowledgeLegacyQuotaPrestartStop(db, correlation);
+          return stopped;
+        }
+        if (legacyStop?.kind === "fenced") return await getRun(runId);
+      }
+      const quotaStop = await fenceQuotaReplacementStop(db, run, options.cancellationRequestId,
+        options.cancellationRequestedByUserId ?? null);
+      if (quotaStop?.kind === "successor") {
+        quotaLineage.add(runId);
+        return cancelRun(quotaStop.run.id, reason, options, false, quotaLineage);
+      }
+      if (quotaStop?.kind === "fenced") {
+        // The source remains failed; no provider stop or cancellation receipt was established.
+        throw conflict("Automatic provider continuation was stopped; the original run remains failed", { runId });
+      }
+    }
 
 
     const attribution = {
@@ -1242,6 +1276,20 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           eq(heartbeatRuns.companyId, run!.companyId))).for("update");
         if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
         run = current;
+        // Provider failure can commit after the initial read. Release these locks
+        // and retry through the quota fence, which takes issue -> coordinator ->
+        // run locks and also observes any already-committed successor.
+        if (!options.expectedStatus && options.resultJson?.cancelledByActorType === "user" && isLegacyQuotaPrestartStopCandidate(current))
+          return "quota_recheck" as const;
+        if (!options.expectedStatus && options.resultJson?.cancelledByActorType === "user"
+          && current.runtimeMode === "native" && current.status === "failed" && current.nativeIssueId) {
+          if (current.nativeIssueId !== handoffIssueId) return "quota_recheck" as const;
+          const [owner] = await tx.select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+            .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId, runId),
+              eq(nativeRunFinalizations.companyId, current.companyId), eq(nativeRunFinalizations.issueId, current.nativeIssueId)))
+            .for("update", { noWait: true }).limit(1);
+          if (owner?.phase === "terminal_failure" && nativePoolFailureKind(owner.failureCode)) return "quota_recheck" as const;
+        }
         if (options.cancellationRequestId) {
           run = await claimCancellationRequest(tx as unknown as Db, runId, run!.companyId, options.cancellationRequestId,
             options.cancellationRequestedByUserId ?? null);
@@ -1291,7 +1339,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           sourceRunId: runId, includeUnboundTerminalIntent: Boolean(fenced && ownsTask), reason, publications });
         return true;
       });
-      let supersessionApplied = false;
+      let supersessionApplied: boolean | "quota_recheck" = false;
       for (let attempt = 0; ; attempt++) {
         const previousRun = run;
         try {
@@ -1311,6 +1359,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
         }
       }
+      if (supersessionApplied === "quota_recheck") return cancelRun(runId, reason, options, false, quotaLineage);
       publications.forEach(publishActivity);
       if (!supersessionApplied) return null;
     }

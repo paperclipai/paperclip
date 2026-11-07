@@ -27,6 +27,18 @@ describe("built-in provider launch preparation", () => {
     expect(frozen.settings).toEqual({});
   });
 
+  it("binds the quota capability to the run and rejects environment changes", () => {
+    const capability = { schema: "paperclip.native-quota-failover.v1" as const, companyId: "company", agentId: "agent", runId: "run", issueId: "issue", poolId: "pool", taskKey: "task", memberId: "member" };
+    const options = { provider: "acpx" as const, acpxAgent: "grok" as const, builtinQuotaPoolCapability: capability };
+    const selected = runnerProviderLaunchRequirements(options, requirements.identity, { model: "grok-4.7" }, null, "");
+    const launch = createRunnerProviderLaunch(selected, environment);
+    const prepared = { configurationId: "quota", requirementsDigest: runnerLaunchRequirementsDigest(selected), provider: launch };
+    expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
+    expect(() => validatePreparedRunnerLaunch(selected, { ...prepared, provider: { ...launch, builtinQuotaPoolCapability: { ...capability, memberId: "other" } } })).toThrow();
+    expect(() => runnerProviderLaunchRequirements({ ...options, builtinQuotaPoolCapability: { ...capability, runId: "other" } }, requirements.identity, {}, null, "")).toThrow("runner_quota_capability_binding_mismatch");
+    const legacy = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok" }, requirements.identity, { model: "grok-4.7" }, null, "");
+    expect(() => validatePreparedRunnerLaunch(legacy, { configurationId: "legacy", requirementsDigest: runnerLaunchRequirementsDigest(legacy), provider: { ...createRunnerProviderLaunch(legacy, environment), builtinQuotaPoolCapability: capability } })).toThrow();
+  });
   it("preserves probe project-instruction suppression through a prepared launch", () => {
     const selected = runnerProviderLaunchRequirements({ provider: "codex", disableCodexProjectInstructions: true,
       disableCodexWebSearch: true }, requirements.identity,

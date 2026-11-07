@@ -100,6 +100,17 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
+  /**
+   * Evidence for fresh-context continuation after the adapter returned. The
+   * owned provider stopped and local workspace finalization completed. This
+   * does not authorize action replay or prove external shell effects settled.
+   * Absence means settlement was not established by this adapter.
+   */
+  executionSettlement?: {
+    providerStopped: true;
+    workspaceSettled: true;
+    actionOutcomes: "unknown";
+  };
   /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
   executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false } | {
     kind: "interrupted";
