@@ -998,10 +998,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     for (const mode of ["abort", "storage_failure"] as const) {
       const controller = new AbortController(), failure = new Error("Saved object unavailable");
       let observedSignal: AbortSignal | undefined;
+      let observedBody: Readable | undefined;
       const interruptedStorage: StorageService = { ...storage, getObject: async (companyId, objectKey, options) => {
         observedSignal = options?.signal;
         if (mode === "storage_failure") throw failure;
         const object = await storage.getObject(companyId, objectKey, options);
+        observedBody = object.stream;
         controller.abort(new DOMException("Saved read cancelled", "AbortError"));
         return object;
       } };
@@ -1010,9 +1012,15 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       const access = await remoteFiles.open({ companyId: ids.company, workspaceId: reserved.id, signal: controller.signal })
         .catch(error => { readError = error; return null; });
       await access?.close();
-      expect(observedSignal).toBe(controller.signal);
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(observedSignal?.aborted).toBe(controller.signal.aborted);
       if (mode === "storage_failure") expect(readError).toBe(failure);
-      else expect(readError).toMatchObject({ name: "AbortError" });
+      else {
+        expect(observedSignal?.reason).toBe(controller.signal.reason);
+        expect(readError).toMatchObject({ name: "AbortError" });
+        expect(observedBody?.destroyed).toBe(true);
+        expect(observedBody?.closed).toBe(true);
+      }
       expect(await fs.readdir(savedTemp)).toEqual([]);
     }
     const cancelled = new DOMException("Already cancelled", "AbortError");
