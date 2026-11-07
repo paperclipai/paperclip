@@ -1076,7 +1076,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
-  it("selects the answer retry from the real delivery producer and heartbeat queue", async () => {
+  it.each([false, true])("selects the answer retry from the real delivery producer and heartbeat queue (legacy context=%s)", async legacy => {
     const f = await fixture();
     await db.update(agents).set({ adapterType: "paperclip_runner", status: "idle",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
@@ -1093,7 +1093,12 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await interactions.answerQuestions(issue, interaction.id, { answers: [{ questionId: "choice", optionIds: ["yes"] }] },
       { userId: "local-board" });
     const heartbeat = heartbeatService(db);
-    await questionResponseDeliveryService(db, { heartbeat }).deliver(interaction.id);
+    const answerHeartbeat = legacy ? { ...heartbeat, wakeup: (...[agentId, options]: Parameters<typeof heartbeat.wakeup>) => {
+      const contextSnapshot = { ...options?.contextSnapshot };
+      delete contextSnapshot.mutation;
+      return heartbeat.wakeup(agentId, { ...options, contextSnapshot });
+    } } : heartbeat;
+    await questionResponseDeliveryService(db, { heartbeat: answerHeartbeat }).deliver(interaction.id);
     const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
       .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id));
     expect(delivery).toMatchObject({ status: "fallback_queued", deliveryMode: "wake_fallback" });

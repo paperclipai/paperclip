@@ -311,6 +311,10 @@ its own bounded continuation retry. A denied authorization, Stop, pause or block
 dependency cannot use this wait as permission to execute. No retry budget resets,
 new background poller or provider replay are introduced.
 
+Question-answer delivery records its interaction marker in the wake context.
+Queue enrichment backfills that marker for older question-answer payloads only.
+Plan confirmations retain their existing admission and handoff lifecycle.
+
 An answered retry proves at most two saved pre-dispatch failure ancestors before
 reading the original user-owned answer receipt. It rechecks that receipt, its
 original delivery target and current chat permissions. The original receipt and
