@@ -2058,7 +2058,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       remote: { providerLeaseId: "original-provider-lease", remoteCwd: "/original" },
     };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
+      new Error("native_remote_recovery_lease_mismatch: stage=workspace_preparation field=workspace_reference"));
     expect(acquire).not.toHaveBeenCalled();
     expect(await leases(input.run.id)).toHaveLength(0);
     expect(input.nativeRunnerPreparationSpans).toMatchObject([{ name: "environment.acquire", outcome: "failed" }]);
