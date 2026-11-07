@@ -8502,10 +8502,15 @@ export function resolveRunnerdCodexSkillInputs(
   });
 }
 
-/** Controller admission budget; ordinary command and turn deadlines are independent. */
+/**
+ * Controller admission budget; ordinary command and turn deadlines are independent.
+ * A cold ACPX Claude session.open timed out at the old 30 s bound on a loaded
+ * host (1-minute load 17-43), so it shares Pi's and OpenCode's 60 s cold budget.
+ * The runner's sidecar session.open bound matches.
+ */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
   if (!coldProcess) return 30_000;
-  return (provider === "acpx" && agent === "pi") || provider === "opencode" ? 60_000 : 30_000;
+  return (provider === "acpx" && (agent === "pi" || agent === "claude")) || provider === "opencode" ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {
