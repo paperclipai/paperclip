@@ -58,7 +58,11 @@ function boundedText(
     : `${candidate.slice(0, maxCharacters)}...[truncated]`;
 }
 
-export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | null {
+export function runtimeRequestKind(method: string, params?: Record<string, unknown>): HarnessRuntimeRequestKind | null {
+  if (method === "mcpServer/elicitation/request" && record(params?._meta).codex_approval_kind === "mcp_tool_call"
+    && params?.mode === "form" && record(params.requestedSchema).type === "object"
+    && Object.keys(record(record(params.requestedSchema).properties)).length === 0
+    && Object.keys(record(params.requestedSchema)).sort().join(",") === "properties,type") return "permission_approval";
   if (
     method === "item/commandExecution/requestApproval" ||
     method === "execCommandApproval"
@@ -451,6 +455,11 @@ export function runtimeRequestProtocolPayload(request: HarnessRuntimeRequest): R
   if (request.method === "session/request_permission") {
     return { ...request, schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2, type: "permission", choices: request.details.choices };
   }
+  if (request.requestKind === "permission_approval" && request.method === "mcpServer/elicitation/request") {
+    return { schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2, requestKind: "permission_approval", requestId: request.requestId,
+      type: "permission", status: request.status, prompt: request.prompt, choices: request.details.choices,
+      details: request.details, origin: request.origin, turnId: request.turnId, itemId: request.itemId };
+  }
   if (request.input !== undefined) {
     return {
       schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
@@ -575,6 +584,10 @@ export function runtimeRequestResponse(
       cancel: "cancel",
     } as const;
     return { decision: decisions[resolution.action] };
+  }
+  if (request.requestKind === "permission_approval" && request.method === "mcpServer/elicitation/request") {
+    if (!["accept", "decline", "cancel"].includes(resolution.action)) throw new Error("MCP tool approval requires a one-time decision");
+    return { action: resolution.action, content: null, _meta: null };
   }
   if (request.requestKind === "permission_approval") {
     if (resolution.action === "submit") {

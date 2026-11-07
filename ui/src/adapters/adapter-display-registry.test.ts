@@ -3,9 +3,23 @@ import { describe, expect, it } from "vitest";
 import { agentDisplayAdapterType, getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
 
 describe("adapter display registry", () => {
+  it("shows a pending setup choice without changing the saved execution adapter", () => {
+    const agent = { adapterType: "process", adapterConfig: {}, pauseReason: "setup", metadata: {
+      setupAdapterPending: true,
+      setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" },
+    } };
+    expect(getAdapterLabel(agentDisplayAdapterType(agent))).toBe("Google Antigravity");
+    expect(agent.adapterType).toBe("process");
+    expect(agentDisplayAdapterType({ ...agent, pauseReason: "manual" })).toBe("process");
+  });
+  it("keeps a configured Antigravity runner branded as Google Antigravity", () => {
+    const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" } });
+    expect(getAdapterLabel(type)).toBe("Google Antigravity");
+  });
   it.each([
     ["openai_dot", "OpenAI Dot"],
     ["grok_bot", "Grok Bot"],
+    ["muse", "Muse — Personal agent"],
   ])("keeps saved %s external runners branded by provider", (provider, label) => {
     const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } });
     expect(getAdapterDisplay(type).label).toBe(label);
@@ -18,6 +32,7 @@ describe("adapter display registry", () => {
     }
   });
   it("uses user-facing labels without the legacy local qualifier for built-in adapters", () => {
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } })).toBe("opencode_local");
     expect(getAdapterLabel("codex_local")).toBe("Codex");
     expect(getAdapterLabel("claude_local")).toBe("Claude Code");
     expect(getAdapterLabel("acpx_local")).toBe("ACPX (retired)");
@@ -29,6 +44,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi" } })).toBe("pi_local");
 
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",

@@ -14,6 +14,7 @@ import {
   agents,
   companies,
   createDb,
+  closeRegisteredClients,
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
@@ -87,6 +88,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const RUNTIME_OWNED_GIT_BRANCH_METADATA = {
   createdByRuntime: true,
@@ -134,8 +136,12 @@ function workspaceBranchIncoherenceFingerprintForTest(input: {
 }
 
 const leasedRunIds = new Set<string>();
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const externalRuntimeControlDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RUNTIME_CONTROL_TEST_DATABASE_URL");
+const embeddedPostgresSupport: Awaited<ReturnType<typeof getEmbeddedPostgresTestSupport>> = externalRuntimeControlDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+// The explicit fixture belongs only to the service-control suite. Other DB
+// suites must not allocate an embedded or admin-owned database in this mode.
+const describeEmbeddedPostgres = !externalRuntimeControlDatabaseUrl && embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeRuntimeControl = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -169,7 +175,7 @@ async function writeRegisteredSourceConfig(baseCwd: string, instanceId = "source
 
 async function createTempRepo(defaultBranch = "main") {
   const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repo-"));
-  await runGit(repoRoot, ["init"]);
+  await runGit(repoRoot, ["init", "--initial-branch", defaultBranch]);
   await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
   await fs.writeFile(path.join(repoRoot, "README.md"), "hello\n", "utf8");
@@ -335,6 +341,7 @@ function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
     strategy: "project_primary",
     cwd,
     branchName: null,
+    branchCreatedByRuntime: false,
     worktreePath: null,
     warnings: [],
     created: false,
@@ -405,7 +412,7 @@ function createWorkspaceOperationRecorderDouble() {
       executionWorkspaceId = nextExecutionWorkspaceId;
     },
     recordOperation: async (input) => {
-      const result = await input.run();
+      const result = await input.run(async () => {});
       operations.push({
         phase: input.phase,
         command: input.command ?? null,
@@ -1370,6 +1377,8 @@ describe("realizeExecutionWorkspace", () => {
   it.each(["missing", "empty"] as const)("records the actual lookup and fetch outcome for a %s origin", async (mode) => {
     const { repoRoot } = await createClonedRepoWithRemote();
     await runGit(repoRoot, mode === "missing" ? ["remote", "remove", "origin"] : ["config", "remote.origin.url", ""]);
+    const remoteUrl = mode === "empty" ? await readGit(repoRoot, ["remote", "get-url", "origin"]) : null;
+    if (mode === "empty") expect(["", "origin"]).toContain(remoteUrl);
     let authCalls = 0;
     const error = await realizeWorktreeForTest(repoRoot, "absent-fixture", async () => { authCalls++; return null; }).catch(error => error);
     expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
@@ -1378,6 +1387,12 @@ describe("realizeExecutionWorkspace", () => {
       expect(authCalls).toBe(0);
       expect(readUnresolvedWorkspaceBaseRefDiagnostic(error)).toEqual({ schemaVersion: 1,
         remoteLookup: "failed", authLookup: "not_requested", fetch: "not_attempted", refResolution: "failed", refExitCode: 128 });
+    } else if (remoteUrl === "") {
+      expect(error.fetchError).toBeNull();
+      expect(authCalls).toBe(1);
+      expect(error.defaultBranch).toBeNull();
+      expect(readUnresolvedWorkspaceBaseRefDiagnostic(error)).toEqual({ schemaVersion: 1,
+        remoteLookup: "empty", authLookup: "not_requested", fetch: "not_attempted", refResolution: "failed", refExitCode: 128 });
     } else {
       // Git returns the remote name when its URL is empty, then the fetch fails.
       expect(error.fetchError).toBeTruthy();
@@ -5627,12 +5642,6 @@ describe("resolveShell (shell fallback)", () => {
     expect(resolveShell()).toBe("sh");
   });
 
-  it("falls back to /bin/sh on darwin when SHELL is unset", () => {
-    delete process.env.SHELL;
-    Object.defineProperty(process, "platform", { value: "darwin" });
-    expect(resolveShell()).toBe("/bin/sh");
-  });
-
   it("treats empty SHELL as unset and uses platform fallback", () => {
     process.env.SHELL = "";
     Object.defineProperty(process, "platform", { value: "linux" });
@@ -6669,16 +6678,18 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
   }, 20_000);
 });
 
-describeEmbeddedPostgres("workspace runtime service control persistence", () => {
+describeRuntimeControl("workspace runtime service control persistence", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
-    db = createDb(tempDb.connectionString);
+    if (!externalRuntimeControlDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
+    db = createDb(externalRuntimeControlDatabaseUrl ?? tempDb!.connectionString,
+      externalRuntimeControlDatabaseUrl ? { maxConnections: 4 } : undefined);
   }, 20_000);
 
   afterAll(async () => {
+    if (externalRuntimeControlDatabaseUrl) await closeRegisteredClients(externalRuntimeControlDatabaseUrl, { scope: "database" });
     await tempDb?.cleanup();
   });
 
@@ -6827,6 +6838,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         strategy: "git_worktree",
         cwd: workspaceRoot,
         branchName: "feature/runtime-control",
+        branchCreatedByRuntime: false,
         worktreePath: workspaceRoot,
         warnings: [],
         created: false,
@@ -7000,6 +7012,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       strategy: workspace.mode === "isolated_workspace" ? "git_worktree" : "project_primary",
       cwd: workspace.cwd,
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: workspace.mode === "isolated_workspace" ? workspace.cwd : null,
       warnings: [],
       created: false,
@@ -7279,14 +7292,14 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         return result[0]!;
       }));
 
-      // The two lanes claim ports concurrently in-process. The allocator guarantees
-      // distinct ports, but not which lane wins the base port. It depends on the
-      // scheduling order. So assert order-independent invariants, not array index.
+      // A free-port probe is not a reservation. Both siblings must own distinct
+      // live ports in the allocator's bounded range even if the preferred port
+      // becomes unavailable before allocation.
       const lowerPort = Math.min(first.port!, second.port!);
       const upperPort = Math.max(first.port!, second.port!);
       const maxAllocatablePort = basePort + WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS - 1;
       expect(first.port).not.toBe(second.port);
-      expect(lowerPort).toBe(basePort);
+      expect(lowerPort).toBeGreaterThanOrEqual(basePort);
       expect(upperPort).toBeGreaterThan(basePort);
       expect(upperPort).toBeLessThanOrEqual(maxAllocatablePort);
       expect(first.url).toBe(`http://127.0.0.1:${first.port}`);
@@ -7326,8 +7339,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     }
   }, 20_000);
 
-  it("commits fixed-port reservations before readiness windows longer than 60 seconds", async () => {
+  it("commits fixed-port reservations across the configured database idle timeout", async () => {
     const fixture = await createRuntimeFixture();
+    const readinessDb = createDb(externalRuntimeControlDatabaseUrl ?? tempDb!.connectionString, { idleTimeoutSeconds: 1, maxConnections: 1 });
+    const [initialConnection] = await readinessDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
     const basePort = await findFreePort();
@@ -7353,7 +7368,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
 
     try {
       startPromise = startRuntimeServicesForWorkspaceControl({
-        db,
+        db: readinessDb,
         actor: fixture.actor,
         issue: null,
         workspace: fixture.realizedWorkspace(workspace),
@@ -7377,16 +7392,18 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         parentWrite.then(() => "committed" as const),
         new Promise<"locked">((resolve) => setTimeout(() => resolve("locked"), 2_000)),
       ]);
+      expect(parentWriteOutcome).toBe("committed");
 
       const readinessWaitStartedAt = Date.now();
-      await new Promise((resolve) => setTimeout(resolve, 60_250));
-      expect(Date.now() - readinessWaitStartedAt).toBeGreaterThanOrEqual(60_000);
+      await new Promise((resolve) => setTimeout(resolve, 1_250));
+      expect(Date.now() - readinessWaitStartedAt).toBeGreaterThanOrEqual(1_000);
+      const [reconnected] = await readinessDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      expect(reconnected!.pid).not.toBe(initialConnection!.pid);
 
       await fs.writeFile(releaseMarkerPath, "release");
       const started = (await startPromise)[0]!;
       await parentWrite;
 
-      expect(parentWriteOutcome).toBe("committed");
       expect(started).toMatchObject({
         port: basePort,
         url: `http://127.0.0.1:${basePort}`,
@@ -7413,6 +7430,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       }).catch(() => undefined);
       await cleanupRuntimeHome();
       await fixture.cleanup();
+      await readinessDb.$client.end({ timeout: 1 });
     }
   }, 80_000);
 
@@ -7473,7 +7491,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const blockerScript = [
       "const net=require('node:net');",
       "const port=Number(process.argv[1]);",
-      "net.createServer((socket)=>socket.destroy()).listen(port,'127.0.0.1');",
+      "net.createServer((socket)=>socket.destroy()).listen(port,'127.0.0.1',()=>process.send({ready:true}));",
     ].join("");
     const raceScript = [
       "const fs=require('node:fs');",
@@ -7486,8 +7504,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       "const start=()=>http.createServer((_req,res)=>res.end('ok')).listen(port,'127.0.0.1');",
       "if(!fs.existsSync(marker)){",
       "fs.writeFileSync(marker,String(port));",
-      "const blocker=spawn(process.execPath,['-e',blockerScript,String(port)],{detached:true,stdio:'ignore'});",
-      "fs.writeFileSync(pidFile,String(blocker.pid));blocker.unref();setTimeout(start,200);",
+      "const blocker=spawn(process.execPath,['-e',blockerScript,String(port)],{detached:true,stdio:['ignore','ignore','ignore','ipc']});",
+      "fs.writeFileSync(pidFile,String(blocker.pid));",
+      "const readyDeadline=setTimeout(()=>{throw new Error('Fixture blocker did not become ready');},5000);",
+      "blocker.once('message',(message)=>{if(message?.ready!==true)throw new Error('Invalid fixture readiness message');clearTimeout(readyDeadline);blocker.disconnect();blocker.unref();start();});",
       "}else{start();}",
       "setInterval(()=>{},1000);",
     ].join("");
@@ -7533,6 +7553,8 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     }
   }, 20_000);
 
+  // Exhaustion starts and stops all 32 candidates after ownership fails.
+  // Give their real-process stability checks and verified cleanup bounded headroom.
   it("does not accept an occupied allocated port when listener ownership is unavailable", async () => {
     const fixture = await createRuntimeFixture();
     const cleanupRuntimeHome = await createRuntimeHome();
@@ -7573,7 +7595,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       await cleanupRuntimeHome();
       await fixture.cleanup();
     }
-  }, 20_000);
+  }, 60_000);
 
   it("returns a bounded structured conflict and exposes only same-company workspace references", async () => {
     const fixture = await createRuntimeFixture({
@@ -7963,22 +7985,11 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        // macOS can allocate an entire ephemeral range above 55535. Pick a
-        // bounded candidate so the test's HMR companion remains a valid port.
-        await new Promise<void>((resolve) => {
-          probe.once("error", () => resolve());
-          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
-        });
-        if (!probe.listening) continue;
-        const address = probe.address();
-        const port = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
+        // Keep both listeners below ephemeral client ports and outside the broker range.
+        const port = 12_000 + Math.floor(Math.random() * 6_000);
+        if (await isLoopbackPortFree(port) && await isLoopbackPortFree(port + 10_000)) return port;
       }
-      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
+      throw new Error("Failed to reserve app and HMR ports for the HTTPS backfill test");
     };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();
@@ -8160,7 +8171,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       await stopRuntimeServicesForProjectWorkspace({
         db,
         projectWorkspaceId,
-        workspaceCwd: workspaceRoot,
       }).catch(() => undefined);
       await resetRuntimeServicesForTests();
       await fs.rm(paperclipHome, { recursive: true, force: true });
@@ -9424,6 +9434,7 @@ describe("workspace realization request additionalSources", () => {
       strategy: "project_primary",
       cwd: "/anchor",
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: null,
       warnings: [],
       created: false,

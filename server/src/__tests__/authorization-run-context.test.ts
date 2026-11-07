@@ -18,7 +18,7 @@ const support = await getEmbeddedPostgresTestSupport();
     db = createDb(database.connectionString, { maxConnections: 1 });
     client = db.$client;
     client.options.transform.value.from = (value, column) => {
-      if (recording && column.type === 3802 && value !== null) jsonBytes.push(Buffer.byteLength(JSON.stringify(value)));
+      if (recording && column?.type === 3802 && value !== null) jsonBytes.push(Buffer.byteLength(JSON.stringify(value)));
       return value;
     };
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -44,6 +44,21 @@ const support = await getEmbeddedPostgresTestSupport();
       } } });
     recording = true;
     expect(await authorizationService(db).projectDiscoveryCandidateIds(fixture.actor, fixture.companyId)).toEqual([fixture.projectId]);
+    expect(jsonBytes.length).toBeGreaterThan(0);
+    expect(Math.max(...jsonBytes)).toBeLessThan(1024);
+  });
+
+  it('keeps batched saved policy checks below the context transfer budget', async () => {
+    const fixture = await seed();
+    await db.insert(heartbeatRuns).values({ id: fixture.runId, companyId: fixture.companyId, agentId: fixture.agentId,
+      contextSnapshot: { contextPadding: 'unrelated'.repeat(32_768), executionPolicy: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: { trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, projectIds: [fixture.projectId] } },
+      } } });
+    recording = true;
+    const decisions = await authorizationService(db).decideReads(fixture.actor,
+      [{ type: 'project', companyId: fixture.companyId, projectId: fixture.projectId }]);
+    expect(decisions.map(decision => decision.allowed)).toEqual([true]);
     expect(jsonBytes.length).toBeGreaterThan(0);
     expect(Math.max(...jsonBytes)).toBeLessThan(1024);
   });

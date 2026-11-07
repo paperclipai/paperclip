@@ -1,16 +1,37 @@
 export const REMOTE_RUNNER_RECOVERY_ERROR_CODE = "runner_remote_process_identity_unavailable";
 
-const stages = ["identity_marker", "process_verification"] as const;
+const stages = ["runner_state", "identity_marker", "process_verification"] as const;
 const reasons = [
   "marker_missing", "marker_unsafe", "marker_read_failed", "marker_invalid",
   "fingerprint_missing", "process_not_running", "process_identity_changed",
   "fingerprint_unavailable", "process_generation_changed", "probe_timeout",
   "probe_transport_failed", "probe_failed",
+  "state_read_failed", "state_invalid",
+] as const;
+
+const runnerLifecycles = [
+  "connecting", "ready", "backpressure", "reconnecting", "session_opening", "session_open",
+  "turn_starting", "turn_active", "running", "suspended", "recoverable_failure", "reconciliation_required",
+  "provider_exited", "unrecoverable", "fenced", "failed", "completed", "closed",
+  "other", "unavailable",
 ] as const;
 
 export interface RemoteRunnerRecoveryDiagnostic {
   stage: typeof stages[number];
   reason: typeof reasons[number];
+  runnerLifecycle?: typeof runnerLifecycles[number];
+  runnerSettled?: boolean;
+}
+
+export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,
+  "runnerLifecycle" | "runnerSettled"> {
+  const lifecycle = state.lifecycle;
+  return {
+    runnerLifecycle: typeof lifecycle !== "string" ? "unavailable"
+      : runnerLifecycles.find(candidate => candidate === lifecycle && candidate !== "other" && candidate !== "unavailable") ?? "other",
+    runnerSettled: Array.isArray(state.outbox) && state.outbox.length === 0 &&
+      state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null,
+  };
 }
 
 const transportDiagnostics = new WeakMap<object, RemoteRunnerRecoveryDiagnostic>();
@@ -34,9 +55,13 @@ export class RemoteRunnerRecoveryError extends Error {
 export function readRemoteRunnerRecoveryDiagnostic(value: unknown): RemoteRunnerRecoveryDiagnostic | null {
   if (!value || typeof value !== "object") return null;
   try {
-    const { stage, reason } = value as Record<string, unknown>;
+    const { stage, reason, runnerLifecycle, runnerSettled } = value as Record<string, unknown>;
     if (!stages.some(candidate => candidate === stage) || !reasons.some(candidate => candidate === reason)) return null;
-    return { stage, reason } as RemoteRunnerRecoveryDiagnostic;
+    return {
+      stage, reason,
+      ...(runnerLifecycles.some(candidate => candidate === runnerLifecycle) ? { runnerLifecycle } : {}),
+      ...(typeof runnerSettled === "boolean" ? { runnerSettled } : {}),
+    } as RemoteRunnerRecoveryDiagnostic;
   } catch {
     return null;
   }
@@ -68,8 +93,45 @@ export const REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT = [
   'test -f "$identity_path" || exit 41',
   '{ IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path" || exit 43',
   'test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 44',
-  'kill -0 "$pid" 2>/dev/null || exit 45',
-  'if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 44; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 44; fi',
+  String.raw`node -e '
+const fs = require("node:fs");
+const [pid, runnerId, expectedGeneration] = process.argv.slice(1);
+if (!/^[1-9][0-9]*$/.test(pid) || !Number.isSafeInteger(Number(pid))) process.exit(44);
+function requireLiveProcess() {
+  try { process.kill(Number(pid), 0); }
+  catch (error) { process.exit(error.code === "ESRCH" ? 45 : 46); }
+}
+function verifyGeneration() {
+  try {
+    const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+    const end = stat.lastIndexOf(") ");
+    const fields = stat.slice(end + 2).trim().split(/\s+/);
+    const ticks = fields[19];
+    const boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    if (end < 0 || !stat.startsWith(pid + " (") || !/^[0-9]+$/.test(ticks || "") || !/^[-a-fA-F0-9]+$/.test(boot)) process.exit(46);
+    if ("linux:" + boot + ":" + ticks !== expectedGeneration) process.exit(47);
+    if (fields[0] === "Z") process.exit(45);
+  } catch (error) {
+    if (error.code === "ENOENT") requireLiveProcess();
+    process.exit(46);
+  }
+}
+requireLiveProcess();
+const commandPath = "/proc/" + pid + "/cmdline";
+if (process.platform !== "linux" && !expectedGeneration && !fs.existsSync(commandPath)) process.exit(0);
+let args;
+try { args = fs.readFileSync(commandPath, "utf8").split("\0"); }
+catch (error) {
+  requireLiveProcess();
+  if (error.code === "ENOENT" && expectedGeneration) verifyGeneration();
+  process.exit(46);
+}
+if (expectedGeneration) verifyGeneration();
+if (!args.includes("--runner-id") || !args.includes(runnerId)) {
+  requireLiveProcess();
+  process.exit(44);
+}
+' "$pid" "$expected_runner_id"` + ' "${5:-}"',
 ].join("; ");
 
 export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic["stage"], exitCode: number | null, timedOut: boolean): RemoteRunnerRecoveryDiagnostic["reason"] {
@@ -78,7 +140,7 @@ export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic[
     if (exitCode === 31) return "marker_missing";
     if (exitCode === 32) return "marker_unsafe";
     if (exitCode === 33) return "marker_read_failed";
-  } else {
+  } else if (stage === "process_verification") {
     if (exitCode === 41) return "marker_missing";
     if (exitCode === 42) return "marker_unsafe";
     if (exitCode === 43) return "marker_read_failed";

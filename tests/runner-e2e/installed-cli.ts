@@ -16,6 +16,30 @@ const installedCodexCells = new Set([
   "first-task.runner-codex.local.task-card-accept",
   "everyday-workflows.runner-codex.local.build-revise",
   "agent-chat.runner-codex.local.continuity-restart",
+  "everyday-workflows.runner-codex.daytona.recover-controller",
+  "daytona-restart-continuity.runner-codex.daytona.recover-controller",
+]);
+const installedCopilotCells = new Set([
+  "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+  "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+  "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+  "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+  "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+  "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+  "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate",
+  "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete",
+  "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume",
+  "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+  "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+  "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+  "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+  "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume",
+  "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+  "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+  "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn",
+  "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn",
 ]);
 export function usesInstalledCli(env: NodeJS.ProcessEnv): boolean {
   return installedCliKeys.some(key => env[key] !== undefined);
@@ -24,8 +48,9 @@ export function assertInstalledCliSelection(env: NodeJS.ProcessEnv, executions: 
   if (!usesInstalledCli(env)) return;
   if (!installedCliKeys.every(key => Boolean(env[key])) || executions.length === 0 || executions.some(e => !(
     (e.profile.id === "runner-acpx-pi" && e.profile.qualificationCandidate === "pi" && e.suite.manualOnly && suites.has(e.suite.id)) ||
-    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && e.environment.id === "local" && installedCodexCells.has(e.id))
-  ))) throw new Error("Installed CLI proof requires complete pins and explicit supported Pi or Codex cases");
+    (e.profile.id === "runner-codex" && e.profile.provider === "codex" && installedCodexCells.has(e.id)) ||
+    (e.profile.id === "runner-acpx-copilot" && e.profile.qualificationCandidate === "copilot" && e.suite.manualOnly && installedCopilotCells.has(e.id))
+  ))) throw new Error("Installed CLI proof requires complete pins and explicit supported Pi, Codex, or Copilot cases");
   for (const key of overrideKeys) if (env[key] !== undefined) throw new Error(`Installed CLI proof forbids ${key}`);
   if (env.NODE_OPTIONS !== undefined || env.NODE_PATH !== undefined) throw new Error("Installed CLI proof forbids ambient Node injection");
 }
@@ -115,7 +140,7 @@ export async function probeInstalledCodexStartup(input: {
     const driver = new runtime.CodexAppServerDriver({
       taskEnvelope: { schema: "paperclip.skillless_task.v1", objective: "Credential-free installed startup proof.",
         completionContract: { revision: "installed-startup-v1", criteria: [] }, constraints: [], expectedResultSchema: "paperclip.run_result.v1" },
-      model: "gpt-5.6-sol", conversationMode: "direct", requestedCollaborationMode: "plan", approvalPolicy: "never",
+      model: "gpt-6.1-sol", conversationMode: "direct", requestedCollaborationMode: "plan", approvalPolicy: "never",
       includeCollaborationModeInstructions: false, dynamicTools: [], environment,
       transportFactory: () => bundle.transport, requireProviderSessionIdentity: true,
     });
@@ -123,7 +148,7 @@ export async function probeInstalledCodexStartup(input: {
     const event = await session.events()[Symbol.asyncIterator]().next();
     const identity = session.ids();
     const evidence = bundle.evidence();
-    if (event.value?.eventType !== "session.started" || event.value.payload?.context?.model !== "gpt-5.6-sol" ||
+    if (event.value?.eventType !== "session.started" || event.value.payload?.context?.model !== "gpt-6.1-sol" ||
       event.value.payload?.context?.sandbox?.permissionProfile?.id !== "paperclip-runner-workspace-read-only" ||
       !identity.driverSessionId || !identity.providerSessionId || evidence.providerDriver !== "codex_app_server" ||
       !(evidence.runnerPid > 0) || !(evidence.codexPid > 0)) throw new Error("Installed Codex startup returned no matching native identity or read-only model context");
@@ -132,7 +157,7 @@ export async function probeInstalledCodexStartup(input: {
     if (!bundle.evidence().runnerExited) throw new Error("Installed Codex startup cleanup is incomplete");
     cleanupConfirmed = true;
     return { schema: "paperclip.e2e.installed-codex-startup/v1", platform: `${process.platform}-${process.arch}`,
-      runnerSha256, codexSha256, codexVersion, providerDriver: "codex_app_server", model: "gpt-5.6-sol",
+      runnerSha256, codexSha256, codexVersion, providerDriver: "codex_app_server", model: "gpt-6.1-sol",
       nativeSessionStarted: true, cleanupConfirmed: true, providerTurns: 0, credentialsUsed: false,
       defaultRuntimeResolution: true, reasoningEffortExercised: false };
   } catch (error) {
