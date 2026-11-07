@@ -1,5 +1,5 @@
 {
-  "id": "d0deb16d-8a9e-44d5-8719-5756bd1712e6",
+  "id": "a2ec96c6-3cf1-4c51-8ee8-b35f090bfd42",
   "prevId": "0c990bdc-6df0-44ca-8f21-28124f7b39e7",
   "version": "7",
   "dialect": "postgresql",
@@ -44766,15 +44766,15 @@
           "primaryKey": false,
           "notNull": false
         },
-        "controller_host_hash": {
-          "name": "controller_host_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "controller_pid": {
           "name": "controller_pid",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_host_hash": {
+          "name": "controller_host_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

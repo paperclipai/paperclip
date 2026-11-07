@@ -40,8 +40,8 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
     leaseOwner: nativeRunFinalizations.leaseOwner,
     leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
     controllerBootId: nativeRunFinalizations.controllerBootId,
-    controllerHostHash: nativeRunFinalizations.controllerHostHash,
     controllerPid: nativeRunFinalizations.controllerPid,
+    controllerHostHash: nativeRunFinalizations.controllerHostHash,
     controllerProcessStartedAt: nativeRunFinalizations.controllerProcessStartedAt,
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),

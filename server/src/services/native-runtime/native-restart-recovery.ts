@@ -37,7 +37,7 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { currentControllerBootId, currentProcessStartedAtMs, processStartsDefinitelyDiffer } from "../controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs, processStartsDefinitelyDiffer, sameProcessSpace } from "../controller-process-identity.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
@@ -56,6 +56,9 @@ export type NativeControllerIdentity = {
   bootId: string;
   pid: number;
   processStartedAt: Date;
+  /** PID space of `pid`; "unknown" when this host's space cannot be read,
+   * which no later probe accepts. Optional for identities built in tests. */
+  hostHash?: string;
 };
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
@@ -336,6 +339,7 @@ export async function currentNativeControllerIdentity(): Promise<NativeControlle
     pid: process.pid,
     processStartedAt:
       observed !== null ? new Date(observed) : (Number.isNaN(fallback.getTime()) ? new Date() : fallback),
+    hostHash: currentProcessSpaceHash(),
   };
 }
 
@@ -365,7 +369,11 @@ export async function evaluateNativeControllerTakeover(input: {
     | "leaseExpiresAt"
     | "controllerPid"
     | "controllerProcessStartedAt"
-  >;
+  > & {
+    /** Absent for owners without a stored PID space (receipts, rows saved
+     * before the column existed): those keep the previous local proof. */
+    controllerHostHash?: string | null;
+  };
   now: Date;
   coordinatedPreviousController?: {
     pid: number;
@@ -397,6 +405,12 @@ export async function evaluateNativeControllerTakeover(input: {
           ? "expired_lease_without_controller_identity"
           : "live_legacy_lease_without_controller_identity",
     };
+  }
+  // A PID can only be judged in the PID space that recorded it. A controller
+  // on another host or namespace (or an unreadable local space) is never
+  // proven gone by a local probe; its lease or fence decides instead.
+  if (owner.controllerHostHash && !sameProcessSpace(owner.controllerHostHash)) {
+    return { allowed: false, reason: "controller_host_unprovable" };
   }
   if (!isAlive(priorPid)) {
     return {

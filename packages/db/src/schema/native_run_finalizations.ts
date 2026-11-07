@@ -28,8 +28,10 @@ export const nativeRunFinalizations = pgTable(
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     controllerBootId: text("controller_boot_id"),
-    controllerHostHash: text("controller_host_hash"),
     controllerPid: integer("controller_pid"),
+    // PID space of controllerPid (controller-process-identity hostHash). Null
+    // on rows saved before it existed.
+    controllerHostHash: text("controller_host_hash"),
     controllerProcessStartedAt: timestamp("controller_process_started_at", {
       withTimezone: true,
     }),
