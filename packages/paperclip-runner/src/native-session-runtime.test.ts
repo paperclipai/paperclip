@@ -647,7 +647,8 @@ describe("executeNativeSession recovery", () => {
     };
     const lostTerminal = { turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) };
     const completedTerminal = (turnId: string) => ({ turnId, fingerprint: JSON.stringify({ terminalState: "completed", error: null, result: null }) });
-    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: startTurn.mock.calls.length === 1 ? "turn-continuation" : "turn-disposition" }));
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => startTurn.mock.calls.length === 1
+      ? { turnId: "turn-continuation", borrowedDispositionMarker: true as const } : { turnId: "turn-disposition" });
     let continuationDone = false;
     const session: NativeSession = {
       identity: () => identity,
@@ -709,6 +710,81 @@ describe("executeNativeSession recovery", () => {
     expect(disposition.message.text).toContain("Paperclip semantic-result recovery");
     expect(disposition.message.text).toContain("paperclip_finish or paperclip_block");
     expect(disposition.message.text).not.toContain(input.task.prompt);
+  });
+
+  it("asks for the disposition when the continuation completes before its start checkpoint settles", async () => {
+    // The checkpoint already records the lost turn, so the continuation starts
+    // while the event consumer is running. The provider completes it at once:
+    // the driver has returned the marker before any post-start snapshot, and
+    // the completion reaches the consumer while the start checkpoint is held.
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const lostTerminal = { turnId: "turn-recovery", fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) };
+    const completedTerminal = (turnId: string) => ({ turnId, fingerprint: JSON.stringify({ terminalState: "completed", error: null, result: null }) });
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "record-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: null,
+      terminalTurns: [lostTerminal], semanticResult: null, pendingRuntimeRequests: [], lineage: [],
+    };
+    let releaseStartCheckpoint!: () => void;
+    const startCheckpointHeld = new Promise<void>(resolve => { releaseStartCheckpoint = resolve; });
+    let continuationCompletionSeen = false;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => startTurn.mock.calls.length === 1
+      ? { turnId: "turn-continuation", borrowedDispositionMarker: true as const } : { turnId: "turn-disposition" });
+    let wakeEvents!: () => void;
+    let eventsWoken = new Promise<void>(resolve => { wakeEvents = resolve; });
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        while (startTurn.mock.calls.length < 1) { await eventsWoken; eventsWoken = new Promise(resolve => { wakeEvents = resolve; }); }
+        continuationCompletionSeen = true;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed", error: null }), turnId: "turn-continuation" };
+        while (startTurn.mock.calls.length < 2) { await eventsWoken; eventsWoken = new Promise(resolve => { wakeEvents = resolve; }); }
+        yield { ...runnerEvent(3, "turn.completed", { status: "completed", error: null }), turnId: "turn-disposition" };
+      },
+      startTurn: async (value) => { const started = await startTurn(value); wakeEvents(); return started; },
+      async result() { return startTurn.mock.calls.length >= 2 ? { result, terminal, turnId: "turn-disposition" } : null; },
+      async snapshot() {
+        const calls = startTurn.mock.calls.length;
+        if (calls === 0) return structuredClone(checkpoint);
+        if (calls === 1) return { ...checkpoint, terminalTurns: [lostTerminal, completedTerminal("turn-continuation")],
+          dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null };
+        return { ...checkpoint, terminalTurns: [lostTerminal, completedTerminal("turn-continuation"), completedTerminal("turn-disposition")],
+          dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-disposition" };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "restart", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { throw new Error("must preserve the provider session"); },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const persisted: PersistedNativeSession[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession(snapshot) {
+        // Hold the continuation's start checkpoint until the consumer has
+        // already received the continuation's completion.
+        if (startTurn.mock.calls.length === 1 && persisted.every(value => value.terminalTurns?.length !== 2)) {
+          await vi.waitFor(() => expect(continuationCompletionSeen).toBe(true));
+          await new Promise(resolve => setTimeout(resolve, 20));
+          releaseStartCheckpoint();
+        }
+        persisted.push(structuredClone(snapshot));
+      },
+      async appendEvent(event: PrpEvent) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({
+      input, backend, controlPlane: port, persistedSession: checkpoint,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      resumeInterruptedTurn: true,
+    })).resolves.toMatchObject({ result, turnId: "turn-disposition" });
+    await startCheckpointHeld;
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    expect((startTurn.mock.calls[0]![0] as { continuation?: true }).continuation).toBe(true);
+    expect(startTurn.mock.calls[1]![0].message.text).toContain("Paperclip semantic-result recovery after a restart continuation");
   });
 
   it("never continues task work when a restart loses a compaction turn", async () => {

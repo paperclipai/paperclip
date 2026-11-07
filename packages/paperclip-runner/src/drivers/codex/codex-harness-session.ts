@@ -378,6 +378,7 @@ export class CodexHarnessSession
     return {
       turnId,
       effectiveCollaborationMode,
+      ...(this.restartContinuationTurnId === turnId ? { borrowedDispositionMarker: true as const } : {}),
     };
   }
 

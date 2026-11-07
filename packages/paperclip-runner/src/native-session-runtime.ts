@@ -2690,16 +2690,27 @@ export async function executeNativeSession(
     let restartContinuationStarted = false;
     let borrowedContinuationTurnId: string | null = null;
     let continuationDispositionRequested = false;
-    const startRestartContinuation = async (signal?: AbortSignal) => {
+    // The consumer may already be running when a continuation starts, and the
+    // continuation can complete before its start checkpoint settles. A
+    // terminal waits for this setup so it neither misses the borrowed turn nor
+    // persists its own checkpoint ahead of the continuation's.
+    let continuationSetup: Promise<void> | null = null;
+    const startRestartContinuation = (signal?: AbortSignal) => {
       restartContinuationStarted = true;
-      const { turnId } = await session.startTurn(restartContinuation());
-      const started = await checkpoint(signal);
-      borrowedContinuationTurnId = started.dispositionOnlyRecoveryConsumed === true &&
-        started.dispositionOnlyRecoveryTurnId === turnId ? turnId : null;
+      continuationSetup = (async () => {
+        // The driver reports the borrowed marker with the accepted turn; a
+        // later snapshot may already show the marker returned.
+        const started = await session.startTurn(restartContinuation());
+        if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
+        await checkpoint(signal);
+      })();
+      return continuationSetup;
     };
     const requestContinuationDisposition = async (event: PrpEvent, signal: AbortSignal) => {
-      if (continuationDispositionRequested || borrowedContinuationTurnId === null ||
-          event.eventType !== "turn.completed" || event.turnId !== borrowedContinuationTurnId) return false;
+      if (continuationDispositionRequested || event.eventType !== "turn.completed") return false;
+      await continuationSetup?.catch(() => undefined);
+      signal.throwIfAborted();
+      if (borrowedContinuationTurnId === null || event.turnId !== borrowedContinuationTurnId) return false;
       const snapshot = await session.snapshot();
       signal.throwIfAborted();
       if (snapshot.semanticResult || snapshot.activeTurnId || snapshot.goal || snapshot.pendingRuntimeRequests?.length ||
