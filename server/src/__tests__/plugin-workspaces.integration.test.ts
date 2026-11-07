@@ -829,7 +829,6 @@ const support = await getEmbeddedPostgresTestSupport();
           .update(issues)
           .set({ status: "done", completedAt: new Date() })
           .where(eq(issues.id, f.issueId));
-        // A run that is still queued or running keeps its workspace.
         await db
           .update(heartbeatRuns)
           .set({ status: "cancelled" })
