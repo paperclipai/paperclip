@@ -1,6 +1,8 @@
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -325,11 +327,7 @@ function readCodexMcpServerNames(config: string): Set<string> {
   return names;
 }
 
-function buildManagedMcpBlock(input: {
-  gateways: ManagedCodexMcpGateway[];
-  apiBaseUrl: string;
-  existingNames: Set<string>;
-}): { block: string; warnings: string[] } {
+function buildManagedMcpBlock(input: { gateways: ManagedCodexMcpGateway[]; apiBaseUrl: string; existingNames: Set<string>; runId?: string }): { block: string; warnings: string[] } {
   const warnings: string[] = [];
   const usedNames = new Set<string>();
   const lines = [
@@ -340,52 +338,68 @@ function buildManagedMcpBlock(input: {
     const baseName = sanitizeMcpServerName(gateway.name, `gateway-${index + 1}`);
     const directOverlap = input.existingNames.has(gateway.name) || input.existingNames.has(baseName);
     let managedName = directOverlap ? `paperclip-${baseName}` : baseName;
-    let suffix = 2;
-    while (usedNames.has(managedName) || input.existingNames.has(managedName)) {
+    for (let suffix = 2; usedNames.has(managedName) || input.existingNames.has(managedName); suffix += 1) {
       managedName = `paperclip-${baseName}-${suffix}`;
-      suffix += 1;
     }
     usedNames.add(managedName);
     if (directOverlap) {
-      warnings.push(
-        `Found unmanaged Codex MCP server "${gateway.name}" overlapping a Paperclip-governed gateway; leaving the direct entry in place and adding managed gateway "${managedName}". Paperclip cannot enforce policies for that direct entry.`,
-      );
+      warnings.push(`Found unmanaged Codex MCP server "${gateway.name}" overlapping a Paperclip-governed gateway; leaving the direct entry in place and adding managed gateway "${managedName}". Paperclip cannot enforce policies for that direct entry.`);
     }
     const url = new URL(gateway.endpointPath, input.apiBaseUrl).toString();
-    lines.push(
-      "",
-      `[mcp_servers.${tomlString(managedName)}]`,
-      `url = ${tomlString(url)}`,
-      `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
-    );
+    lines.push("", `[mcp_servers.${tomlString(managedName)}]`, `url = ${tomlString(url)}`, `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)}${input.runId ? `, "X-Paperclip-Run-Id" = ${tomlString(input.runId)}` : ""} }`);
   });
   lines.push(MANAGED_MCP_BLOCK_END);
   return { block: lines.join("\n"), warnings };
 }
 
-export async function writeManagedCodexMcpConfig(input: {
-  codexHome: string;
-  apiBaseUrl: string;
-  gateways: ManagedCodexMcpGateway[];
-}): Promise<{ configPath: string; warnings: string[] }> {
-  const configPath = path.join(input.codexHome, "config.toml");
+export async function writeManagedCodexMcpConfig(input: { codexHome: string; apiBaseUrl: string; gateways: ManagedCodexMcpGateway[]; configName?: string; existingNames?: Set<string>; runId?: string }): Promise<{ configPath: string; warnings: string[] }> {
+  const configPath = path.join(input.codexHome, input.configName ?? "config.toml");
   await fs.mkdir(input.codexHome, { recursive: true });
   const existing = await fs.readFile(configPath, "utf8").catch((error) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
   });
   const unmanagedConfig = stripManagedMcpBlock(existing);
-  const { block, warnings } = buildManagedMcpBlock({
-    gateways: input.gateways,
-    apiBaseUrl: input.apiBaseUrl,
-    existingNames: readCodexMcpServerNames(unmanagedConfig),
-  });
-  const next = input.gateways.length > 0
-    ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
-    : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
+  const { block, warnings } = buildManagedMcpBlock({ gateways: input.gateways, apiBaseUrl: input.apiBaseUrl, existingNames: new Set([...readCodexMcpServerNames(unmanagedConfig), ...(input.existingNames ?? [])]), runId: input.runId });
+  const next = input.gateways.length > 0 ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n` : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
   await fs.writeFile(configPath, next, { mode: 0o600 });
   await fs.chmod(configPath, 0o600);
   return { configPath, warnings };
+}
+
+export async function prepareManagedCodexMcpProfile(input: { codexHome: string; apiBaseUrl: string; gateways: ManagedCodexMcpGateway[]; extraArgs: string[]; runId: string }): Promise<{ profileName: string; args: string[]; configPath: string; warnings: string[]; cleanup: () => Promise<void> }> {
+  const args: string[] = [];
+  let selectedProfile: string | null = null;
+  for (let index = 0; index < input.extraArgs.length; index += 1) {
+    const arg = input.extraArgs[index]!;
+    const inline = /^(?:--profile=|-p=?)(.+)$/.exec(arg);
+    if (arg === "--profile" || arg === "-p" || inline) {
+      if (selectedProfile !== null) throw new Error("Codex profile may only be selected once");
+      const name = inline?.[1] ?? input.extraArgs[++index];
+      if (!name || !/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Invalid Codex profile name");
+      selectedProfile = name;
+    } else args.push(arg);
+  }
+  const base = await writeManagedCodexMcpConfig({ ...input, gateways: [] });
+  const baseText = await fs.readFile(base.configPath, "utf8");
+  const profileText = selectedProfile
+    ? (await readOwnedRegularFile(path.join(input.codexHome, `${selectedProfile}.config.toml`), {
+      requirePrivate: false,
+      failure: "Selected Codex profile must be an owned regular file, not a link",
+    })).toString("utf8")
+    : "";
+  const profileName = `paperclip-run-${randomUUID()}`;
+  const configName = `${profileName}.config.toml`;
+  const configPath = path.join(input.codexHome, configName);
+  const cleanup = () => fs.rm(configPath, { force: true });
+  try {
+    await fs.writeFile(configPath, profileText, { mode: 0o600, flag: "wx" });
+    const result = await writeManagedCodexMcpConfig({ ...input, configName, existingNames: readCodexMcpServerNames(baseText) });
+    return { ...result, profileName, args: [...args, "--profile", profileName], cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }
 
 /**
@@ -401,10 +415,37 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
+/**
+ * Reads a file only when it is a regular file owned by this process, with one
+ * hard link and no symlink. A link could otherwise put the bytes of another
+ * host file into a run profile or into the sandbox home. With `requirePrivate`
+ * the file must also have no group or other permission bits.
+ */
+async function readOwnedRegularFile(filePath: string, options: { requirePrivate: boolean; failure: string }): Promise<Buffer> {
+  // O_NOFOLLOW refuses a symlink at open, and the checks use the opened file,
+  // so a swap after the check cannot change which file is read.
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error(options.failure);
+    throw error;
+  });
+  try {
+    const stat = await handle.stat();
+    if (
+      !stat.isFile() || stat.nlink !== 1 ||
+      (typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
+      (options.requirePrivate && (stat.mode & 0o077) !== 0)
+    ) throw new Error(options.failure);
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
 export interface StageCodexHomeForSyncOptions {
   additionalFiles?: readonly string[];
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
+  profileName?: string;
 }
 
 /**
@@ -626,13 +667,23 @@ export async function stageCodexHomeForSync(
   try {
     for (const filename of options.additionalFiles ?? []) {
       if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
-      const source = path.join(effectiveCodexHome, filename);
-      const stat = await fs.lstat(source);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
-      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+      const bytes = await readOwnedRegularFile(path.join(effectiveCodexHome, filename), {
+        requirePrivate: true,
+        failure: "Managed observability profile must be an owned private regular file",
+      });
+      await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
       await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+    }
+    if (options.profileName) {
+      if (!/^paperclip-run-[A-Za-z0-9-]+$/.test(options.profileName)) throw new Error("Invalid run-scoped Codex profile");
+      const filename = `${options.profileName}.config.toml`;
+      const bytes = await readOwnedRegularFile(path.join(effectiveCodexHome, filename), {
+        requirePrivate: true,
+        failure: "Run-scoped Codex profile must be an owned private regular file",
+      });
+      await fs.writeFile(path.join(stagedHome, filename), bytes, { mode: 0o600, flag: "wx" });
     }
     return stagedHome;
   } catch (error) {

@@ -1,6 +1,6 @@
 import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
-import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
+import { prepareCodexObservabilityProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
@@ -86,7 +86,7 @@ import {
   seedManagedCodexHome,
   stageCodexHomeForSync,
   mergeManagedCodexMcpGateways,
-  writeManagedCodexMcpConfig,
+  prepareManagedCodexMcpProfile,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
 import {
@@ -783,18 +783,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let stagedCodexHomeDir: string | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
+  let managedMcpProfile: Awaited<ReturnType<typeof prepareManagedCodexMcpProfile>> | null = null;
   try {
-    if (ctx.observability) {
-      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
-        try {
-          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
-            launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
-        } catch {
-          observabilityPreparationFailed = true;
-          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
-        }
-      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
-    }
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
@@ -808,11 +798,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runtimeMcpGateways,
       managedMcpGatewaysFromContext(context),
     );
-    const managedMcp = await writeManagedCodexMcpConfig({
+    const managedMcp = await prepareManagedCodexMcpProfile({
       codexHome: effectiveCodexHome,
       apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
       gateways: managedMcpGateways,
+      runId,
+      extraArgs: asStringArray(config.extraArgs).length > 0 ? asStringArray(config.extraArgs) : asStringArray(config.args),
     });
+    managedMcpProfile = managedMcp;
     if (managedMcpGateways.length > 0) {
       await onLog(
         "stdout",
@@ -821,6 +814,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     for (const warning of managedMcp.warnings) {
       await onLog("stderr", `[paperclip] ${warning}\n`);
+    }
+    // The observability profile replaces the run profile in the arguments, so
+    // it is built from the run profile. It then keeps this run's managed MCP
+    // gateways and the settings of the profile that the agent selected.
+    if (ctx.observability) {
+      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+        try {
+          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
+            launch: ctx.observability, sourceProfile: managedMcp.profileName });
+        } catch {
+          observabilityPreparationFailed = true;
+          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
+        }
+      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
     }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).
@@ -855,7 +862,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, profileName: managedMcp.profileName, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -1286,6 +1293,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           resumeSessionId,
           skipGitRepoCheck: executionTargetIsSandbox,
           networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
+          managedMcpArgs: managedMcp.args,
         },
       );
       const args = execArgs.args;
@@ -1702,6 +1710,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await managedMcpProfile?.cleanup();
     // Remove the staged CODEX_HOME allowlist temp dir on every exit path
     // (teardown AND error), never only the happy path. Cleanup failure is
     // logged, not fatal — a leaked temp dir must not crash the run.
