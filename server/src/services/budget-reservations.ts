@@ -54,7 +54,8 @@ export async function recheckRunBudgetReservationInTransaction(
   }
   if (stopRecovery) return null;
   const { block, policies, observations } = await budgetServiceInTransaction(tx, publications)
-    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id });
+    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id,
+      admittedRecovery: Boolean(recoveryLeaseOwner) });
   if (block) return block.reason;
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
@@ -102,7 +103,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
         // Recovery has already made this run queued/running, so its own pending
         // accounting is excluded. Current overruns, other unfinished runs and
         // scope pauses still apply before any more paid work starts.
-        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId });
+        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId, admittedRecovery: true });
         if (block) return { admissionBlockReason: block.reason };
         const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
           .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
