@@ -106,13 +106,35 @@ export function readControllerProcess(value: unknown): ControllerProcess | null 
     processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null };
 }
 
-function processExists(pid: number): boolean {
+/**
+ * True when some process owns the PID in this PID space. EPERM means the
+ * process exists but belongs to another user, so it counts as alive.
+ */
+export function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
+}
+
+/** Process start times closer than this may be the same process. */
+export const PROCESS_START_PRECISION_MS = 1_000;
+
+/**
+ * True only when two start times for one PID prove different processes.
+ * `ps -o lstart` on macOS and BSD has whole-second precision, while a recorded
+ * start can come from a millisecond clock, so a sub-second gap is ambiguous
+ * and fails closed (same process). A missing or unparsable time proves nothing.
+ */
+export function processStartsDefinitelyDiffer(
+  recorded: Date | string | null | undefined,
+  observed: Date | string | null | undefined,
+): boolean {
+  const left = recorded instanceof Date ? recorded.getTime() : Date.parse(recorded ?? "");
+  const right = observed instanceof Date ? observed.getTime() : Date.parse(observed ?? "");
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) >= PROCESS_START_PRECISION_MS;
 }
 
 /** True only with proof, in this process's own PID space, that the recorded
@@ -123,7 +145,6 @@ export async function controllerProcessExited(controller: ControllerProcess): Pr
   if (!processExists(controller.pid)) return true;
   // The PID now belongs to a live process, possibly this restarted server.
   // Only a definitely different start time proves the recorded process is gone.
-  const recorded = Date.parse(controller.processStartedAt ?? "");
   const observed = await observedProcessStartedAt(controller.pid);
-  return Number.isFinite(recorded) && observed !== null && Math.abs(observed - recorded) >= 1_000;
+  return observed !== null && processStartsDefinitelyDiffer(controller.processStartedAt, new Date(observed));
 }
