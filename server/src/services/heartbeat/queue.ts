@@ -1,4 +1,4 @@
-import { CONTEXT_COMPACTION_WAKE_REASON, readContextCompactionRequest } from "../context-compaction.js";
+import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2187,16 +2187,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       triggerDetail,
       payload,
     });
+    const isManualContextCompactionWake = () => Boolean(
+      reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
+      && opts.manualUserWake === true && opts.requestedByActorType === "user"
+      && Boolean(opts.requestedByActorId) && opts.allowRunCoalescing === false
+      && payload?.intent === CONTEXT_COMPACTION_WAKE_REASON
+      && readNonEmptyString(payload.requestId) !== null
+      && readContextCompactionRequest(enrichedContextSnapshot)?.requestId === payload.requestId,
+    );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-      reason === CHAT_COMPLETION_WAKE_REASON ||
-      (reason === CONTEXT_COMPACTION_WAKE_REASON && source === "on_demand" && triggerDetail === "manual"
-        && opts.manualUserWake === true && opts.requestedByActorType === "user"
-        && Boolean(opts.requestedByActorId) && opts.allowRunCoalescing === false
-        && payload?.intent === CONTEXT_COMPACTION_WAKE_REASON
-        && readNonEmptyString(payload.requestId) !== null
-        && readContextCompactionRequest(enrichedContextSnapshot)?.requestId === payload.requestId),
+      reason === CHAT_COMPLETION_WAKE_REASON || isManualContextCompactionWake(),
     );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
@@ -3734,6 +3736,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .where(eq(issues.id, issue.id));
               }
             }
+          }
+
+          // Availability is advisory: competing clicks may both read it before
+          // admission. The existing issue lock serializes the run and deferred
+          // receipt checks with the admission below, without another lock owner.
+          if (isManualContextCompactionWake()) {
+            if (activeExecutionRun) {
+              const compacting = isContextCompactionRun(activeExecutionRun.contextSnapshot);
+              throw new ContextCompactionError(compacting ? "already_pending" : "agent_busy",
+                compacting ? "The agent is already compacting its context." : "Available when the agent finishes its current run.");
+            }
+            const [pending] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, agentId),
+              inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]), isNull(agentWakeupRequests.runId),
+              executionWaitRequestId ? ne(agentWakeupRequests.id, executionWaitRequestId) : undefined,
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'intent' = ${CONTEXT_COMPACTION_WAKE_REASON}`,
+              sql`jsonb_typeof(${agentWakeupRequests.payload}->'requestId') = 'string'`,
+              sql`nullif(btrim(${agentWakeupRequests.payload}->>'requestId'), '') is not null`,
+              sql`${agentWakeupRequests.payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'contextCompactionRequestId' = ${agentWakeupRequests.payload}->>'requestId'`,
+            )).limit(1);
+            if (pending) throw new ContextCompactionError("already_pending", "The agent is already compacting its context.");
           }
 
           const dependencyReadiness = await issuesSvc

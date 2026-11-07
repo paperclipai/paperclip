@@ -7,11 +7,12 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
-import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
-import { mergeCoalescedContextSnapshot } from "./run-preparation.js";
+import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
+import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
 import { settleConversationTurn } from "../agent-conversations.js";
 import { chatCompletionDeliveryService, recordChatCompletion, recordChatHandoff } from "../chat-completion-delivery.js";
@@ -228,6 +229,100 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
       .toMatchObject({ status: "in_review", conversationState: "waiting", assigneeAgentId: f.agent.id });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(0);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("admits only one of two simultaneous waiting-conversation compaction requests", async () => {
+    const f = await waitingCompactionFixture();
+    // Both service requests must finish their real availability read before
+    // either enters queue admission. Dispatch remains suppressed, not mocked.
+    // task_drain explicitly retains admission (queue.ts's admission guard
+    // excludes it), while startNextQueuedRunForAgent stops before any claim.
+    // Do not tie two admissions to a call-count-sensitive suppression sequence.
+    f.deps.getSchedulingSuppression.mockReset().mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    const admission = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => f.user.id,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: { filterZombieCoalesceTarget: f.deps.filterZombieCoalesceTarget,
+        mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
+    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    let releaseAvailability!: () => void;
+    const bothAvailable = new Promise<void>(resolve => { releaseAvailability = resolve; });
+    let arrivals = 0;
+    const service = contextCompactionService(db, { wakeup: async (...args) => {
+      if (++arrivals === 2) releaseAvailability();
+      await bothAvailable;
+      return f.queue.enqueueWakeup(...args);
+    } });
+    const results = await Promise.allSettled([0, 1].map(() => service.request({
+      companyId: f.company.id, issue: f.issue, userId: f.user.id,
+    })));
+    // Inspect both forms of durable execution authority before asserting.
+    // A saved deferred maintenance request can replay after the first run;
+    // counting only currently admitted runs would miss that extra work.
+    const maintenanceRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    const maintenanceReceipts = receipts.filter(row => row.status !== "skipped"
+      && row.payload?.intent === "context_compaction" && row.payload.issueId === f.issue.id);
+    expect(arrivals).toBe(2);
+    expect(maintenanceReceipts.map(row => ({ id: row.id, status: row.status, runId: row.runId })),
+      "one durable compaction authority including deferred").toHaveLength(1);
+    expect(maintenanceRuns.map(run => run.id)).toHaveLength(1);
+    expect(maintenanceRuns[0]).toMatchObject({ companyId: f.company.id, contextSnapshot: { issueId: f.issue.id } });
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.filter(result => result.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    if (rejected[0]?.status === "rejected") expect(rejected[0].reason).toMatchObject({ code: "already_pending" });
+    expect(receipts.filter(row => row.status === "deferred_issue_execution")).toEqual([]);
+    expect(receipts.filter(row => row.reason === "context_compaction" && row.status !== "skipped")).toHaveLength(1);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves an existing deferred compaction authority until cancellation allows a new request", async () => {
+    const f = await waitingCompactionFixture();
+    f.deps.getSchedulingSuppression.mockReset().mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    // Reproduce a pre-existing receipt through the actual normal deferred
+    // writer. In particular, its informational reason is NOT context_compaction.
+    // The service builds the real request; no provider/result rows are seeded.
+    const historical = contextCompactionService(db, { wakeup: async (agentId, options) => {
+      const source = options.source ?? "on_demand";
+      const triggerDetail = options.triggerDetail ?? null;
+      const context = enrichWakeContextSnapshot({ contextSnapshot: { ...options.contextSnapshot },
+        reason: options.reason ?? null, source, triggerDetail, payload: options.payload ?? null });
+      await db.transaction(async tx => {
+        await createWakeAdmissionWriter().insertNewDeferredWake(TransactionScope.create(f.company.id, tx), {
+          companyId: f.company.id, agentId, source, triggerDetail,
+          payload: { ...options.payload, manualUserWake: true, [DEFERRED_WAKE_CONTEXT_KEY]: context.contextSnapshot },
+          requestedByActorType: options.requestedByActorType ?? null,
+          requestedByActorId: options.requestedByActorId ?? null, idempotencyKey: options.idempotencyKey ?? null,
+        });
+      });
+      return null;
+    } });
+    await expect(historical.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "wake_skipped" });
+    const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    expect(pending).toMatchObject({ reason: "issue_execution_deferred", status: "deferred_issue_execution", runId: null,
+      payload: { issueId: f.issue.id, intent: "context_compaction" } });
+    await expect(f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id }))
+      .rejects.toMatchObject({ code: "already_pending" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toEqual([pending]);
+    // This never-dispatched fixture authority is now cancelled, not completed.
+    // Nonpending history must not permanently block a fresh normal request.
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, pending.id));
+    const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id)))
+      .toEqual([expect.objectContaining({ id: accepted.runId, status: "queued" })]);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.find(row => row.id === pending.id)).toMatchObject({ status: "cancelled", runId: null });
+    expect(receipts.find(row => row.runId === accepted.runId)).toMatchObject({ status: "queued" });
     expect(f.deps.executeRun).not.toHaveBeenCalled();
   });
 
