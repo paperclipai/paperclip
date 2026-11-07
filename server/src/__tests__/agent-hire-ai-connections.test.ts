@@ -708,26 +708,37 @@ describe("hired agents sharing a subscription", () => {
     }
   }, 30000);
 
-  it("validates a connection chosen with the switch away from a self-authenticated adapter", async () => {
+  it.each([false, true])("validates a connection chosen with the switch away from a self-authenticated adapter (legacy: %s)", async (legacy) => {
     const f = await fixture("anthropic");
+    if (legacy) await markLegacyAdoption(f.account.connectionId);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
     await db.update(agents).set({ adapterType: "hermes_gateway", runtimeConfig: { aiConnection: f.binding } }).where(eq(agents.id, f.agentId));
     const original = getServerAdapter("claude_local");
-    const probe = vi.fn(async () => ({ adapterType: "claude_local", status: "pass" as const, checks: [], testedAt: new Date().toISOString() }));
+    const probe = vi.fn(async () => ({ adapterType: "claude_local", status: "fail" as const, testedAt: new Date().toISOString(),
+      checks: [{ code: "fixture_runtime_unavailable", level: "error" as const, message: "The selected runtime is unavailable" }],
+    }));
     registerServerAdapter({ ...original, testEnvironment: probe });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network unavailable"));
     try {
       // An explicit binding sent with the switch is validated for the new
-      // harness. The fixture key is not a real credential, so validation
-      // reports the provider rejection and the switch is refused.
+      // harness like any other binding change: a healthy saved account is
+      // accepted without another probe, and a legacy account must pass the
+      // probe in the new harness before the switch is saved.
       const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({
         adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" }, runtimeConfig: { aiConnection: f.binding },
       });
-      expect(probe).toHaveBeenCalled();
-      expect(response.status, JSON.stringify(response.body)).toBe(422);
-      expect(response.body.code).toBe("ai_connection_validation_failed");
+      expect(response.status, JSON.stringify(response.body)).toBe(legacy ? 422 : 200);
+      expect(probe).toHaveBeenCalledTimes(legacy ? 1 : 0);
       const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-      expect(saved.adapterType).toBe("hermes_gateway");
+      if (legacy) {
+        expect(response.body.code).toBe("ai_connection_validation_failed");
+        expect(saved.adapterType).toBe("hermes_gateway");
+      } else {
+        expect(saved.adapterType).toBe("claude_local");
+        expect(saved.runtimeConfig.aiConnection).toEqual(f.binding);
+      }
     } finally {
+      network.mockRestore();
       unregisterServerAdapter("claude_local");
     }
   }, 30000);
