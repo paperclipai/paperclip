@@ -94,6 +94,32 @@ async function assertResumeIdentity(db: Db, request: OnlineWorkspaceMigrationReq
   }
 }
 
+async function completedOperationReceipts<T>(db: Db, result: T): Promise<T> {
+  const receipt = result as { applied?: boolean; companyId: string; workspaceId?: string; snapshotId?: string;
+    members?: Array<{ companyId: string; workspaceId: string; snapshotId: string }> };
+  if (receipt.applied !== true) return result;
+  const members = receipt.members ?? [receipt as { companyId: string; workspaceId: string; snapshotId: string }];
+  const completed = await readOnly(db, async tx => {
+    const items = [];
+    for (const member of members) {
+      if (member.companyId !== receipt.companyId || !member.workspaceId || !member.snapshotId) {
+        throw new Error("online_migration_committed_receipt_requires_reconciliation");
+      }
+      const [operation] = await tx.execute(sql`select o.id from execution_workspace_snapshots s
+        join workspace_operations o on o.id=s.source_operation_id and o.company_id=s.company_id
+          and o.execution_workspace_id=s.execution_workspace_id
+        where s.company_id=${member.companyId}::uuid and s.execution_workspace_id=${member.workspaceId}::uuid
+          and s.id=${member.snapshotId}::uuid and s.status in ('committed','superseded')
+          and o.phase='remote_workspace_migration' and o.status='succeeded' and o.finished_at is not null
+          and o.metadata->>'snapshotId'=s.id::text and o.metadata->>'manifestDigest'=s.manifest_digest`);
+      if (!operation) throw new Error("online_migration_committed_receipt_requires_reconciliation");
+      items.push({ ...member, operationId: String(operation.id) });
+    }
+    return items;
+  });
+  return (receipt.members ? { ...receipt, members: completed } : { ...receipt, operationId: completed[0].operationId }) as T;
+}
+
 export async function runOnlineWorkspaceMigration(input: {
   db: Db; storage: StorageService; request: OnlineWorkspaceMigrationRequest; signal: AbortSignal;
 }) {
@@ -125,8 +151,9 @@ export async function runOnlineWorkspaceMigration(input: {
   }
   if (request.mode === "cohort") {
     if (!cohortOwner) throw new Error("online_migration_cohort_unavailable");
-    return cohortOwner({ db: input.db, storage: input.storage, companyId: request.companyId,
+    const result = await cohortOwner({ db: input.db, storage: input.storage, companyId: request.companyId,
       workspaceIds: request.workspaceIds, apply: true, concurrency: request.concurrency, signal: input.signal });
+    return completedOperationReceipts(input.db, result);
   }
   const apply = async () => {
     input.signal.throwIfAborted();
@@ -136,13 +163,14 @@ export async function runOnlineWorkspaceMigration(input: {
     if (request.mode === "resume" && result.snapshotId !== request.snapshotId) throw new Error("online_migration_resume_result_changed");
     return result;
   };
-  if (request.mode !== "resume") return apply();
+  if (request.mode !== "resume") return completedOperationReceipts(input.db, await apply());
   const [workspace] = await input.db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, request.companyId), eq(executionWorkspaces.id, request.workspaceIds[0])));
   const source = workspace && await inspectOnlineWorkspaceSource(input.db, workspace);
   if (!source) throw new Error("online_migration_resume_source_unproven");
-  return withWorkspaceSourceLocks(input.db, { companyId: request.companyId,
+  const result = await withWorkspaceSourceLocks(input.db, { companyId: request.companyId,
     projectIds: source.projectIds, issueIds: source.issueIds }, apply, true);
+  return completedOperationReceipts(input.db, result);
 }
 
 export async function assertOnlineMigrationRuntime(request: OnlineWorkspaceMigrationRequest) {
@@ -224,7 +252,8 @@ export async function runOnlineWorkspaceMigrationEntry(args = process.argv.slice
 if (process.env.PAPERCLIP_ONLINE_WORKSPACE_MIGRATION === "true") {
   await runOnlineWorkspaceMigrationEntry().catch(error => {
     const reason = error instanceof Error && /^[a-z_]{1,120}(?::[a-z_,]{1,1000})?$/.test(error.message) ? error.message : "online_migration_failed";
-    console.error(JSON.stringify({ schema: "paperclip.online-workspace-migration.v1", state: "blocked", reason, enrollmentReady: false }));
+    console.error(JSON.stringify({ schema: "paperclip.online-workspace-migration.v1", state: "blocked", reason, enrollmentReady: false,
+      ...(reason === "online_migration_committed_receipt_requires_reconciliation" ? { publicationMayHaveCommitted: true } : {}) }));
     process.exitCode = 1;
   });
 }

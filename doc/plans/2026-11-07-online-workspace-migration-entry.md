@@ -111,7 +111,11 @@ stopped; reconcile the durable journals before retrying.
 
 Output includes the separate identities, canonical authority IDs, source digests,
 outcome and process peak RSS. It excludes repository URLs, local file paths,
-keys and database URLs. A successful import is preparatory preservation, not an
+keys and database URLs. Completed operation IDs come from the exact returned
+snapshot's succeeded migration journal, including a legitimately superseded
+snapshot. This readback runs after publication commits. A readback failure
+reports reconciliation required; it does not prove that publication failed or
+authorize a blind retry. A successful import is preparatory preservation, not an
 ephemeral-enrollment or zero-downtime acceptance receipt. Operational proof still
 requires the reviewed release artifact, fresh source/volume witnesses, resource
 headroom and actual hosted readback.
