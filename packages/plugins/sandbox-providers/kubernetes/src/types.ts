@@ -4,6 +4,20 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+const labelNameRegex = /^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
+const labelPrefixRegex = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+
+export function isValidLabelKey(key: string): boolean {
+  const slash = key.indexOf("/");
+  if (slash === -1) return labelNameRegex.test(key);
+  const prefix = key.slice(0, slash);
+  return prefix.length <= 253 && labelPrefixRegex.test(prefix) && labelNameRegex.test(key.slice(slash + 1));
+}
+
+export function isValidLabelValue(value: string): boolean {
+  return value === "" || labelNameRegex.test(value);
+}
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -19,6 +33,13 @@ export const kubernetesProviderConfigSchema = z
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),
+    paperclipServerPodSelector: z
+      .record(
+        z.string().refine(isValidLabelKey, "paperclipServerPodSelector keys must be valid Kubernetes label keys"),
+        z.string().refine(isValidLabelValue, "paperclipServerPodSelector values must be valid Kubernetes label values"),
+      )
+      .refine((labels) => Object.keys(labels).length > 0, "paperclipServerPodSelector must not be empty")
+      .default({ app: "paperclip-server" }),
 
     defaultResources: z
       .object({
@@ -105,4 +126,5 @@ export interface KubernetesLeaseMetadata {
    * sync may be used when the worker advertises the verbs.
    */
   nativeFileSyncUnsupported?: boolean;
+  expiresAt?: string;
 }
