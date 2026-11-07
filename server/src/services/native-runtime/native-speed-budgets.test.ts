@@ -4,6 +4,7 @@ import { createNativeRunTrace } from "./native-run-trace.js";
 import {
   evaluateSpeedBudget,
   LOCAL_SPEED_BUDGETS,
+  RESTART_RECOVERY_PROVIDER_EVENT_TYPES,
   SPEED_BUDGET_EXCEEDED_EVENT_TYPE,
   speedBudgetAdapter,
   speedBudgetFor,
@@ -104,6 +105,32 @@ describe("speed budget checks in the native run trace", () => {
     trace.checkRestartRecovery({ readyAtMs: 0, eventAtMs: LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1, disposition: "resume_dead_runner" });
     await trace.finish("ok");
     expect(breaches().map(breach => breach.metric)).toEqual(["restart_recovery"]);
+  });
+
+  it("does not spend the restart-recovery check on an event emitted before ready", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    const late = LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1_000;
+    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 9_000, disposition: "reattach_existing_runner" });
+    trace.checkRestartRecovery({ readyAtMs: 10_000, eventAtMs: 10_000 + late, disposition: "reattach_existing_runner" });
+    await trace.finish("ok");
+    expect(breaches()).toEqual([expect.objectContaining({ metric: "restart_recovery", measuredMs: late })]);
+  });
+
+  it("measures a resumed attempt's boot from its own claim, not the run's first queue span", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local" });
+    trace.setBudgetStart("warm");
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 100 });
+    // The attempt resumed ten minutes later and booted in one second.
+    await trace.record({ name: "heartbeat.prepare_before_environment", startedAtMs: 600_000, endedAtMs: 600_200 });
+    await trace.record({ name: "runner.session.resume", startedAtMs: 600_200, endedAtMs: 601_000 });
+    await trace.finish("ok");
+    expect(breaches()).toEqual([]);
+  });
+
+  it("counts only the baseline's provider events as a recovered run's next event", () => {
+    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("item.delta")).toBe(true);
+    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("harness.diagnostic")).toBe(false);
+    expect(RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has("run.performance.span")).toBe(false);
   });
 
   it("writes nothing for remote runs or without a budget subject", async () => {

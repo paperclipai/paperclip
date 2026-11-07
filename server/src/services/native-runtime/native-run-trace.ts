@@ -359,6 +359,7 @@ export function createNativeRunTrace(input: {
   // measurement, so the check never adds a wait to the turn path.
   let budgetStart: SpeedBudgetStart | null = null;
   let queueEndedAtMs: number | null = null;
+  let attemptStartedAtMs: number | null = null;
   let bootChecked = false;
   const reportBudgetBreach = (breach: SpeedBudgetBreach | null): void => {
     if (!breach || !input.onEvent) return;
@@ -376,6 +377,9 @@ export function createNativeRunTrace(input: {
     if (!input.budget || input.budget.restartRecovery) return;
     const subject = { adapter: input.budget.adapter, environment: input.budget.environment };
     if (name === "heartbeat.queue") queueEndedAtMs = endedAtMs;
+    // A resumed attempt keeps the run's original queue span; its own claim is
+    // the start of this attempt's preparation.
+    if (name === "heartbeat.prepare_before_environment") attemptStartedAtMs = startedAtMs;
     if (name === "task.time_to_first_token") {
       reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "ttft", start: budgetStart,
         measuredMs: endedAtMs - startedAtMs }));
@@ -384,8 +388,9 @@ export function createNativeRunTrace(input: {
     // accepting turn.start (end of runner.turn.submit or runner.session.resume).
     if ((name === "runner.turn.submit" || name === "runner.session.resume") && !bootChecked && queueEndedAtMs !== null) {
       bootChecked = true;
+      const claimedAtMs = Math.max(queueEndedAtMs, attemptStartedAtMs ?? queueEndedAtMs);
       reportBudgetBreach(evaluateSpeedBudget({ ...subject, metric: "agent_boot", start: budgetStart,
-        measuredMs: endedAtMs - queueEndedAtMs }));
+        measuredMs: endedAtMs - claimedAtMs }));
     }
   };
 
@@ -655,8 +660,10 @@ export function createNativeRunTrace(input: {
   let recoveryChecked = false;
   const checkRestartRecovery = (measurement: { readyAtMs: number | null; eventAtMs: number; disposition: string }): void => {
     if (!input.budget || recoveryChecked || measurement.readyAtMs === null) return;
-    recoveryChecked = true;
+    // An event emitted before ready (committed late by a surviving runner)
+    // is not the recovered run's next event; it must not use the one check.
     if (measurement.eventAtMs < measurement.readyAtMs) return;
+    recoveryChecked = true;
     reportBudgetBreach(evaluateSpeedBudget({ adapter: input.budget.adapter, environment: input.budget.environment,
       metric: "restart_recovery", start: null, measuredMs: measurement.eventAtMs - measurement.readyAtMs,
       disposition: measurement.disposition }));

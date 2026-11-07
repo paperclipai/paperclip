@@ -13,7 +13,7 @@ import { readProviderFailure } from "@paperclipai/shared";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
-import { speedBudgetAdapter } from "./native-speed-budgets.js";
+import { RESTART_RECOVERY_PROVIDER_EVENT_TYPES, speedBudgetAdapter } from "./native-speed-budgets.js";
 import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
@@ -10259,7 +10259,7 @@ async function executePaperclipNativeSessionWithinScope(
           : Date.now();
         // Restart recovery latency (invariant 8): control plane ready to this
         // recovered run's first provider event. Checked once; run log only.
-        if (input.restartRecovery && !event.eventType.startsWith("run.")) {
+        if (input.restartRecovery && RESTART_RECOVERY_PROVIDER_EVENT_TYPES.has(event.eventType)) {
           const startup = getStartupRecoveryState();
           trace.checkRestartRecovery({
             readyAtMs: startup.phase === "ready" ? Date.parse(startup.updatedAt) : null,
