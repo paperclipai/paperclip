@@ -70,8 +70,15 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local -
 |---|---|---|---|---|---|
 | `w-20261107T181913-s4242` | warm | 8 | 7 | 8/8 PASS | none |
 | `w-20261107T183435-s4242` | per_turn | 8 | 8 | 8/8 PASS | none |
+| `w-20261107T194407-s4242` | default (no stored lifecycle) | 8 | 7 | 8/8 PASS | none |
 
-Both waves cover Codex and OpenCode in workloads A1, B1 and B5 under K1 (SIGKILL), K2 (SIGTERM) and K6 (crash loop). Warm adds no R1–R6 failure. Revision: master `4d5265fe7e` + #19874 + the reconnect grace (#19879, before its recovery follow-up), with `--lifecycle` added to the harness here. The runner-e2e catalog pins `per_turn`, so the harness forces the lifecycle explicitly; warm is what the new default resolves to for these local agents.
+All three waves cover Codex and OpenCode in workloads A1, B1 and B5 under K1 (SIGKILL), K2 (SIGTERM) and K6 (crash loop). Warm adds no R1–R6 failure. The `default` wave ran this pull request's own revision with `--lifecycle default`, which creates the agents without a stored lifecycle, so it exercises the real default path rather than a forced warm. Revision: master `4d5265fe7e` + #19874 + the reconnect grace (#19879, before its recovery follow-up), with `--lifecycle` added to the harness here. The runner-e2e catalog pins `per_turn`, so the harness forces the lifecycle explicitly; warm is what the new default resolves to for these local agents.
+
+### End-to-end default check
+
+`--lifecycle default` on this pull request's revision (`ttft-baseline.ts --adapters codex,opencode --samples 2 --phases coldwarm --lifecycle default`): both agents read back with no stored lifecycle (`agentLifecycles: unset`), and every follow-up reused the runner and provider session (`run.startup.reuse` runner and provider_session `reused`, no `runner.process.launch`). Follow-up TTFT: Codex 4.8 s and 3.6 s, OpenCode 4.1 s and 3.7 s.
+
+This check found that `normalizePaperclipRunnerAdapterConfig`, which runs on every create and update, wrote `lifecycleMode: "per_turn"` into every native config. Without the fix in this pull request, the default never applied and any edit after the migration would have written the old default back.
 
 ## Safety model of the warm default
 

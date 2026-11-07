@@ -1611,7 +1611,9 @@ describe("goal-less native task-session publication", () => {
       await db.insert(projects).values({ id: projectId, companyId, name: "Pointer project", status: "active" });
       await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId, projectId, name: "Pointer workspace", cwd: repoRoot, isPrimary: true });
       await db.insert(agents).values({ id: agentId, companyId, name: "Pointer agent", adapterType: "paperclip_runner", status: "active",
-        adapterConfig: { provider: "codex", workspaceStrategy: { type: "project_primary" } },
+        // This scenario is per-turn publication: each run closes its session.
+        // An unset lifecycle now resolves to warm for local Codex.
+        adapterConfig: { provider: "codex", lifecycleMode: "per_turn", workspaceStrategy: { type: "project_primary" } },
         runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
       await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId, issueNumber: 1,
         identifier: `${issuePrefix}-1`, title: "Deliver the saved artifact", status: "in_progress", assigneeAgentId: agentId, workMode: "standard",
