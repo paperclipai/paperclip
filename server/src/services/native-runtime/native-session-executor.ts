@@ -6130,36 +6130,50 @@ const STALE_REMOTE_RUNNER_STOP_WAIT_MS = 10_000;
  * runner can be verified there is nothing to stop, and a remaining conflict is
  * still caught by the bounded same-run bootstrap retry.
  */
-async function stopStaleRemoteRunnerBeforeBootstrap(input: {
+export async function stopStaleRemoteRunnerBeforeBootstrap(input: {
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   identity: Record<string, unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-}): Promise<void> {
+}, options: {
+  verify?: typeof verifyRemoteRunnerReattachment;
+  waitMs?: number;
+  pollMs?: number;
+} = {}): Promise<"no_prior_runner" | "stopped" | "killed" | "stop_failed"> {
   const target = input.runnerExecutionTarget;
-  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return;
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return "no_prior_runner";
   const providerLeaseId = target.sandboxLeaseAcquisition?.providerLeaseId;
-  if (!providerLeaseId) return;
+  if (!providerLeaseId) return "no_prior_runner";
   const runId = input.execution.binding.runId;
+  const verify = options.verify ?? verifyRemoteRunnerReattachment;
   let runner: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
-    runner = await verifyRemoteRunnerReattachment({
+    runner = await verify({
       claim: { runId, remote: { providerLeaseId, remoteCwd: target.remoteCwd } },
       target, identity: input.identity, runId, normalizedSessionId: nativeSessionKey(input.execution),
     });
   } catch {
-    return; // No verifiable prior runner in this sandbox.
+    // No runner with this run's exact identity and generation is alive here.
+    return "no_prior_runner";
   }
   try {
+    let outcome: "stopped" | "killed" = "stopped";
     if (await runner.signal("SIGTERM")) {
-      const deadline = Date.now() + STALE_REMOTE_RUNNER_STOP_WAIT_MS;
-      while (Date.now() < deadline && await runner.isAlive()) await new Promise(done => setTimeout(done, 500));
-      if (await runner.isAlive()) await runner.signal("SIGKILL");
+      const deadline = Date.now() + (options.waitMs ?? STALE_REMOTE_RUNNER_STOP_WAIT_MS);
+      while (Date.now() < deadline && await runner.isAlive()) {
+        await new Promise(done => setTimeout(done, options.pollMs ?? 500));
+      }
+      if (await runner.isAlive()) {
+        await runner.signal("SIGKILL");
+        outcome = "killed";
+      }
     }
     await input.onLog?.("stdout", `[paperclip-runner] Stopped the interrupted runner ${runner.pid} before restarting the bootstrap.\n`);
+    return outcome;
   } catch (error) {
     await input.onLog?.("stderr", `[paperclip-runner] Could not stop the interrupted runner before restarting the bootstrap: ${
       error instanceof Error ? error.message : String(error)}\n`);
+    return "stop_failed";
   }
 }
 
