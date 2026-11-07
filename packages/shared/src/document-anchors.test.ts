@@ -99,6 +99,8 @@ describe("document text projection", () => {
   it("keeps text the renderer shows literally", () => {
     expect(projectMarkdownToText("# - Roadmap").text).toBe("- Roadmap");
     expect(projectMarkdownToText("> # - Quoted heading").text).toBe("- Quoted heading");
+    expect(projectMarkdownToText("- [ ] # Release").text).toBe("# Release");
+    expect(projectMarkdownToText("- [x] - Shipped").text).toBe("- Shipped");
     expect(projectMarkdownToText("Intro\n\n| --- |").text).toBe("Intro ---");
     expect(projectMarkdownToText("| A | B |\n| --- | --- |\n| 1 | 2 |").text).not.toContain("---");
     expect(projectMarkdownToText("Show \\&amp; and &Amp; and &constructor;").text)

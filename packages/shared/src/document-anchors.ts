@@ -275,9 +275,11 @@ function stripBlockSyntax(line: string, absoluteOffset: number): { text: string;
       consumed += quote[0].length;
       continue;
     }
-    const listItem = rest.match(/^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/);
+    const listItem = rest.match(/^\s*(?:[-+*]|\d+[.)])\s+(\[[ xX]\]\s+)?/);
     if (listItem) {
       consumed += listItem[0].length;
+      // A task checkbox starts the item's paragraph, so markers after it stay visible.
+      if (listItem[1]) break;
       continue;
     }
     // Heading text is inline content, so markers after `#` stay visible.
