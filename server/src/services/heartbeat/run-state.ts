@@ -416,6 +416,8 @@ export type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Effective context high-water mark (largest single step); a maximum, not a sum. */
+  contextTokens?: number | null;
 };
 
 type SessionCompactionDecision = {
@@ -692,6 +694,9 @@ export function normalizeUsageTotals(
       Math.floor(asNumber(usage.cachedInputTokens, 0)),
     ),
     outputTokens: Math.max(0, Math.floor(asNumber(usage.outputTokens, 0))),
+    ...(typeof usage.contextTokens === "number" && Number.isFinite(usage.contextTokens)
+      ? { contextTokens: Math.max(0, Math.floor(usage.contextTokens)) }
+      : {}),
   };
 }
 
@@ -720,6 +725,12 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
       asNumber(parsed.rawOutputTokens, asNumber(parsed.outputTokens, 0)),
     ),
   );
+  const contextTokens = Math.max(
+    0,
+    Math.floor(
+      asNumber(parsed.rawContextTokens, asNumber(parsed.contextTokens, 0)),
+    ),
+  );
 
   if (inputTokens <= 0 && cachedInputTokens <= 0 && outputTokens <= 0) {
     return null;
@@ -729,6 +740,7 @@ function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
     inputTokens,
     cachedInputTokens,
     outputTokens,
+    ...(contextTokens > 0 ? { contextTokens } : {}),
   };
 }
 
@@ -757,6 +769,11 @@ export function normalizeAdapterRunUsage(
     inputTokens: Math.max(0, inputTokens),
     cachedInputTokens: Math.max(0, cachedInputTokens),
     outputTokens: Math.max(0, outputTokens),
+    // The context high-water mark is a maximum, not a cumulative total: keep
+    // the current watermark instead of subtracting the previous run's value.
+    ...(typeof current.contextTokens === "number" && current.contextTokens > 0
+      ? { contextTokens: current.contextTokens }
+      : {}),
   };
 }
 
@@ -1425,6 +1442,7 @@ export function createHeartbeatRunState(db: Db) {
     // separate cache counter when the writer explicitly saved exclusive input.
     const latestRawInputTokens = (latestRawUsage?.inputTokens ?? 0) +
       (latestRun?.usageJson?.rawInputIncludesCached === false ? latestRawUsage?.cachedInputTokens ?? 0 : 0);
+    const latestContextTokens = latestRawUsage?.contextTokens ?? 0;
     const sessionAgeHours =
       latestRun && oldestRun
         ? Math.max(
@@ -1446,6 +1464,14 @@ export function createHeartbeatRunState(db: Db) {
       reason =
         `session raw input reached ${formatCount(latestRawInputTokens)} tokens ` +
         `(threshold ${formatCount(policy.maxRawInputTokens)})`;
+    } else if (
+      policy.maxContextTokens > 0 &&
+      latestRawUsage &&
+      latestContextTokens >= policy.maxContextTokens
+    ) {
+      reason =
+        `session effective context reached ${formatCount(latestContextTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxContextTokens)})`;
     } else if (
       policy.maxSessionAgeHours > 0 &&
       sessionAgeHours >= policy.maxSessionAgeHours

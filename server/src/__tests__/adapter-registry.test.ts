@@ -504,6 +504,7 @@ describe("resolveExternalAdapterRegistration", () => {
         enabled: true,
         maxSessionRuns: 200,
         maxRawInputTokens: 2_000_000,
+        maxContextTokens: 0,
         maxSessionAgeHours: 72,
       },
     };

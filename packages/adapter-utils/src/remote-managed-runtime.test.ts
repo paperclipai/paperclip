@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   prepareWorkspaceForSshExecution,
@@ -348,5 +348,175 @@ describe("remote managed runtime", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe("remote managed runtime — stable task workspace", () => {
+  const cleanupDirs: string[] = [];
+  const spec = {
+    host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+    privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true,
+  } as const;
+  const identity = { companyId: "co-1", agentId: "agent-1", issueId: "issue-1" };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    prepareWorkspaceForSshExecution.mockImplementation(async () => ({ gitBacked: false }));
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stable-task-lockroot-"));
+    cleanupDirs.push(root);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "stable-task-test");
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function makeWorkspaceDir() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stable-task-ws-"));
+    cleanupDirs.push(root);
+    return root;
+  }
+
+  it("realizes the workspace at the stable per-task directory", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    const prepared = await prepareRemoteManagedRuntime({
+      spec, runId: "run-a", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+    });
+    expect(prepared.workspaceRemoteDir).toBe(
+      "/app/.paperclip-runtime/tasks/co-1/agent-1/issue-1/workspace",
+    );
+    expect(prepared.runtimeRootDir).toBe(
+      "/app/.paperclip-runtime/tasks/co-1/agent-1/issue-1/workspace/.paperclip-runtime/opencode",
+    );
+    expect(prepared.taskWorkspaceIdentity).toEqual(identity);
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/tasks/co-1/agent-1/issue-1/workspace",
+    }));
+    await prepared.restoreWorkspace();
+  });
+
+  it("keeps the legacy per-run directory without task identity", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    const prepared = await prepareRemoteManagedRuntime({
+      spec, runId: "run-legacy", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+    });
+    expect(prepared.workspaceRemoteDir).toBe("/app/.paperclip-runtime/runs/run-legacy/workspace");
+    expect(prepared.taskWorkspaceIdentity).toBeNull();
+    await prepared.restoreWorkspace();
+  });
+
+  it("rejects identity segments that are not simple path segments", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-bad", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: { companyId: "co/../escape", agentId: "agent-1", issueId: "issue-1" },
+    })).rejects.toThrow(/simple path segment/);
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-bad", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: { companyId: "co-1", agentId: "agent/1", issueId: "issue-1" },
+    })).rejects.toThrow(/simple path segment/);
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-bad", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: { companyId: "co-1", agentId: "agent-1", issueId: "  " },
+    })).rejects.toThrow(/simple path segment/);
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+  });
+
+  it("serializes concurrent cycles of the same task and fails fast", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    let releaseFirst: (() => void) | null = null;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    prepareWorkspaceForSshExecution.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) await firstGate;
+      return { gitBacked: false };
+    });
+    const first = prepareRemoteManagedRuntime({
+      spec, runId: "run-first", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+    });
+    await vi.waitFor(() => {
+      expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
+    });
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-second", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+      taskWorkspaceLockWaitMs: 150,
+    })).rejects.toMatchObject({ code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT" });
+    releaseFirst?.();
+    const prepared = await first;
+    await prepared.restoreWorkspace();
+  });
+
+  it("releases the cycle lock when preparation fails", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    prepareWorkspaceForSshExecution.mockImplementation(async () => {
+      throw new Error("ssh transport failed");
+    });
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-err", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+    })).rejects.toThrow("ssh transport failed");
+    prepareWorkspaceForSshExecution.mockImplementation(async () => ({ gitBacked: false }));
+    const prepared = await prepareRemoteManagedRuntime({
+      spec, runId: "run-retry", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+      taskWorkspaceLockWaitMs: 150,
+    });
+    await prepared.restoreWorkspace();
+  });
+
+  it("releases the cycle lock after restore and stays idempotent", async () => {
+    const workspaceDir = await makeWorkspaceDir();
+    const first = await prepareRemoteManagedRuntime({
+      spec, runId: "run-r1", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+    });
+    await first.restoreWorkspace();
+    await first.restoreWorkspace();
+    const second = await prepareRemoteManagedRuntime({
+      spec, runId: "run-r2", adapterKey: "opencode", workspaceLocalDir: workspaceDir,
+      taskWorkspace: identity,
+      taskWorkspaceLockWaitMs: 150,
+    });
+    expect(second.workspaceRemoteDir).toBe(first.workspaceRemoteDir);
+    await second.restoreWorkspace();
+  });
+
+  it("allows a different task of the same agent to prepare concurrently", async () => {
+    const workspaceDirA = await makeWorkspaceDir();
+    const workspaceDirB = await makeWorkspaceDir();
+    let releaseFirst: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    prepareWorkspaceForSshExecution.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return { gitBacked: false };
+    });
+    const first = prepareRemoteManagedRuntime({
+      spec, runId: "run-t1", adapterKey: "opencode", workspaceLocalDir: workspaceDirA,
+      taskWorkspace: identity,
+    });
+    await vi.waitFor(() => {
+      expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
+    });
+    const second = await prepareRemoteManagedRuntime({
+      spec, runId: "run-t2", adapterKey: "opencode", workspaceLocalDir: workspaceDirB,
+      taskWorkspace: { ...identity, issueId: "issue-2" },
+      taskWorkspaceLockWaitMs: 150,
+    });
+    releaseFirst?.();
+    const preparedFirst = await first;
+    await preparedFirst.restoreWorkspace();
+    await second.restoreWorkspace();
   });
 });

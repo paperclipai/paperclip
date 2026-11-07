@@ -13,6 +13,7 @@ import {
   type SandboxAdditionalSource,
   type SandboxManagedRuntimeAssetRestoreContext,
 } from "./sandbox-managed-runtime.js";
+import { acquireKeyedDirectoryMergeLock } from "./workspace-restore-merge.js";
 import { captureDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -41,6 +42,12 @@ export interface RemoteManagedRuntimeAsset {
   restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
+export interface RemoteTaskWorkspaceIdentity {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+}
+
 export interface PreparedRemoteManagedRuntime {
   spec: SshRemoteExecutionSpec;
   workspaceLocalDir: string;
@@ -48,11 +55,21 @@ export interface PreparedRemoteManagedRuntime {
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
   /**
-   * Remote directory of each additional (referenced) project that staged
+   * Remote directory of each referenced (additional) project that staged
    * successfully, keyed by `projectId`. A project whose staging failed is
    * absent (per-project failure isolation).
    */
   additionalSourceDirs: Record<string, string>;
+  /**
+   * Present when the workspace was realized at a stable per-task directory
+   * (`.paperclip-runtime/tasks/<companyId>/<agentId>/<issueId>/workspace`)
+   * instead of the legacy per-run directory. The directory persists across
+   * runs of the same task so sessioned tools can resume in place; the
+   * prepare/execute/restore cycle for the same task is serialized by a
+   * keyed directory merge lock released by `restoreWorkspace` (and on any
+   * preparation error).
+   */
+  taskWorkspaceIdentity: RemoteTaskWorkspaceIdentity | null;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -106,12 +123,67 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
   );
 }
 
+function requireTaskWorkspaceSegment(value: unknown, field: string): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (
+    trimmed.length === 0 ||
+    trimmed !== value ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed.includes("..")
+  ) {
+    throw new Error(`stable task workspace ${field} is not a simple path segment: ${String(value)}`);
+  }
+  return trimmed;
+}
+
+function buildStableTaskWorkspaceRemoteDir(
+  baseRemoteDir: string,
+  identity: RemoteTaskWorkspaceIdentity,
+): string {
+  return path.posix.join(
+    baseRemoteDir,
+    ".paperclip-runtime",
+    "tasks",
+    identity.companyId,
+    identity.agentId,
+    identity.issueId,
+    "workspace",
+  );
+}
+
+function buildStableTaskWorkspaceLockKey(
+  spec: SshRemoteExecutionSpec,
+  workspaceRemoteDir: string,
+): string {
+  return `stable-task-workspace:${spec.host}:${spec.port}:${spec.username}:${workspaceRemoteDir}`;
+}
+
 export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
   runId: string;
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  /**
+   * Opt in to a stable per-task remote workspace directory keyed by
+   * (companyId, agentId, issueId) instead of the legacy per-run directory.
+   * The directory persists across runs of the same task; runtime assets
+   * under the workspace's `.paperclip-runtime` subtree survive the per-run
+   * workspace clean, so sessioned tools (for example OpenCode with its
+   * session database under HOME) can resume in place. The whole
+   * prepare/execute/restore cycle for the same task is serialized by a
+   * keyed directory merge lock; a concurrent run of the same task fails
+   * fast with a recoverable lock-timeout error instead of silently
+   * clobbering the shared directory.
+   */
+  taskWorkspace?: RemoteTaskWorkspaceIdentity;
+  /**
+   * Test seam only: overrides how long the stable-workspace cycle lock waits
+   * before reporting a timeout. Production callers must omit it and keep the
+   * real budget.
+   */
+  taskWorkspaceLockWaitMs?: number;
   syncWorkspace?: boolean;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
@@ -124,16 +196,71 @@ export async function prepareRemoteManagedRuntime(input: {
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const syncWorkspace = input.syncWorkspace !== false;
+  const taskWorkspaceIdentity = input.taskWorkspace
+    ? {
+        companyId: requireTaskWorkspaceSegment(input.taskWorkspace.companyId, "companyId"),
+        agentId: requireTaskWorkspaceSegment(input.taskWorkspace.agentId, "agentId"),
+        issueId: requireTaskWorkspaceSegment(input.taskWorkspace.issueId, "issueId"),
+      }
+    : null;
   const workspaceRemoteDir = syncWorkspace
-    ? path.posix.join(
-        baseWorkspaceRemoteDir,
-        ".paperclip-runtime",
-        "runs",
-        input.runId,
-        "workspace",
-      )
+    ? taskWorkspaceIdentity
+      ? buildStableTaskWorkspaceRemoteDir(baseWorkspaceRemoteDir, taskWorkspaceIdentity)
+      : path.posix.join(
+          baseWorkspaceRemoteDir,
+          ".paperclip-runtime",
+          "runs",
+          input.runId,
+          "workspace",
+        )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+
+  // The stable workspace is shared state across runs of the same task: hold
+  // the cycle lock from the first remote mutation until the restore (or the
+  // preparation error path) completes. Legacy per-run workspaces are already
+  // disjoint, so they keep the lock-free behavior.
+  const releaseCycleLock = taskWorkspaceIdentity
+    ? await acquireKeyedDirectoryMergeLock(
+        buildStableTaskWorkspaceLockKey(input.spec, workspaceRemoteDir),
+        "task_workspace_cycle",
+        input.taskWorkspaceLockWaitMs,
+      )
+    : null;
+  try {
+    return await prepareRemoteManagedRuntimeLocked({
+      ...input,
+      taskWorkspaceIdentity,
+      workspaceRemoteDir,
+      runtimeRootDir,
+      releaseCycleLock,
+    });
+  } catch (error) {
+    await releaseCycleLock?.();
+    throw error;
+  }
+}
+
+async function prepareRemoteManagedRuntimeLocked(input: {
+  spec: SshRemoteExecutionSpec;
+  runId: string;
+  adapterKey: string;
+  workspaceLocalDir: string;
+  taskWorkspaceIdentity: RemoteTaskWorkspaceIdentity | null;
+  workspaceRemoteDir: string;
+  runtimeRootDir: string;
+  releaseCycleLock: (() => Promise<void>) | null;
+  syncWorkspace?: boolean;
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
+  assets?: RemoteManagedRuntimeAsset[];
+  additionalSources?: SandboxAdditionalSource[];
+  onProgress?: RuntimeProgressSink;
+}): Promise<PreparedRemoteManagedRuntime> {
+  const workspaceRemoteDir = input.workspaceRemoteDir;
+  const runtimeRootDir = input.runtimeRootDir;
+  const releaseCycleLock = input.releaseCycleLock;
+  const syncWorkspace = input.syncWorkspace !== false;
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -183,16 +310,20 @@ export async function prepareRemoteManagedRuntime(input: {
       });
     }
   } catch (error) {
-    if (preparedWorkspace && baselineSnapshot) {
-      await restoreWorkspaceFromSshExecution({
-        spec: input.spec,
-        localDir: input.workspaceLocalDir,
-        remoteDir: workspaceRemoteDir,
-        baselineSnapshot,
-        restoreGitHistory: preparedWorkspace.gitBacked,
-        onProgress: input.onProgress,
-        repositories: repositoryBaselines,
-      });
+    try {
+      if (preparedWorkspace && baselineSnapshot) {
+        await restoreWorkspaceFromSshExecution({
+          spec: input.spec,
+          localDir: input.workspaceLocalDir,
+          remoteDir: workspaceRemoteDir,
+          baselineSnapshot,
+          restoreGitHistory: preparedWorkspace.gitBacked,
+          onProgress: input.onProgress,
+          repositories: repositoryBaselines,
+        });
+      }
+    } finally {
+      await releaseCycleLock?.();
     }
     throw error;
   }
@@ -250,24 +381,29 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
+    taskWorkspaceIdentity: input.taskWorkspaceIdentity,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
-      if (preparedWorkspace && baselineSnapshot) {
-        await restoreWorkspaceFromSshExecution({
-          spec: input.spec,
-          localDir: input.workspaceLocalDir,
-          remoteDir: workspaceRemoteDir,
-          baselineSnapshot,
-          restoreGitHistory: preparedWorkspace.gitBacked,
-          onProgress,
-          repositories: repositoryBaselines,
-        });
-      }
-      for (const asset of input.assets ?? []) {
-        if (!asset.restore) continue;
-        await asset.restore({
-          assetDir: path.posix.join(runtimeRootDir, asset.key),
-          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
-        });
+      try {
+        if (preparedWorkspace && baselineSnapshot) {
+          await restoreWorkspaceFromSshExecution({
+            spec: input.spec,
+            localDir: input.workspaceLocalDir,
+            remoteDir: workspaceRemoteDir,
+            baselineSnapshot,
+            restoreGitHistory: preparedWorkspace.gitBacked,
+            onProgress,
+            repositories: repositoryBaselines,
+          });
+        }
+        for (const asset of input.assets ?? []) {
+          if (!asset.restore) continue;
+          await asset.restore({
+            assetDir: path.posix.join(runtimeRootDir, asset.key),
+            readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+          });
+        }
+      } finally {
+        await releaseCycleLock?.();
       }
     },
   };

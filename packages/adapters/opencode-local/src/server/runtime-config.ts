@@ -260,10 +260,29 @@ export function prepareManagedOpenCodeRemoteHomes(input: {
   runtimeRootDir: string | null | undefined;
   runId: string;
   configDir?: string;
+  /**
+   * Set when the run executes in a stable per-task workspace whose
+   * `.paperclip-runtime` subtree persists across runs. Session storage
+   * (XDG data/state) and the cache move to stable directories under the
+   * runtime root so OpenCode can resume its session database in place;
+   * credentials stay in the per-run managed home and the per-run synced
+   * config dir, preserving the isolation the managed home provides.
+   */
+  stableTaskHomes?: boolean;
 }): void {
   if (!input.config.managedAiConnection) return;
   if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
   const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
+  if (input.stableTaskHomes) {
+    Object.assign(input.env, {
+      HOME: home,
+      XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
+      XDG_DATA_HOME: path.posix.join(input.runtimeRootDir, "xdg", "data"),
+      XDG_CACHE_HOME: path.posix.join(input.runtimeRootDir, "xdg", "cache"),
+      XDG_STATE_HOME: path.posix.join(input.runtimeRootDir, "xdg", "state"),
+    });
+    return;
+  }
   Object.assign(input.env, {
     HOME: home,
     XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),

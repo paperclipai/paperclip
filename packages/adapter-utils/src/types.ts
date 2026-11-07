@@ -37,6 +37,12 @@ export interface UsageSummary {
   cachedInputTokens?: number;
   /** Subset of inputTokens, not an additional token count. */
   cacheWriteTokens?: number;
+  /**
+   * Effective context high-water mark: the largest single-step token footprint
+   * (prompt including cache-served tokens, plus completion tokens) observed in
+   * this run. A maximum, never a sum across steps or runs.
+   */
+  contextTokens?: number;
 }
 
 /** Accounting-only snapshot. Never include prompt, response, or credentials. */

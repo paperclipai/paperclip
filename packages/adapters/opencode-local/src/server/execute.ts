@@ -386,10 +386,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let localSkillsDir: string | null = null;
     let remoteRuntimeRootDir: string | null = null;
+    let stableTaskWorkspaceActive = false;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTarget?.kind === "remote") {
       localSkillsDir = await buildOpenCodeSkillsDir(config);
+      // Stable per-task workspace (opt-in, SSH transport only): the remote
+      // workspace directory persists across runs of the same task so the
+      // OpenCode session can be resumed in place. Disabled by default; the
+      // legacy per-run workspace remains the rollback path.
+      const stableTaskWorkspaceEnabled =
+        config.stableTaskWorkspace === true ||
+        isTruthyEnvFlag(env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE ?? process.env.PAPERCLIP_OPENCODE_STABLE_TASK_WORKSPACE);
+      const stableTaskWorkspaceIdentity =
+        stableTaskWorkspaceEnabled && executionTarget.transport === "ssh" && wakeTaskId && agent?.id && agent?.companyId
+          ? { companyId: agent.companyId, agentId: agent.id, issueId: wakeTaskId }
+          : null;
+      if (stableTaskWorkspaceEnabled && !stableTaskWorkspaceIdentity) {
+        await onLog(
+          "stdout",
+          "[paperclip] Stable task workspace requested but unavailable (requires the SSH transport plus company, agent, and task identity); falling back to the per-run workspace.\n",
+        );
+      } else if (stableTaskWorkspaceIdentity) {
+        await onLog(
+          "stdout",
+          `[paperclip] Stable task workspace enabled for task ${stableTaskWorkspaceIdentity.issueId} of agent ${stableTaskWorkspaceIdentity.agentId}.\n`,
+        );
+      }
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -400,6 +423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         adapterKey: "opencode",
         timeoutSec,
         workspaceLocalDir: cwd,
+        ...(stableTaskWorkspaceIdentity ? { taskWorkspace: stableTaskWorkspaceIdentity } : {}),
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
         onProgress: (line) => onLog("stdout", line),
@@ -420,6 +444,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       restoreRemoteWorkspace = () =>
         preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      stableTaskWorkspaceActive = preparedExecutionTargetRuntime.taskWorkspaceIdentity != null;
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env: preparedRuntimeConfig.env,
@@ -448,6 +473,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         runtimeRootDir: preparedExecutionTargetRuntime.runtimeRootDir,
         runId,
         configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
+        stableTaskHomes: stableTaskWorkspaceActive,
       });
       const remoteHomeDir = config.managedAiConnection
         ? preparedRuntimeConfig.env.HOME
@@ -510,13 +536,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionParams = parseObject(runtime.sessionParams);
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeSessionWorkspaceId = asString(runtimeSessionParams.workspaceId, "");
+    const runtimeSessionRepoUrl = asString(runtimeSessionParams.repoUrl, "");
+    const runtimeSessionRepoRef = asString(runtimeSessionParams.repoRef, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    // In stable-workspace mode the directory alone no longer proves session
+    // compatibility: the same task can be rebound to a different workspace or
+    // repository over time, and resuming a session saved for another
+    // repository would replay stale context onto unrelated files. Empty saved
+    // fields (older sessions) are treated as unknown and never block resume.
+    const stableWorkspaceIdentityMatches = !stableTaskWorkspaceActive
+      || (
+        (runtimeSessionWorkspaceId.length === 0 || workspaceId.length === 0 || runtimeSessionWorkspaceId === workspaceId) &&
+        (runtimeSessionRepoUrl.length === 0 || workspaceRepoUrl.length === 0 || runtimeSessionRepoUrl === workspaceRepoUrl) &&
+        (runtimeSessionRepoRef.length === 0 || workspaceRepoRef.length === 0 || runtimeSessionRepoRef === workspaceRepoRef)
+      );
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      stableWorkspaceIdentityMatches &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (stableTaskWorkspaceActive && runtimeSessionId && !stableWorkspaceIdentityMatches) {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode session "${runtimeSessionId}" was saved for a different workspace (workspaceId/repo changed) and will not be resumed in the stable task workspace. Starting a fresh session.\n`,
+      );
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] OpenCode session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,

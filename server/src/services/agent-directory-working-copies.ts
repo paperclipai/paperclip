@@ -83,7 +83,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       // or Git-history discovery. The registered root is the exact writable root.
       if (!recovering) await syncDirectoryToSsh({ spec: target.spec, localDir: row.localRoot, remoteDir: row.executionRoot, exclude: [".paperclip-runtime"] });
       return { target, workspaceRemoteDir: row.executionRoot, runtimeRootDir: null,
-        assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+        assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, taskWorkspaceIdentity: null,
         restoreWorkspace: () => restoreWorkspaceFromSshExecution({ spec: target.spec, localDir: row.localRoot,
           remoteDir: row.executionRoot, baselineSnapshot: { ...baseline(row), exclude: [".paperclip-runtime"] }, restoreGitHistory: false }) };
     }

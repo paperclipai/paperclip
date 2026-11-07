@@ -13,6 +13,7 @@ const sessionManagement: AdapterSessionManagement = {
     enabled: true,
     maxSessionRuns: 0,
     maxRawInputTokens: 0,
+    maxContextTokens: 0,
     maxSessionAgeHours: 0,
   },
 };

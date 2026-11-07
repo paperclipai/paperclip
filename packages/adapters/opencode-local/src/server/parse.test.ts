@@ -37,6 +37,7 @@ describe("parseOpenCodeJsonl", () => {
       inputTokens: 120,
       cachedInputTokens: 20,
       outputTokens: 50,
+      contextTokens: 190,
     });
     expect(parsed.costUsd).toBeCloseTo(0.0025, 6);
     expect(parsed.errorMessage).toContain("model unavailable");
@@ -93,5 +94,31 @@ describe("OpenCode reported usage completeness", () => {
     const line = JSON.stringify({ type: "step_finish", part: { tokens: { input: 0, output: 0 } } });
     expect(parseOpenCodeJsonl(line)).toMatchObject({ usageReported: true, usageComplete: true, usage: { inputTokens: 0, outputTokens: 0 }, costUsd: null });
     expect(parseOpenCodeJsonl(line + '\n' + JSON.stringify({ type: "step_finish" }))).toMatchObject({ usageReported: true, usageComplete: false });
+  });
+});
+
+describe("OpenCode effective context high-water mark", () => {
+  it("tracks the largest single-step footprint while sums keep accumulating", () => {
+    const lines = [
+      JSON.stringify({ type: "step_finish", sessionID: "s1", part: { tokens: { input: 76, output: 4, reasoning: 0, cache: { read: 7424, write: 0 } } } }),
+      JSON.stringify({ type: "step_finish", sessionID: "s1", part: { tokens: { input: 120, output: 30, reasoning: 10, cache: { read: 8512, write: 64 } } } }),
+      JSON.stringify({ type: "step_finish", sessionID: "s1", part: { tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 9000, write: 0 } } } }),
+    ].join("\n");
+    const parsed = parseOpenCodeJsonl(lines);
+    expect(parsed.usage).toMatchObject({
+      inputTokens: 76 + 120 + 64 + 10,
+      cachedInputTokens: 7424 + 8512 + 9000,
+      outputTokens: 46,
+      contextTokens: 10 + 2 + 9000,
+    });
+  });
+
+  it("starts at zero without step data and never decreases within a run", () => {
+    expect(parseOpenCodeJsonl("").usage.contextTokens).toBe(0);
+    const growing = [
+      { type: "step_finish", part: { tokens: { input: 5, output: 1, cache: { read: 10, write: 0 } } } },
+      { type: "step_finish", part: { tokens: { input: 1, output: 1, cache: { read: 2, write: 0 } } } },
+    ].map((row) => JSON.stringify(row)).join("\n");
+    expect(parseOpenCodeJsonl(growing).usage.contextTokens).toBe(16);
   });
 });
