@@ -5,6 +5,8 @@ import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 
+const MAX_INLINE_TASK_PLAN_CHARS = 12_000;
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -300,13 +302,19 @@ export function buildPaperclipTaskMarkdown(input: {
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
-    if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
+    const planBody = issue.conversationAgentId ? "" : input.taskPlan?.body.trim();
+    if (input.taskPlan && planBody) {
       lines.push(
         "",
         `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
-        fenceTaskText(input.taskPlan.body.trim()),
+        fenceTaskText(planBody.slice(0, MAX_INLINE_TASK_PLAN_CHARS)),
       );
+      if (planBody.length > MAX_INLINE_TASK_PLAN_CHARS) {
+        lines.push(
+          `Plan truncated at ${MAX_INLINE_TASK_PLAN_CHARS} of ${planBody.length} chars; read the full document via GET /api/issues/${issue.id}/documents/plan.`,
+        );
+      }
     }
   }
   if (ancestors.length > 0) {

@@ -42,6 +42,19 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("Write a 300-word launch post for customers using the supplied brief.");
   });
 
+  it("caps the inlined task plan and points to the full document", () => {
+    const body = `HEAD-${"x".repeat(20_000)}-TAIL`;
+    const markdown = buildPaperclipTaskMarkdown({
+      issue,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 2, body },
+    })!;
+
+    expect(markdown).toContain("HEAD-");
+    expect(markdown).not.toContain("-TAIL");
+    expect(markdown).toContain(`Plan truncated at 12000 of ${body.length} chars; read the full document via GET /api/issues/task-1/documents/plan.`);
+    expect(markdown.length).toBeLessThan(body.length);
+  });
+
   it.each([
     { nativeRunner: false, coordinatorWorkspace: true, conversationAgentId: null },
     { nativeRunner: undefined, coordinatorWorkspace: false, conversationAgentId: null },
