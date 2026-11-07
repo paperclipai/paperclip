@@ -96,6 +96,16 @@ describe("speed budget checks in the native run trace", () => {
       disposition: "resume_dead_runner", startKind: "unknown" })]);
   });
 
+  it("judges a restart-recovery dispatch only on recovery latency, not on TTFT or boot spanning the outage", async () => {
+    const { trace, breaches } = traced({ adapter: "codex", environment: "local", restartRecovery: true });
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 0, endedAtMs: 1 });
+    await trace.record({ name: "runner.session.resume", startedAtMs: 1, endedAtMs: 120_000 });
+    await trace.record({ name: "task.time_to_first_token", startedAtMs: 0, endedAtMs: 120_000 });
+    trace.checkRestartRecovery({ readyAtMs: 0, eventAtMs: LOCAL_SPEED_BUDGETS.codex.restart_recovery.p95Ms + 1, disposition: "resume_dead_runner" });
+    await trace.finish("ok");
+    expect(breaches().map(breach => breach.metric)).toEqual(["restart_recovery"]);
+  });
+
   it("writes nothing for remote runs or without a budget subject", async () => {
     for (const budget of [{ adapter: "codex" as const, environment: "remote" as const }, undefined]) {
       const { trace, breaches } = traced(budget);

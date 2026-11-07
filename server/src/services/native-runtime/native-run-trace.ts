@@ -268,7 +268,13 @@ export function createNativeRunTrace(input: {
   onEvent?: NativeRunTraceSink;
   traceContext?: StartupTraceContextHandle;
   /** Speed-budget subject (invariant 8). Absent or remote means no check. */
-  budget?: { adapter: SpeedBudgetAdapter | null; environment: "local" | "remote" };
+  budget?: {
+    adapter: SpeedBudgetAdapter | null;
+    environment: "local" | "remote";
+    /** A restart-recovery dispatch: its TTFT and boot span the outage, so only
+     * `restart_recovery` is judged. */
+    restartRecovery?: boolean;
+  };
 }) {
   const tracing =
     input.traceContext ?? getStartupTraceContext("paperclip.native-runner");
@@ -367,7 +373,7 @@ export function createNativeRunTrace(input: {
     });
   };
   const checkSpanBudget = (name: string, startedAtMs: number, endedAtMs: number): void => {
-    if (!input.budget) return;
+    if (!input.budget || input.budget.restartRecovery) return;
     const subject = { adapter: input.budget.adapter, environment: input.budget.environment };
     if (name === "heartbeat.queue") queueEndedAtMs = endedAtMs;
     if (name === "task.time_to_first_token") {

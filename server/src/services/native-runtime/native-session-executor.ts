@@ -9482,6 +9482,7 @@ async function executePaperclipNativeSessionWithinScope(
     budget: {
       adapter: speedBudgetAdapter(input.execution.provider),
       environment: !input.runnerExecutionTarget || input.runnerExecutionTarget.kind === "local" ? "local" : "remote",
+      restartRecovery: Boolean(input.restartRecovery),
     },
   });
   await emitStartupReuse(input.onEvent, "environment", environmentStartupReuse(input.runnerExecutionTarget));

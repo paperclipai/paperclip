@@ -100,7 +100,8 @@ provider event). The payload names `adapter` (`codex`, `claude` or `opencode`),
 `environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
 start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
 `percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
-Each metric is checked at most once per run. Remote runs and other adapters have
+Each metric is checked at most once per dispatch. A restart-recovery dispatch is
+judged only on `restart_recovery`, because its TTFT and boot span the outage. Remote runs and other adapters have
 no budget yet. The event is written in detached diagnostic work after the
 measurement, so it adds no wait before `turn.start`. It is a run-log row only
 and never goes to Telemetry.
