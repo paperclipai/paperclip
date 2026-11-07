@@ -68,6 +68,23 @@ durable checkpoint. Its `original_volume_source_evidence` manifest reason does
 not grant provider recovery or Runner execution authority. Publication checks
 the source bytes again and retains the first authenticated archive during a
 concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Retired authority epochs can use the same evidence archive with a closed
+inventory of their original controller and suspended Runner files, bytes and
+modes. Each epoch must match a retained same-session run and its canonical
+checkpoint identity when a header exists. A genuinely absent historical header
+instead requires the exact admitted authority binding and remains explicitly
+absent. Malformed, retired, or foreign headers cannot use this path. Current
+source checkpoint and artifact requirements remain unchanged. Source fences
+recheck the complete inventory before archive and receipt publication. Unknown
+children and other nonempty history directories remain blockers. The inventory
+and historical headers or their explicit absence stay bound in replacement
+validation. History-free manifests and receipts keep their exact
+existing shape; current-controller-only evidence remains retained when a later
+archive adds historical files. These archives do not become executable backups.
+This maintenance inventory is limited to 128 entries, 16 MiB per file and 64 MiB
+total. These bounds are intentionally smaller than the Runner control-plane
+state's 256 MiB maximum. A larger otherwise valid epoch remains on the original
+volume and blocks filesystem independence; it is never truncated or waived.
 Source locks and a final comparison fence publication; original files, stamps,
 warnings, failed statuses and session pointers remain unchanged. Startup can
 validate the published receipt using only database bindings, without the old
