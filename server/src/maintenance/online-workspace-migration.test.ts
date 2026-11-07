@@ -6,6 +6,13 @@ import fs from "node:fs/promises";
 import * as buildCommit from "../build-commit.js";
 import type { StorageService } from "../storage/types.js";
 
+vi.mock("../services/remote-workspace-migration.js", async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const owners = { ...actual };
+  owners.migrateRemoteWorkspaceCohort = undefined;
+  return owners;
+});
+
 const request = () => ({
   schema: "paperclip.online-workspace-migration.v1",
   toolCommit: "a".repeat(40),
@@ -93,9 +100,14 @@ describe("online migration manifest and output", () => {
     const receipt = onlineWorkspaceMigrationReceipt({ companyId: request().companyId, workspaceId: request().workspaceIds[0],
       snapshotId: "55555555-5555-4555-8555-555555555555", applied: true, replayed: false,
       localPath: "/private/user-files", source: { kind: "git", repoUrl: "https://private-token@example.test/repo" } });
-    expect(receipt.members[0].sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt.members?.[0]?.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(receipt)).not.toContain("private-token");
     expect(JSON.stringify(receipt)).not.toContain("user-files");
+    const preflight = onlineWorkspaceMigrationReceipt({ companyId: request().companyId, cohortId: "not-an-apply-token",
+      applied: false, eligible: true, workspaceIds: request().workspaceIds });
+    expect(preflight).toMatchObject({ eligible: true, noAdmissionProof: true, workspaceIds: request().workspaceIds });
+    expect(preflight.cohortId).toBeUndefined();
+    expect(preflight.members).toBeUndefined();
   });
 });
 
@@ -129,5 +141,18 @@ describe("separate online tool identity", () => {
       Object.defineProperty(process.versions, "node", { value: originalNode, configurable: true });
       realpath.mockRestore(); stamp.mockRestore(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
     }
+  });
+});
+
+
+describe("optional cohort capability", () => {
+  it.each(["cohort", "inspect"])("refuses %s for multiple members when the reviewed artifact has no cohort owner", async mode => {
+    const execute = vi.fn().mockResolvedValue([{ type: "text", not_null: false }]);
+    const parsed = parseOnlineWorkspaceMigrationRequest({ ...request(), mode, concurrency: 2,
+      workspaceIds: [...request().workspaceIds, "66666666-6666-4666-8666-666666666666"] });
+    await expect(runOnlineWorkspaceMigration({ db: { execute } as unknown as Db,
+      storage: { provider: "s3" } as StorageService, request: parsed, signal: new AbortController().signal }))
+      .rejects.toThrow("online_migration_cohort_unavailable");
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

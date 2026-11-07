@@ -101,6 +101,15 @@ export async function runOnlineWorkspaceMigration(input: {
   input.signal.throwIfAborted();
   await assertOnlineMigrationSchema(input.db);
   if (input.storage.provider !== "s3") throw new Error("online_migration_shared_storage_required");
+  type Cohort = (args: { db: Db; storage: StorageService; companyId: string; workspaceIds: string[];
+    apply: boolean; concurrency: number; signal: AbortSignal }) => Promise<unknown>;
+  const cohortOwner = (migration as typeof migration & { migrateRemoteWorkspaceCohort?: Cohort }).migrateRemoteWorkspaceCohort;
+  if (request.mode === "inspect" && request.workspaceIds.length > 1) {
+    if (!cohortOwner) throw new Error("online_migration_cohort_unavailable");
+    const storage = new Proxy({} as StorageService, { get() { throw new Error("online_migration_inspection_storage_forbidden"); } });
+    return readOnly(input.db, db => cohortOwner({ db, storage, companyId: request.companyId,
+      workspaceIds: request.workspaceIds, apply: false, concurrency: request.concurrency, signal: input.signal }));
+  }
   if (request.mode === "inspect") {
     const members = await readOnly(input.db, async db => {
       const result = [];
@@ -115,11 +124,8 @@ export async function runOnlineWorkspaceMigration(input: {
     return { companyId: request.companyId, applied: false as const, members };
   }
   if (request.mode === "cohort") {
-    type Cohort = (args: { db: Db; storage: StorageService; companyId: string; workspaceIds: string[];
-      apply: true; concurrency: number; signal: AbortSignal }) => Promise<unknown>;
-    const owner = (migration as typeof migration & { migrateRemoteWorkspaceCohort?: Cohort }).migrateRemoteWorkspaceCohort;
-    if (!owner) throw new Error("online_migration_cohort_unavailable");
-    return owner({ db: input.db, storage: input.storage, companyId: request.companyId,
+    if (!cohortOwner) throw new Error("online_migration_cohort_unavailable");
+    return cohortOwner({ db: input.db, storage: input.storage, companyId: request.companyId,
       workspaceIds: request.workspaceIds, apply: true, concurrency: request.concurrency, signal: input.signal });
   }
   const apply = async () => {
@@ -162,8 +168,10 @@ export function onlineWorkspaceMigrationReceipt(result: unknown) {
       eligible: item.eligible, alreadyMigrated: item.alreadyMigrated, reasons: item.reasons,
       sourceSha256: createHash("sha256").update(JSON.stringify(item.source ?? null)).digest("hex") };
   };
-  return { companyId: row.companyId, cohortId: row.cohortId, applied: row.applied, replayed: row.replayed,
-    members: Array.isArray(row.members) ? row.members.map(member) : [member(row)] };
+  return { companyId: row.companyId, cohortId: row.applied === true ? row.cohortId : undefined,
+    applied: row.applied, replayed: row.replayed, eligible: row.eligible, workspaceIds: row.workspaceIds,
+    noAdmissionProof: row.applied === false,
+    members: Array.isArray(row.members) ? row.members.map(member) : row.workspaceId ? [member(row)] : undefined };
 }
 
 export async function runOnlineWorkspaceMigrationEntry(args = process.argv.slice(2)) {

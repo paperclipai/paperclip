@@ -55,14 +55,19 @@ From the tool root, use its own Node 24 and loader:
 
 ```sh
 PAPERCLIP_ONLINE_WORKSPACE_MIGRATION=true \
-  ./node/bin/node --import ./cli/node_modules/tsx/dist/loader.mjs \
+  ./node/bin/node --max-old-space-size=2048 --import ./cli/node_modules/tsx/dist/loader.mjs \
   ./server/src/maintenance/online-workspace-migration.ts /private/operator/request.json
 ```
 
-`inspect` performs bounded read-only canonical inventory. `single` invokes one
-canonical importer. `cohort` invokes the existing cohort owner once for the exact
+`inspect` with one member performs bounded read-only canonical inventory. With
+multiple members it requires the actual cohort API and calls its `apply:false`
+preflight inside a read-only transaction with storage access forbidden. It does
+not combine singleton eligibility into cohort proof. The observation holds no
+source fence and grants no later admission. `single` invokes one canonical
+importer. `cohort` invokes the existing cohort owner once for the exact
 full sorted set, one through eight unique workspaces, with the requested bounded
-concurrency. A release without that owner refuses the mode. A cohort preflight
+concurrency. A release without that owner refuses cohort apply and multi-member inspection.
+Single inspection, single import and exact single-journal resume remain available. A cohort preflight
 identifier is not an apply token; its durable journal remains the canonical
 resume record.
 
@@ -90,6 +95,13 @@ writes, snapshots, encryption, authenticated restore, locks and recovery recipes
 The entry does not assert stopped writers, terminate an agent, clear a hold or
 change remote authority. An unrelated active run is not a global-idle blocker.
 An actual scoped writer, foreign alias or unsupported source still refuses.
+
+Before each apply, use the existing per-operation memory, CPU and temporary-disk
+resource preflight. A concurrency bound is not resource admission. Budget every
+logical capture and up to two nested-child verifications. Qualify one single
+import and a two-member cohort before considering eight, using actual RSS,
+scratch headroom and elapsed-time evidence. This entry makes no implicit resource
+safety claim.
 
 The deadline is at most 720 seconds. Shutdown aborts the active operation and
 awaits the canonical owner before closing only this database's process-local
