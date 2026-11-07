@@ -602,6 +602,46 @@ export async function prepareRemoteWorkspace(input: {
   return prepared;
 }
 
+export const REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA = "paperclip.remote-workspace-abandoned-epoch.v1";
+
+/**
+ * Ends an epoch whose unsaved files cannot be verified, without applying them.
+ * The last committed save stays the workspace's content. The writer, its dirty
+ * flag and its location are cleared and the epoch advances, so the old writer
+ * can no longer publish. The published root and any migration root are
+ * forgotten, so the next preparation restores the saved version into a new
+ * directory and never reuses or overwrites the root that holds the unverified
+ * files. The caller holds the task, run and recovery locks.
+ */
+export async function abandonUnverifiedRemoteWorkspaceEpoch(tx: Transaction, input: {
+  companyId: string; workspaceId: string; runId: string; epoch: number; snapshotId: string | null;
+  location: NonNullable<RemoteWorkspaceAuthority["location"]>;
+}) {
+  const workspace = await currentWorkspace(tx, input.companyId, input.workspaceId);
+  const current = readRemoteWorkspaceAuthority(workspace.metadata);
+  if (!current || current.writerRunId !== input.runId || current.epoch !== input.epoch
+    || current.snapshotId !== input.snapshotId || !sameExportLocation(current.location, input.location)) {
+    throw new Error("remote_workspace_authority_changed");
+  }
+  const next: RemoteWorkspaceAuthority = { ...current, epoch: current.epoch + 1, writerRunId: null, dirty: false, location: null };
+  const prior = Array.isArray(workspace.metadata?.remoteWorkspaceAbandonedEpochs)
+    ? workspace.metadata.remoteWorkspaceAbandonedEpochs as unknown[] : [];
+  const abandoned = { schema: REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA, epoch: current.epoch, runId: input.runId,
+    snapshotId: current.snapshotId, location: current.location, providerRef: workspace.providerRef,
+    ...(workspace.metadata?.nativeWorkspaceMigration !== undefined ? { nativeWorkspaceMigration: workspace.metadata.nativeWorkspaceMigration } : {}),
+    abandonedAt: new Date().toISOString() };
+  const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: next,
+    remoteWorkspaceAbandonedEpochs: [...prior, abandoned].slice(-20) };
+  // The migration receipt names the old root as the next preparation's root.
+  delete metadata.nativeWorkspaceMigration;
+  const [saved] = await tx.update(executionWorkspaces).set({ providerRef: null, cwd: `/workspaces/${workspace.id}`, metadata,
+    updatedAt: new Date() }).where(and(eq(executionWorkspaces.id, workspace.id), eq(executionWorkspaces.companyId, input.companyId))).returning();
+  await persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "remote-workspaces",
+    action: "workspace.remote_epoch_abandoned", entityType: "execution_workspace", entityId: workspace.id, runId: input.runId,
+    details: { abandonedEpoch: current.epoch, epoch: next.epoch, snapshotId: next.snapshotId } });
+  return { workspace: saved!, authority: next };
+}
+
 /** The workspace lock fences new invocations while completed final authority
  * retires only attempts whose every registered invocation has settled. */
 async function retireQuiescedSaves(tx: Transaction, workspace: Workspace, runId: string, epoch: number,

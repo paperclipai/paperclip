@@ -35,6 +35,7 @@ import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
+import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, settleSiblingRecoveredHold } from "./workspace-recovery-fallback.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -160,6 +161,17 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   const initial = await loadSystemRecovery(db, input);
+  if (initial?.state === "exhausted") {
+    // A sibling recovery already saved this run's files: nothing is left to do.
+    if (await settleSiblingRecoveredHold(db, input)) return;
+    // Holds exhausted by an unverifiable source, including those saved by
+    // older releases, continue from the last save instead of waiting on a person.
+    if (isUnverifiableSourceFailure(initial.failure) && !canAdoptNativeSourceRetention(initial)) {
+      const fallback = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
+        retainedRepairActionId: input.actionId }, ownership => continueFromLastSavedWorkspace({ ...input, ownership }));
+      if (fallback.acquired && fallback.value !== "ineligible") return;
+    }
+  }
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
     // board confirmation in its handoff can release it (RC-50 wave databases).
@@ -430,10 +442,17 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
         && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
       const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
-      await updateSystemRecovery(db, input, current!, failSystemRecovery(current!, failure, {
+      const failed = failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),
-      }));
+      });
+      const recorded = await updateSystemRecovery(db, input, current!, failed);
+      // A permanent refusal of the recorded source repeats on every retry.
+      // Continue from the last save in this same pass, under this ownership.
+      if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
+        await continueFromLastSavedWorkspace({ ...input, ownership }).catch(fallbackError =>
+          logger.warn({ err: fallbackError, runId: input.runId }, "Continuing from the last save was deferred; the hold remains"));
+      }
       if (failure.retryClass === "recheck_evidence" && ["agent_stop_unconfirmed", "copyback_stop_unconfirmed"].includes(failure.code))
         await recheckStoppedWorkspaceRecovery(db, input, false);
       logger.warn({ err: error, runId: input.runId, failureCode: failure.code, failureCause: cause?.label, phase: current!.phase }, "Workspace preservation deferred; source retained");

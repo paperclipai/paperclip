@@ -464,7 +464,9 @@ export async function captureRemoteWorkspaceArchive(input: {
   }
 }
 
-async function captureReadOnlyWorkspaceArchive(input: {
+/** Captures a sandbox directory without writing to the sandbox. The copy is
+ * verified against an inventory taken before and after the transfer. */
+export async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
