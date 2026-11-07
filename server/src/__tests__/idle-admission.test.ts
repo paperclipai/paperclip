@@ -34,6 +34,19 @@ describe("idle admission", () => {
     expect(idleWorkSnapshot().active).toBe(0);
   });
 
+  it("exempts only the exact body status read from self-accounting and keeps drain mutations tracked", async () => {
+    const server = app();
+    server.post("/api/instance/task-drain/status", (_req, res) => res.json({ active: idleWorkSnapshot().active }));
+    server.post("/api/instance/task-drain", (_req, res) => res.json({ active: idleWorkSnapshot().active }));
+    trackIdleRequestHandlers(server);
+    startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    expect((await request(server).post("/api/instance/task-drain/status").expect(200)).body.active).toBe(0);
+    expect((await request(server).post("/api/instance/task-drain").expect(200)).body.active).toBe(1);
+    await request(server).post("/api/instance/task-drain/status/mutate").expect(503);
+    await request(server).get("/api/instance/task-drain/status").expect(503);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+
   it("counts a nested async handler after it sends a response", async () => {
     const server = app();
     const router = express.Router();

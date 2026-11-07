@@ -7133,6 +7133,17 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/instance/task-drain/status",
+  tags: ["instance"],
+  summary: "Read task-drain status with body-bound signed Cloud idle capabilities",
+  description: "Requires the task-drain:read-body Cloud control assertion bound to the exact raw JSON SHA256. The body alone and browser administrator access do not grant this authority. Uses the same status/idle-safety reader and owner/scheduled-wake semantics as GET; does not start or stop a drain.",
+  request: { body: jsonBody(z.object({ idleCapabilities: z.unknown().describe("Complete closed incoming-wake and deadline catalogs, validated by the existing capability parser after signature and exact raw-body binding") }).strict()),
+    query: z.object({ upgradeReadiness: z.literal("1").optional(), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional(), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:

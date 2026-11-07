@@ -1,5 +1,6 @@
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
 import { parseIdleCapabilities, type IdleCapabilities } from "./idle-incoming-wake-capability.js";
-import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
+import { createHash, createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings } from "@paperclipai/db";
@@ -449,6 +450,7 @@ export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
 export const CLOUD_CONTROL_ACTIONS = [
   "ephemeral-enrollment:prepare",
   "task-drain:read",
+  "task-drain:read-body",
   "task-drain:start",
   "task-drain:stop",
   "lifecycle:read",
@@ -496,6 +498,7 @@ export type CloudControlClaims = {
   action: CloudControlAction;
   requestId: string;
   idleCapabilities?: IdleCapabilities;
+  bodySha256?: string;
   iat: number;
   exp: number;
 };
@@ -509,6 +512,7 @@ export type CloudControlClaims = {
  */
 export function verifyCloudControlAssertion(input: {
   compactJws: string;
+  rawBody?: Uint8Array;
   expectedAction: CloudControlAction;
   env?: NodeJS.ProcessEnv;
   now?: Date;
@@ -577,9 +581,27 @@ export function verifyCloudControlAssertion(input: {
   ) {
     throw new Error("Cloud control assertion is expired or has an invalid lifetime");
   }
-  if (payload.idleCapabilities !== undefined) {
-    if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
-    payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
+  if (payload.action === "task-drain:read-body") {
+    if (payload.idleCapabilities !== undefined || typeof payload.bodySha256 !== "string" || !/^[a-f0-9]{64}$/.test(payload.bodySha256)
+      || !input.rawBody || input.rawBody.byteLength === 0 || input.rawBody.byteLength > DEFAULT_JSON_BODY_LIMIT_BYTES) {
+      throw new Error("Invalid Cloud idle status body binding");
+    }
+    const raw = Buffer.from(input.rawBody);
+    if (createHash("sha256").update(raw).digest("hex") !== payload.bodySha256) throw new Error("Cloud idle status body digest changed");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    let body: unknown;
+    try { body = JSON.parse(text); }
+    catch { throw new Error("Invalid Cloud idle status body JSON"); }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "idleCapabilities") {
+      throw new Error("Invalid Cloud idle status body");
+    }
+    payload.idleCapabilities = parseIdleCapabilities(Reflect.get(body, "idleCapabilities"));
+  } else {
+    if (payload.bodySha256 !== undefined) throw new Error("Cloud body binding requires task-drain:read-body");
+    if (payload.idleCapabilities !== undefined) {
+      if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
+      payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
+    }
   }
   // Consumed LAST, only after every other check passed: a rejected
   // assertion must not burn its request id, or an attacker could deny a

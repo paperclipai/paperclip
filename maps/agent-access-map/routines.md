@@ -171,3 +171,8 @@ then saves immutable version selections in the heartbeat execution context. New 
 resolve latest installed content; resumed runs retain selections and recheck access.
 An unavailable explicit reference produces an actionable configuration error.
 Live agent execution across an upstream update remains required acceptance evidence.
+
+Signed Cloud catalog reads may instead use `POST /api/instance/task-drain/status`
+with the same `idleSleepSafety`, `scheduledWake` and exact `ownerId` query. The
+`task-drain:read-body` assertion binds the complete raw JSON body by SHA256; it
+grants no routine execution or management authority. Existing GET is compatible.

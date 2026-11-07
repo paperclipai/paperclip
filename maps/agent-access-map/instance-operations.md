@@ -168,6 +168,12 @@ API: `present` — representative operation IDs:
   status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
   and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
   establish this local boundary; hosted active-run continuity requires separate proof.
+- `POST /api/instance/task-drain/status?idleSleepSafety=1` — Cloud-only body read.
+  The short `task-drain:read-body` control assertion signs the exact raw JSON
+  SHA256; the complete catalog remains in the body under the existing 10 MiB
+  JSON limit. A browser actor or unsigned body grants no wake authority. It
+  shares GET status/owner/deadline semantics, never starts or stops a drain.
+  This documents the source contract, not fleet deployment or sleep acceptance.
 - `GET /api/instance/task-drain?idleSleepSafety=1` — the negotiated incoming-wake
   extension requires a verified stack/action/owner-scoped Cloud control capability;
   query parameters and tenant credentials cannot grant it. Its version-3 proof

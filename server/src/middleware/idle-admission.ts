@@ -55,6 +55,7 @@ export function completeIdleReadOnlyResponse(req: Request, application: Applicat
 function isControlRequest(req: Request) {
   const path = req.path.replace(/\/$/, "");
   return (path === "/api/instance/task-drain" && ["GET", "POST", "DELETE"].includes(req.method)) ||
+    (path === "/api/instance/task-drain/status" && req.method === "POST") ||
     (path === "/api/health" && ["GET", "HEAD"].includes(req.method));
 }
 
@@ -71,7 +72,8 @@ export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
     res.set("Retry-After", "1").status(503).json({ error: "instance_preparing_to_sleep" });
     return;
   }
-  if (controlRequest && req.method === "GET" && req.path.replace(/\/$/, "") === "/api/instance/task-drain") {
+  if (controlRequest && ((req.method === "GET" && req.path.replace(/\/$/, "") === "/api/instance/task-drain")
+    || (req.method === "POST" && req.path.replace(/\/$/, "") === "/api/instance/task-drain/status"))) {
     next();
     return;
   }
