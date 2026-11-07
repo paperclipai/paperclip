@@ -182,7 +182,8 @@ function valid(scenario: string): InternalObservation {
     case "tasks.organize-open-work": {
       o.tasks = Array.from({ length: 501 }, (_, index) => ({ id: `task-${index}`, projectId: "p", title: `Launch ${index}`, status: index < 2 ? "blocked" : "todo", assigneeAgentId: null }));
       o.state.originalTasks = structuredClone(o.tasks); o.state.ownerLabels = { unassigned: "Unassigned" };
-      o.links = o.tasks.map(row => `/ACORN/issues/${row.id}`); o.reply = "## Unassigned\n" + o.tasks.map(row => `- [${row.title}](/ACORN/issues/${row.id})`).join("\n"); break;
+      o.links = o.tasks.map(row => `/ACORN/issues/${row.id}`); o.reply = "## Unassigned\n" + o.tasks.map(row => `- [${row.title}](/ACORN/issues/${row.id})`).join("\n");
+      Object.assign(o, { sourceIssueId: "chat" }); break;
     }
     case "inbox-search.show-my-work":
     case "inbox-search.archive-without-grant": {
@@ -338,7 +339,7 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "tasks.attachment-brief": o => { Object.assign(o, { workerDownloadStatus: 403 }); },
   "projects.add-repository": o => { Object.assign(o, { repositoryProject: { ...o.projects[0], workspaces: [{ id: "wrong", repoUrl: "https://github.com/acorn/unapproved" }] } }); },
   "projects.replace-repository": o => { (o.state.beforeOwnerReplacement as { agentStatus: number }).agentStatus = 200; },
-  "tasks.organize-open-work": o => { o.reply = o.reply.replace("## Unassigned", "## Morgan"); },
+  "tasks.organize-open-work": o => { o.state.ownerLabels = { ...o.state.ownerLabels as object, morgan: "Morgan" }; o.reply = o.reply.replace("## Unassigned", "## Morgan"); },
   "inbox-search.show-my-work": o => { o.reply = "You have 7 unread inbox items; I reviewed all of them."; },
   "inbox-search.archive-without-grant": o => { o.activity.push(event("issue.inbox_archived", "task")); },
   "tasks.share-private-task": o => { Object.assign(o, { observerTaskStatus: 200 }); },
@@ -587,6 +588,32 @@ describe("multi-page open inventory calibration", () => {
   });
   it("rejects a truncated inventory silently claimed as all", () => {
     const o = valid("tasks.organize-open-work"); o.links = o.links.slice(0, 10);
+    expect(gradeInternal(o).passed).toBe(false);
+  });
+  const fileHref = "/api/attachments/file/content?download=1";
+  const asFile = (body: string) => { const o = valid("tasks.organize-open-work"); o.links = [fileHref];
+    o.reply = `501 open tasks, grouped by owner, blocked first. Full list: [inventory.md](${fileHref})`;
+    return Object.assign(o, { deliverables: [{ id: "file", href: fileHref, body }] }); };
+  const fileBody = (o: ReturnType<typeof valid>) => "**No owner**\n" + o.tasks.map(row => `- ${row.id} ${row.title} (${row.status})`).join("\n");
+  it("accepts the full inventory as a run deliverable linked from the reply, with reworded group headings", () => {
+    expect(gradeInternal(asFile(fileBody(valid("tasks.organize-open-work")))).passed).toBe(true);
+  });
+  it("rejects a deliverable inventory that silently drops an open task or is not linked from the reply", () => {
+    const o = valid("tasks.organize-open-work");
+    expect(gradeInternal(asFile(fileBody({ ...o, tasks: o.tasks.slice(0, 500) }))).passed).toBe(false);
+    const unlinked = asFile(fileBody(o)); unlinked.reply = "501 open tasks; see the attached file.";
+    expect(gradeInternal(unlinked).passed).toBe(false);
+  });
+  it("rejects unassigned work presented under a named owner in a deliverable", () => {
+    const o = asFile("## Morgan\n" + valid("tasks.organize-open-work").tasks.map(row => `- ${row.id}`).join("\n"));
+    o.state.ownerLabels = { morgan: "Morgan", unassigned: "Unassigned" };
+    expect(gradeInternal(o).passed).toBe(false);
+  });
+  it("treats the answer's own conversation comment as read-only but rejects a work-task mutation", () => {
+    const o = valid("tasks.organize-open-work");
+    o.activity = [{ id: "a", action: "issue.comment_added", agentId: o.leadId, ...{ entityType: "issue", entityId: "chat" } }];
+    expect(gradeInternal(o).passed).toBe(true);
+    o.activity.push({ id: "b", action: "issue.updated", agentId: o.leadId, ...{ entityType: "issue", entityId: "task-3" } });
     expect(gradeInternal(o).passed).toBe(false);
   });
   it("rejects a blocked item placed after an ordinary item for the same owner", () => {

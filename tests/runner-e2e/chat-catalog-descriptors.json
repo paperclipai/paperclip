@@ -5879,7 +5879,7 @@
       "chat-scenarios/tasks.yaml",
       "chat-catalog-domains/internal-task-inventory.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.organize-open-work.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -5888,7 +5888,8 @@
       "readiness": "preserve-scenario",
       "invariantCheckIds": [
         "inventory-owners-paused",
-        "lead-ready"
+        "lead-ready",
+        "inventory-settled"
       ]
     },
     "modulePath": "./chat-catalog-domains/internal-tasks.js",
