@@ -500,17 +500,19 @@ export function activityService(db: Db) {
               or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
                 ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
             ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            sql`${heartbeatRuns.id} in (
+              select hr_issue.id
+              from ${heartbeatRuns} as hr_issue
+              where hr_issue.company_id = ${companyId}
+                and hr_issue.issue_id = ${issueId}
+              union
+              select ${activityLog.runId}
+              from ${activityLog}
+              where ${activityLog.companyId} = ${companyId}
+                and ${activityLog.entityType} = 'issue'
+                and ${activityLog.entityId} = ${issueId}
+                and ${activityLog.runId} is not null
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
