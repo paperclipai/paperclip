@@ -61,10 +61,17 @@ $$;--> statement-breakpoint
 CREATE TRIGGER paperclip_deleted_issue_project_references AFTER DELETE ON "issues"
 REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION paperclip_deleted_issue_project_references();--> statement-breakpoint
 -- Issue documents of every key, by latest body. A document's source ID is its document ID.
+-- A new or moved link share-locks its documents before reading their bodies, so
+-- it waits for an open body edit and indexes the committed body (the next
+-- statement takes a fresh snapshot); a later body edit waits for the link's
+-- commit, then its trigger sees the link. Service writers link only documents
+-- they created in the same transaction, so this lock waits only on foreign
+-- links, and body edits lock document then link: no new cycle.
 CREATE OR REPLACE FUNCTION paperclip_issue_document_project_references() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
 	IF TG_OP = 'INSERT' THEN
+		PERFORM 1 FROM documents d WHERE d.id IN (SELECT document_id FROM new_rows) ORDER BY d.id FOR SHARE;
 		PERFORM paperclip_sync_project_reference_sources('document', '[]', coalesce((SELECT jsonb_agg(jsonb_build_object(
 			'company_id', n.company_id, 'issue_id', n.issue_id, 'source_id', n.document_id, 'body', d.latest_body))
 			FROM new_rows n JOIN documents d ON d.id = n.document_id), '[]'));
@@ -72,6 +79,8 @@ BEGIN
 		PERFORM paperclip_sync_project_reference_sources('document', coalesce((SELECT jsonb_agg(jsonb_build_object(
 			'issue_id', o.issue_id, 'source_id', o.document_id)) FROM old_rows o), '[]'), '[]');
 	ELSE
+		PERFORM 1 FROM documents d WHERE d.id IN (SELECT n.document_id FROM old_rows o JOIN new_rows n ON n.id = o.id
+			WHERE (n.issue_id, n.document_id) IS DISTINCT FROM (o.issue_id, o.document_id)) ORDER BY d.id FOR SHARE;
 		PERFORM paperclip_sync_project_reference_sources('document',
 			coalesce((SELECT jsonb_agg(jsonb_build_object('issue_id', o.issue_id, 'source_id', o.document_id)) FROM old_rows o JOIN new_rows n ON n.id = o.id
 				WHERE (n.issue_id, n.document_id) IS DISTINCT FROM (o.issue_id, o.document_id)), '[]'),

@@ -79,7 +79,7 @@ function unprojectedSources(selection: TaskContextSelection): UnprojectedContext
 }
 
 /** Validates the pinned session → run → admission chain; never reconstructs a set from edited text. */
-async function retainedProjectIds(tx: Db, input: ResolveTaskProjectReferencesInput) {
+async function retainedProjectIds(tx: Db, input: ResolveTaskProjectReferencesInput, identifier: string | null) {
   const pin = input.selection.retainedSession;
   if (!pin) return { kind: "none" as const };
   const { companyId, issueId } = input;
@@ -91,7 +91,9 @@ async function retainedProjectIds(tx: Db, input: ResolveTaskProjectReferencesInp
       sql`${issueId} in (${heartbeatRuns.issueId}::text, ${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`));
   const admission = await readAdmittedProjects(tx, { companyId, admissionId: pin.admissionId });
   const actorAgentId = input.actor.type === "agent" ? input.actor.agentId : null;
-  if (!session || !run || admission.kind === "not_found" || session.agentId !== actorAgentId || session.taskKey !== issueId
+  // Sessions are keyed by the task's UUID or its identifier, as heartbeat run state accepts.
+  const taskKeyMatches = session && (session.taskKey === issueId || (identifier !== null && session.taskKey === identifier));
+  if (!session || !run || admission.kind === "not_found" || session.agentId !== actorAgentId || !taskKeyMatches
     || session.lastRunId !== pin.runId || run.agentId !== session.agentId || admission.runId !== pin.runId) {
     return { kind: "mismatch" as const };
   }
@@ -109,22 +111,24 @@ async function retainedProjectIds(tx: Db, input: ResolveTaskProjectReferencesInp
 export async function resolveTaskProjectReferences(tx: Db, input: ResolveTaskProjectReferencesInput): Promise<TaskProjectReferences> {
   if (!("nestedIndex" in tx)) throw new Error("Task project references must be resolved in a transaction");
   const { companyId, issueId, selection } = input;
-  const [issue] = await tx.select({ projectId: issues.projectId }).from(issues)
+  const [issue] = await tx.select({ identifier: issues.identifier }).from(issues)
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
   if (!issue) return { kind: "not_found" };
   const unprojected = unprojectedSources(selection);
   if (unprojected.length > 0) return { kind: "unprojected_context_source", sources: unprojected };
-  const retained = await retainedProjectIds(tx, input);
+  const retained = await retainedProjectIds(tx, input, issue.identifier);
   if (retained.kind === "mismatch") return { kind: "retained_context_mismatch" };
   if (retained.kind === "fresh_context_required") return retained;
 
+  // One statement reads the primary project and every source in one snapshot.
+  // A selected accepted plan revision replaces the latest plan body.
   const plan = selection.acceptedPlanRevisionId;
   const [read] = await tx.execute(sql`with sources(body, data) as (
       select concat_ws(' ', title, description), null::jsonb from issues where id = ${issueId} and company_id = ${companyId}
       union all select title, null from issues where company_id = ${companyId} and id in (${ancestorIds(companyId, issueId)})
       union all select body, null from issue_comments where company_id = ${companyId} and issue_id = ${issueId} and deleted_at is null
       union all select d.latest_body, null from issue_documents l join documents d on d.id = l.document_id
-        where l.company_id = ${companyId} and l.issue_id = ${issueId}
+        where l.company_id = ${companyId} and l.issue_id = ${issueId}${plan ? sql` and l.key <> 'plan'` : sql``}
       union all select body, null from document_annotation_comments where company_id = ${companyId} and issue_id = ${issueId}
       union all select null, jsonb_build_array(title, summary, payload, result) from issue_thread_interactions
         where company_id = ${companyId} and issue_id = ${issueId}
@@ -132,13 +136,16 @@ export async function resolveTaskProjectReferences(tx: Db, input: ResolveTaskPro
     ), linked as (select body, data from sources where coalesce(body, data::text) ilike '%project://%'),
     size as (select coalesce(sum(octet_length(coalesce(body, data::text))), 0) as bytes from linked)
     select (select bytes from size) as bytes,
+      (select project_id from issues where id = ${issueId} and company_id = ${companyId}) as primary_project_id,
+      exists (select 1 from issues where id = ${issueId} and company_id = ${companyId}) as issue_found,
       (select coalesce(jsonb_agg(coalesce(to_jsonb(body), data)), '[]') from linked where (select bytes from size) <= ${MAX_TASK_REFERENCE_SOURCE_BYTES}) as texts,
       ${plan ? sql`(select r.body from document_revisions r join issue_documents l on l.document_id = r.document_id
         where r.company_id = ${companyId} and r.id = ${plan} and l.issue_id = ${issueId} and l.key = 'plan')` : sql`null`} as plan_body,
       ${plan ? sql`(select count(*) from document_revisions r join issue_documents l on l.document_id = r.document_id
         where r.company_id = ${companyId} and r.id = ${plan} and l.issue_id = ${issueId} and l.key = 'plan')` : sql`1`}::int as plan_found`) as unknown as
-    Array<{ bytes: string | number; texts: unknown; plan_body: string | null; plan_found: number }>;
-  if (!read || read.plan_found === 0) return { kind: "context_source_unavailable" };
+    Array<{ bytes: string | number; primary_project_id: string | null; issue_found: boolean; texts: unknown; plan_body: string | null; plan_found: number }>;
+  if (!read?.issue_found) return { kind: "not_found" };
+  if (read.plan_found === 0) return { kind: "context_source_unavailable" };
   if (Number(read.bytes) + Buffer.byteLength(read.plan_body ?? "") > MAX_TASK_REFERENCE_SOURCE_BYTES) {
     return { kind: "context_too_large", limit: MAX_TASK_REFERENCE_SOURCE_BYTES };
   }
@@ -150,7 +157,7 @@ export async function resolveTaskProjectReferences(tx: Db, input: ResolveTaskPro
     malformed += scan.malformed;
     for (const projectId of scan.projectIds) referenced.add(projectId);
   }
-  const primaryProjectId = issue.projectId;
+  const primaryProjectId = read.primary_project_id;
   if (primaryProjectId) referenced.add(primaryProjectId);
   const projectIds = [...referenced].sort();
   if (projectIds.length > MAX_ADMISSION_PROJECTS) {
