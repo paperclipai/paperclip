@@ -1,4 +1,5 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
+import { agentExecutionsHaveStopped, LEGACY_ADAPTER_NOT_ENTERED_RECEIPT } from "../services/agent-execution-stop.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -3687,6 +3688,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(mockAdapterExecute).not.toHaveBeenCalled();
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       expect(task.executionRunId).toBeNull();
+    });
+  });
+
+  it("records stop proof when a conversation run is cancelled before its adapter is entered", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db, {
+        // The last gate before adapter entry: cancellation lands before any
+        // adapter Stop control exists, as an issue reassignment does.
+        beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
+          if (stage === "dispatch" && id === runId) await heartbeat.cancelRun(id);
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockAdapterExecute.mock.calls.map(([ctx]) => (ctx as AdapterExecutionContext).runId)).not.toContain(runId);
+      const run = await heartbeat.getRun(runId);
+      expect(run).toMatchObject({ status: "cancelled", runtimeMode: "legacy", executionStage: "settled",
+        processPid: null, processGroupId: null,
+        resultJson: { [LEGACY_ADAPTER_NOT_ENTERED_RECEIPT]: expect.any(String) } });
+      expect(run?.resultJson?.executionCancellation).not.toMatchObject({ state: "acknowledged" });
+      expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
+    });
+  });
+
+  it("does not record the not-entered receipt once the adapter was entered", async () => {
+    await withTempPaperclipHome(async () => {
+      const { runId } = await seedQueuedIssueRunFixture();
+      const heartbeat = heartbeatService(db);
+      let cancelling: Promise<unknown> | undefined;
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        cancelling = heartbeat.cancelRun(runId).catch(error => error);
+        await new Promise(resolve => setTimeout(resolve, 50));
+        return { exitCode: null, signal: "SIGTERM", timedOut: false, errorMessage: "cancelled" };
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      await cancelling;
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("cancelled");
+      expect(run?.resultJson).not.toHaveProperty(LEGACY_ADAPTER_NOT_ENTERED_RECEIPT);
     });
   });
 
