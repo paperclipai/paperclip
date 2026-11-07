@@ -1482,10 +1482,12 @@ impl CodexProvider {
         // Codex app-server never receives it (runnerd validates the claim), and
         // the OpenCode proxy receives the current contract with each turn/start,
         // so neither needs a cold resume to adopt it. Other providers keep the
-        // cold-resume boundary.
+        // cold-resume boundary, and so does adding or removing a contract.
         let contract_changed = completion_contract != self.completion_contract;
+        let contract_replaced = completion_contract.is_some() && self.completion_contract.is_some();
         if authorized_tools != self.authorized_tools
-            || (contract_changed && !matches!(self.config.provider.as_str(), "codex" | "opencode"))
+            || (contract_changed
+                && !(contract_replaced && matches!(self.config.provider.as_str(), "codex" | "opencode")))
         {
             return Ok(false);
         }
