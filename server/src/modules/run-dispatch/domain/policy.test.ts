@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildContinuationSummaryMarkdown,
+  continuationSummaryParksExecutor,
+} from "../../../services/issue-continuation-summary.js";
+import {
   decideQueuedRunStaleness,
   decideScheduledRetryGate,
   type QueuedRunFacts,
@@ -8,6 +12,34 @@ import {
 } from "./policy.js";
 
 const NOW = new Date("2026-01-01T00:00:00.000Z");
+
+describe("continuation summary dispatch", () => {
+  it("allows automatic continuation after a review summary is refreshed in progress", () => {
+    const input = {
+      issue: {
+        id: "issue-1", identifier: "TEST-1", title: "Revise after review",
+        description: null, status: "in_review", priority: "medium",
+      },
+      run: { id: "previous-run", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "Worker", adapterType: "claude_local" },
+    };
+    const reviewSummary = buildContinuationSummaryMarkdown(input);
+    expect(continuationSummaryParksExecutor(reviewSummary)).toBe(true);
+    const continuationSummaryBody = buildContinuationSummaryMarkdown({
+      ...input,
+      issue: { ...input.issue, status: "in_progress" },
+      previousSummaryBody: reviewSummary,
+    });
+
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      continuationParkApplies: true,
+      continuationParksExecutor: continuationSummaryParksExecutor(continuationSummaryBody),
+      continuationSummaryBody,
+      wakeReason: "issue_continuation_needed",
+    }, NOW)).toEqual({ stale: false });
+  });
+});
 
 const NO_PARTICIPANT: ReviewParticipantFacts = {
   isInReview: false,
