@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySkill } from "@paperclipai/shared";
 import { once } from "node:events";
-import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheLockHolderExited, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
+import { releaseExitedRuntimeSkillCacheLock, removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheLockHolderExited, runtimeSkillCacheSpec } from "../services/runtime-skill-cache.js";
 import { currentControllerProcessStamp } from "../services/controller-process-identity.js";
 
 /** A PID whose process has exited and been reaped. */
@@ -17,8 +17,8 @@ async function exitedPid(): Promise<number> {
   return child.pid!;
 }
 
-const lockStamp = (controller: Record<string, unknown>) =>
-  Buffer.from(JSON.stringify({ pid: controller.pid, host: os.hostname(), controller }));
+const lockStamp = (controller: Record<string, unknown>, token: string = randomUUID()) =>
+  Buffer.from(JSON.stringify({ pid: controller.pid, host: os.hostname(), token, controller }));
 
 async function makeWritable(root: string): Promise<void> {
   const stat = await fs.lstat(root);
@@ -102,13 +102,40 @@ describe("runtime skill revision cache", () => {
     const namespace = path.dirname(spec.root);
     await fs.mkdir(namespace, { recursive: true });
     const pid = await exitedPid();
-    await fs.writeFile(path.join(namespace, `${skill.id}.lock`),
-      lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }));
+    const token = randomUUID();
+    const stale = lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }, token);
+    // The crashed holder's owner file and its hard-linked lock, as publishLocked leaves them.
+    await fs.writeFile(path.join(namespace, `.owner-${token}`), stale);
+    await fs.link(path.join(namespace, `.owner-${token}`), path.join(namespace, `${skill.id}.lock`));
     const startedAt = Date.now();
-    const source = await resolveRuntimeSkillCache(spec, reader());
-    expect(source).toBe(path.join(spec.entry, "files"));
+    // Concurrent waiters in one process share one build; separate processes race for the claim.
+    const sources = await Promise.all([resolveRuntimeSkillCache(spec, reader()),
+      resolveRuntimeSkillCache(runtimeSkillCacheSpec(root, { ...skill })!, reader())]);
+    expect(new Set(sources)).toEqual(new Set([path.join(spec.entry, "files")]));
     expect(Date.now() - startedAt).toBeLessThan(5_000);
-    expect((await fs.readdir(namespace)).filter(name => name.includes(".lock"))).toEqual([]);
+    const left = await fs.readdir(namespace);
+    expect(left).not.toContain(`${skill.id}.lock`);
+    expect(left).not.toContain(`.owner-${token}`);
+  });
+
+  it("never removes a newer lock for a waiter that read a stale one late", async () => {
+    const namespace = path.join(root, "locks");
+    await fs.mkdir(namespace);
+    const lock = path.join(namespace, "skill.lock");
+    const staleToken = randomUUID();
+    const liveToken = randomUUID();
+    // The stale lock was already released and a live holder took the path.
+    await fs.writeFile(path.join(namespace, `.owner-${liveToken}`), lockStamp(currentControllerProcessStamp(), liveToken));
+    await fs.link(path.join(namespace, `.owner-${liveToken}`), lock);
+    const live = await fs.lstat(lock);
+    // Another waiter's claim exists: a late waiter does nothing, even when the
+    // live lock happens to reuse the stale inode number.
+    await fs.writeFile(`${lock}.released-${staleToken}`, "{}");
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: live.ino, token: staleToken });
+    expect((await fs.lstat(lock)).ino).toBe(live.ino);
+    // Without a claim, a different inode keeps the live lock too.
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: live.ino + 1, token: randomUUID() });
+    expect((await fs.lstat(lock)).ino).toBe(live.ino);
   });
 
   it("never treats age, another host, or a legacy holder as proof that a lock holder exited", async () => {

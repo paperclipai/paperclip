@@ -126,25 +126,34 @@ export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer): Pr
   return controller !== null && await controllerProcessExited(controller);
 }
 
+const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function lockHolderToken(lockContent: Buffer): string | null {
+  try {
+    const token = (JSON.parse(lockContent.toString("utf8")) as { token?: unknown } | null)?.token;
+    return typeof token === "string" && OWNER_TOKEN.test(token) ? token : null;
+  } catch { return null; }
+}
+
 /**
- * Moves a lock whose holder exited out of the way. The rename takes whatever
- * is at the lock path, so the moved inode is compared with the one proven
- * stale. When another waiter replaced the lock first, the moved lock is
- * linked back so its holder keeps ownership. Only a third acquirer inside that
- * rename-to-link window could overlap it; the build it guards publishes by
- * atomic rename and revalidates, so an overlap repeats work but cannot
- * publish a partial revision.
+ * Removes a lock whose holder exited. Every waiter that read the same stale
+ * lock races for one exclusive claim named by the holder's unique token, so
+ * only one of them ever unlinks it. While the stale lock exists no one else
+ * can acquire or remove it (its holder is gone), so the inode check before the
+ * unlink only confirms the claim is still about that lock. The claim file is
+ * kept: a waiter that read the stale lock late finds it and does nothing,
+ * rather than judging a newer lock by a reused inode number.
  */
-async function releaseExitedLock(lock: string, staleInode: number): Promise<void> {
-  const moved = `${lock}.released-${randomUUID()}`;
-  try { await fs.rename(lock, moved); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  if ((await fs.lstat(moved)).ino !== staleInode) {
-    await fs.link(moved, lock).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "EEXIST") throw error;
-    });
-  }
-  await fs.unlink(moved).catch(() => {});
+export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: string, stale: { inode: number; token: string }): Promise<void> {
+  const claim = `${lock}.released-${stale.token}`;
+  try { await fs.writeFile(claim, JSON.stringify({ controller: currentControllerProcessStamp() }), { flag: "wx" }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return; throw error; }
+  const current = await fs.lstat(lock).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (current?.ino === stale.inode) await fs.unlink(lock);
+  await fs.unlink(path.join(root, `.owner-${stale.token}`)).catch(() => {});
 }
 
 // Serialize builds and cleanup for one skill across processes as well as callers.
@@ -152,12 +161,15 @@ async function releaseExitedLock(lock: string, staleInode: number): Promise<void
 // provably exited is released at once; any other holder is waited for.
 async function publishLocked<T>(root: string, fingerprint: string, action: () => Promise<T>): Promise<T> {
   const lock = path.join(root, `${fingerprint}.lock`);
-  const owner = path.join(root, `.owner-${randomUUID()}`);
+  const token = randomUUID();
+  const owner = path.join(root, `.owner-${token}`);
   // `pid` and `host` stay for older readers; `controller` is the proof input.
   // The stamp does no I/O, so preparation adds no wait before the turn.
-  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname(),
+  await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname(), token,
     controller: currentControllerProcessStamp() }), { flag: "wx" });
   let acquired = false;
+  // A live holder is re-proved at most once a second, not on every 20 ms poll.
+  let judged: { inode: number; at: number } | null = null;
   try {
     const deadline = Date.now() + 60_000;
     while (!acquired) {
@@ -169,15 +181,20 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
           throw openError;
         });
         if (!handle) continue;
-        let stale: { content: Buffer; inode: number };
+        let held: { content: Buffer; inode: number };
         try {
           const stat = await handle.stat();
           if (!stat.isFile()) throw new Error("Unsafe runtime skill cache file");
-          stale = { content: await handle.readFile(), inode: stat.ino };
+          held = { content: await handle.readFile(), inode: stat.ino };
         } finally { await handle.close(); }
-        if (await runtimeSkillCacheLockHolderExited(stale.content)) {
-          await releaseExitedLock(lock, stale.inode);
-          continue;
+        const holderToken = lockHolderToken(held.content);
+        const due = judged === null || judged.inode !== held.inode || Date.now() - judged.at >= 1_000;
+        if (holderToken && due) {
+          judged = { inode: held.inode, at: Date.now() };
+          if (await runtimeSkillCacheLockHolderExited(held.content)) {
+            await releaseExitedRuntimeSkillCacheLock(root, lock, { inode: held.inode, token: holderToken });
+            continue;
+          }
         }
         if (Date.now() >= deadline) {
           throw new Error(`Runtime skill cache publisher is busy; retry preparation. If no server process holds ${lock}, remove it.`);

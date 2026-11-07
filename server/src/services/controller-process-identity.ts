@@ -150,6 +150,8 @@ export function processStartsDefinitelyDiffer(
 export async function controllerProcessExited(controller: ControllerProcess): Promise<boolean> {
   if (controller.bootId === bootId || hostHash === UNKNOWN_PROCESS_SPACE || controller.hostHash !== hostHash) return false;
   if (!processExists(controller.pid)) return true;
+  // Without a recorded start time a live PID can never prove exit; skip the probe.
+  if (!Number.isFinite(Date.parse(controller.processStartedAt ?? ""))) return false;
   // The PID now belongs to a live process, possibly this restarted server.
   // Only a definitely different start time proves the recorded process is gone.
   const observed = await observedProcessStartedAt(controller.pid);
