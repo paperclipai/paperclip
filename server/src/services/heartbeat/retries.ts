@@ -317,8 +317,19 @@ export function readTransientRecoveryContractFromRun(
     : null;
 }
 
+// Deterministic spawn errnos are not transient infrastructure: the same launch
+// fails identically on every retry, so a bounded retry only burns runs and
+// tells the operator "Retry scheduled automatically" for a retry that can never
+// succeed. `E2BIG` is the case that made an entire issue unwakeable - Linux caps
+// one argv string at MAX_ARG_STRLEN (32 * PAGE_SIZE = 131072 bytes), so an
+// adapter that passes the whole run prompt as one argument cannot wake a long
+// issue thread again. `ENOEXEC` is equally permanent (bad interpreter / binary
+// format).
+const NON_RETRYABLE_SPAWN_ERRNO = /\bE2BIG\b|\bENOEXEC\b/i;
+
 function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
+  if (NON_RETRYABLE_SPAWN_ERRNO.test(value)) return false;
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
