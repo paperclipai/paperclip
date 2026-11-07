@@ -39,6 +39,14 @@ import { resolveConfirmationFromComment } from "../services/confirmation-comment
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import {
+  ATTENTION_DELEGATE_DECISION_ACTION,
+  ATTENTION_DELEGATE_MAX_HOLD_MS,
+  attentionDelegationEnabled,
+  findDelegatableAttentionItem,
+  isAttentionDelegate,
+  isDelegatableRecovery,
+} from "../services/attention-delegates.js";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
@@ -7186,6 +7194,8 @@ export function issueRoutes(
       return true;
     }
     if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
+    // An attention delegate may decide board-owned (never user-owned) recovery of a delegatable kind.
+    if (isDelegatableRecovery(activeRecoveryAction) && isAttentionDelegate(issue.companyId, actorAgentId)) return true;
     if (
       activeRecoveryAction.ownerAgentId &&
       (await hasActiveCheckoutManagementOverride(
@@ -9930,6 +9940,92 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  /**
+   * Records an attention delegate's decision on one live attention item. The current occurrence of a
+   * delegatable item then leaves every board user's queue until holdUntil (mandatory, at most 7 days),
+   * unless the verb is escalate_owner or reopen.
+   * Responses:
+   * - 404 when delegation is off for the company or no live item has the key;
+   * - 422 when the item must stay with humans;
+   * - 401 when an agent caller has no run.
+   * The decision is written to the activity log on the issue, so it appears in the issue's history.
+   */
+  router.post("/companies/:companyId/attention/delegate-decisions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!attentionDelegationEnabled(companyId)) {
+      res.status(404).json({ error: "Attention delegation is not enabled for this company" });
+      return;
+    }
+    if (req.actor.type === "agent") {
+      if (!isAttentionDelegate(companyId, req.actor.agentId)) {
+        throw forbidden("Agent is not an attention delegate for this company");
+      }
+      if (!requireAgentRunId(req, res)) return;
+    } else {
+      assertBoard(req);
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const itemKey = typeof body.itemKey === "string" ? body.itemKey.trim() : "";
+    if (!/^attention:(recovery|blocker):.+$/.test(itemKey) || itemKey.length > 500) {
+      throw badRequest("itemKey must be the dismissalKey of a recovery or blocker attention item");
+    }
+    const verb = typeof body.verb === "string" ? body.verb.trim() : "";
+    if (!/^[a-z_]{1,64}$/.test(verb)) {
+      throw badRequest("verb must be a lowercase word such as nudge, reassign, park, resolve, escalate_owner or reopen");
+    }
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (reason.length < 15 || reason.length > 2000) throw badRequest("reason must be 15 to 2000 characters");
+    const holdTime = typeof body.holdUntil === "string" ? new Date(body.holdUntil).getTime() : Number.NaN;
+    if (!Number.isFinite(holdTime) || holdTime <= Date.now() || holdTime > Date.now() + ATTENTION_DELEGATE_MAX_HOLD_MS) {
+      throw badRequest("holdUntil is required: a future ISO timestamp at most 7 days ahead");
+    }
+    const live = await findDelegatableAttentionItem(db, companyId, itemKey, req.actor as never);
+    if (!live) {
+      res.status(404).json({ error: "No live attention item has this key" });
+      return;
+    }
+    const issue = await getAccessibleResource(req, res, getIssueById(req, live.issueId), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (await assertLowTrustControlPlaneDenied(req, res, companyId, issue)) return;
+    if (req.actor.type === "agent") {
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!boundaryDecision.allowed) {
+        await denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
+        return;
+      }
+      if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))) return;
+    }
+    if ("ineligible" in live) {
+      res.status(422).json({ error: `This item stays with humans: ${live.ineligible}` });
+      return;
+    }
+    const details = {
+      itemKey,
+      verb,
+      reason,
+      holdUntil: new Date(holdTime).toISOString(),
+      sourceKind: live.sourceKind,
+      occurrenceStartedAt: live.occurrenceStartedAt,
+      occurrenceKey: live.occurrenceKey,
+    };
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: ATTENTION_DELEGATE_DECISION_ACTION,
+      entityType: "issue",
+      entityId: issue.id,
+      details,
+    });
+    res.status(201).json({ companyId, issueId: issue.id, ...details, decidedByType: actor.actorType, decidedById: actor.actorId });
+  });
+
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -10106,9 +10202,17 @@ export function issueRoutes(
         executionReconciliation,
         workspaceBaseRef,
       } = req.body;
-      if (outcome === "false_positive" || outcome === "cancelled") {
+      // A delegate defers this gate until the target action is loaded; it then passes only for a delegatable action.
+      const delegateBoardBypass =
+        (outcome === "false_positive" || outcome === "cancelled") &&
+        req.actor.type === "agent" &&
+        isAttentionDelegate(existing.companyId, req.actor.agentId);
+      if ((outcome === "false_positive" || outcome === "cancelled") && !delegateBoardBypass) {
         assertBoard(req);
       }
+      const assertDelegateBoardBypassTarget = (action: { ownerType: string; kind: string; cause: string | null }) => {
+        if (delegateBoardBypass && !isDelegatableRecovery(action)) assertBoard(req);
+      };
 
       if (workspaceBaseRef) {
         assertBoard(req);
@@ -10186,6 +10290,7 @@ export function issueRoutes(
               ),
             );
           if (settled) {
+            assertDelegateBoardBypassTarget(settled);
             await requireRecoveryActionAuthority(
               req,
               lockedIssue,
@@ -10230,6 +10335,7 @@ export function issueRoutes(
         ) {
           throw notFound("Active recovery action not found");
         }
+        assertDelegateBoardBypassTarget(activeRecoveryAction);
         await requireRecoveryActionAuthority(
           req,
           lockedIssue,

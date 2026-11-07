@@ -67,6 +67,16 @@ import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokabilit
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
+  applyDelegateDecisions,
+  attentionDelegationEnabled,
+  blockerDelegation,
+  isDelegatableRecovery,
+  recoveryOccurrence,
+  stalledBlockerOccurrences,
+  unblockDescriptorMap,
+  type DelegatableOccurrence,
+} from "./attention-delegates.js";
+import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
 } from "./decision-retention.js";
@@ -1095,6 +1105,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const summaryOnly = options.summaryOnly === true;
       const loadImages = (...args: Parameters<typeof issueImageMap>) => summaryOnly
         ? Promise.resolve(new Map<string, AttentionDetailImage[]>()) : issueImageMap(...args);
+      // Delegatable occurrences by dismissal key; null keeps the feed exactly as before.
+      const delegable = attentionDelegationEnabled(companyId) ? new Map<string, DelegatableOccurrence>() : null;
       const collected: AttentionItem[] = [];
 
       const add = (item: AttentionItem) => {
@@ -1432,6 +1444,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         if (!sourceIssue) continue;
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
+        if (delegable && isDelegatableRecovery(recovery)) {
+          delegable.set(`attention:${dedupKey}`, recoveryOccurrence(recovery));
+        }
         add(createItem({
           companyId,
           sourceKind: "recovery_action",
@@ -1559,6 +1574,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const blockedWorkCounts = await blockedWorkCountMap(db, companyId, [...terminalCandidates.keys()]);
+      if (delegable && terminalCandidates.size > 0) {
+        const occurrences = stalledBlockerOccurrences(typedBlockedIssues);
+        const terminalDescriptors = await unblockDescriptorMap(db, companyId, [...terminalCandidates.keys()]);
+        for (const terminalIssueId of terminalCandidates.keys()) {
+          const entry = blockerDelegation(terminalIssueId, occurrences.get(terminalIssueId), terminalDescriptors.get(terminalIssueId));
+          if (entry) delegable.set(`attention:blocker:${terminalIssueId}`, entry);
+        }
+      }
       for (const [terminalIssueId, candidate] of terminalCandidates) {
         const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
@@ -1869,6 +1892,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       }
 
+      if (delegable) await applyDelegateDecisions(db, companyId, collected, delegable, now, includeDismissed);
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
         const current = deduped.get(item.dedupKey);

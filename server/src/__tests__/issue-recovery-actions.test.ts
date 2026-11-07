@@ -3285,6 +3285,59 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  describe("attention delegate cancel/false_positive bypass", () => {
+    const ENV = "PAPERCLIP_ATTENTION_DELEGATES";
+    afterEach(() => { delete process.env[ENV]; });
+
+    async function seedAction(kind: string, cause: string, owner: { ownerType: "board" | "user"; ownerUserId?: string }) {
+      const fixture = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: fixture.coderId }).where(eq(issues.id, fixture.sourceIssueId));
+      const action = await issueRecoveryActionService(db).upsertSourceScoped({
+        companyId: fixture.companyId,
+        sourceIssueId: fixture.sourceIssueId,
+        kind: kind as never,
+        ...owner,
+        cause,
+        fingerprint: `${kind}:delegate-bypass`,
+        evidence: {},
+        nextAction: "Decide.",
+        wakePolicy: { type: "manual" },
+      });
+      return { ...fixture, action };
+    }
+    async function cancelAs(fixture: { companyId: string; sourceIssueId: string; action: { id: string } }, agentId: string) {
+      process.env[ENV] = JSON.stringify({ [fixture.companyId]: [agentId] });
+      const runId = randomUUID();
+      await seedHeartbeatRun({ companyId: fixture.companyId, agentId, runId, issueId: fixture.sourceIssueId });
+      return request(createApp({ type: "agent", agentId, companyId: fixture.companyId, runId, source: "agent_jwt" }))
+        .post(`/api/issues/${fixture.sourceIssueId}/recovery-actions/resolve`)
+        .send({ actionId: fixture.action.id, outcome: "cancelled", sourceIssueStatus: "done", resolutionNote: "Delegate cancel." });
+    }
+    async function actionStatus(id: string) {
+      const [row] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id));
+      return row?.status;
+    }
+
+    it("keeps assertBoard for a user-owned configuration_validation action even when the delegate is the assignee", async () => {
+      const fixture = await seedAction("configuration_validation", "configuration_incomplete", { ownerType: "user", ownerUserId: "board-user" });
+      expect((await cancelAs(fixture, fixture.coderId)).status).toBe(403);
+      expect(await actionStatus(fixture.action.id)).toBe("active");
+    });
+
+    it("keeps assertBoard for a board-owned configuration_validation action even when the delegate is the assignee", async () => {
+      const fixture = await seedAction("configuration_validation", "configuration_incomplete", { ownerType: "board" });
+      expect((await cancelAs(fixture, fixture.coderId)).status).toBe(403);
+      expect(await actionStatus(fixture.action.id)).toBe("active");
+    });
+
+    it("lets a non-assignee delegate cancel a board-owned delegatable action", async () => {
+      const fixture = await seedAction("stranded_assigned_issue", "execution_review_participant_recovery", { ownerType: "board" });
+      const response = await cancelAs(fixture, fixture.managerId);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await actionStatus(fixture.action.id)).toBe("cancelled");
+    });
+  });
+
   it("rejects peer-agent recovery action resolution on a board-owned source issue", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
