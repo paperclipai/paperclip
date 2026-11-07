@@ -1,11 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { open } from "node:fs/promises";
-import { constants } from "node:fs";
 import path from "node:path";
 import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
 import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
 import { resolveCodexCommand, startAntigravityBrowserLogin } from "../vendor/paperclip-runner/index.js";
+
+import { readVerifiedLocalAiCredential } from "./local-ai-credentials.js";
+import { parseStoredClaudeOauth } from "./claude-oauth-credential.js";
 
 export type LocalBrowserLoginState = {
   authorizationUrl?: string;
@@ -51,7 +52,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
-  const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
+  const args = provider === "anthropic" ? ["auth", "login"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
@@ -103,7 +104,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
     const codeReady = new Promise<string>((resolve) => { deliverCode = resolve; });
     state.submitCode = (code) => { deliverCode?.(code); deliverCode = undefined; };
     void runSetupTokenLogin(driver, {
-      timeoutMs: 300_000, signal: controller.signal,
+      command: "claude auth login", timeoutMs: 300_000, signal: controller.signal,
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; },
       provideCode: (signal) => new Promise<string>((resolve, reject) => {
         const abort = () => reject(new Error("Local sign-in cancelled"));
@@ -111,15 +112,9 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
         signal.addEventListener("abort", abort, { once: true });
         codeReady.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
       }),
-      onCredential: async (bytes) => {
-        const file = await open(path.join(home, ".credentials.json"),
-          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-        try {
-          await file.writeFile(JSON.stringify({ claudeAiOauth: { accessToken: bytes.toString("utf8") } }));
-        } finally {
-          await file.close();
-        }
-      },
+      // The CLI owns the isolated login file (or namespaced macOS Keychain item).
+      // Do not report success for another non-refreshable access token.
+      verifyCredential: async () => Boolean(parseStoredClaudeOauth(await readVerifiedLocalAiCredential("anthropic", home))),
     }).then((result) => { state.outcome = result.outcome === "success" ? "success" : "failure"; })
       .catch(() => { state.outcome = "failure"; });
   } else {

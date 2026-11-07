@@ -194,21 +194,24 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
-  it("accepts a Claude browser code and stores its token only in the attempt home", async () => {
+  it("accepts a Claude auth login code and keeps the full credential only in the attempt home", async () => {
     const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
     const home = await fakeCli("claude", [
-      'printf "Welcome to Claude Code\\nOpening browser to sign in…\\nBrowser didn\x27t open? Use the url below to sign in (c to copy)\\n"',
+      '[ "$1 $2" = "auth login" ] || exit 11',
+      'printf "If the browser didn\x27t open, visit:\\n"',
       `printf '%s\\n' '${url}'`,
       'printf "Paste code here if prompted >\\n"',
       'read -r entered',
-      'printf "✓ Long-lived authentication token created successfully!\\n\\nYour OAuth token (valid for 1 year):\\n\\nsk-ant-oat01-AAAABBBBCCCCDDDDEEEE11112222FFFFGGGG_HHHH-IIII\\n\\nStore this token securely. You won\x27t be able to see it again.\\n"',
+      'umask 077',
+      `printf '%s' '${JSON.stringify({ claudeAiOauth: { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: Date.now() + 28800_000 } })}' > "$CLAUDE_CONFIG_DIR/.credentials.json"`,
+      'printf "Login successful\\n"',
     ].join("\n"));
     const login = startLocalBrowserLogin("anthropic", home);
     await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
     login.submitCode?.("fixture-code");
     await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 5000 });
     const credential = JSON.parse(await readFile(path.join(home, ".credentials.json"), "utf8"));
-    expect(credential.claudeAiOauth.accessToken).toMatch(/^sk-ant-oat01-/);
+    expect(credential.claudeAiOauth).toMatchObject({ accessToken: "fixture-access", refreshToken: "fixture-refresh" });
     expect((await stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);
   });
 

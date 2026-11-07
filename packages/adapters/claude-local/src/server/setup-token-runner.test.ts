@@ -373,3 +373,27 @@ describe("runSetupTokenLogin", () => {
     expect(CLAUDE_SETUP_TOKEN_COMMAND).toBe("claude setup-token");
   });
 });
+
+describe("auth login credential verification", () => {
+  it.each([true, false])("accepts a clean exit only when its credential check succeeds (%s)", async verified => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
+    const verifyCredential = vi.fn().mockResolvedValue(verified);
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      command: "claude auth login", onPrompt: vi.fn(), provideCode: async () => BROWSER_CODE,
+      codeSubmitSettleMs: 0, timeoutMs: 1000, verifyCredential, onCredential,
+    });
+    expect(result.outcome).toBe(verified ? "success" : "failure");
+    expect(result.credentialDelivered).toBe(verified);
+    expect(verifyCredential).toHaveBeenCalledOnce();
+    expect(onCredential).not.toHaveBeenCalled();
+    expect(fake.stops.count).toBe(1);
+  });
+  it("never verifies credentials after a failed command", async () => {
+    const fake = createFakeDriver({ exitCode: 1 });
+    const verifyCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, { onPrompt: vi.fn(), provideCode: async () => BROWSER_CODE, timeoutMs: 1000, verifyCredential });
+    expect(result.outcome).toBe("failure");
+    expect(verifyCredential).not.toHaveBeenCalled();
+  });
+});

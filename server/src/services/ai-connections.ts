@@ -1,3 +1,5 @@
+import { claudeAccessTokenOf } from "./claude-oauth-credential.js";
+import { refreshClaudeSubscription } from "./claude-subscription-refresh.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -523,7 +525,7 @@ export function aiConnectionService(db: Db) {
     }
     return { ...row, provider };
   }
-  async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
+  async function credentialRaw(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">, retry = 0, audit?: { responsibleUserId: string | null; actorType: "user" | "agent" | "system"; actorId: string; issueId?: string | null; heartbeatRunId?: string | null }): Promise<string> {
     const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
     if (metadata.routing?.auth === "none") return "";
     const ref = row.grant.credentialSecretRefs.find(
@@ -587,9 +589,16 @@ export function aiConnectionService(db: Db) {
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });
-      return credential(row, retry + 1, audit);
+      return credentialRaw(row, retry + 1, audit);
     }
     return value;
+  }
+  async function credential(row: Parameters<typeof credentialRaw>[0], retry = 0, audit?: Parameters<typeof credentialRaw>[2]): Promise<string> {
+    const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
+    if (metadata.provider !== "anthropic" || metadata.method !== "subscription") return credentialRaw(row, retry, audit);
+    // Resolve under the credential lock too: resolution records lastResolvedAt,
+    // so concurrent pre-lock reads would contend with the rotating writer.
+    return refreshClaudeSubscription(db, row, (tx, selected) => aiConnectionService(tx).credentialRaw(selected, retry, audit));
   }
   async function save(
     companyId: string,
@@ -1033,7 +1042,7 @@ export function aiConnectionService(db: Db) {
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, row.connection.companyId),
         )).for("update", { noWait: true });
         const selected = { connection: row.connection, grant };
-        const current = await aiConnectionService(tx as unknown as Db).credential(selected);
+        const current = await aiConnectionService(tx as unknown as Db).credentialRaw(selected);
         const pending = await recoverQuotaCredentialInTransaction(tx as unknown as Db, selected, current, () => {
           savingReplacement = true;
         });
@@ -1094,8 +1103,8 @@ export function aiConnectionService(db: Db) {
         await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
           eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, ref.secretId),
         )).for("update");
-        const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
-        const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
+        const value = await aiConnectionService(tx as unknown as Db).credentialRaw({ connection, grant });
+        const generation = createHash("sha256").update(metadata.data.provider === "anthropic" && metadata.data.method === "subscription" ? claudeAccessTokenOf(value) : value).digest("hex").slice(0, 16);
         if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
         // A quota exchange may have consumed this run's token before a failed
         // database commit. Save its working replacement instead of revoking it.
@@ -1136,7 +1145,7 @@ export function aiConnectionService(db: Db) {
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, companyId),
         )).for("update", { noWait: true });
         if (!secret) throw new Error("credentials_unavailable");
-        const current = await aiConnectionService(tx as unknown as Db).credential({ connection: row.connection, grant });
+        const current = await aiConnectionService(tx as unknown as Db).credentialRaw({ connection: row.connection, grant });
         if (replacement) {
           // A lost commit response is reconciled from the authoritative secret.
           // Reconnect, revocation and a competing saved generation always win.
@@ -1233,5 +1242,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, credentialRaw, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }
