@@ -3,7 +3,7 @@ import { resolvePaperclipRunnerProviderProfile } from "../native-runtime/provide
 import { agentTaskSessions, aiConnectionPools, aiConnectionTaskPins, agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { parseObject } from "../../adapters/utils.js";
-import { applyAiConnectionRouterTaskSettings, poolExecutionAdapterType, aiConnectionRouterService, LOCAL_POOL_ADAPTERS, AiConnectionPoolExhausted } from "../ai-connection-router.js";
+import { applyAiConnectionRouterTaskSettings, aiConnectionRouterService, LOCAL_POOL_ADAPTERS, AiConnectionPoolExhausted } from "../ai-connection-router.js";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
@@ -40,7 +40,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   const [pin] = await db.select({ selection: aiConnectionTaskPins.selection }).from(aiConnectionTaskPins).where(and(
     eq(aiConnectionTaskPins.companyId, agent.companyId), eq(aiConnectionTaskPins.agentId, agent.id),
     eq(aiConnectionTaskPins.poolId, binding.connectionId), eq(aiConnectionTaskPins.taskKey, taskKey))).limit(1);
-  const sessionAdapterType = pin ? poolExecutionAdapterType(pin.selection.binding, agent.adapterType) : agent.adapterType;
+  const sessionAdapterType = pin?.selection.adapterType ?? agent.adapterType;
   const [session] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, agent.companyId),
     eq(agentTaskSessions.agentId, agent.id), eq(agentTaskSessions.adapterType, sessionAdapterType), eq(agentTaskSessions.taskKey, taskKey))).limit(1);
   const [issue] = typeof context.issueId === "string" ? await db.select({ overrides: issues.assigneeAdapterOverrides }).from(issues)
@@ -55,7 +55,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
       sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(issue?.overrides).adapterConfig) },
       skipUsageProbe: pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY,
       existingGrantId: typeof identity === "string" ? identity.split(":")[0] : undefined });
-    return { adapterDispatch: { ...adapterDispatch, adapterType: selection.adapterType ?? poolExecutionAdapterType(selection.binding, agent.adapterType), poolId: selection.poolId, memberId: selection.memberId },
+    return { adapterDispatch: { ...adapterDispatch, adapterType: selection.adapterType ?? agent.adapterType, poolId: selection.poolId, memberId: selection.memberId },
       context: { aiRouterSelection: selection, aiRouterTaskKey: taskKey } };
   } catch (error) {
     const failure = error instanceof AiConnectionPoolExhausted
@@ -80,8 +80,8 @@ export function effectiveRunAgent<T extends Pick<typeof agents.$inferSelect, "ad
   if (configured && configured !== agent.adapterType) throw new Error("Agent adapter changed during startup; start a new turn with the updated agent.");
   if (!selected || (selected === agent.adapterType && typeof dispatch.poolId !== "string")) return agent;
   const selection = parseObject(run.contextSnapshot).aiRouterSelection as AiConnectionRouterSelection | undefined;
-  if (!selection || dispatch.poolId !== selection.poolId || dispatch.memberId !== selection.memberId || poolExecutionAdapterType(selection.binding, agent.adapterType) !== selected ||
-      (selection.adapterType && selection.adapterType !== selected)) throw new Error("The admitted pool adapter does not match its selection.");
+  if (!selection || dispatch.poolId !== selection.poolId || dispatch.memberId !== selection.memberId ||
+      (selection.adapterType ?? agent.adapterType) !== selected) throw new Error("The admitted pool adapter does not match its selection.");
   const adapterConfig = applyAiConnectionRouterTaskSettings(parseObject(agent.adapterConfig), selection, agent.adapterType);
   if (dispatch.harnessPoolProfile && !isDeepStrictEqual(dispatch.harnessPoolProfile, resolvePaperclipRunnerProviderProfile(adapterConfig)))
     throw new Error("The admitted Pool harness profile changed before dispatch.");

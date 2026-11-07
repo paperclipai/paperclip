@@ -3103,7 +3103,7 @@ export function agentRoutes(
         const memberAdapter = member.binding.provider === "openai" ? "codex_local" : member.binding.provider === "anthropic" ? "claude_local" : member.binding.provider === "xai" ? "grok_local" : "opencode_local";
         const models = [{ id: member.profile.model, label: member.profile.model }, ...await listAdapterModels(memberAdapter)];
         for (const model of models) {
-          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
+          try { poolMemberRuntimeConfig({ ...member, profile: { ...member.profile, model: model.id } }, type, {}, pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY); catalog.set(model.id, model); } catch { /* Only qualified profiles belong in the pool catalog. */ }
         }
       }
       res.json([...catalog.values()]);
@@ -3219,7 +3219,7 @@ export function agentRoutes(
       for (const member of pool.members) {
         let runtime: ReturnType<typeof poolMemberRuntimeConfig>;
         try {
-          runtime = poolMemberRuntimeConfig(member, adapterType);
+          runtime = poolMemberRuntimeConfig(member, adapterType, {}, pool.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY);
           assertPoolAdapterPolicyCompatible(config, adapterType, runtime.adapterType, runtime.config);
         } catch { continue; }
         compatible = true;

@@ -10,11 +10,13 @@ import { queryKeys } from "@/lib/queryKeys";
 import { buildNewAgentRuntimeConfig } from "@/lib/new-agent-runtime-config";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/select";
+import { useToastActions } from "@/context/ToastContext";
 
 /** Completes the same held name-only draft as the concrete harness setup. */
 export function PoolAgentSetup({ companyId, agentId }: { companyId: string; agentId: string }) {
   const navigate = useNavigate();
   const cache = useQueryClient();
+  const { pushToast } = useToastActions();
   const agent = useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => agentsApi.get(agentId, companyId) });
   const pools = useQuery({ queryKey: ["harness-pool-choices", companyId], queryFn: () => harnessPoolsApi.choices(companyId) });
   const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: () => instanceSettingsApi.getExperimental() });
@@ -48,6 +50,8 @@ export function PoolAgentSetup({ companyId, agentId }: { companyId: string; agen
       });
       cache.setQueryData(queryKeys.agents.detail(response.agent.id), response.agent);
       await Promise.all([cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) }), cache.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) })]);
+      const warnings = result.checks.filter(check => check.level === "warn").map(check => check.message);
+      if (warnings.length) pushToast({ title: "Pool configuration checked", body: warnings.join(" "), tone: "warn" });
       navigate(`/agents/${response.agent.id}`);
     } catch (failure) { setError(describeError(failure).body); }
     finally { busyRef.current = false; setBusy(false); }
@@ -75,7 +79,7 @@ export function PoolAgentSetup({ companyId, agentId }: { companyId: string; agen
       <label className="block space-y-2 text-sm"><span>Harness pool</span><NativeSelect aria-label="Harness pool" value={poolId} disabled={busy || experimental.data?.enableNativeRunner !== true} onChange={event => setSelected(event.target.value)}><option value="">Choose a pool</option>{pools.data?.map(item => <option key={item.id} value={item.id} disabled={!item.enabled}>{item.name}{item.enabled ? "" : " (disabled)"}</option>)}</NativeSelect></label>
       {!pools.data?.length && <p className="text-sm text-muted-foreground">Create a pool in Settings → Connections first.</p>}
       {poolId && !pool && <p role="alert" className="text-sm text-destructive">The saved pool is unavailable. Choose another pool.</p>}
-      <p className="text-sm text-muted-foreground">Finish setup tests the selected account and environment, then follows the existing hiring and approval process.</p>
+      <p className="text-sm text-muted-foreground">Finish setup checks the pool configuration and follows the existing hiring and approval process. Run a task to verify the selected account and harness.</p>
     </>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex items-center justify-between gap-2"><Button variant="outline" disabled={busy} onClick={() => void saveAndExit()}>Save & exit</Button><Button disabled={busy || Boolean(loadError) || !agent.data || !pool?.enabled || experimental.data?.enableNativeRunner !== true} onClick={() => void finish()}>{busy ? "Testing and saving…" : "Finish setup"}</Button></div>

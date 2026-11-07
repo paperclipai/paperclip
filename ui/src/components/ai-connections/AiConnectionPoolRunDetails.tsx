@@ -14,7 +14,7 @@ export function AiConnectionPoolRunDetails({ context }: { context: Record<string
   const config = selection.runtimeConfig;
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? config.variant;
   return <div className="rounded-lg border p-4 text-sm space-y-1">
-    {pool?.poolName && <p className="font-medium">{pool.poolName} � revision {pool.poolRevision}</p>}
+    {pool?.poolName && <p className="font-medium">{pool.poolName} · revision {pool.poolRevision}</p>}
     <p className="font-medium">{failover?.sourceRunId ? "Backup pool account" : "Pool account"} · {accountName ?? connectionId ?? "Selected account"}</p>
     <p>{[selection.binding.provider, selection.adapterType, config.provider, config.acpxAgent, config.model, effort].filter(Boolean).map(String).join(" · ")}</p>
     {failover?.sourceRunId && reason && <p className="text-muted-foreground">Backup selected: {reason}.</p>}

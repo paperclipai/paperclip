@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionRouterCursors, aiConnectionTaskPins, companySecrets, connectionGrants, instanceSettings, plugins, toolApplications, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, agentHarnessType, aiRoutingModel, aiConnectionMetadataSchema, aiConnectionRouterAppDefinition, aiConnectionRouterSlug, aiConnectionPoolConfigSchema, isAiConnectionCompatible, type AiConnectionPool, type AiConnectionPoolMember, type AiConnectionRouterRequest, type AiConnectionRouterSelection, type AiConnectionPoolSaveInput, type AiConnectionUsage } from "@paperclipai/shared";
 import { isCodexLocalKnownModel, codexLocalReasoningEffortsForModel } from "@paperclipai/adapter-codex-local";
 import { models as claudeModels, claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { models as grokModels, grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
@@ -19,6 +19,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { parseObject } from "../adapters/utils.js";
+import { listOpenRouterModels } from "./openrouter-models.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
@@ -65,7 +66,7 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
   if (config.codexPermissionMode != null && config.codexPermissionMode !== "never") refuse();
 }
 export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection, configuredAdapterType?: string, sourcePolicyConfig = config): Record<string, unknown> {
-  const targetAdapter = selection.adapterType ?? (configuredAdapterType ? poolExecutionAdapterType(selection.binding, configuredAdapterType) : undefined);
+  const targetAdapter = selection.adapterType ?? configuredAdapterType;
   const switchingHarness = configuredAdapterType && targetAdapter && poolHarnessChanges(sourcePolicyConfig, configuredAdapterType, targetAdapter, selection.runtimeConfig);
   if (switchingHarness) assertPoolAdapterPolicyCompatible(sourcePolicyConfig, configuredAdapterType, targetAdapter!, selection.runtimeConfig);
   const sourceEngine = typeof sourcePolicyConfig.engine === "string" ? sourcePolicyConfig.engine.trim().toLowerCase() : "";
@@ -80,7 +81,8 @@ export class AiConnectionPoolExhausted extends Error {
 
 export const LOCAL_POOL_ADAPTERS = ["claude_local", "codex_local", "grok_local", "opencode_local"];
 
-export function poolExecutionAdapterType(binding: { provider: string }, configuredAdapterType: string): string {
+export function poolExecutionAdapterType(binding: { provider: string }, configuredAdapterType: string, allowHarnessSwitch = true): string {
+  if (!allowHarnessSwitch) return configuredAdapterType;
   if (configuredAdapterType === "paperclip_runner") return configuredAdapterType;
   if (!LOCAL_POOL_ADAPTERS.includes(configuredAdapterType)) throw unprocessable("This harness cannot execute a connection pool");
   const adapters: Record<string, string> = { anthropic: "claude_local", openai: "codex_local", xai: "grok_local", openrouter: "opencode_local" };
@@ -94,7 +96,7 @@ function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectio
     poolId: selection.poolId,
     memberId: selection.memberId,
     binding: selection.binding,
-    adapterType: selection.adapterType ?? poolExecutionAdapterType(selection.binding, configuredAdapterType),
+    adapterType: selection.adapterType ?? configuredAdapterType,
   });
   return isDeepStrictEqual(
     identity(left),
@@ -103,8 +105,8 @@ function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectio
 }
 
 /** Routing can override provider/model only, never environment, permissions, or instructions. */
-export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterType: string, overrides: Record<string, unknown> = {}) {
-  adapterType = poolExecutionAdapterType(member.binding, adapterType);
+export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterType: string, overrides: Record<string, unknown> = {}, allowHarnessSwitch = true) {
+  adapterType = poolExecutionAdapterType(member.binding, adapterType, allowHarnessSwitch);
   const notes: string[] = [];
   const provider = member.binding.provider;
   const profile = member.profile;
@@ -248,6 +250,16 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
           member.binding.mode !== (account.ownership === "shared" ? "shared" : "delegated")))
         throw unprocessable("Pool member account settings do not match its saved grant");
       const effective = poolMemberRuntimeConfig(member, "paperclip_runner");
+      if (config.kind === "harness_pool") {
+        const model = member.profile.model;
+        const catalogued = account.routing?.models.length
+          ? account.routing.models.some(item => aiRoutingModel(account.routing!, agentHarnessType("paperclip_runner", effective.config), item.id) === model)
+          : account.provider === "openai" ? isCodexLocalKnownModel(model)
+            : account.provider === "anthropic" ? claudeModels.some(item => item.id === model)
+              : account.provider === "xai" ? grokModels.some(item => item.id === model)
+                : (await listOpenRouterModels()).some(item => item.id === model);
+        if (!catalogued) throw unprocessable("Choose a model available in this account's model catalog");
+      }
       if (config.kind === "harness_pool" && member.profile.effort && ![effective.config.modelReasoningEffort, effective.config.reasoningEffort].includes(member.profile.effort))
         throw unprocessable("Effort is unavailable for this harness and model; choose a supported effort or leave it empty");
     }
@@ -352,18 +364,18 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
   async function resolve(input: { companyId: string; poolId: string; agentId: string; userId: string | null; adapterType: string; taskKey: string; overrides?: Record<string, unknown>; existingGrantId?: string; requireExisting?: boolean; persisted?: AiConnectionRouterSelection; skipUsageProbe?: boolean; environmentId?: string | null; sourceAdapterConfig?: Record<string, unknown> }) {
     const pinWhere = and(eq(aiConnectionTaskPins.companyId, input.companyId), eq(aiConnectionTaskPins.poolId, input.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey));
     const validateSelection = async (selection: AiConnectionRouterSelection, client = db) => {
-      const effectiveAdapter = poolExecutionAdapterType(selection.binding, input.adapterType);
+      const effectiveAdapter = selection.adapterType ?? input.adapterType;
       assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
       return aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: effectiveAdapter, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
     };
     if (input.persisted) {
       if (input.persisted.poolId !== input.poolId) throw unprocessable("Persisted pool selection does not match this run");
+      const [pool] = await db.select({ pluginKey: aiConnectionPools.pluginKey }).from(aiConnectionPools)
+        .where(and(eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.id, input.poolId)));
       if (input.adapterType !== "paperclip_runner" && !LOCAL_POOL_ADAPTERS.includes(input.adapterType)) {
-        const [pool] = await db.select({ pluginKey: aiConnectionPools.pluginKey }).from(aiConnectionPools)
-          .where(and(eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.id, input.poolId)));
         if (pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY) throw unprocessable("The built-in failover pool requires the Paperclip runner; migrate this agent before using the pool");
       }
-      const effectiveAdapter = poolExecutionAdapterType(input.persisted.binding, input.adapterType);
+      const effectiveAdapter = poolExecutionAdapterType(input.persisted.binding, input.adapterType, pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY);
       if (input.persisted.adapterType && input.persisted.adapterType !== effectiveAdapter)
         throw unprocessable("Persisted pool adapter is inconsistent");
       if (input.requireExisting && (input.persisted.binding.mode === "responsible_user" || input.persisted.binding.grantId !== input.existingGrantId)) throw unprocessable("Reset this task session before adopting the connection pool");
@@ -371,8 +383,9 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       // Uninstall can remove the virtual connection. Server-owned native recovery
       // evidence still authorizes the original concrete selection, never a new one.
       if (pin && (pin.selection.memberId !== input.persisted.memberId || JSON.stringify(pin.selection.binding) !== JSON.stringify(input.persisted.binding))) throw unprocessable("Persisted pool allocation is inconsistent");
-      await validateSelection(input.persisted);
-      return input.persisted;
+      const retained = { ...input.persisted, adapterType: effectiveAdapter };
+      await validateSelection(retained);
+      return retained;
     }
     for (let attempt = 0; attempt < 20; attempt++) {
       const [record] = await db.select({ pool: aiConnectionPools, connectionStatus: toolConnections.status }).from(aiConnectionPools)
@@ -398,7 +411,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       let policyRefusal: HttpError | undefined;
       for (const member of pin ? [pin.member] : pool.members) {
         try {
-          const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides);
+          const effective = poolMemberRuntimeConfig(member, input.adapterType, input.overrides, builtin);
           const selection: AiConnectionRouterSelection = { poolId: row.id, memberId: member.id, binding: member.binding, adapterType: effective.adapterType, runtimeConfig: effective.config, notes: effective.notes, ...(row.config.kind === "harness_pool" && input.environmentId !== undefined ? { runnerScope: { environmentId: input.environmentId ?? null } } : {}) };
           const authorized = await validateSelection(selection);
           const identity = await quotaIdentity(authorized, input.companyId);
@@ -460,7 +473,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       if (result.kind !== "selected") throw unprocessable("No pool account is permitted and compatible for this task");
       const candidate = candidates.find((v) => v.member.id === result.memberId);
       if (!candidate || (pin && candidate.member.id !== pin.member.id)) throw unprocessable("The router returned an unauthorized member");
-      const selected: AiConnectionRouterSelection = { poolId: row.id, memberId: candidate.member.id, binding: candidate.member.binding, adapterType: poolExecutionAdapterType(candidate.member.binding, input.adapterType), runtimeConfig: candidate.runtimeConfig, notes: candidate.notes, ...(row.config.kind === "harness_pool" && input.environmentId !== undefined ? { runnerScope: { environmentId: input.environmentId ?? null } } : {}) };
+      const selected: AiConnectionRouterSelection = { poolId: row.id, memberId: candidate.member.id, binding: candidate.member.binding, adapterType: poolExecutionAdapterType(candidate.member.binding, input.adapterType, builtin), runtimeConfig: candidate.runtimeConfig, notes: candidate.notes, ...(row.config.kind === "harness_pool" && input.environmentId !== undefined ? { runnerScope: { environmentId: input.environmentId ?? null } } : {}) };
       if (pin) return selected;
       const committed = await db.transaction(async (tx) => {
         const [locked] = await tx.select().from(aiConnectionRouterCursors).where(and(eq(aiConnectionRouterCursors.poolId, row.id), eq(aiConnectionRouterCursors.companyId, input.companyId))).for("update");

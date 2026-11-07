@@ -47,3 +47,12 @@ it("requires an explicit confirmation after conversion preview", async()=>{
   try{flushSync(()=>root.render(<QueryClientProvider client={client}><HarnessPoolSettings companyId="company" /></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Preview conversion: Old pool")!.click());await settle();expect(mocks.convert).toHaveBeenCalledWith("company","old",4,true);expect(mocks.convert).toHaveBeenCalledTimes(1);flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Convert pool")!.click());await settle();expect(mocks.convert).toHaveBeenCalledWith("company","old",4,false);}
   finally{flushSync(()=>root.unmount());client.clear();}
 });
+
+it.each(["loading", "error"])("blocks archive when affected-agent inspection is %s", async state => {
+  mocks.accounts.mockResolvedValue({canManageConnections:true,connections:[]});mocks.legacy.mockResolvedValue([]);
+  mocks.pools.mockResolvedValue([{id:"used-pool",name:"Used pool",revision:1,schemaVersion:2,kind:"harness_pool",enabled:true,mode:"failover",members:[]}]);
+  if(state==="loading") mocks.inspect.mockImplementation(()=>new Promise(()=>{}));else mocks.inspect.mockRejectedValue(new Error("Inspection unavailable"));
+  const host=document.createElement("div");const root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+  try{flushSync(()=>root.render(<QueryClientProvider client={client}><HarnessPoolSettings companyId="company" /></QueryClientProvider>));await settle();flushSync(()=>Array.from(host.querySelectorAll("button")).find(button=>button.textContent?.startsWith("Used pool ·"))!.click());await settle();expect(host.textContent).not.toContain("No agents");expect(Array.from(host.querySelectorAll("button")).find(button=>button.textContent==="Archive pool")!.disabled).toBe(true);expect(mocks.archive).not.toHaveBeenCalled();}
+  finally{flushSync(()=>root.unmount());client.clear();}
+});

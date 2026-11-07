@@ -62,6 +62,25 @@ const identityFor = async (grantId: string) => {
   return `secret:${ref.secretId}:${secret!.aiSessionEpoch}`;
 };
 const makePool = async (config = {}) => service().save(pluginKey, { companyId, config: { name: randomUUID(), enabled: true, mode: "round_robin", thresholdPercent: 90, members, ...config } }, "alice");
+
+it("keeps V1 plugin pools on the configured legacy harness", async () => {
+  await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+  const pool = await makePool();
+  const chosen = await resolve(pool.id, randomUUID(), { adapterType: "claude_local" });
+  expect(chosen.adapterType).toBe("claude_local");
+  expect(chosen.binding.provider).toBe("anthropic");
+  const piMember = { ...members[0]!, id: randomUUID(), profile: { provider: "codex" as const, model: "openai/gpt-5.6-sol" } };
+  const piPool = await makePool({ members: [piMember] });
+  expect(await resolve(piPool.id, randomUUID(), { adapterType: "pi_local" })).toMatchObject({ adapterType: "pi_local", memberId: piMember.id });
+});
+
+it("rejects an unknown model before enabling a central harness pool", async () => {
+  const { harnessPoolService } = await import("../services/harness-pools.js");
+  const member = members[0]!;
+  await expect(harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Invalid model", enabled: true, mode: "failover", members: [
+    { id: randomUUID(), harness: { type: "codex" }, connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "definitely-not-a-model" },
+  ] } }, "alice")).rejects.toMatchObject({ status: 422 });
+});
 beforeAll(async () => {
   isolatedHome = createIsolatedTestHome();
   home = isolatedHome.home;
@@ -98,7 +117,7 @@ describe("durable, authorized connection routing", () => {
     const native = members[0]!;
     const config = { schemaVersion: 2, kind: "harness_pool", name: "Smart", enabled: true, mode: "failover", members: [
       { id: native.id, harness: { type: "codex" }, connection: native.binding, model: native.profile.model },
-      { id: randomUUID(), harness: { type: "codex" }, connection: native.binding, model: "other-configured-model" },
+      { id: randomUUID(), harness: { type: "codex" }, connection: native.binding, model: "gpt-6-sol" },
     ] };
     const created = await request(app).post(url).send({ config });
     expect(created.status).toBe(200);
@@ -198,7 +217,7 @@ describe("durable, authorized connection routing", () => {
     const effective = effectiveRunAgent({ ...run!, contextSnapshot: prepared.context, runnerProfileJson: { adapterDispatch: prepared.adapterDispatch } }, agent!);
     expect(effective.adapterConfig.model).toBe(native.profile.model);
     expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterConfig.model).toBe("inactive-primary");
-    const revised = await harnessPoolService(db).save(companyId, { id: pool.id, expectedRevision: pool.revision, config: { schemaVersion: 2, kind: "harness_pool", name: "Renamed", enabled: true, mode: "failover", members: [{ id: native.id, connection: native.binding, harness: { type: "codex" }, model: "new-model" }] } }, "alice");
+    const revised = await harnessPoolService(db).save(companyId, { id: pool.id, expectedRevision: pool.revision, config: { schemaVersion: 2, kind: "harness_pool", name: "Renamed", enabled: true, mode: "failover", members: [{ id: native.id, connection: native.binding, harness: { type: "codex" }, model: "gpt-6-sol" }] } }, "alice");
     const historical = await preparePoolAdapterClaim(db, run!, agent!, "alice");
     expect(historical.context.harnessPoolSelection).toMatchObject({ poolRevision: revised.revision, poolName: "Renamed", memberSnapshot: { model: native.profile.model } });
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
@@ -238,7 +257,7 @@ describe("durable, authorized connection routing", () => {
     const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
     const account = await aiConnectionService(db).save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Scoped pool fixture", apiKey: "scoped-pool-fixture", agentIds: [], allAgents: true }, randomUUID());
     const connection = { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account };
-    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Five models", enabled: true, mode: "failover", members: Array.from({ length: 5 }, (_, index) => ({ id: randomUUID(), harness: { type: "codex" as const }, connection, model: `configured-model-${index}` })) } }, "alice");
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Five models", enabled: true, mode: "failover", members: Array.from({ length: 5 }, (_, index) => ({ id: randomUUID(), harness: { type: "codex" as const }, connection, model: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"][index]! })) } }, "alice");
     const first = await resolve(pool.id, "scope-first", { environmentId: "environment-a" });
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
     const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
