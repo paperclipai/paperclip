@@ -491,6 +491,22 @@ function joinWakePayloadSections(structuredWakePrompt: string, structuredWakeJso
   return sections.join("\n");
 }
 
+export function extractAssistantChunk(data: Record<string, unknown>): string | null {
+  const delta = typeof data.delta === "string" ? data.delta : null;
+  const text = typeof data.text === "string" ? data.text : null;
+
+  if (delta && delta.length > 0) {
+    if (delta.trim().length === 0 && text && text.trim().length > 0) {
+      return text;
+    }
+    return delta;
+  }
+  if (text && text.length > 0) {
+    return text;
+  }
+  return null;
+}
+
 export function buildAgentParams(input: {
   payloadTemplate: Record<string, unknown>;
   message: string;
@@ -1230,12 +1246,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
 
       if (stream === "assistant") {
-        const delta = nonEmpty(data.delta);
-        const text = nonEmpty(data.text);
-        if (delta) {
-          assistantChunks.push(delta);
-        } else if (text) {
-          assistantChunks.push(text);
+        const chunk = extractAssistantChunk(data);
+        if (chunk) {
+          assistantChunks.push(chunk);
         }
         return;
       }
