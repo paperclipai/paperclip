@@ -87,6 +87,7 @@
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",
+              "deploy/backup-restore",
               "deploy/secrets",
               "deploy/storage",
               "deploy/environment-variables"
