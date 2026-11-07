@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations,
+  agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations,
   nativeRunnerCheckpoints, nativeRunResults,
 } from "@paperclipai/db";
 import { DurablePrpControlPlane, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -179,19 +179,22 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...current.runnerProfileJson, nativeExecutionInput: execution,
       nativeToolContractFingerprint: nativeToolContractFingerprintForTarget("remote", execution.provider.kind),
       sessionCheckpoint: admission.checkpoint } }).where(eq(heartbeatRuns.id, runId));
-    const logs: string[] = [];
-    const start = (outcome: "created" | "replacement" = "created") => createRunnerdBackend({
+    const logs: string[] = [], environmentId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${runId}`;
+    const remoteExecute = vi.fn(async (_request: unknown): Promise<{ exitCode: number; timedOut: boolean; stdout: string; stderr: string }> => {
+      throw new Error("admission must not reach the sandbox");
+    });
+    const start = (outcome: "created" | "replacement" | "resumed" = "created") => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
-      runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId: randomUUID(),
-        leaseId: randomUUID(), remoteCwd: "/workspace", reusableLeaseConfigured: true,
-        runner: { execute: vi.fn(async () => { throw new Error("admission must not reach the sandbox"); }) },
-        sandboxLeaseAcquisition: { outcome, providerLeaseId: `sandbox-${runId}` } } as never,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "daytona", environmentId,
+        leaseId, remoteCwd: "/workspace", reusableLeaseConfigured: true,
+        runner: { execute: remoteExecute },
+        sandboxLeaseAcquisition: { outcome, providerLeaseId } } as never,
     }).then(() => "constructed", (error: Error) => error.message);
     // A local Runner keeps its controller root on this host between turns.
     const startLocal = () => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
     }).then(() => "constructed", (error: Error) => error.message);
-    return { runId, logs, start, startLocal, selectedRunId: selected?.id ?? null };
+    return { runId, logs, start, startLocal, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
   }
 
   async function quarantined() {
@@ -310,6 +313,38 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await readdir(join(root, "continuity-breaks", archive!))).toEqual(["control-plane"]);
     expect(await quarantined()).toEqual([]);
     expect(followUp.logs.join("")).not.toContain("starting a new runner for this conversation");
+  }, 60_000);
+
+  it("rehydrates a same-source external marker before reading the suspended resumed sandbox", async () => {
+    const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
+    await writeFile(path, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: latest.identity }));
+    await db.insert(environments).values({ id: followUp.environmentId, name: `retained-${followUp.environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId: followUp.environmentId,
+      issueId: fixture.prior.issueId, heartbeatRunId: latest.runId, provider: "daytona", providerLeaseId: followUp.providerLeaseId,
+      status: "released", metadata: { remoteCwd: "/workspace" } });
+    const runnerState = { schema: "paperclip.runner.durable.state.v1", ...latest.identity, lifecycle: "suspended", outbox: [],
+      pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null };
+    followUp.remoteExecute.mockResolvedValueOnce({ exitCode: 0, timedOut: false,
+      stdout: Buffer.from(JSON.stringify(runnerState)).toString("base64"), stderr: "" });
+    expect(await followUp.start("resumed")).toBe(ADMITTED);
+    expect(JSON.parse(await readFile(path, "utf8")).identity).toEqual(latest.identity);
+    expect(JSON.parse(await readFile(join(root, "plugin-runner-state.json"), "utf8"))).toMatchObject(latest.identity);
+    expect(followUp.remoteExecute).toHaveBeenCalledOnce();
+    await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([]);
+    expect(await quarantined()).toEqual([]);
+  }, 60_000);
+
+  it("preserves a same-source marker with a different turn identity before any remote read", async () => {
+    const fixture = await staleProjection("codex", true), { latest, followUp, root, path } = fixture;
+    const marker = JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1",
+      identity: { ...latest.identity, itemId: "foreign-item" } });
+    await writeFile(path, marker);
+    expect(await followUp.start("resumed")).toBe("native_runner_checkpoint_projection_held:prior_identity");
+    expect(await readFile(path, "utf8")).toBe(marker);
+    expect(followUp.remoteExecute).not.toHaveBeenCalled();
+    await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([]);
   }, 60_000);
 
   it.each(["unsettled journal", "old owner held", "selected owner held", "foreign scope", "selected parts missing", "selected parts tampered"] as const)(

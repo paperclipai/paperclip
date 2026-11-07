@@ -3813,7 +3813,7 @@ an unverified fresh start.
 
 Per-turn controller recovery uses the newest run selected by the canonical
 session selector. A readable older projection or an old external marker does
-not replace that selection. Refresh holds the existing source coordinator
+not replace that selection. Replacing an older projection holds the existing source coordinator
 locks and requires settled controller state, committed results, released
 owners and stopped or fenced controllers for both source runs. The full
 session scope must match. A current or newer owner, changed local bytes,
@@ -3821,7 +3821,10 @@ unreadable checkpoint or unsettled state blocks replacement. Refresh retains
 the exact old control-plane directory in the existing continuity archive. It
 keeps the selected run's failover backup and provider files active. The normal
 backup verification and provider resume checks still run; this refresh does
-not start a new provider session or declare a continuity break.
+not start a new provider session or declare a continuity break. A marker that
+already names the exact selected identity only rehydrates its own controller
+state. The existing retained-sandbox binding and suspended Runner read still
+govern that same-source resume.
 
 For the native runner, warm mode requests a reusable sandbox lease **before**
 lease acquisition. The environment's explicit runner lifecycle overrides the

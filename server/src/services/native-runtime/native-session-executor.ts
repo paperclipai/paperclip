@@ -6620,6 +6620,15 @@ async function refreshFinishedPerTurnRunnerdProjection(
         if (marker.schema !== "paperclip.runner.external-control-plane-state.v1" ||
           ["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "turnId", "itemId"]
             .some(key => record(marker.identity)[key] !== reference[key])) return refuse("prior_identity");
+        if (sourceRunId === reference.runId) {
+          if (["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "turnId", "itemId"]
+            .some(key => sourceIdentity[key] !== reference[key])) return refuse("prior_identity");
+          if (readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8") !== referenceBytes) {
+            return refuse("journal_changed");
+          }
+          recovered.checkpoint.restoreSessionDirectory(root);
+          return;
+        }
         const previous = await loadNativeRunnerCheckpoint(tx as unknown as Db, { ...input.execution.binding, runId: reference.runId });
         if (!previous) return refuse("prior_checkpoint_missing");
         previous.restoreSessionDirectory(oldRoot);
