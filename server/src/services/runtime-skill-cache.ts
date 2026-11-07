@@ -140,19 +140,28 @@ function lockHolderToken(lockContent: Buffer): string | null {
  * lock races for one exclusive claim named by the holder's unique token, so
  * only one of them ever unlinks it. While the stale lock exists no one else
  * can acquire or remove it (its holder is gone), so the inode check before the
- * unlink only confirms the claim is still about that lock. The claim and the
- * holder's owner file are kept: the owner file pins the stale inode so it is
- * never reused, and a waiter that read the stale lock late finds the claim and
- * does nothing. A claim is itself a lock with a token and controller: when its
+ * unlink only confirms the claim is still about that lock. Every lock and
+ * claim inode is pinned by a kept owner file, so it is never reused while a
+ * delayed waiter may compare against it, and a waiter that read the stale
+ * lock late finds the claim and does nothing. A claim is itself a lock with a token and controller: when its
  * claimer provably exited before finishing, the same rule releases the claim
  * and the next poll claims the stale lock again.
  */
 export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: string,
   stale: { inode: number; token: string }, depth = 0): Promise<void> {
   const claim = `${lock}.released-${stale.token}`;
+  // Publish the claim the way a lock is published: write a complete owner
+  // file, then hard-link it into place, so a claim name never exists without
+  // its body. The owner file is kept: it pins the claim's inode, so a deleted
+  // claim's inode is never reused by a newer claim that a delayed waiter
+  // might then compare against.
+  const claimToken = randomUUID();
+  const claimOwner = path.join(root, `.owner-${claimToken}`);
+  await fs.writeFile(claimOwner, JSON.stringify({ token: claimToken, controller: currentControllerProcessStamp() }), { flag: "wx" });
   try {
-    await fs.writeFile(claim, JSON.stringify({ token: randomUUID(), controller: currentControllerProcessStamp() }), { flag: "wx" });
+    await fs.link(claimOwner, claim);
   } catch (error) {
+    await fs.unlink(claimOwner).catch(() => {});
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     // Bounded: a claimer crash inside this two-syscall window is already rare.
     if (depth >= 2) return;
@@ -164,9 +173,9 @@ export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: str
     let held: { content: Buffer; inode: number };
     try { held = { content: await handle.readFile(), inode: (await handle.stat()).ino }; }
     finally { await handle.close(); }
-    const claimToken = lockHolderToken(held.content);
-    if (claimToken && await runtimeSkillCacheLockHolderExited(held.content)) {
-      await releaseExitedRuntimeSkillCacheLock(root, claim, { inode: held.inode, token: claimToken }, depth + 1);
+    const heldToken = lockHolderToken(held.content);
+    if (heldToken && await runtimeSkillCacheLockHolderExited(held.content)) {
+      await releaseExitedRuntimeSkillCacheLock(root, claim, { inode: held.inode, token: heldToken }, depth + 1);
     }
     return;
   }

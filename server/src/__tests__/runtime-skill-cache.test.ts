@@ -124,12 +124,36 @@ describe("runtime skill revision cache", () => {
     const token = randomUUID();
     await fs.writeFile(path.join(namespace, `.owner-${token}`), lockStamp({ ...dead, pid: await exitedPid() }, token));
     await fs.link(path.join(namespace, `.owner-${token}`), path.join(namespace, `${skill.id}.lock`));
-    // The waiter that claimed the stale lock crashed before unlinking it.
-    await fs.writeFile(path.join(namespace, `${skill.id}.lock.released-${token}`),
-      JSON.stringify({ token: randomUUID(), controller: { ...dead, pid: await exitedPid() } }));
+    // The waiter that claimed the stale lock crashed before unlinking it,
+    // leaving its claim published from a kept owner file.
+    const claimToken = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${claimToken}`),
+      JSON.stringify({ token: claimToken, controller: { ...dead, pid: await exitedPid() } }));
+    await fs.link(path.join(namespace, `.owner-${claimToken}`), path.join(namespace, `${skill.id}.lock.released-${token}`));
     const startedAt = Date.now();
     expect(await resolveRuntimeSkillCache(spec, reader())).toBe(path.join(spec.entry, "files"));
     expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("publishes a release claim only with its complete body", async () => {
+    const namespace = path.join(root, "claims");
+    await fs.mkdir(namespace);
+    const lock = path.join(namespace, "skill.lock");
+    const pid = await exitedPid();
+    const token = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${token}`),
+      lockStamp({ ...currentControllerProcessStamp(), bootId: randomUUID(), pid, processStartedAt: null }, token));
+    await fs.link(path.join(namespace, `.owner-${token}`), lock);
+    const stale = await fs.lstat(lock);
+    await releaseExitedRuntimeSkillCacheLock(namespace, lock, { inode: stale.ino, token });
+    const claim = await fs.readFile(`${lock}.released-${token}`, "utf8");
+    expect(JSON.parse(claim)).toMatchObject({ token: expect.any(String), controller: { pid: process.pid } });
+    // The claim keeps an owner file with the same inode, so its inode is never reused.
+    const claimInode = (await fs.lstat(`${lock}.released-${token}`)).ino;
+    const owners = await Promise.all((await fs.readdir(namespace)).filter(name => name.startsWith(".owner-"))
+      .map(async name => (await fs.lstat(path.join(namespace, name))).ino));
+    expect(owners).toContain(claimInode);
+    await expect(fs.lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("never removes a newer lock for a waiter that read a stale one late", async () => {
