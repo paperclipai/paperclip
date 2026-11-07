@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,23 +7,42 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import type { ObjectJournalIOPriority } from "./object-byte-journal.js";
+import { createObjectRunLogStore } from "./object-run-log-store.js";
+import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "s3_segments" | "s3_archive";
+export function isRunLogStoreType(value: unknown): value is RunLogStoreType {
+  return value === "local_file" || value === "s3_segments" || value === "s3_archive";
+}
 
 export interface RunLogHandle {
   store: RunLogStoreType;
   logRef: string;
   attemptId?: string;
+  initialBytes?: number;
+  initialSequence?: number;
+  initialSourceCursor?: number;
+  /** Exact immutable prefix has a durable source-coverage proof, not just a max cursor. */
+  initialSourcePrefixVerified?: boolean;
 }
 
 export interface RunLogReadOptions {
   offset?: number;
   limitBytes?: number;
+  /** Include the start of the first NDJSON record when reading a log tail. */
+  alignStartToRecord?: boolean;
   signal?: AbortSignal;
+  priority?: ObjectJournalIOPriority;
 }
 
 export interface RunLogReadResult {
   content: string;
+  nextOffset?: number;
+}
+
+interface RunLogByteRange {
+  bytes: Buffer;
   nextOffset?: number;
 }
 
@@ -35,13 +54,36 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+export interface RunLogBeginInput {
+  companyId: string;
+  agentId: string;
+  runId: string;
+  // Set only when persisted run lifecycle state proves no earlier attempt
+  // began this log, so no durable prefix can exist to restore. Omitted means
+  // the run may be a retry or recovery and the durable mirror is checked.
+  newRun?: boolean;
+
+  assertWriterAuthority?: () => Promise<void>;
+  previousStore?: RunLogStoreType;
+  signal?: AbortSignal;
+}
+
 export interface RunLogStore {
-  begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
+  begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number;
+      /** Caller proved this is ordered canonical output or a non-native diagnostic. */
+      preservesSourceCoverage?: boolean },
   ): Promise<number>;
-  finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
+  enqueue?(
+    handle: RunLogHandle,
+    event: Parameters<RunLogStore["append"]>[1],
+  ): Promise<{ committed: Promise<number> }>;
+  flush?(handle: RunLogHandle): Promise<void>;
+  /** Record the caller's complete ordered source-prefix proof without changing log bytes. */
+  recordVerifiedSourcePrefix?(handle: RunLogHandle, sourceCursor: number): Promise<void>;
+  finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
@@ -246,7 +288,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     offset: number,
     limitBytes: number,
     signal?: AbortSignal,
-  ): Promise<RunLogReadResult | null> {
+  ): Promise<RunLogByteRange | null> {
     signal?.throwIfAborted();
     const start = Math.max(0, offset);
     // Read one extra byte to discover whether another page exists. A single
@@ -265,9 +307,8 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     }
     signal?.throwIfAborted();
     const bytes = Buffer.concat(chunks);
-    const content = bytes.subarray(0, limitBytes).toString("utf8");
     const nextOffset = bytes.length > limitBytes ? start + limitBytes : undefined;
-    return { content, nextOffset };
+    return { bytes: bytes.subarray(0, limitBytes), nextOffset };
   }
 
   async function readS3Range(
@@ -275,7 +316,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     offset: number,
     limitBytes: number,
     signal?: AbortSignal,
-  ): Promise<RunLogReadResult> {
+  ): Promise<RunLogByteRange> {
     signal?.throwIfAborted();
     if (!s3) throw notFound("Run log not found");
     const key = s3Key(logRef);
@@ -289,7 +330,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     // must short-circuit to an empty read instead of clamping end up to
     // start and requesting `bytes=total-total`.
     const end = Math.min(start + limitBytes - 1, total - 1);
-    if (total === 0 || start > end) return { content: "", nextOffset: start < total ? start : undefined };
+    if (total === 0 || start > end) return { bytes: Buffer.alloc(0), nextOffset: start < total ? start : undefined };
 
     const result = await s3.provider.getObject({ objectKey: key, range: { start, end }, signal });
     // Destroy a body that stalls after headers arrive, including a body
@@ -300,9 +341,8 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
     signal?.throwIfAborted();
-    const content = Buffer.concat(chunks).toString("utf8");
     const nextOffset = end + 1 < total ? end + 1 : undefined;
-    return { content, nextOffset };
+    return { bytes: Buffer.concat(chunks), nextOffset };
   }
 
   async function sha256File(filePath: string): Promise<string> {
@@ -326,11 +366,12 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       await retireInflightMirror(relPath);
       // Retries share a run ID. Never truncate their earlier evidence. On a
       // new pod, restore the durable prefix before opening another attempt.
+      // A proven-new run has no prefix, so skip the remote round trip.
       const exists = await fs.stat(absPath).then(() => true, (error) => {
         if (error.code === "ENOENT") return false;
         throw error;
       });
-      if (!exists && s3) {
+      if (!exists && s3 && input.newRun !== true) {
         const key = s3Key(relPath);
         const head = await s3.provider.headObject({ objectKey: key });
         if (head.exists) {
@@ -450,12 +491,33 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       opts?.signal?.throwIfAborted();
       if (handle.store !== "local_file") throw notFound("Run log not found");
       const absPath = resolveWithin(basePath, handle.logRef);
-      const offset = opts?.offset ?? 0;
+      const offset = Math.max(0, opts?.offset ?? 0);
       const limitBytes = opts?.limitBytes ?? 256_000;
-      const local = await readLocalRange(absPath, offset, limitBytes, opts?.signal);
-      if (local) return local;
-      // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
-      return readS3Range(handle.logRef, offset, limitBytes, opts?.signal);
+      const readRange = async (start: number, length: number) =>
+        await readLocalRange(absPath, start, length, opts?.signal)
+        // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
+        ?? await readS3Range(handle.logRef, start, length, opts?.signal);
+      const result = await readRange(offset, limitBytes);
+      if (!opts?.alignStartToRecord || offset === 0 || result.bytes.length === 0) {
+        return { content: result.bytes.toString("utf8"), nextOffset: result.nextOffset };
+      }
+      // Walk back only to the preceding record boundary. Keep bytes intact
+      // until decoding so a tail beginning inside UTF-8 text is not corrupted.
+      const parts = [result.bytes];
+      let before = offset;
+      while (before > 0) {
+        const start = Math.max(0, before - 32_000);
+        const prefix = await readRange(start, before - start);
+        if (prefix.bytes.length !== before - start) throw new Error("Run log changed while reading its tail");
+        const boundary = prefix.bytes.lastIndexOf(10);
+        parts.unshift(prefix.bytes.subarray(boundary + 1));
+        if (boundary >= 0) break;
+        before = start;
+      }
+      return {
+        content: Buffer.concat(parts).toString("utf8"),
+        nextOffset: result.nextOffset ?? offset + result.bytes.length,
+      };
     },
 
     async flushInflightMirrors() {
@@ -498,7 +560,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
-function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
+export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
@@ -527,7 +589,48 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const local = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const s3 = resolveRunEvidenceStorage();
+  const external = s3 ? createObjectRunLogStore({
+    provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
+    assertWriterAuthority: async input => {
+      if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
+      await input.assertWriterAuthority();
+    },
+  }) : null;
+  const writer = external ?? local;
+  function writable(handle: RunLogHandle) {
+    if (handle.store === "s3_archive") throw new Error("Historical run log archives are read-only");
+    if (handle.store === "local_file") return local;
+    if (!external) throw new Error("Object run log storage is not configured");
+    return external;
+  }
+  cachedStore = {
+    begin: input => {
+      if (input.previousStore === "s3_archive") throw new Error("Historical run log archives are read-only");
+      if (input.previousStore === "local_file") return local.begin(input);
+      if (input.previousStore === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.begin(input);
+      }
+      return writer.begin(input);
+    },
+    append: (handle, event) => writable(handle).append(handle, event),
+    enqueue: (handle, event) => {
+      const store = writable(handle);
+      return store.enqueue?.(handle, event) ?? Promise.resolve({ committed: store.append(handle, event) });
+    },
+    flush: async handle => { await writable(handle).flush?.(handle); },
+    finalize: (handle, options) => writable(handle).finalize(handle, options),
+    read: (handle, opts) => {
+      if (handle.store === "s3_segments" || handle.store === "s3_archive") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.read(handle, opts);
+      }
+      return local.read(handle, opts);
+    },
+    flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
+  };
   return cachedStore;
 }
 
@@ -537,4 +640,50 @@ export function getRunLogStore() {
 // created or in-flight mirroring is off.
 export async function flushInFlightRunLogMirrors(): Promise<void> {
   await cachedStore?.flushInflightMirrors?.();
+}
+
+
+export async function openLegacyRunLogForMigration(logRef: string, options: { requireCanonicalLocalFile?: boolean } = {}) {
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const base = options.requireCanonicalLocalFile ? await fs.realpath(basePath) : basePath;
+  const file = resolveWithin(base, logRef);
+  if (options.requireCanonicalLocalFile) {
+    if (await fs.realpath(file) !== file) throw new Error("native_log_archive_source_alias");
+    const descriptor = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await descriptor.stat();
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error("native_log_archive_source_not_private");
+      return {
+        stream: descriptor.createReadStream({ highWaterMark: 4 * 1024 * 1024 }), bytes: stat.size, source: "local" as const,
+        async assertUnchanged() {
+          const current = await fs.lstat(file);
+          if (await fs.realpath(file) !== file || !current.isFile() || current.nlink !== 1
+            || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size
+            || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs)
+            throw new Error("legacy_log_source_changed");
+        },
+      };
+    } catch (error) { await descriptor.close(); throw error; }
+  }
+  try {
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) throw new Error("Legacy run log is not a regular file");
+    return {
+      stream: createReadStream(file), bytes: stat.size, source: "local" as const,
+      async assertUnchanged() {
+        const current = await fs.stat(file);
+        if (current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size ||
+          current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs) {
+          throw new Error("legacy_log_source_changed");
+        }
+      },
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const config = resolveRunLogS3();
+  if (!config) throw notFound("Legacy run log not found");
+  const key = `${config.keyPrefix?.replace(/\/+$/, "") || "run-logs"}/${logRef}`;
+  const object = await config.provider.getObject({ objectKey: key, signal: AbortSignal.timeout(30_000) });
+  return { stream: object.stream, bytes: object.contentLength, source: "mirror" as const };
 }

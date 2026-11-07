@@ -3,6 +3,8 @@
 Product map: [Documents, attachments, and work
 products](../feature-map/documents-artifacts.md).
 
+Feature ID: `documents-artifacts`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -11,6 +13,22 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `documents`
+
+Capability ID: `documents-artifacts/documents`.
+
+Document image selection is browser presentation state. It needs no new API or
+agent permission. Agents can share `#document-<key>&image=<one-based-position>`
+links with optional `revision` and `viewer=full` parameters. Existing task,
+document, revision, and image resource read permissions still apply.
+
+Coordinator receipt reads add `GET /api/issues/{id}/documents/{key}/revisions/{revisionId}`.
+It applies the same task-read authorization as document revision history and
+queries exactly one revision under that task/document key. It does not fall back
+to current content. Cross-task receipts retain both the originating interaction
+and document owner; sidebar reads use the owner's existing authorization boundary.
+The [document service regression](../../server/src/__tests__/documents-service.test.ts)
+checks exact identity and cross-key/task misses against temporary PostgreSQL;
+route and live caller authorization remain separately verified.
 
 Review: `baseline`.
 
@@ -26,6 +44,14 @@ CLI / MCP.
 Policy: Task/resource visibility, mutation/checkout ownership, revision/lock guards and
 permitted deliverable context.
 
+Native completion evidence accepts the server's relative link only for a document
+attached to the current company/task with a matching current-revision publication
+receipt. It can accompany a separately verified requested file; it cannot replace
+that file. The [native feedback regression](../../server/src/services/native-runtime/native-completion-feedback.test.ts)
+exercises the native write/register/finish boundary with local PostgreSQL and a
+controlled remote file reader. It does not qualify the whole document API or a
+live provider run.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L10299) at
 the reviewed commit above.
 
@@ -38,6 +64,8 @@ Gaps: Supported. Native helpers focus on the active task; generic API or explici
 other-task tools cover additional scope.
 
 ## `annotations`
+
+Capability ID: `documents-artifacts/annotations`.
 
 Review: `baseline`.
 
@@ -64,6 +92,8 @@ anchors and resolver authority.
 
 ## `attachments`
 
+Capability ID: `documents-artifacts/attachments`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -85,10 +115,16 @@ credentials/run context; inspect its result and applicable persistence/attributi
 Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
+Queue and HTTP/2 sandbox callbacks admit `GET /api/assets/{assetId}/content`,
+including screenshot references in task descriptions. The controller still checks
+company and task visibility before opening storage.
+
 Gaps: Native API uploads are bounded; attachment reading has target/provider and
 permission conditions.
 
 ## `work-products`
+
+Capability ID: `documents-artifacts/work-products`.
 
 Review: `baseline`.
 
@@ -115,6 +151,8 @@ Gaps: A registered reference does not prove uploaded bytes, external delivery, o
 accepted review.
 
 ## `library`
+
+Capability ID: `documents-artifacts/library`.
 
 Review: `baseline`.
 

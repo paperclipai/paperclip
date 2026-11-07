@@ -247,7 +247,7 @@ describe("chat publication commit signals", () => {
       'eventType: "run.presentation.resolved"',
     );
     const committedComment = completionSource.lastIndexOf(
-      "await issuesSvc.addComment",
+      "issuesSvc.addComment",
       presentationMarker,
     );
     expect(presentationMarker).toBeGreaterThanOrEqual(0);

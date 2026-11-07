@@ -111,7 +111,7 @@ async function flushReact() {
   });
 }
 
-async function mount() {
+async function mount(nativeRunnerEnabled?: boolean) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -124,6 +124,7 @@ async function mount() {
     session: { id: "session-1", userId: "user-1" },
     user: { id: "user-1", name: "Example", email: "user-1@example.com", image: null },
   });
+  if (nativeRunnerEnabled !== undefined) queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: nativeRunnerEnabled, enableOpenAiDot: true });
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -288,5 +289,18 @@ describe("OnboardingWizard adapter selection", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it.each([false, true])("normalizes a saved Copilot draft with the native runner experiment set to %s", async (nativeRunnerEnabled) => {
+    mockAdapterRegistry.list = [{ type: "paperclip_runner" }, { type: "codex_local" }];
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
+    const { root } = await mount(nativeRunnerEnabled);
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+      expect(saved).toMatchObject({ adapterType: "codex_local", runner: "auto", model: "" });
+      expect(saved).not.toHaveProperty("onboardingCopilot");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

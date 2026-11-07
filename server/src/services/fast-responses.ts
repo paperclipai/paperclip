@@ -1,3 +1,5 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
+import { insertIssueComment } from "./issue-comment-writes.js";
 import { randomUUID } from "node:crypto";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import {
@@ -20,7 +22,6 @@ import {
   issueAttachments,
   projects,
   authUsers,
-  budgetPolicies,
   budgetReservations,
   companies,
   companyFastResponses,
@@ -59,15 +60,15 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "./activity-log.js";
-import { withAccountingTransaction } from "./accounting-transaction.js";
+import { withAccountingTransaction, withOperationAccountingTransaction } from "./accounting-transaction.js";
+import { withBudgetSpan } from "./budget-tracing.js";
 import {
-  budgetPoliciesForRun,
-  budgetService,
   budgetServiceInTransaction,
-  computeObservedSpend,
   type BudgetServiceHooks,
 } from "./budgets.js";
 import { createCostEventInTransaction } from "./costs.js";
+import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
+import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import {
   notifyDeliveryWork,
   DELIVERY_QUEUES,
@@ -197,6 +198,7 @@ export async function enqueueFastResponse(tx: Db, source: FastResponseSource) {
   if (source.acceptedAt.getTime() + FAST_RESPONSE_DEADLINE_MS <= Date.now())
     return;
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.fastResponse);
+  if (source.endpointId && source.deliveryId) await notifyChatResponseAvailability(tx, { companyId: source.companyId, deliveryId: source.deliveryId });
   await tx
     .insert(fastResponseRequests)
     .values({
@@ -434,13 +436,15 @@ export function fastResponseService(
       | "endpointId"
     > &
       Partial<Pick<Request, "connectionId" | "grantId" | "model">>,
+    lockConfiguration = false,
   ) {
     if (!(await instanceSettingsService(tx).getExperimental()).enableFastResponses)
       throw unprocessable("disabled");
-    const [config] = await tx
+    const configQuery = tx
       .select()
       .from(companyFastResponses)
       .where(eq(companyFastResponses.companyId, request.companyId));
+    const [config] = await (lockConfiguration ? configQuery.for("share") : configQuery);
     if (
       !config?.enabled ||
       !config.connectionId ||
@@ -551,32 +555,30 @@ export function fastResponseService(
     }
   }
   async function skip(request: Request, reason: string) {
-    await db
-      .update(fastResponseRequests)
-      .set({
-        status: "skipped",
-        publicationStatus: "suppressed",
-        errorCode: reason,
-        finishedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(fastResponseRequests.id, request.id),
-          eq(fastResponseRequests.status, "pending"),
-        ),
-      );
+    await db.transaction(async tx => {
+      if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
+      await tx
+        .update(fastResponseRequests)
+        .set({
+          status: "skipped",
+          publicationStatus: "suppressed",
+          errorCode: reason,
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(fastResponseRequests.id, request.id),
+            eq(fastResponseRequests.companyId, request.companyId),
+            eq(fastResponseRequests.status, "pending"),
+          ),
+        );
+    });
   }
   async function settle(request: Request, outcome: FastResponseOutcome) {
-    await withAccountingTransaction(
+    await withBudgetSpan("budget.accounting.settlement", () => withOperationAccountingTransaction(
       db,
       request.companyId,
       async (tx, publications) => {
-        const [current] = await tx
-          .select()
-          .from(fastResponseRequests)
-          .where(eq(fastResponseRequests.id, request.id))
-          .for("update");
-        if (!current || current.status !== "running") return;
         const receipt = outcome.receipt;
         const links: {
           agentId: string | null;
@@ -599,7 +601,47 @@ export function fastResponseService(
             .for("key share");
           if (row) links[key] = row.id;
         }
-        const event = await createCostEventInTransaction(
+        const [current] = await tx.select().from(fastResponseRequests).where(and(
+          eq(fastResponseRequests.companyId, request.companyId), eq(fastResponseRequests.id, request.id),
+        )).for("update");
+        if (!current) return;
+        const [existing] = current.costEventId ? await tx.select({ id: costEvents.id, costStatus: costEvents.costStatus,
+          inputTokens: costEvents.inputTokens, cachedInputTokens: costEvents.cachedInputTokens, outputTokens: costEvents.outputTokens,
+          providerRequestId: costEvents.providerRequestId, pricingProvenance: costEvents.pricingProvenance,
+          costCents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(and(
+          eq(costEvents.companyId, request.companyId), eq(costEvents.id, current.costEventId),
+        )).for("update") : [];
+        if (current.status !== "running") {
+          if (!existing || outcome.errorCode === "interrupted") return;
+          if (current.errorCode !== "interrupted" && (existing.costStatus !== "unpriced" || receipt.costStatus === "unpriced")) return;
+        }
+        let event: { id: string };
+        if (existing) {
+          const receiptUsage = { inputTokens: receipt.inputTokens ?? current.inputTokens ?? 0, cachedInputTokens: 0,
+            outputTokens: receipt.outputTokens ?? current.outputTokens ?? 0, providerRequestId: receipt.providerRequestId ?? current.providerRequestId };
+          if (existing.costStatus === "unpriced" && receipt.costStatus !== "unpriced") await applyCostCorrectionInTransaction(tx, publications, { companyId: request.companyId, eventId: existing.id,
+            idempotencyKey: `fast-response:${request.id}:late-receipt`, expectedCents: existing.costCents,
+            correctedCents: receipt.costCents ?? "0", reason: "Provider receipt arrived after interrupted accounting recovery",
+            costStatus: receipt.costStatus,
+            receiptUsage,
+            pricing: { ...receipt.pricingProvenance, evidence: JSON.stringify({ providerRequestId: receipt.providerRequestId,
+              inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, evidence: receipt.pricingProvenance.evidence }) },
+            actorId: "cost_accounting" });
+          else {
+            if (Object.entries(receiptUsage).some(([key, value]) => existing[key as keyof typeof existing] !== value))
+              await applyCostCorrectionInTransaction(tx, publications, { companyId: request.companyId, eventId: existing.id,
+                idempotencyKey: `fast-response:${request.id}:late-usage`, expectedCents: existing.costCents, correctedCents: existing.costCents,
+                costStatus: existing.costStatus === "unpriced" ? "unpriced" : existing.costStatus === "estimated" ? "estimated" : "reported", receiptUsage,
+                reason: "Provider usage arrived after interrupted accounting recovery",
+                pricing: existing.pricingProvenance ?? { source: "unknown" }, actorId: "cost_accounting" });
+            if (existing.costStatus !== "unpriced") await logActivity(tx, { companyId: request.companyId,
+              actorType: "system", actorId: "cost_accounting", responsibleUserIdOverride: request.responsibleUserId,
+              action: "accounting.late_receipt_observed", entityType: "cost_event", entityId: existing.id,
+              details: { effectiveCostCents: existing.costCents, ...receipt },
+            }, publications);
+          }
+          event = existing;
+        } else event = await createCostEventInTransaction(
           tx,
           request.companyId,
           {
@@ -627,6 +669,7 @@ export function fastResponseService(
           },
         );
         const finishedAt = new Date();
+        if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
         await tx
           .update(fastResponseRequests)
           .set({
@@ -637,14 +680,14 @@ export function fastResponseService(
                 : "failed",
             errorCode: outcome.errorCode ?? null,
             costEventId: event.id,
-            providerRequestId: receipt.providerRequestId,
-            inputTokens: receipt.inputTokens,
-            outputTokens: receipt.outputTokens,
+            providerRequestId: receipt.providerRequestId ?? current.providerRequestId,
+            inputTokens: receipt.inputTokens ?? current.inputTokens,
+            outputTokens: receipt.outputTokens ?? current.outputTokens,
             finishedAt,
             durationMs: finishedAt.getTime() - request.acceptedAt.getTime(),
             ...(outcome.text ? {} : { publicationStatus: "suppressed" }),
           })
-          .where(eq(fastResponseRequests.id, request.id));
+          .where(and(eq(fastResponseRequests.companyId, request.companyId), eq(fastResponseRequests.id, request.id)));
         if (receipt.costStatus !== "unpriced")
           await tx
             .update(budgetReservations)
@@ -660,10 +703,8 @@ export function fastResponseService(
               ),
             );
       },
-    );
-    await budgetService(db, options.budgetHooks).deliverPendingEnforcement(
-      request.companyId,
-    );
+    ), { "budget.accounting.owner": "fast_response" });
+
   }
   async function process(
     request: Request,
@@ -797,16 +838,30 @@ export function fastResponseService(
     );
     let admitted: Request | null = null;
     try {
-      admitted = await withAccountingTransaction(
+      admitted = await withOperationAccountingTransaction(
         db,
         request.companyId,
         async (tx) => {
           if (request.expiresAt.getTime() <= Date.now() || signal?.aborted)
             return null;
-          const current = await resolve(tx, request);
+          const [company] = await tx.select({ status: companies.status }).from(companies)
+            .where(eq(companies.id, request.companyId)).for("share");
+          if (!company || company.status !== "active") return null;
+          if (selected.issue?.projectId) {
+            const [project] = await tx.select({ id: projects.id }).from(projects).where(and(
+              eq(projects.companyId, request.companyId), eq(projects.id, selected.issue.projectId),
+            )).for("share");
+            if (!project) return null;
+          }
+          const current = await resolve(tx, request, true);
           if (
             current.config.updatedAt.getTime() !==
               selected.config.updatedAt.getTime() ||
+            current.config.connectionId !== selected.config.connectionId ||
+            current.config.grantId !== selected.config.grantId ||
+            current.config.model !== selected.config.model ||
+            current.issue?.projectId !== selected.issue?.projectId ||
+            current.connection.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")?.secretId !== secretId ||
             current.connection.connection.updatedAt.getTime() !==
               selected.connection.connection.updatedAt.getTime() ||
             current.connection.grant.updatedAt.getTime() !==
@@ -832,10 +887,6 @@ export function fastResponseService(
           )
             return null;
           if (request.endpointId) await options.authorizeExternal!(tx, request);
-          const [company] = await tx
-            .select()
-            .from(companies)
-            .where(eq(companies.id, request.companyId));
           const [agent] = request.agentId
             ? await tx
                 .select()
@@ -845,7 +896,7 @@ export function fastResponseService(
                     eq(agents.id, request.agentId),
                     eq(agents.companyId, request.companyId),
                   ),
-                )
+                ).for("share")
             : [];
           if (
             company?.status !== "active" ||
@@ -853,60 +904,15 @@ export function fastResponseService(
               (!agent || ["paused", "terminated"].includes(agent.status)))
           )
             return null;
-          if (
-            await budgetServiceInTransaction(tx, []).getInvocationBlock(
-              request.companyId,
-              request.agentId,
-              { projectId: current.issue?.projectId },
-            )
-          )
-            return null;
-          const policies = await tx
-            .select()
-            .from(budgetPolicies)
-            .where(
-              and(
-                eq(budgetPolicies.companyId, request.companyId),
-                eq(budgetPolicies.isActive, true),
-                eq(budgetPolicies.hardStopEnabled, true),
-                eq(budgetPolicies.metric, "billed_cents"),
-                sql`${budgetPolicies.amount} > 0`,
-                budgetPoliciesForRun(
-                  request.companyId,
-                  request.agentId,
-                  current.issue?.projectId ?? null,
-                ),
-              ),
-            );
+          const { block, policies, observations } = await budgetServiceInTransaction(tx, []).evaluateAdmission(
+            request.companyId, request.agentId, { projectId: current.issue?.projectId });
+          if (block) return null;
           const amount = policies.reduce((max, p) => {
             const n = centsToUnits(p.reservationCents);
             return n > max ? n : max;
           }, 0n);
-          for (const policy of policies) {
-            const [held] = await tx
-              .select({
-                total: sql<string>`coalesce(sum(${budgetReservations.amountCents}),0)::text`,
-              })
-              .from(budgetReservations)
-              .where(
-                and(
-                  eq(budgetReservations.companyId, request.companyId),
-                  eq(budgetReservations.state, "held"),
-                  policy.scopeType === "agent"
-                    ? eq(budgetReservations.agentId, request.agentId!)
-                    : undefined,
-                  policy.scopeType === "project"
-                    ? eq(
-                        budgetReservations.projectId,
-                        current.issue!.projectId!,
-                      )
-                    : undefined,
-                ),
-              );
-            const committed =
-              centsToUnits(
-                (await computeObservedSpend(tx, policy)).totalExact,
-              ) + centsToUnits(held.total);
+          for (const [index, policy] of policies.entries()) {
+            const committed = centsToUnits(observations[index].ledgerCents) + centsToUnits(observations[index].effectiveHeldCents);
             if (
               committed >= centsToUnits(policy.amount) ||
               committed + amount > centsToUnits(policy.amount)
@@ -930,6 +936,7 @@ export function fastResponseService(
             .where(
               and(
                 eq(fastResponseRequests.id, request.id),
+                eq(fastResponseRequests.companyId, request.companyId),
                 eq(fastResponseRequests.status, "pending"),
               ),
             )
@@ -943,6 +950,7 @@ export function fastResponseService(
             amountCents: unitsToCents(amount),
             providerStartedAt: claimed.startedAt,
           });
+          await queueBudgetEvaluation(tx, { companyId: request.companyId, agentId: request.agentId, projectId: current.issue?.projectId });
           return claimed;
         },
       );
@@ -985,7 +993,7 @@ export function fastResponseService(
           const [locked] = await tx
             .select()
             .from(fastResponseRequests)
-            .where(eq(fastResponseRequests.id, request.id))
+            .where(and(eq(fastResponseRequests.companyId, request.companyId), eq(fastResponseRequests.id, request.id)))
             .for("update");
           if (
             !locked ||
@@ -1011,21 +1019,18 @@ export function fastResponseService(
                   ),
                 )
             : [];
-          const [comment] = await tx
-            .insert(issueComments)
-            .values({
-              companyId: request.companyId,
-              issueId: request.issueId!,
-              authorAgentId: request.agentId,
-              authorUserId: request.agentId ? null : "board-concierge",
-              authorType: request.agentId ? "agent" : "system",
-              body: safe.text,
-              sourceTrust: source?.sourceTrust ?? null,
-              conversationSessionGeneration: request.sessionGeneration,
-              origin: "fast_response",
-              fastResponseRequestId: request.id,
-            })
-            .returning();
+          const [comment] = await insertIssueComment(tx, {
+            companyId: request.companyId,
+            issueId: request.issueId!,
+            authorAgentId: request.agentId,
+            authorUserId: request.agentId ? null : "board-concierge",
+            authorType: request.agentId ? "agent" : "system",
+            body: safe.text,
+            sourceTrust: source?.sourceTrust ?? null,
+            conversationSessionGeneration: request.sessionGeneration,
+            origin: "fast_response",
+            fastResponseRequestId: request.id,
+          });
           if (
             request.endpointId &&
             request.conversationId &&
@@ -1045,13 +1050,14 @@ export function fastResponseService(
               idempotencyKey: `fast-response:${request.id}`,
               payload: safe,
             });
+          if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
           await tx
             .update(fastResponseRequests)
             .set({
               commentId: comment.id,
               publicationStatus: request.endpointId ? "pending" : "published",
             })
-            .where(eq(fastResponseRequests.id, request.id));
+            .where(and(eq(fastResponseRequests.companyId, request.companyId), eq(fastResponseRequests.id, request.id)));
           await logActivity(
             tx as unknown as Db,
             {
@@ -1078,6 +1084,7 @@ export function fastResponseService(
       .where(
         and(
           eq(fastResponseRequests.id, request.id),
+          eq(fastResponseRequests.companyId, request.companyId),
           isNull(fastResponseRequests.commentId),
         ),
       );
