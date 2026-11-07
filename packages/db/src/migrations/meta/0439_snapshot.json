@@ -1,5 +1,5 @@
 {
-  "id": "133f47b3-f66a-4056-adb2-30b658949f34",
+  "id": "d290d707-7d29-43a0-a697-06eecbdb743d",
   "prevId": "69e6941f-890f-43d8-af7c-2e3e24ebfcd5",
   "version": "7",
   "dialect": "postgresql",
@@ -16081,12 +16081,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "feedback_data_sharing_enabled": {
           "name": "feedback_data_sharing_enabled",
@@ -34886,6 +34880,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "legacy_process_settlement": {
+          "name": "legacy_process_settlement",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "last_output_at": {
           "name": "last_output_at",
           "type": "timestamp with time zone",
@@ -50363,12 +50363,6 @@
         },
         "execution_workspace_policy": {
           "name": "execution_workspace_policy",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "default_execution_policy": {
-          "name": "default_execution_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

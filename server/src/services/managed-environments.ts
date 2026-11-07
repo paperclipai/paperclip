@@ -48,8 +48,14 @@
  * entry: await `pluginsReady`, require the plugin `ready`, declaring the
  * entry's driver, and running a worker; else archive the entry's row and
  * re-ensure it on the worker's `ready`. Each entry owns one row (see
- * `managed-plugin-environments.ts`). Plugin entries never touch the instance
- * default.
+ * `managed-plugin-environments.ts`).
+ *
+ * Instance default: boot fills an unset, local or deleted default once, under
+ * a lock (`fillUnsetInstanceDefault`), and never changes a set one. A plugin
+ * entry with `instanceDefault` fills first, right after its ensure; the
+ * managed sandbox (under `enableManagedSandboxOnly`) fills after all plugin
+ * entries. So a new instance gets the plugin environment, and an existing
+ * instance, whose default is already set, keeps its default.
  */
 
 import type { Db } from "@paperclipai/db";
@@ -302,6 +308,11 @@ export async function applyManagedEnvironments(
    * on. The write is one locked transaction (`fillUnsetInstanceDefault`), so
    * overlapping boots and admin writes cannot overwrite each other.
    *
+   * Runs once, after the plugin entries: a plugin entry with
+   * `instanceDefault` fills an unset default first (see
+   * `fillPluginInstanceDefault`), so on a new instance it wins, and on an
+   * existing one (whose default is already set) neither fill changes it.
+   *
    * Best-effort: a failure degrades to the run-time policy, which refuses
    * local under managed-sandbox-only regardless.
    */
@@ -318,6 +329,41 @@ export async function applyManagedEnvironments(
       logger.error(
         { err, environmentId: managedEnvironment.id },
         "failed to reconcile the instance default environment with the managed sandbox environment",
+      );
+    }
+  };
+
+  /**
+   * A plugin entry with `instanceDefault` fills the instance default with its
+   * row right after a successful boot ensure, through the same locked fill:
+   * only an unset, local or deleted default is replaced, and a set default
+   * (an existing instance's managed sandbox, an admin's choice) never is.
+   * Like an admin's write, the fill declines while active agents following
+   * the default lack the plugin's setup; the sandbox fill then runs as usual.
+   * Recovery after boot never fills. Best-effort, like the sandbox fill.
+   */
+  const fillPluginInstanceDefault = async (
+    spec: ManagedInstanceConfig["pluginEnvironments"][number],
+    environmentId: string,
+  ): Promise<void> => {
+    if (!spec.instanceDefault) return;
+    try {
+      const { filled, previousDefaultEnvironmentId, declined } = await fillInstanceDefault(environmentId);
+      if (declined) {
+        logger.warn(
+          { environmentId, name: spec.name, previousDefaultEnvironmentId, declined },
+          "kept the instance default: agents that follow it need setup for the managed plugin environment first",
+        );
+      }
+      if (!filled) return;
+      logger.info(
+        { environmentId, name: spec.name, previousDefaultEnvironmentId },
+        "instance default environment set to the managed plugin environment",
+      );
+    } catch (err) {
+      logger.error(
+        { err, environmentId, name: spec.name },
+        "failed to fill the instance default with the managed plugin environment",
       );
     }
   };
@@ -405,6 +451,7 @@ export async function applyManagedEnvironments(
   let unchanged = 0;
   let skipped = 0;
   const outcomes: ManagedEnvironmentReconciliationOutcome[] = [];
+  let sandboxDefaultCandidate: string | null = null;
   for (const spec of managedConfig.environments) {
     try {
       const resolved = await resolveDriver({ db, driverKey: spec.provider });
@@ -469,7 +516,8 @@ export async function applyManagedEnvironments(
         stockStatus: reconciliation.stockStatus,
         updateAvailable: reconciliation.updateAvailable,
       });
-      await ensureManagedInstanceDefault(reconciliation.environment);
+      // Filled after the plugin entries (see `ensureManagedInstanceDefault`).
+      sandboxDefaultCandidate = reconciliation.environment.id;
       const logContext = {
         environmentId: reconciliation.environment.id,
         name: reconciliation.environment.name,
@@ -635,6 +683,7 @@ export async function applyManagedEnvironments(
         { ...logBase, environmentId: result.environment.id, action: result.action },
         "managed plugin environment reconciled",
       );
+      await fillPluginInstanceDefault(spec, result.environment.id);
     } catch (err) {
       failed += 1;
       if (recoverable && !isPermanentConfigRejection(err)) {
@@ -666,6 +715,9 @@ export async function applyManagedEnvironments(
       }
     }
   }
+
+
+  if (sandboxDefaultCandidate) await ensureManagedInstanceDefault({ id: sandboxDefaultCandidate });
 
   return {
     ensured,

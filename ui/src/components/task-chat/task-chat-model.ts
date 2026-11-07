@@ -583,6 +583,7 @@ export interface TaskChatMaterializedResourceItem {
   document?: IssueDocumentSummary;
   workProduct?: IssueWorkProduct;
   attachment?: IssueAttachment;
+  imageItems?: TaskChatMaterializedResourceItem[];
 }
 
 export type TaskChatProtocolItem =

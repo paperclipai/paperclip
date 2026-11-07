@@ -97,6 +97,9 @@ export const NATIVE_TOOL_CONTRACT_FINGERPRINT =
 /** The runner proved that this run's saved provider session cannot be
  * restored by the current runner build. Its checkpoint is not resumable. */
 export const NATIVE_PROVIDER_STATE_INCOMPATIBLE = "native_provider_state_incompatible";
+/** The saved session owned a side-effecting call without a delivered result.
+ * Recovery requires an explicit reconciliation of that action. */
+export const NATIVE_PROVIDER_SIDE_EFFECT_PENDING = "native_provider_side_effect_pending";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -613,6 +616,10 @@ export function rebindNativeSessionCheckpoint(input: {
   // The source is still the progress barrier. Its provider session cannot be
   // restored, so the next run starts a fresh session in the same workspace.
   if (input.previousRun.errorCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE) return null;
+  // The saved session still holds the unsettled call and refuses attachment.
+  // Generic Retry is blocked until an operator reconciles that action; the
+  // reconciled continuation then starts a fresh session in the same workspace.
+  if (input.previousRun.errorCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
     previousProfile.nativeToolContractFingerprint !==

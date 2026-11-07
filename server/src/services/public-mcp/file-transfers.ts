@@ -11,6 +11,7 @@ import { authorizationService } from "../authorization.js";
 import { issueService } from "../issues.js";
 import { prepareExternalDeliverablePublication, readExternalDeliverablePublication } from "../native-runtime/external-deliverable-publication.js";
 import { logActivity } from "../activity-log.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { hashMcpSecret, McpOAuthError, type PublicMcpOAuth, type McpPrincipal } from "./oauth.js";
 import { McpCapabilityError, company, task, requestId, pick, object, stable, type ApiDispatch, type Capability } from "./contracts.js";
 
@@ -121,6 +122,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
     const token = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + lifetime);
     await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs, p.grant.id);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${p.grant.id}, 0))`);
       const [count] = await tx.select({ n: sql<number>`count(*)::int` }).from(mcpFileTickets).where(and(eq(mcpFileTickets.grantId, p.grant.id), gt(mcpFileTickets.expiresAt, new Date())));
       if (count.n >= 100) throw new McpCapabilityError("Too many active file links. Wait for earlier links to expire.");

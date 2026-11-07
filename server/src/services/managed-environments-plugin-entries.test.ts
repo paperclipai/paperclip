@@ -404,9 +404,8 @@ describe("applyManagedEnvironments plugin entries", () => {
     expect(environments.archiveManagedPluginEnvironment).not.toHaveBeenCalled();
   });
 
-  it("never fills the instance default with a plugin environment", async () => {
-    // Only the managed sandbox fills an unset default, through the locked
-    // fill, which keeps any set default (a plugin environment included).
+  it("never fills the instance default with a plugin entry that does not declare instanceDefault", async () => {
+    // Without the flag, only the managed sandbox fills an unset default.
     const fillInstanceDefault = vi.fn(async () => ({ filled: false, previousDefaultEnvironmentId: "plugin-env" }));
     await applyManagedEnvironments(noDb, configWith(
       [{ name: "Daytona", provider: "daytona" }, pluginEntry()],
@@ -422,6 +421,99 @@ describe("applyManagedEnvironments plugin entries", () => {
     });
     expect(fillInstanceDefault).toHaveBeenCalledTimes(1);
     expect(fillInstanceDefault).toHaveBeenCalledWith("env-1");
+  });
+
+  describe("instanceDefault", () => {
+    const sandboxAndComputer = () => configWith(
+      [{ name: "Daytona", provider: "daytona" }, pluginEntry({ instanceDefault: true })],
+      { enableManagedSandboxOnly: true },
+    );
+
+    it("fills an unset default with the plugin row first, then lets the sandbox fill", async () => {
+      // The locked fill decides; here it reports a fill each time it is asked.
+      const fillInstanceDefault = vi.fn(async (_environmentId: string) => ({ filled: true, previousDefaultEnvironmentId: null }));
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault,
+        environments: environmentsSeam(),
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      // The plugin row goes first, even though the sandbox entry is ensured
+      // first; on a new instance the plugin fill wins and the sandbox fill
+      // then finds the default set.
+      expect(fillInstanceDefault.mock.calls.map(([environmentId]) => environmentId)).toEqual(["plugin-env", "env-1"]);
+    });
+
+    it("lets the sandbox fill when the plugin fill declines because agents need setup", async () => {
+      const fillInstanceDefault = vi.fn(async (environmentId: string) => environmentId === "plugin-env"
+        ? { filled: false, previousDefaultEnvironmentId: null, declined: "agents_need_setup" as const }
+        : { filled: true, previousDefaultEnvironmentId: null });
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault,
+        environments: environmentsSeam(),
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      expect(fillInstanceDefault.mock.calls.map(([environmentId]) => environmentId)).toEqual(["plugin-env", "env-1"]);
+      expect(await fillInstanceDefault.mock.results[1]!.value).toMatchObject({ filled: true });
+    });
+
+    it("does not fill with the plugin row when its plugin is down, and recovery never fills", async () => {
+      const { handle, fireReady } = recoveryHandle();
+      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      const environments = environmentsSeam();
+      const manager = workerManager(false, handle);
+      await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: manager,
+        fillInstanceDefault,
+        environments,
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      expect(fillInstanceDefault).not.toHaveBeenCalled();
+
+      manager.isRunning.mockReturnValue(true);
+      fireReady();
+      await tick();
+      expect(environments.ensureManagedPluginEnvironment).toHaveBeenCalledTimes(1);
+      expect(fillInstanceDefault).not.toHaveBeenCalled();
+    });
+
+    it("does not fill with the plugin row when its ensure fails", async () => {
+      const fillInstanceDefault = vi.fn(async () => ({ filled: true, previousDefaultEnvironmentId: null }));
+      await applyManagedEnvironments(noDb, sandboxAndComputer(), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault,
+        environments: environmentsSeam({
+          ensureManagedPluginEnvironment: vi.fn().mockRejectedValue(unprocessable("driverConfig.region is not supported")),
+        }),
+        resolveSandboxProviderDriver: readyDriverResolver(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      // Only the sandbox fill runs.
+      expect(fillInstanceDefault.mock.calls).toEqual([["env-1"]]);
+    });
+
+    it("keeps the plugin ensure counted when its fill fails", async () => {
+      const result = await applyManagedEnvironments(noDb, configWith([pluginEntry({ instanceDefault: true })]), {
+        env: {},
+        workerManager: workerManager(),
+        fillInstanceDefault: vi.fn().mockRejectedValue(new Error("db exploded")),
+        environments: environmentsSeam(),
+        resolveEnvironmentPlugin: readyPlugin(),
+        autoInstalledPluginKeys: [PLUGIN_KEY],
+      });
+      expect(result).toMatchObject({ ensured: 1, failed: 0 });
+    });
   });
 
   it("is fail-safe: an ensure failure is logged and counted, not thrown", async () => {

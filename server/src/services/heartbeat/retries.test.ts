@@ -289,6 +289,25 @@ describePostgres("heartbeat retry module database wiring", () => {
     }
   });
 
+  it("keeps the accepted interaction owner and its catalog provider deadline", async () => {
+    const { run, agent } = await fixture();
+    const retryAt = new Date(now.getTime() + 3600_000);
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "repository_catalog_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream", retryNotBefore: retryAt.toISOString() },
+      contextSnapshot: { ...run.contextSnapshot, interactionId: "answered-question", interactionStatus: "answered",
+        interactionKind: "ask_user_questions", mutation: "interaction", wakeReason: "issue_commented" },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, {
+      now, random: () => 0, retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, maxAttempts: 2,
+    })).toMatchObject({ outcome: "scheduled" });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+    expect(successor).toMatchObject({ scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    expect(successor!.contextSnapshot?.codexTransientFallbackMode).toBeUndefined();
+  });
+
   it("waits for a Runner update without spending failure retries and keeps an answered interaction", async () => {
     const { run, agent } = await fixture();
     const snapshot = { ...run.contextSnapshot, interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",

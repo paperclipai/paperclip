@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, assets, authUsers, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import * as nativeSetupReadiness from "./setup-readiness.js";
@@ -487,6 +487,24 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(Object.values((run.resultJson as any).apiToolReceipts).find((receipt: any) => receipt.operationId === args.operationId))
       .toHaveProperty("encryptedResult");
     expect((await fixture.snapshot()).assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
+  });
+
+  // s7504 run cb7994f9 (Codex, CHA-5): while a succeeded run's accounting held
+  // new company work, this live run's write_task_document was refused with
+  // "Company or budget authority unavailable", so it proposed a blocked result.
+  it("lets a running run write during a temporary accounting hold, but not after a hard stop", async () => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
+    await server.db.insert(budgetPolicies).values({ companyId: fixture.companyId, scopeType: "company", scopeId: fixture.companyId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", amount: 3000, notifyEnabled: false, unpricedUsagePolicy: "block" });
+    // Another run ended without succeeding and awaits accounting: new work waits.
+    await server.db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId, invocationSource: "automation",
+      status: "failed", finishedAt: new Date(), costAccountingPending: true, usageJson: { accountingReceiptReady: false } });
+    const write = (key: string) => fixture.authority.execute({ tool: "write_task_document", callId: `hold-${key}`,
+      arguments: { taskId: fixture.issueId, key, title: "Brief", body: "Three bullets", baseRevisionId: null } });
+    await expect(write("brief")).resolves.toMatchObject({ ok: true });
+    await server.db.update(companies).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(companies.id, fixture.companyId));
+    await expect(write("after-stop")).rejects.toThrow("Company or budget authority unavailable");
   });
 
   it.each(["comment_on_task", "write_task_document", "hire_agent"])("recovers completed %s receipts without repeating the write", async tool => {

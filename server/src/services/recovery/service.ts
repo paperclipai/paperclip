@@ -77,6 +77,7 @@ import {
   chatConversations,
   caseHandoffs,
   companies,
+  budgetPolicies,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueAttachments,
@@ -117,6 +118,7 @@ import {
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
+import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
@@ -4830,6 +4832,14 @@ export function recoveryService(
         }
       }
       const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      // A temporary hold (accounting still settling) only delays the task's
+      // start or continuation; it is not a reason to escalate. Leave the task
+      // as it is: settling accounting wakes this recovery again, which then
+      // admits it. A reached hard stop still goes to the board.
+      if (budgetBlock && !(await isBoardOwnedBudgetBlock(db, issue.companyId, budgetBlock))) {
+        result.skipped += 1;
+        continue;
+      }
       if (budgetBlock) {
         const classification = classifyContinuationFailure(latestRun);
         if (

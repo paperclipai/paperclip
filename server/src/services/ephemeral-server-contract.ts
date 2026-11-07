@@ -7,6 +7,7 @@ import { skillInstallationMaintenance } from "./skill-installation-maintenance.j
 import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
 import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
+import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 
 export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
 
@@ -70,6 +71,7 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   if (localTrace) blockers.push("provider_traces_require_migration");
   if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
   if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
+  if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {

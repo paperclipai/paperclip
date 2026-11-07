@@ -4725,7 +4725,22 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-sidebar-recents > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recents > div > :first-child { flex-shrink: 0; }
 .design-sidebar-recents > div > :last-child { flex: 1; min-height: 0; }
-.design-sidebar-recent-list { display: flex; flex-direction: column; gap: var(--design-sidebar-item-gap); min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.design-sidebar-recent-list {
+  --recent-fade-top: 0px;
+  --recent-fade-bottom: 0px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--design-sidebar-item-gap);
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  mask-image: linear-gradient(to bottom, transparent, var(--cell-marquee-mask-solid) var(--recent-fade-top), var(--cell-marquee-mask-solid) calc(100% - var(--recent-fade-bottom)), transparent);
+}
+.design-sidebar-recent-list[data-overflow-top="true"] { --recent-fade-top: var(--task-list-edge-fade-width); }
+.design-sidebar-recent-list[data-overflow-bottom="true"] { --recent-fade-bottom: var(--task-list-edge-fade-width); }
+.design-sidebar-recent-content { display: flex; flex-shrink: 0; flex-direction: column; gap: var(--design-sidebar-item-gap); }
 .design-sidebar-recent-list:focus-visible { outline: var(--design-page-focus-width) solid var(--ring); outline-offset: calc(-1 * var(--design-page-focus-width)); }
 .design-sidebar-recent-list .design-sidebar-item { flex-shrink: 0; }
 .design-sidebar-account { flex-shrink: 0; }
@@ -5329,6 +5344,19 @@ html:not(.dark) .coordinator-sidebar {
   .agent-selection-bar { transition: none; transform: translate(-50%, 0); }
 }
 
+:root {
+  --tc-image-grid-columns: repeat(auto-fill, minmax(min(100%, 8rem), 1fr));
+  --tc-image-grid-max-width: 40rem;
+}
+
+.tc-image-grid {
+  display: grid;
+  grid-template-columns: var(--tc-image-grid-columns);
+  gap: calc(var(--spacing) * 2);
+  width: 100%;
+  max-width: var(--tc-image-grid-max-width);
+}
+
 .paperclip-patch-line { min-width: 0; }
 span.paperclip-patch-line { display: block; }
 .paperclip-patch-line[data-patch-line="add"] { color: var(--patch-add-fg); background: var(--diff-add-bg); }
@@ -5410,3 +5438,23 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 
 :root { --agent-header-character-size: 102px; }
 .agent-header-character { width: var(--agent-header-character-size); height: var(--agent-header-character-size); }
+.agent-pin-row { --agent-pin-surface: var(--background); }
+.agent-contact-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 60%, var(--background)); }
+.agent-contact-pin-row[data-selected="true"] { --agent-pin-surface: var(--accent); }
+.agent-roster-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 50%, var(--background)); }
+.agent-chat-pin {
+  background: var(--agent-pin-surface, transparent);
+}
+.agent-pin-row:is(:hover, :focus-within) .agent-pin-text {
+  mask-image: linear-gradient(to right, var(--foreground) calc(100% - var(--spacing) * 10), transparent calc(100% - var(--spacing) * 2));
+}
+.agent-contact-create {
+  border-radius: var(--agent-contact-top-radius) var(--agent-contact-top-radius) var(--radius-sm) var(--radius-sm);
+}
+:root { --agent-contact-top-radius: 50%; }
+@media (pointer: coarse) {
+  .agent-pin-row .agent-pin-text {
+    mask-image: linear-gradient(to right, var(--foreground) calc(100% - var(--spacing) * 10), transparent calc(100% - var(--spacing) * 2));
+  }
+}
+.agent-contact-pin-row[data-has-unread="true"] .agent-pin-text { mask-image: none; }

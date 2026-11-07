@@ -317,13 +317,25 @@ It starts no scheduler, does not drain tasks, and always reports
 `enrollmentReady: false`. Check serving memory headroom before running a separate
 process on a tenant. Keep the deployment on normal releases.
 
-Only a successful, finished source with a released committed coordinator and an
-accepted result can publish through this path. At both database fences, hold the
+A successful, finished source with a released committed coordinator and an
+accepted result publishes through its normal runtime owner. At both database fences, hold the
 task share lock and recheck its checkout, related queued/running executions,
 recorded session and Runner, exact backup-stamp lease, and unchanged local
 manifest and suspended state. A concurrent turn, moved source, revoked stamp or
 changed owner defers that source. Unrelated executions continue unchanged.
 No lease, result, task or lifecycle state is rewritten to make a source eligible.
+
+The same entry can preserve sealed failed or cancelled backup files through a
+separate source owner. The source must retain its exact selected task/session,
+released committed result or terminal-failure coordinator, and recorded backup
+stamp. Every publication checks the physical finalization lock, task checkout,
+source run and coordinator, source lease, manifest, and payload hashes. A remaining
+coordinator or physical owner blocks the copy even after its deadline expires.
+Historical PID fields are preserved and are not termination proof. A valid
+`previous` tree cannot authenticate a changed `current` tree. Failed publication
+retains the pending encrypted object receipt and every original file. The copy
+does not change the failed outcome, warnings, result, allocation or session.
+It does not prove that an absent backup was recovered or authorize detachment.
 
 Run the controller-only phase separately so it does not re-read provider
 archives that were already verified:
@@ -342,6 +354,28 @@ supervisor bytes are rechecked before commit; a changed source rolls back.
 Unrelated runs remain active. Existing controller checkpoint identity, artifact
 provenance, configuration and snapshot checks still apply. The `paperclip.native-controller-prestage.v1` counts describe this phase; neither successful prestaging
 nor zero deferred controller sources authorizes volume detachment.
+
+The same finite controller-only entry also preserves settled failed sources.
+A committed failed result may import its exact checkpoint under the normal
+owner checks without changing the failed outcome. A terminal failed controller
+that cannot earn executable recovery authority instead gets an encrypted
+evidence archive through the existing native harness object owner.
+
+Online archival verifies the exact retained session pointer, company, agent,
+task, admitted source binding, terminal run and released coordinator. It rejects
+related queued/running work, checkout, expired-but-retained ownership and a busy
+physical finalizer. Source/profile/coordinator fingerprints and original file
+bytes are checked at publication, including after the upload. Pending object
+records commit before upload; a raced source cannot publish a current archive.
+The operation leaves original files, failed status, leases and recovery history
+unchanged. The `archivedFailed` count records preservation, never successful
+execution or permission to take over an agent.
+
+The live Cloud path uses online preparation and static ephemeral arming on the
+retained volume. Replacement startup must recheck the original bytes after the
+old deployment stops. That final check, not an archive copy or process-local
+busy map, establishes the cutover boundary. The offline fallback below is for
+an independently quiet instance; it is not the live staging delivery path.
 
 The final offline migration still stops all writers, verifies every durable
 object, imports deferred sources and all other data, and exports only its normal

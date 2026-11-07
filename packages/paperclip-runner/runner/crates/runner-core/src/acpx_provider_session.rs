@@ -350,6 +350,7 @@ pub struct AcpxProviderSession {
     closed: bool,
     failure: Option<LocalRunnerError>,
     transport_terminated: bool,
+    rejected_start_resumable: bool,
     runtime_retired: bool,
     completed_turn_observed: bool,
 }
@@ -407,6 +408,7 @@ impl AcpxProviderSession {
             closed: false,
             failure: None,
             transport_terminated: false,
+            rejected_start_resumable: false,
             runtime_retired: false,
             completed_turn_observed: false,
         })
@@ -422,6 +424,10 @@ impl AcpxProviderSession {
 
     pub fn identity(&self) -> &AcpxProviderSessionIdentity {
         &self.identity
+    }
+
+    pub(crate) fn rejected_start_checkpoint(&self) -> Option<&AcpxProviderSessionIdentity> {
+        self.rejected_start_resumable.then_some(&self.identity)
     }
 
     pub fn turn_control_capabilities(&self) -> AcpxTurnControlCapabilities {
@@ -598,6 +604,7 @@ impl AcpxProviderSession {
         working_directory: &Path,
         performance: bool,
     ) -> Result<Value, LocalRunnerError> {
+        self.rejected_start_resumable = false;
         self.ensure_open()?;
         if self.runtime_retired {
             return Err(LocalRunnerError::invalid(
@@ -686,12 +693,19 @@ impl AcpxProviderSession {
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
         }
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::TurnStart,
+        let response = match self.transport.request_turn_start(
             json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
             Ok(response) => response,
-            Err(error) => return Err(self.fail_closed(error)),
+            Err(failure) => {
+                let resumable = failure.resume_required
+                    && self.state.active_turn_id().is_none()
+                    && !self.state.has_pending_requests()
+                    && self.transport.buffered_events().len() == 0;
+                let error = self.fail_closed(failure.error);
+                self.rejected_start_resumable = resumable && self.transport_terminated;
+                return Err(error);
+            }
         };
         if response.get("turnId").and_then(Value::as_str) != Some(turn_id) {
             return Err(self.fail_closed(LocalRunnerError::invalid(
@@ -2227,6 +2241,7 @@ mod mode_tests {
             closed: false,
             failure: None,
             transport_terminated: false,
+            rejected_start_resumable: false,
             runtime_retired: false,
             completed_turn_observed: false,
         }
