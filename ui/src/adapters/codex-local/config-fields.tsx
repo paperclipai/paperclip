@@ -587,7 +587,7 @@ export function CodexLocalConfigFields({
       {runnerManaged && !isExternal && !isCursorCloud && (
         <Field configSection="runPolicy"
           label="Runner lifecycle"
-          hint="Automatic keeps Codex, Claude and OpenCode warm on this computer for 5 minutes after a run, so a follow-up starts faster, and runs other harnesses turn by turn. Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
+          hint="Automatic keeps Codex and OpenCode warm on this computer for 5 minutes after a run, so a follow-up starts faster, and runs other harnesses turn by turn. Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
           <SelectPopover
             aria-label="Runner lifecycle"
