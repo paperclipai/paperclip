@@ -221,6 +221,82 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
 
+  it("dispatches saved reviewer rework before an older peer after a busy agent finishes", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const busyEntered = Promise.withResolvers<void>();
+    const releaseBusy = Promise.withResolvers<void>();
+    const nextEntered = Promise.withResolvers<void>();
+    const releaseNext = Promise.withResolvers<void>();
+    const complete = mockAdapterExecute.getMockImplementation()!;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      busyEntered.resolve();
+      await releaseBusy.promise;
+      return complete();
+    }).mockImplementationOnce(async () => {
+      nextEntered.resolve();
+      await releaseNext.promise;
+      return complete();
+    });
+
+    try {
+      const { runId: busyRunId } = await insertClaimableRun(companyId, agentId);
+      await heartbeat.resumeQueuedRuns();
+      await busyEntered.promise;
+      expect(await runStatus(busyRunId)).toMatchObject({ status: "running" });
+
+      const userId = `rework-owner-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Rework owner",
+        email: `qa-mail+${userId}@zolotenkov.site`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+        status: "active", membershipRole: "owner" });
+      const olderIssueId = randomUUID();
+      const reworkIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: olderIssueId, companyId, title: "Older peer", status: "in_progress", priority: "medium",
+          assigneeAgentId: agentId, responsibleUserId: userId },
+        { id: reworkIssueId, companyId, title: "Reviewer rework", status: "in_progress", priority: "medium",
+          assigneeAgentId: agentId, responsibleUserId: userId,
+          executionState: { status: "changes_requested", currentStageId: null, currentStageIndex: null,
+            currentStageType: null, currentParticipant: null, returnAssignee: { type: "agent", agentId },
+            completedStageIds: [], lastDecisionId: randomUUID(), lastDecisionOutcome: "changes_requested" } },
+      ]);
+      const runIds: string[] = [];
+      for (const [index, issueId] of [olderIssueId, reworkIssueId].entries()) {
+        const { runId } = await insertQueuedRun(companyId, agentId, {
+          requestedByActorType: "user", requestedByActorId: userId,
+          payload: { manualUserWake: true, issueId },
+        }, new Date(Date.now() - 60_000 + index * 1_000));
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } })
+          .where(sql`${heartbeatRuns.id} = ${runId}`);
+        runIds.push(runId);
+      }
+      const [olderRunId, reworkRunId] = runIds;
+      await heartbeat.resumeQueuedRuns();
+      expect(await runStatus(olderRunId)).toMatchObject({ status: "queued" });
+      expect(await runStatus(reworkRunId)).toMatchObject({ status: "queued" });
+      expect(mockAdapterExecute).toHaveBeenCalledOnce();
+
+      releaseBusy.resolve();
+      await nextEntered.promise;
+      const executedRunIds = mockAdapterExecute.mock.calls.map(call => ((call as unknown[])[0] as { runId: string }).runId);
+      expect(executedRunIds).toEqual([busyRunId, reworkRunId]);
+      expect(await runStatus(olderRunId)).toMatchObject({ status: "queued" });
+      expect(await runStatus(reworkRunId)).toMatchObject({ status: "running" });
+      const [reworkIssue] = await db.select({ executionRunId: issues.executionRunId }).from(issues)
+        .where(sql`${issues.id} = ${reworkIssueId}`);
+      expect(reworkIssue.executionRunId).toBe(reworkRunId);
+      releaseNext.resolve();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await runStatus(busyRunId)).toMatchObject({ status: "succeeded" });
+      expect(await runStatus(reworkRunId)).toMatchObject({ status: "succeeded" });
+      expect(await runStatus(olderRunId)).toMatchObject({ status: "succeeded" });
+    } finally {
+      releaseBusy.resolve();
+      releaseNext.resolve();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
   it("keeps a recoverable rejection queued without blocking the runs behind it", async () => {
     const { companyId, agentId } = await insertAgent();
     const { runId: deferredRunId } = await insertUnresolvableOwnerRun(companyId, agentId);
