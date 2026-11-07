@@ -202,10 +202,12 @@ export function budgetPoliciesForRun(companyId: string, agentId: string | null, 
 
 /** `runId` names the run being admitted, so its own pending accounting never holds it. */
 type AdmissionContext = { issueId?: string | null; projectId?: string | null; runId?: string | null;
-  /** A validated recovery owner is continuing work that was already admitted.
-   * Accounting holds gate new work only; recoveries must be able to finish,
-   * or concurrent recoveries after a restart storm wait on each other. Hard
-   * stops and pauses still apply. */
+  /** The caller continues work that was already admitted: a validated
+   * recovery owner, or a running run's own tool mutations. Temporary holds
+   * (accounting that awaits settlement, recovering runs, budget inputs that
+   * await evaluation) gate new work only; admitted work must be able to
+   * finish, or concurrent recoveries after a restart storm wait on each other.
+   * Hard stops and pauses still apply. */
   admittedRecovery?: boolean };
 
 async function readAdmissionScopes(db: Db, companyId: string, agentId: string | null, context?: AdmissionContext) {
@@ -273,13 +275,14 @@ function hardStopReached(policy: PolicyRow, observed: Awaited<ReturnType<typeof 
   return compareCents(observed.totalExact, policy.amount) >= 0 || unpricedUsageBlocks(policy, observed);
 }
 
-/** Admission also waits while completed runs await accounting. That unknown
- * is a separate conservative restriction: it holds new work only. A run that
- * finishes moments before its charge commits must not pause the company or
- * cancel unrelated running work. */
+/** Admission also waits while runs that ended without succeeding await
+ * accounting. That unknown is a separate conservative restriction: it holds
+ * new work only. A run that finishes moments before its charge commits must
+ * not pause the company or cancel unrelated running work. A succeeded run with
+ * only usage outstanding is bounded like a running run and does not wait. */
 function observedBlocks(policy: PolicyRow, observed: Awaited<ReturnType<typeof computeObservedSpend>>) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
-  return hardStopReached(policy, observed) || (observed.pendingRunCount - observed.recoveringRunCount) > 0;
+  return hardStopReached(policy, observed) || observed.waitingRunCount > 0;
 }
 export async function policyBlocks(db: Db, policy: PolicyRow) {
   if (!policy.isActive || !policy.hardStopEnabled || policy.amount <= 0) return false;
@@ -846,7 +849,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       for (const { policy, observed } of scoped) {
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
         if (context?.admittedRecovery ? hardStopReached(policy, observed) : observedBlocks(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name,
-          reason: observed.pendingRunCount > 0 ? `${title} cannot start work while completed runs await accounting.`
+          reason: observed.waitingRunCount > 0 ? `${title} cannot start work while completed runs await accounting.`
             : unpricedUsageBlocks(policy, observed) ? `${title} cannot start work because recorded usage has no reliable price.`
             : scopeType === "project" ? "Project cannot start work because its budget hard-stop is still exceeded."
               : `${title} is paused because its budget hard-stop was reached.` });
@@ -857,7 +860,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (scope.budgetHeld) return admission({ scopeType, scopeId, scopeName: scope.name,
         reason: "Budget hold is awaiting reconciliation." });
     }
-    if (reservationIndexes.length > 0) {
+    if (reservationIndexes.length > 0 && !context?.admittedRecovery) {
       for (const index of reservationIndexes) {
         const policy = policies[index];
         const oldest = await oldestBudgetInputAt(db, { companyId,

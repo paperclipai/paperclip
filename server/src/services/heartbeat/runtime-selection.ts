@@ -977,6 +977,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
+          legacyProcessSettlement: null,
           controllerBootId: null,
           controllerLeaseExpiresAt: null,
           executionStage: null,

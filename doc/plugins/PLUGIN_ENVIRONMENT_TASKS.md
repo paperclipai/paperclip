@@ -217,6 +217,16 @@ either, both, or neither. Each field means the host can verify and restore a
 stopped source for that provider without starting another turn. Core requires
 the field for the selected provider and verifies the run’s eligibility.
 
+Core admission recognizes native Codex and qualified Claude through ACPX. ACPX
+Codex is a different provider and cannot use either attestation. Claude admission
+checks both saved and current profiles against Runner’s qualified catalog;
+decodable historical profiles do not authorize recovery. Preparation, submission
+and attachment retain that provider binding. Runner’s launch factory normalizes
+Claude’s model, mode, permissions, effort and runtime content before Core compares
+them with the saved source or current owner. Core revalidates the claim and
+profiles after worker replies. This admission does not activate executor recovery.
+It grants no replacement authority or exception to deterministic recovery refusals.
+
 The authenticated request belongs to
 the current run while `prepare` and `submit` carry the predecessor Runner identity.
 Core derives this relationship from its saved source-consumer claim; a mismatched
