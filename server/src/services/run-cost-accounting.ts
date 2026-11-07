@@ -2,7 +2,7 @@ import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js"
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
-import { usdToUnits, unitsToCents } from "@paperclipai/shared";
+import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
@@ -320,7 +320,21 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         if (!linked) scope[key] = null;
       }
     }
-    const knownCostUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    const reportedCostUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
+    // A later checkpoint can clear the raw cost fields while the live budget
+    // projection keeps the price already observed. A failed capture settles at
+    // no less than that observed money, so settlement never lowers spend.
+    const observedCents = captureFailed ? text(object(usage.budgetExposure).costCents) : null;
+    let observedCostUsd: string | null = null;
+    if (observedCents) {
+      try {
+        const observedUnits = centsToUnits(observedCents);
+        if (observedUnits > 0n && (reportedCostUsd === null || observedUnits > usdToUnits(reportedCostUsd))) {
+          observedCostUsd = centsToUsd(observedCents);
+        }
+      } catch { /* An unreadable projection proves nothing; keep the reported cost. */ }
+    }
+    const knownCostUsd = observedCostUsd ?? reportedCostUsd;
     const lostReceiptEstimate = receiptUnavailable && knownCostUsd === null ? estimateLostReceipt(usage) : null;
     const costUsd = knownCostUsd ?? lostReceiptEstimate?.costUsdExact ?? null;
     const billingType = text(usage.billingType) ?? "unknown";

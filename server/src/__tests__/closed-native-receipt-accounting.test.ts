@@ -663,6 +663,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
   });
 
+  it("keeps a capture failure after a receipt-source handoff under the blocking policy", async () => {
+    const f = await fixture({ unpricedUsagePolicy: "block" });
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model",
+      accountingReceiptSourceFences: { [f.sourceId]: 2 } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.block())?.reason).toMatch(/no reliable price|budget hard-stop/);
+  });
+
+  it("settles a capture failure at no less than its observed live price", async () => {
+    const f = await fixture();
+    await captureFailed(f, 11, { inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } });
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+    // 600 cents exceeds the 500-cent policy: the hard stop still holds.
+    expect((await f.block())?.reason).toMatch(/hard-stop|budget/i);
+  });
+
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
     const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })
