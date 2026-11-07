@@ -1,7 +1,25 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { createServer as createNetServer, connect as netConnect, type AddressInfo, type Server as NetServer, type Socket } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  companyMemberships,
+  connectionGrants,
+  createDb,
+  heartbeatRuns,
+  issues,
+  toolApplications,
+  toolCatalogEntries,
+  toolConnections,
+} from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { guardedRemoteHttpFetch } from "../services/remote-http-fetch.js";
@@ -301,6 +319,40 @@ describe("SOCKS5 proxy guard", () => {
     expect(socketFactory).not.toHaveBeenCalled();
   });
 
+  it("completes HTTPS through the tunnel and checks the certificate against the target hostname", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "paperclip-socks-tls-"));
+    const key = join(directory, "target.key");
+    const certificate = join(directory, "target.crt");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+      "-days", "1", "-subj", "/CN=secure.remote.test", "-addext", "subjectAltName=DNS:secure.remote.test"], { stdio: "ignore" });
+    const server = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    const tunnel = await createSocks5TestProxy({ "secure.remote.test": port, "other.remote.test": port });
+    const previousCertificates = getCACertificates("default");
+    setDefaultCACertificates([...previousCertificates, await readFile(certificate, "utf8")]);
+    const options = { allowPrivateNetwork: true, error: guardError, proxy: `socks5h://127.0.0.1:${tunnel.port}`,
+      lookup: async () => { throw new Error("ENOTFOUND"); } };
+    try {
+      const response = await guardedRemoteHttpFetch(`https://secure.remote.test:${port}/mcp`, {}, options);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+      expect(tunnel.connections[0]).toEqual({ atyp: 0x03, targetHost: "secure.remote.test", targetPort: port });
+
+      // The same certificate does not name this host, so the handshake fails.
+      await expect(guardedRemoteHttpFetch(`https://other.remote.test:${port}/mcp`, {}, options))
+        .rejects.toMatchObject({ code: "remote_http_connect_failed" });
+    } finally {
+      setDefaultCACertificates(previousCertificates);
+      await tunnel.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the guard for a literal target address", async () => {
     const proxy = "socks5h://127.0.0.1:1080";
     await expect(
@@ -380,6 +432,48 @@ describeEmbeddedPostgres("remote MCP connection through a SOCKS5 proxy", () => {
     expect(JSON.stringify(result)).toContain("proxied:hello");
     expect(proxy.connections.length).toBeGreaterThan(connectionsBeforeCall);
     expect(proxy.connections.at(-1)?.targetHost).toBe("mcp.remote.test");
+  });
+
+  it("sends the Composio account calls of a connection through its proxy", async () => {
+    const managed: string[][] = [];
+    const composio = createServer(async (req, res) => {
+      let bodyText = "";
+      for await (const chunk of req) bodyText += chunk;
+      const request = JSON.parse(bodyText);
+      const toolkits = request.params.arguments.toolkits as { name: string; action: string }[];
+      managed.push(toolkits.map((toolkit) => toolkit.action));
+      const results = Object.fromEntries(toolkits.map((toolkit) => [toolkit.name, toolkit.action === "add"
+        ? { redirect_url: "https://connect.composio.dev/link/test" }
+        : { toolkit: toolkit.name, accounts: [] }]));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { structuredContent: { data: { results } } } }));
+    });
+    await new Promise<void>((resolve) => composio.listen(0, "127.0.0.1", resolve));
+    const composioPort = (composio.address() as AddressInfo).port;
+    try {
+      proxy = await createSocks5TestProxy({ "composio.remote.test": composioPort });
+      const company = await createCompany();
+      const userId = randomUUID();
+      await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: userId, membershipRole: "admin", status: "active" });
+      const [app] = await db.insert(toolApplications).values({ companyId: company.id, applicationKey: randomUUID(), name: "Composio", type: "mcp_http", metadata: { sourceTemplateKey: "composio" } }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id, applicationId: app!.id, uid: randomUUID(), name: "Proxied Composio", transport: "mcp_remote",
+        authKind: "none", credentialPolicy: "shared", status: "active", enabled: true,
+        config: { sourceTemplateKey: "composio", url: `http://composio.remote.test:${composioPort}/mcp`, proxy: `socks5h://127.0.0.1:${proxy.port}` },
+      }).returning();
+      await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection!.id, kind: "organization", isDefault: true, status: "active" });
+      await db.insert(toolCatalogEntries).values({ companyId: company.id, connectionId: connection!.id, name: "COMPOSIO_MANAGE_CONNECTIONS", toolName: "COMPOSIO_MANAGE_CONNECTIONS", versionHash: "v1", status: "active", riskLevel: "destructive" });
+      const access = toolAccessService(db, { composioAppToolkits: ["circleback_mcp"] });
+
+      const result = await access.setupComposioApp(connection!.id, "circleback_mcp", { action: "start" }, { actorType: "user", actorId: userId });
+
+      expect(result).toMatchObject({ status: "authorization_required" });
+      expect(managed).toEqual([["list"], ["add"]]);
+      expect(proxy.connections.length).toBeGreaterThanOrEqual(2);
+      expect(proxy.connections.every((connect) => connect.targetHost === "composio.remote.test" && connect.atyp === 0x03)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => composio.close(() => resolve()));
+    }
   });
 
   it("discovers OAuth, registers a client and exchanges the code through the proxy", async () => {
