@@ -282,6 +282,18 @@ async function callTerminalTool(promptBody, signal) {
   const first = await call();
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
+    if (first.result?.isError && String(prompt.message ?? prompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) {
+      let cursor;
+      for (let pageIndex = 0; pageIndex < 8; pageIndex++) {
+        const response = await mcpRequest("tools/call", {
+          name: "paperclip_read_current_wake_comments", arguments: { cursor },
+        });
+        if (response.result?.isError) throw new Error("Current-wake fixture reader was rejected");
+        const page = JSON.parse(response.result.content[0].text);
+        if (page.complete) break;
+        cursor = page.nextCursor;
+      }
+    }
     if (first.result?.isError) outcomes.push(await call());
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
     return outcomes.at(-1);
@@ -483,6 +495,22 @@ const server = createServer(async (request, response) => {
       }
       setTimeout(async () => {
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("configured-environment-output")) {
+          const output = await new Promise((resolve, reject) => {
+            execFile("/bin/sh", ["-c", 'printf "%s" "$PROBE_SECRET"'], { timeout: 5000 }, (error, stdout) => {
+              if (error) reject(error); else resolve(stdout);
+            });
+          });
+          const messageID = "message-configured-binding-output";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: {
+            id: "part-configured-binding-output", messageID, type: "tool", tool: "bash",
+            state: { status: "completed", output },
+          } } });
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
         if (backlogTool) {
           const messageID = "message-stream-backlog";
@@ -507,7 +535,37 @@ const server = createServer(async (request, response) => {
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }
-        await callFirstPaperclipTool();
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [await mcpRequest("tools/call", {
+            name: "paperclip_paperclip_call_assigned_tool", arguments: [],
+          })];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          emit({ type: "message.updated", id: "diagnostic-message-event", properties: { sessionID: session.id,
+            info: { id: "diagnostic-message", sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", id: "diagnostic-part-event", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", messageID: "diagnostic-message", sessionID: session.id,
+              type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "provider-receipt" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (!String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) await callFirstPaperclipTool();
         if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
           const result = await new Promise(resolve => {
             execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {
@@ -702,6 +760,9 @@ const server = createServer(async (request, response) => {
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
+        const outputLimitAfterTool = String(
+          parsedPrompt.message ?? "",
+        ).includes("output-limit-after-tool");
         const commentaryOnlyBeforeWork = String(
           parsedPrompt.message ?? "",
         ).includes("commentary-only-before-work");
@@ -794,6 +855,53 @@ const server = createServer(async (request, response) => {
             },
           });
           await callTerminalTool(promptPayload);
+        } else if (outputLimitAfterTool) {
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-tool-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant" },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-text",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-text",
+                messageID: "message-limit",
+                type: "text",
+                text: `E2E_${"QUIP_".repeat(400)}`,
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message-finished",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant",
+                finish: "length", time: { completed: 5 } },
+            },
+          });
         } else if (finalAfterToolCommentary) {
           emit({
             type: "message.part.updated",

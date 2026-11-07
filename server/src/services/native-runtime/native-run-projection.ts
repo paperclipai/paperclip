@@ -19,6 +19,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
+import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 
 
 export function projectNativeTerminalRunStatus(
@@ -189,7 +190,12 @@ export async function projectCommittedRun(input: {
                 || ${recoveredExecutionFailureMetadata()}
                 || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
             }
-          : { resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)` }),
+          : {
+              // A failed accepted result keeps any recorded cause, and otherwise
+              // names the unexplained failure.
+              ...(terminalState === "failed" ? explainFailedRun(NATIVE_RUN_FAILED_UNEXPLAINED, { preserveCancelled: false }) : {}),
+              resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
+            }),
         updatedAt: now,
       },
       where: needsRepair,

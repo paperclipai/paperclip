@@ -10,6 +10,8 @@ import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
 import { logActivity } from "../services/activity-log.js";
+import { issueContextUsage } from "../services/issue-context-usage.js";
+import { contextCompactionService } from "../services/context-compaction.js";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
 import { caseActivityReadSqlCondition } from "../services/case-activity-access.js";
@@ -385,6 +387,16 @@ export function activityRoutes(db: Db) {
       ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
       : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));
     res.json(result);
+  });
+
+  router.get("/issues/:id/context-usage", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(req.params.id as string), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const usage = await issueContextUsage(db, issue.companyId, issue);
+    res.json(usage
+      ? { ...usage, compaction: await contextCompactionService(db).availability(issue.companyId, issue) }
+      : null);
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {

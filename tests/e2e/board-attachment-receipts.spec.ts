@@ -3,6 +3,7 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type APIResponse,
   type Locator,
   type Page,
 } from "@playwright/test";
@@ -18,7 +19,7 @@ type Attachment = {
 type Comment = { id: string; body: string; clientRequestId?: string | null };
 
 async function body<T>(
-  response: Awaited<ReturnType<APIRequestContext["get"]>>,
+  response: Pick<APIResponse, "json" | "ok" | "status" | "text">,
 ): Promise<T> {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(
     true,
@@ -26,18 +27,29 @@ async function body<T>(
   return response.json() as Promise<T>;
 }
 
+async function dismissAnnouncement(page: Page, dismiss: Locator) {
+  const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
+  if (menuOpen) await page.keyboard.press("Escape");
+  const [button] = await dismiss.elementHandles();
+  if (button) {
+    try { await button.click(); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Element is not attached") || await dismiss.count()) throw error;
+    }
+  }
+  if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
+}
+
 async function setup(page: Page, request: APIRequestContext, classic: boolean) {
+  await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+    userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+  } }));
   // Announcements can appear after navigation or reload and cover the classic
   // composer's attachment button. Dismiss through the same UI as a Board user.
   await page.addLocatorHandler(
     page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
       .getByRole("button", { name: "Dismiss announcement", exact: true }),
-    async (dismiss) => {
-      const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
-      if (menuOpen) await page.keyboard.press("Escape");
-      await dismiss.click();
-      if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
-    },
+    async (dismiss) => dismissAnnouncement(page, dismiss),
   );
   const company = await body<{ id: string; issuePrefix: string }>(
     await request.post("/api/companies", {
@@ -127,7 +139,7 @@ async function openAttachmentChooser(page: Page, composer: Locator) {
 
 test("new-task images survive reload, retain bytes, and clear after creation", async ({ page, request }) => {
   const fixture = await setup(page, request, false);
-  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await page.getByRole("button", { name: /^New [Tt]ask$/, exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "New task", exact: true });
   const editor = dialog.getByRole("textbox", { name: "editable markdown", exact: true });
   await editor.fill("Keep the caption and image after reload.");
@@ -152,7 +164,7 @@ test("new-task images survive reload, retain bytes, and clear after creation", a
   await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
     .some(([key, value]) => key.startsWith("paperclip:issue-draft:") && value.includes("Keep the caption")))).toBe(true);
   await page.reload();
-  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await page.getByRole("button", { name: /^New [Tt]ask$/, exact: true }).first().click();
   await expect(editor).toContainText("Keep the caption and image after reload.");
   await expect(dialog.getByRole("img", { name: "board-fresh.png", exact: true })).toBeVisible();
   const upload = page.waitForResponse((response) => response.request().method() === "POST"
@@ -164,7 +176,7 @@ test("new-task images survive reload, retain bytes, and clear after creation", a
   expect(await content.body()).toEqual(files[1]!.buffer);
   await expect(dialog).toBeHidden();
   await page.reload();
-  await page.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await page.getByRole("button", { name: /^New [Tt]ask$/, exact: true }).first().click();
   await expect(dialog.getByRole("img")).toHaveCount(0);
 });
 
@@ -189,7 +201,7 @@ test("two open tabs retain their staged images when either tab saves or creates 
   await second.goto(page.url());
   const dialogs = [page, second].map((tab) => tab.getByRole("dialog", { name: "New task", exact: true }));
   for (const [index, tab] of [page, second].entries()) {
-    await tab.getByRole("button", { name: "New Task", exact: true }).first().click();
+    await tab.getByRole("button", { name: /^New [Tt]ask$/, exact: true }).first().click();
     await dialogs[index]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill(`Keep tab ${index + 1}'s image.`);
     await expect(dialogs[index]!.getByRole("button", { name: "Create task", exact: true })).toBeEnabled();
   }
@@ -218,7 +230,7 @@ test("two open tabs retain their staged images when either tab saves or creates 
   await expect(dialogs[0]!).toBeHidden();
   await expect.poll(savedNames).toEqual(["tab-2.png"]);
   await second.reload();
-  await second.getByRole("button", { name: "New Task", exact: true }).first().click();
+  await second.getByRole("button", { name: /^New [Tt]ask$/, exact: true }).first().click();
   await expect(dialogs[1]!.getByRole("img", { name: "tab-2.png", exact: true })).toBeVisible();
   await dialogs[1]!.getByRole("textbox", { name: "editable markdown", exact: true }).fill("Create the remaining tab's image.");
   await dialogs[1]!.getByRole("button", { name: "Create task", exact: true }).click();
@@ -573,4 +585,36 @@ test("legacy failed upload can be removed before sending the retained text", asy
     "Keep this text after removing the failed file.",
   );
   expect(await fixture.attachments()).toHaveLength(0);
+});
+
+test("announcement dismissal handler tolerates an already-removed announcement", async ({ page }) => {
+  await page.setContent(`<aside aria-label="Paperclip announcements"><button aria-label="Dismiss announcement">Dismiss</button></aside><button id="continue" onclick="this.dataset.clicked='yes'">Continue</button>`);
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  await page.addLocatorHandler(dismiss, async locator => {
+    await page.locator("aside").evaluate(element => element.remove());
+    await dismissAnnouncement(page, locator);
+  });
+  await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 1000 });
+  await expect(page.locator("#continue")).toHaveAttribute("data-clicked", "yes");
+  await expect(dismiss).toHaveCount(0);
+});
+
+test("announcement dismissal handler preserves errors while the target remains", async ({ page }) => {
+  await page.setContent('<aside aria-label="Paperclip announcements"><button disabled aria-label="Dismiss announcement">Dismiss</button></aside><button>Continue</button>');
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  page.setDefaultTimeout(1000);
+  await expect(dismissAnnouncement(page, dismiss)).rejects.toThrow(/Timeout|timeout/);
+  await expect(dismiss).toBeVisible();
+  await expect(dismiss).toBeDisabled();
+});
+
+test("announcement dismissal handler tolerates detachment after its element snapshot", async ({ page }) => {
+  await page.setContent('<aside aria-label="Paperclip announcements"><button aria-label="Dismiss announcement">Dismiss</button></aside>');
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  const snapshot = await dismiss.elementHandles();
+  expect(snapshot).toHaveLength(1);
+  await snapshot[0]!.evaluate(element => (element as ChildNode).remove());
+  dismiss.elementHandles = async () => snapshot;
+  await dismissAnnouncement(page, dismiss);
+  await expect(dismiss).toHaveCount(0);
 });

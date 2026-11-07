@@ -4,7 +4,7 @@ import { setImmediate as immediate } from "node:timers/promises";
 import { setTimeout as realTimeout, clearTimeout as clearRealTimeout } from "node:timers";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { accessService } from "../services/access.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../services/deferred-execution-wait.js";
@@ -15,7 +15,7 @@ import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, authUsers, chatActions, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, projects, reconcileDatabaseWork, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, authUsers, chatActions, environmentLeases, nativeRunFinalizations, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, projects, reconcileDatabaseWork, heartbeatRuns, issueComments, issueRelations, issues } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -24,6 +24,7 @@ import { registerDeferredReceiptWork } from "../services/heartbeat/deferred-rece
 import { heartbeatService } from "../services/heartbeat.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { issueService } from "../services/issues.js";
+import { environmentService } from "../services/environments.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -157,6 +158,96 @@ describe("deferred receipt durable dispatch", () => {
       source: "on_demand", status: "completed", reason: "task_retry", payload: { issueId: f.issue.id } });
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready; await quiet();
   });
+  async function strandedDependency() {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issue.id,
+      status: "succeeded", errorCode: null, contextSnapshot: { issueId: f.issue.id,
+        wakeReason: "issue_commented", dependencyBlockedInteraction: true } }).where(eq(heartbeatRuns.id, f.source.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id,
+      runId: f.source.id, phase: "committed" });
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issue.id));
+    const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "Completed review",
+      status: "done", completedAt: new Date() }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: blocker.id,
+      relatedIssueId: f.issue.id, type: "blocks" });
+    const [intent] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", reason: "issue_blockers_resolved", status: "coalesced",
+      requestedByActorType: "system", requestedByActorId: "native-status-committer",
+      payload: { issueId: f.issue.id, resolvedBlockerIssueId: blocker.id },
+    }).returning();
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${intent.id}`,
+      payload: { issueId: f.issue.id, resolvedBlockerIssueId: blocker.id, _paperclipWakeContext: {
+        issueId: f.issue.id, wakeReason: "issue_blockers_resolved", statusDecisionSource: "native_status_decision",
+        nativeStatusWakeIntentId: intent.id } },
+    }).returning();
+    return { ...f, receipt, blocker };
+  }
+
+  it.each(["restart", "cleanup"] as const)("recovers a dependency wake after native audit %s into one continuation", async event => {
+    const f = await strandedDependency();
+    const { receipt } = f;
+    const [lease] = event === "cleanup" ? await db.insert(environmentLeases).values({ companyId: f.companyId,
+      heartbeatRunId: f.source.id, issueId: f.issue.id, provider: "daytona", providerLeaseId: "dependency-finalizing",
+      status: "active", leasePolicy: "reuse_by_environment" }).returning() : [];
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    if (lease) {
+      await waitForReal(async () => {
+        await Promise.allSettled([...passes]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null });
+      await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
+    }
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      const pending = saved.runId ? (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, saved.runId)))[0] : null;
+      expect(saved.status, JSON.stringify({ status: pending?.status, error: pending?.error, errors })).toBe("completed");
+      expect(saved.runId).not.toBeNull();
+    }, { timeout: 15_000 });
+    await finish(f.issue.id);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    const dependencyRuns = runs.filter(run => run.contextSnapshot?.wakeReason === "issue_blockers_resolved");
+    expect(dependencyRuns).toHaveLength(1);
+    const [resumed] = dependencyRuns;
+    expect(resumed).toMatchObject({ status: "succeeded", stdoutExcerpt: expect.stringContaining("receipt-proof"),
+      contextSnapshot: { wakeReason: "issue_blockers_resolved" } });
+    expect(resumed.contextSnapshot?.dependencyBlockedInteraction).not.toBe(true);
+    await heartbeat.resumeQueuedRuns();
+    const after = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(after.filter(run => run.contextSnapshot?.wakeReason === "issue_blockers_resolved")).toHaveLength(1);
+    expect(after.find(run => run.id === f.source.id)?.status).toBe("succeeded");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+      .toMatchObject({ status: "done", executionRunId: null, checkoutRunId: null });
+    await quiet();
+  });
+  it.each(["paused", "cleanup", "cancelled"] as const)("keeps the %s gate when recovering a dependency wake", async gate => {
+    const f = await strandedDependency();
+    if (gate === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    if (gate === "cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issue.id));
+    if (gate === "cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId,
+      heartbeatRunId: f.source.id, issueId: f.issue.id, provider: "daytona", providerLeaseId: "dependency-cleanup",
+      status: "active", leasePolicy: "reuse_by_environment" });
+    await heartbeat.resumeQueuedRuns();
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.receipt.id));
+    expect(saved).toMatchObject({ status: gate === "cancelled" ? "cancelled" : "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  });
+  it("checks unresolved blockers before a recovered dependency wake can execute", async () => {
+    const f = await strandedDependency();
+    await db.update(issues).set({ status: "blocked", completedAt: null }).where(eq(issues.id, f.blocker.id));
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.receipt.id));
+    expect(receipt).toMatchObject({ status: "skipped", runId: expect.any(String) });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_dependencies_blocked", stdoutExcerpt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].status).toBe("blocked");
+  });
   it.each([false, true])("reconsiders every saved receipt during repeated company eligibility changes (expired wait: %s)", async expiredWait => {
     const f = await fixture();
     const ids = Array.from({ length: 178 }, (_, index) => `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`);
@@ -257,8 +348,10 @@ describe("deferred receipt durable dispatch", () => {
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`)).toHaveLength(1);
     await quiet();
   });
-  async function blockedRetry(gate: "budget" | "project budget" | "paused agent") {
+  async function blockedRetry(gate: "budget" | "project budget" | "paused agent", conversation = false) {
     const f = await fixture(), lifecycle = createAgentLifecycle(db), budgets = budgetService(db);
+    if (conversation) await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
+      conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
     // Host lifecycle completion is controlled; all state, admission and the
     // eventual process adapter execution use their production implementations.
     const lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
@@ -275,6 +368,7 @@ describe("deferred receipt durable dispatch", () => {
       await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agent.id, projectId,
         provider: "test", model: "receipt-proof", costCents: 200, occurredAt: new Date() });
       await budgets.upsertPolicy(f.companyId, policy, f.actorId);
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     } else await lifecycle.pauseAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
@@ -313,8 +407,10 @@ describe("deferred receipt durable dispatch", () => {
     const { f, lifecycle, budgets, policy, lifecycleWorker, request, read } = await blockedRetry(gate);
     // Keep the clock advancing with wall time through gate release and actual
     // child-process exit. Accelerate only after that execution has settled.
-    if (gate !== "paused agent") await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
-    else await lifecycle.resumeAgent(f.agent.id);
+    if (gate !== "paused agent") {
+      await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
+    } else await lifecycle.resumeAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     let runId: string | null = null;
     await waitForReal(async () => {
@@ -644,54 +740,26 @@ describe("deferred receipt durable dispatch", () => {
     expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id }));
     await quiet();
   });
-  it("parks an accepted conversation Retry while chat is disabled and resumes it on enablement", async () => {
-    const settings = instanceSettingsService(db), original = await settings.getExperimental();
-    await settings.updateExperimental({ enableAgentChat: true });
-    try {
-      const f = await fixture();
-      await db.update(issues).set({ status: "in_review", conversationAgentId: f.agent.id,
-        conversationUserId: f.actorId, conversationState: "waiting" }).where(eq(issues.id, f.issue.id));
-      const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
-        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() });
-      expect(request.accepted).toBe(true);
-      await settings.updateExperimental({ enableAgentChat: false });
-      await expect(requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id,
-        actorId: f.actorId, observedRunId: f.source.id, idempotencyKey: randomUUID() }))
-        .rejects.toMatchObject({ status: 404, message: "Agent Chat is disabled" });
-      const priorCursor = new Date(Date.now() - 31_000);
-      await db.update(agentWakeupRequests).set({ updatedAt: priorCursor }).where(eq(agentWakeupRequests.id, request.requestId!));
-      await heartbeat.resumeExecutionWaitComments({ companyId: f.companyId });
-      const [parked] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
-      expect(parked.updatedAt.getTime()).toBeGreaterThan(priorCursor.getTime());
-      expect(parked).toMatchObject({ status: "deferred_issue_execution", runId: null });
-      await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
-      await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
-      await Promise.allSettled([...passes]);
-      expect(errors).toEqual([]);
-      const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!)))[0];
-      expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
-      await waitForReal(async () => {
-        await Promise.allSettled([...passes]);
-        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
-      }, { timeout: 40_000 });
-      const idleStatements = statements.length;
-      await new Promise(resolve => setTimeout(resolve, 31_000));
-      expect(statements).toHaveLength(idleStatements);
-      await settings.updateExperimental({ enableAgentChat: true });
-      let runId: string | null = null;
-      await waitForReal(async () => {
-        const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
-      }, { timeout: 5_000 });
-      await waitForReal(async () => {
-        await heartbeat.drainActiveRunExecutions();
-        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
-      }, { timeout: 15_000 });
-      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
+  it("keeps a conversation Retry behind agent pause while ignoring retired Chat off values", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
+    const { f, lifecycle, lifecycleWorker, request, read } = await blockedRetry("paused agent", true);
+    expect((await instanceSettingsService(db).getExperimental()).enableAgentChat).toBe(true);
+    expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    await lifecycle.resumeAgent(f.agent.id);
+    await lifecycleWorker.process(f.agent.id);
+    let runId: string | null = null;
+    await waitForReal(async () => {
+      const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
+    }, { timeout: 40_000 });
+    await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
-    } finally { await settings.updateExperimental({ enableAgentChat: original.enableAgentChat }); }
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, stderr: run.stderrExcerpt })).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+    }, { timeout: 15_000 });
+    expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
+    await quiet();
   });
-  it("resumes saved conversation input only after chat is re-enabled and its transaction commits", async () => {
+  it("resumes saved conversation input only after its agent resume commits despite retired Chat off values", async () => {
     const settings = instanceSettingsService(db), original = await settings.getExperimental();
     await settings.updateExperimental({ enableAgentChat: true });
     try {
@@ -708,25 +776,31 @@ describe("deferred receipt durable dispatch", () => {
         resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
           queuedCommentInterruptQueueId: wake.id } }).where(eq(heartbeatRuns.id, f.source.id));
       await settings.updateExperimental({ enableAgentChat: false });
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
       await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
       await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
       await waitForReal(async () => {
         await Promise.allSettled([...passes]);
         expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
-      }, { timeout: 5_000 });
+      }, { timeout: 40_000 });
       const idleStatements = statements.length;
       await new Promise(resolve => setTimeout(resolve, 31_000));
       expect(statements).toHaveLength(idleStatements);
       const read = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0];
       expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
       await expect(db.transaction(async tx => {
-        await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: true });
-        throw new Error("rolled back chat enablement");
-      })).rejects.toThrow("rolled back chat enablement");
+        await notifyDeferredExecutionEligibility(tx, { companyId: f.companyId });
+        await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
+        throw new Error("rolled back agent resume");
+      })).rejects.toThrow("rolled back agent resume");
       await Promise.allSettled([...passes]);
       expect(await read()).toMatchObject({ status: "deferred_issue_execution", runId: null });
-      expect((await settings.getExperimental()).enableAgentChat).toBe(false);
-      await settings.updateExperimental({ enableAgentChat: true });
+      expect((await settings.getExperimental()).enableAgentChat).toBe(true);
+      expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("paused");
+      await db.transaction(async tx => {
+        await notifyDeferredExecutionEligibility(tx, { companyId: f.companyId });
+        await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
+      });
       let runId: string | null = null;
       await waitForReal(async () => {
         const saved = await read(); expect(saved.runId).toBeTruthy(); runId = saved.runId;
@@ -734,7 +808,7 @@ describe("deferred receipt durable dispatch", () => {
       await waitForReal(async () => {
         await heartbeat.drainActiveRunExecutions();
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-        expect(run.status).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
+        expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, stderr: run.stderrExcerpt })).toBe("succeeded"); expect(run.stdoutExcerpt).toContain("receipt-proof");
       }, { timeout: 15_000 });
       const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         sql`${heartbeatRuns.id} <> ${f.source.id}`));
@@ -1010,5 +1084,62 @@ describe("deferred receipt durable dispatch", () => {
       })).rejects.toThrow("nested rollback");
     });
     await quiet(); expect(dispatchNative).not.toHaveBeenCalled();
+  });
+  it("delivers messages saved behind a finishing native run once, when its environment cleanup settles", async () => {
+    // Remote native finalization commits Done and projects the run terminal
+    // without the in-process release. The provider environment then settles
+    // (harness backup, warm retention). Messages the user sent after the final
+    // turn took its input wait on that cleanup and must then run exactly once.
+    const f = await fixture();
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, f.issue.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, resultJson: {}, runtimeMode: "native",
+      nativeIssueId: f.issue.id, finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.source.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: f.source.id, phase: "committed" });
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.source.id,
+      issueId: f.issue.id, provider: "daytona", providerLeaseId: "sandbox-finalizing", status: "active",
+      leasePolicy: "reuse_by_environment" }).returning();
+    const comments = [];
+    for (const body of ["Also mention saved searches.", "Also mention it works on mobile."]) {
+      comments.push((await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issue.id, authorType: "user",
+        authorUserId: f.actorId, body }).returning())[0]);
+    }
+    const commentIds = comments.map(comment => comment.id);
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", triggerDetail: "system", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: f.actorId,
+      payload: { issueId: f.issue.id, commentId: commentIds[1], mutation: "comment", _paperclipWakeContext: {
+        issueId: f.issue.id, taskId: f.issue.id, commentId: commentIds[1], wakeCommentId: commentIds[1],
+        wakeCommentIds: commentIds, wakeReason: "issue_commented", source: "issue.comment" } } }).returning();
+    const readWake = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0];
+    const issueRuns = () => db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issue.id}`);
+
+    // The receipt is checked while the source environment is still active.
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]);
+      expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 10_000 });
+    expect(await readWake()).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await issueRuns()).toHaveLength(1);
+
+    await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]);
+      expect((await readWake()).runId).toBeTruthy();
+    }, { timeout: 10_000 });
+    // Exactly one turn carries the saved messages, in order, under the
+    // original user's authority, and the completed task is reopened for it.
+    const commentRuns = async () => (await issueRuns()).filter(run => run.contextSnapshot?.wakeReason === "issue_commented");
+    const [successor, ...duplicates] = await commentRuns();
+    expect(duplicates).toEqual([]);
+    expect(successor.contextSnapshot?.wakeCommentIds).toEqual(commentIds);
+    expect((await readWake()).runId).toBe(successor.id);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issue.id),
+      sql`${activityLog.details}->>'reopened' = 'true'`))).toHaveLength(1);
+    await finish(f.issue.id);
+    // A later settlement signal cannot deliver the same messages again.
+    await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
+    await quiet();
+    expect(await commentRuns()).toHaveLength(1);
   });
 });

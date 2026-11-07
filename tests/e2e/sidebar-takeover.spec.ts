@@ -54,6 +54,9 @@ test.describe("Contextual sidebar companion", () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
+    } }));
     await page.addInitScript((key) => {
       window.localStorage.removeItem(key);
       window.sessionStorage.clear();

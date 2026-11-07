@@ -81,7 +81,11 @@ export function wakeMustNotJoinActiveRun(
   wakeContext: Record<string, unknown>,
   interactionReceipt: boolean,
 ): boolean {
+  // A context compaction run does no task work, so ordinary wakes and
+  // compactions never merge, in either arrival order.
   return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+    Boolean(readNonEmptyString(parseObject(activeRunContext).contextCompactionRequestId)) ||
+    Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
 }
 
