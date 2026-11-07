@@ -155,3 +155,35 @@ it("reuses the same authenticated uploaded snapshot after losing the original lo
   expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
   expect(await fs.readFile(path.join(targetDir, "README.md"), "utf8")).toBe("preserve exact original bytes\n");
 });
+
+it.each(["private", "generated", "hashed"].flatMap(primary => ["directory", "alias", "unreadable"].flatMap(state => ["retry", "publication"].map(boundary => ({ primary, state, boundary })))))
+("refuses returned primary $primary $state at $boundary without losing either copy", async ({ primary, state, boundary }) => {
+  const f = await fixture(), put = storage.putFile.bind(storage);
+  const target = primary === "private" ? f.base : managedSourcePaths(f.workspace)[primary === "generated" ? 0 : 1]!;
+  const retained = state === "alias" ? path.join(root, "returned-primary") : target;
+  const restorePrimary = async () => {
+    await fs.mkdir(path.dirname(retained), { recursive: true }); await git(root, "clone", "--no-hardlinks", f.original, retained);
+    await fs.writeFile(path.join(retained, "retained-edit.txt"), "returned primary work must survive\n");
+    if (state === "alias") { await fs.mkdir(path.dirname(target), { recursive: true }); await fs.symlink(retained, target); }
+    if (state === "unreadable") { const stat = fs.lstat.bind(fs); vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+      if (String(args[0]) === target) throw Object.assign(new Error("primary unreadable"), { code: "EACCES" }); return stat(...args);
+    }); }
+  };
+  let uploaded = false, uploadedKey: string | null = null, uploadedSha256: string | null = null;
+  storage.putFile = async input => { const result = await put(input); uploadedKey = result.objectKey; uploadedSha256 = result.sha256; if (!uploaded) { uploaded = true;
+    if (boundary === "retry") throw new Error("upload_ack_lost"); await restorePrimary();
+  } return result; };
+  if (boundary === "retry") { await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload_ack_lost"); await restorePrimary(); }
+  const snapshotsBefore = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, f.workspaceId));
+  await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow();
+  const row = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0]!;
+  expect(readRemoteWorkspaceAuthority(row.metadata)).toBeNull();
+  expect(await fs.readFile(path.join(retained, "retained-edit.txt"), "utf8")).toBe("returned primary work must survive\n");
+  const snapshots = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, f.workspaceId));
+  expect(snapshots).toHaveLength(1); if (boundary === "retry") expect(snapshots[0]!.id).toBe(snapshotsBefore[0]!.id);
+  expect(uploadedKey).toBeTruthy(); if (boundary === "retry") expect(snapshots[0]!.objectKey).toBeNull(); else expect(snapshots[0]!.objectKey).toBe(uploadedKey);
+  const cipher = await storage.getObject(f.companyId, uploadedKey!), hash = createHash("sha256"); let bytes = 0;
+  for await (const chunk of cipher.stream) { bytes += Buffer.byteLength(chunk); hash.update(chunk); }
+  expect(bytes).toBeGreaterThan(0); expect(hash.digest("hex")).toBe(uploadedSha256);
+  expect(await git(f.original, "rev-parse", "HEAD")).toBe(f.commit);
+});

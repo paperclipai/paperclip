@@ -51,7 +51,11 @@ async function localGit(cwd: string, args: string[]) {
       GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" },
   })).stdout.trim();
 }
-async function verifiedOriginalLocalSource(workspace: Workspace, sourcePath: string) {
+async function verifiedOriginalLocalSource(workspace: Workspace, sourcePath: string, configuredCwd?: string | null) {
+  for (const primary of new Set([recordedIsolatedRemoteSource(workspace), ...managedSourcePaths(workspace), configuredCwd].filter((value): value is string => typeof value === "string"))) {
+    const present = await fs.lstat(primary).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (present || await physicalPath(primary) !== primary) throw unavailable();
+  }
   const root = resolvePaperclipInstanceRoot(), relative = path.relative(root, sourcePath), full = workspace.metadata?.baseRefSha;
   if (!originalLocalSource(workspace, sourcePath) || !relative || relative === ".." || relative.startsWith(`..${path.sep}`)
     || path.isAbsolute(relative) || path.resolve(sourcePath) !== sourcePath || await fs.realpath(root) !== root
@@ -94,8 +98,8 @@ async function verifiedOriginalLocalSource(workspace: Workspace, sourcePath: str
   if (!refs.length || refs.length > 64 || refs.some(ref => !ref.startsWith(`${full} refs/heads/`) && !ref.startsWith(`${full} refs/tags/`))) throw unavailable();
   return sourcePath;
 }
-function verifiedReceiptObjectSource(workspace: Workspace, sourcePath: string) {
-  if (originalLocalSource(workspace, sourcePath)) return verifiedOriginalLocalSource(workspace, sourcePath);
+function verifiedReceiptObjectSource(workspace: Workspace, sourcePath: string, configuredCwd?: string | null) {
+  if (originalLocalSource(workspace, sourcePath)) return verifiedOriginalLocalSource(workspace, sourcePath, configuredCwd);
   return managedSourcePaths(workspace).includes(sourcePath)
     ? verifiedManagedGitObjectSource(workspace, sourcePath) : verifiedGitCacheSource(workspace, sourcePath);
 }
@@ -232,7 +236,7 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
   }
   if (originalLocalSource(workspace, sourcePath) && (!projectWorkspace || projectWorkspace.repoUrl !== workspace.repoUrl
     || !originalDeletionReceipt(workspace, operation))) throw unavailable();
-  await verifiedReceiptObjectSource(workspace, sourcePath);
+  await verifiedReceiptObjectSource(workspace, sourcePath, projectWorkspace?.cwd);
   const commit = await (originalLocalSource(workspace, sourcePath) ? localGit : git)(sourcePath, ["rev-parse", "--verify", `${abbreviation}^{commit}`]);
   if (!/^[a-f0-9]{40}$/.test(commit) || originalLocalSource(workspace, sourcePath) && commit !== workspace.metadata?.baseRefSha) throw unavailable();
   return { commit, sourcePath, cleanupOperationId: operation.id, recipe: null };

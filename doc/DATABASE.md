@@ -139,7 +139,9 @@ the deleted tip. It accepts self-contained SHA-1 storage with a bounded standard
 configuration and at most 10,000 metadata entries. Aliases, special files,
 alternates, replacement/graft/shallow state and execution hooks fail closed.
 Every retained branch or lightweight tag must still name that full base commit.
-Git reads use a restricted environment and local-file transport only.
+Saved retries and final publication recheck that all recorded private and generated
+primary sources remain absent. Returned or unreadable primary files block the
+original-source path. Git reads use a restricted environment and local-file transport only.
 
 Materialization uses private migration scratch. Existing encrypted snapshot
 readback, journal identity, source reinspection and publication fences still
