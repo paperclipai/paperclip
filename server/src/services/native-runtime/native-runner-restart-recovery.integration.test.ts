@@ -2454,7 +2454,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         terminalState: "failed", result: null,
         error: { code: "provider_turn_lost_on_restore", recoverable: true },
       }) }],
-      ...(lostContinuation ? { dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "interrupted-turn" } : {}),
+      // A restart during the first continuation: its turn is still the
+      // checkpointed active turn and the consumed marker names it.
+      ...(lostContinuation ? { activeTurnId: "continuation-turn", terminal: null,
+        dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "continuation-turn" } : {}),
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await fixture.db.update(nativeRunFinalizations).set({ attempt }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     const dispositions = await claimNativeRestartRecoveries({

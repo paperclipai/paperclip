@@ -82,14 +82,44 @@ describe("Codex app-server Codex driver", () => {
     // The lost continuation re-arms the marker exactly like the first loss.
     expect(snapshot.dispositionOnlyRecoveryConsumed).toBe(false);
     expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null })).toBe("turn-2");
-    // A checkpoint whose consumed marker names that continuation is also
-    // continuable (it can be persisted before the terminal is mapped).
-    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true,
-      dispositionOnlyRecoveryTurnId: "turn-2" })).toBe("turn-2");
-    // A lost turn that is not the consumed continuation keeps the one-shot rule.
-    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true,
-      dispositionOnlyRecoveryTurnId: "turn-other" })).toBeNull();
+    // A consumed marker still means the allowance is used.
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true })).toBeNull();
     await session.close({ reason: "fixture complete" });
+  });
+
+  it("re-arms the continuation when recovery finds the checkpointed continuation turn lost", async () => {
+    // Controller lost during the first continuation: the checkpoint names the
+    // continuation as the active turn and as the consumed marker's turn.
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-lost-continuation", normalizedSessionId: "session-lost-continuation", workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Finish the request." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(original.events());
+    first.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await original.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    const checkpoint = await original.snapshot();
+    expect(checkpoint).toMatchObject({ activeTurnId: "turn-2", dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-2" });
+    await original.close({ reason: "controller lost during the continuation" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [
+      { id: "turn-1", status: "failed", error: lost, items: [] },
+      { id: "turn-2", status: "failed", error: lost, items: [] },
+    ] } };
+    const recovery = await driver.recoverSession!(checkpoint);
+    expect(recovery).toMatchObject({ recovered: true });
+    const recovered = recovery.session!;
+    const restored = await recovered.snapshot();
+    expect(restored.dispositionOnlyRecoveryConsumed).toBe(false);
+    expect(nativeRestartInterruptedTurnId({ ...restored, semanticResult: null })).toBe("turn-2");
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    await expect(recovered.startTurn({ message: { role: "user", text: "Continue." }, continuation: true }))
+      .resolves.toMatchObject({ turnId: "turn-3" });
+    await recovered.close({ reason: "fixture complete" });
   });
 
   it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {

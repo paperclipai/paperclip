@@ -99,18 +99,17 @@ const RESTART_CONTINUATION_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex_a
 
 /** The terminal fingerprint survives a crash between interruption and continuation. */
 export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
-  "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" |
-  "dispositionOnlyRecoveryTurnId" | "pendingRuntimeRequests" | "goal"
+  "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
 >): string | null {
   // Runnerd records this cause for Codex app-server and ACPX sessions after
   // proving the old provider lifetime ended and restoring the conversation.
+  // A lost continuation re-arms the driver's marker before it is checkpointed,
+  // so a consumed marker here still means the allowance is used.
   if (!RESTART_CONTINUATION_DRIVER_KINDS.has(snapshot.driverKind ?? "") || snapshot.activeTurnId != null ||
-      snapshot.semanticResult != null || snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
+      snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
+      snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
   const terminal = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
   if (!terminal || typeof terminal.fingerprint !== "string" || !terminal.turnId) return null;
-  // A consumed one-shot marker still allows the next admitted restart to
-  // continue when the lost turn is that continuation itself.
-  if (snapshot.dispositionOnlyRecoveryConsumed && snapshot.dispositionOnlyRecoveryTurnId !== terminal.turnId) return null;
   try {
     const fingerprint = JSON.parse(terminal.fingerprint);
     return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
