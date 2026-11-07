@@ -102,7 +102,13 @@ export class RunnerApi {
     const events = new RegExp(`^/api/heartbeat-runs/${uuid}/events$`, "i").test(url.pathname)
       && [...url.searchParams.keys()].every(key => ["afterSeq", "limit"].includes(key))
       && /^\d+$/.test(url.searchParams.get("afterSeq") ?? "") && /^[1-9]\d*$/.test(url.searchParams.get("limit") ?? "");
-    if (url.origin !== this.baseURL || url.username || url.password || url.hash || !(companyRuns || run || events)) throw new Error("Run observation requires an allowlisted same-origin GET endpoint");
+    // Catalog observers re-read the full company inventory and activity on every poll; tracing those bodies
+    // made large-fixture failure evidence exceed the private archive allowance, so they share this untraced path.
+    const exactQuery = (expected: Record<string, string>) => [...url.searchParams.keys()].length === Object.keys(expected).length
+      && Object.entries(expected).every(([key, value]) => url.searchParams.getAll(key).length === 1 && url.searchParams.get(key) === value);
+    const companyIssues = new RegExp(`^/api/companies/${uuid}/issues$`, "i").test(url.pathname) && exactQuery({ includeAgentCreatedTasks: "true", limit: "1000" });
+    const companyActivity = new RegExp(`^/api/companies/${uuid}/activity$`, "i").test(url.pathname) && exactQuery({ limit: "1000" });
+    if (url.origin !== this.baseURL || url.username || url.password || url.hash || !(companyRuns || run || events || companyIssues || companyActivity)) throw new Error("Run observation requires an allowlisted same-origin GET endpoint");
     return this.authenticatedJson<T>("GET", path, undefined, options);
   }
 
