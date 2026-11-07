@@ -632,19 +632,21 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       throw error;
     }
   }
-  async function recheckLegacyPinnedPoolAccount(input: { companyId: string; agentId: string; userId: string | null; taskKey: string; selection: AiConnectionRouterSelection }) {
+  async function recheckPinnedPoolAccount(input: { companyId: string; agentId: string; userId: string | null; taskKey: string; selection: AiConnectionRouterSelection }) {
     const [row] = await db.select().from(aiConnectionPools).where(and(eq(aiConnectionPools.companyId, input.companyId), eq(aiConnectionPools.id, input.selection.poolId)));
     if (!row || row.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY) return;
     const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, input.companyId),
       eq(aiConnectionTaskPins.poolId, input.selection.poolId), eq(aiConnectionTaskPins.agentId, input.agentId), eq(aiConnectionTaskPins.taskKey, input.taskKey)));
-    if (!pin || !samePoolSelection(pin.selection, input.selection, "claude_local")) throw conflict("The task pool selection changed before provider start");
+    const adapterType = input.selection.adapterType ?? "claude_local";
+    if (!pin || !samePoolSelection(pin.selection, input.selection, adapterType)) throw conflict("The task pool selection changed before provider start");
     const selected = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
-      adapterType: poolExecutionAdapterType(pin.selection.binding, "claude_local"), binding: pin.selection.binding, model: pin.selection.runtimeConfig.model,
+      adapterType, binding: pin.selection.binding, model: pin.selection.runtimeConfig.model,
       runnerProvider: pin.selection.runtimeConfig.provider, acpxAgent: pin.selection.runtimeConfig.acpxAgent });
     const identity = await quotaIdentity(selected, input.companyId);
     if (!identity) throw unprocessable("The task account identity changed before provider start");
-    const retryAt = await accountCooldown(input.companyId, pin.member.binding.connectionId, identity);
+    const retryAt = await accountCooldown(input.companyId, pin.member.binding.connectionId, identity,
+      pin.selection.runnerScope ? { config: pin.selection.runtimeConfig, scope: pin.selection.runnerScope } : undefined);
     if (retryAt) throw new AiConnectionPoolExhausted(retryAt.toISOString(), row.id);
   }
-  return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, currentMemberCooldown, transitionQuotaPin, recheckLegacyPinnedPoolAccount };
+  return { catalog, list, selectable, inspect, save, remove, resolve, recordQuotaCooldown, accountCooldown, currentMemberCooldown, transitionQuotaPin, recheckPinnedPoolAccount };
 }

@@ -299,7 +299,7 @@ import {
   assertManagedAiProjectAuth,
 } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
-import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings, LOCAL_POOL_ADAPTERS, poolExecutionAdapterType } from "./ai-connection-router.js";
+import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings, LOCAL_POOL_ADAPTERS } from "./ai-connection-router.js";
 import { effectiveRunAgent } from "./heartbeat/effective-run-adapter.js";
 import {
   getExecutionBlocker,
@@ -776,8 +776,8 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 export interface HeartbeatServiceOptions {
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
-  /** Test seam for a concurrent quota observation before legacy provider preparation. */
-  afterLegacyPoolSelection?: (runId: string, selection: AiConnectionRouterSelection) => Promise<void>;
+  /** Test seam for a concurrent cooldown observation before fresh provider preparation. */
+  afterPoolSelection?: (runId: string, selection: AiConnectionRouterSelection) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
   beforeChatControlRecoveryCheck?: (input: {
     runId: string;
@@ -2585,14 +2585,15 @@ export function heartbeatService(
             requireExisting: Boolean(taskSession?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
             persisted: routerHasPersistedInput ? context.aiRouterSelection as AiConnectionRouterSelection | undefined : undefined,
           });
-          if (poolExecutionAdapterType(selection.binding, loadedAgent.adapterType) !== agent.adapterType) {
+          if ((selection.adapterType ?? loadedAgent.adapterType) !== agent.adapterType) {
             throw new Error("The pool adapter changed after this run was claimed; start a new turn.");
           }
           context.aiRouterSelection = selection;
           taskKey ??= routerTaskKey;
-          if (LOCAL_POOL_ADAPTERS.includes(loadedAgent.adapterType)) {
-            await options.afterLegacyPoolSelection?.(run.id, selection);
-            await router.recheckLegacyPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
+          if (LOCAL_POOL_ADAPTERS.includes(loadedAgent.adapterType) ||
+              (agent.adapterType === "paperclip_runner" && Object.keys(savedRouterInput).length === 0)) {
+            await options.afterPoolSelection?.(run.id, selection);
+            await router.recheckPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
               userId: responsibleUserId, taskKey: String(context.aiRouterTaskKey), selection });
           }
           aiBinding = selection.binding;

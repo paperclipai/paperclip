@@ -283,6 +283,23 @@ const support = externalDatabaseUrl
         const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
         expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
           credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
+        if (i === 0) {
+          let release!: () => void, ready!: () => void;
+          const held = new Promise<void>(resolve => { ready = resolve; });
+          const gate = new Promise<void>(resolve => { release = resolve; });
+          const blocker = db.transaction(async tx => {
+            await tx.select().from(issues).where(eq(issues.id, source.issueId)).for("update");
+            ready(); await gate;
+          });
+          await held;
+          const timer = setTimeout(release, 2500);
+          try {
+            await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null })).rejects.toThrow("native_replacement_decision_retry_required");
+          } finally { release(); clearTimeout(timer); await blocker; }
+          const [pending] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId));
+          expect(pending.failureDetail?.replacementDenied).toBeUndefined();
+          expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId))).toHaveLength(0);
+        }
         expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null })).scheduled).toBe(1);
         const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId));
         expect(next.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: members[i + 1].id });

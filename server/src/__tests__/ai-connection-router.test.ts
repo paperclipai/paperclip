@@ -74,6 +74,54 @@ it("keeps V1 plugin pools on the configured legacy harness", async () => {
   expect(await resolve(piPool.id, randomUUID(), { adapterType: "pi_local" })).toMatchObject({ adapterType: "pi_local", memberId: piMember.id });
 });
 
+it("dispatches a V1 plugin Pi pool through Pi without remapping it to Codex", async () => {
+  const member = { ...members[0]!, id: randomUUID(), profile: { provider: "codex" as const, model: "openai/gpt-5.6-sol" } };
+  const pool = await makePool({ members: [member] });
+  const [agent] = await db.insert(agents).values({ companyId, name: "Plugin Pi dispatch", adapterType: "pi_local",
+    adapterConfig: { cwd: home }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
+  const [issue] = await db.insert(issues).values({ companyId, title: "Pi dispatch", status: "todo", assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+  const execute = vi.fn(async () => { throw new Error("Pi fixture stopped before provider start"); });
+  registerServerAdapter({ ...getServerAdapter("pi_local"), execute });
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
+  try {
+    const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" }, triggerDetail: "system" });
+    await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("failed");
+    expect(execute).toHaveBeenCalledOnce();
+    expect((await heartbeat.getRun(run!.id))?.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "pi_local", memberId: member.id });
+  } finally { unregisterServerAdapter("pi_local"); await heartbeat.drainActiveRunExecutions(); }
+}, 30_000);
+
+it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a concurrent %s cooldown before provider start", async kind => {
+  const original = await instanceSettingsService(db).getExperimental();
+  await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+  const { harnessPoolService } = await import("../services/harness-pools.js");
+  const member = members[0]!;
+  const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+    { id: randomUUID(), harness: { type: "codex" }, connection: member.binding as Exclude<typeof member.binding, { mode: "responsible_user" }>, model: "gpt-5.6-sol" },
+  ] } }, "alice");
+  const [agent] = await db.insert(agents).values({ companyId, name: "Fresh native cooldown", adapterType: "paperclip_runner",
+    adapterConfig: { cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id }, heartbeat: { enabled: false } } }).returning();
+  const [issue] = await db.insert(issues).values({ companyId, title: "Native cooldown", status: "todo", assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+  const providerStart = vi.fn(() => { throw new Error("Cooled native provider must not start"); });
+  const deadline = new Date(Date.now() + 3_600_000);
+  const selected = vi.fn(async (_runId: string, selection: import("@paperclipai/shared").AiConnectionRouterSelection) => {
+    const identity = await identityFor(member.binding.grantId);
+    const { poolRunnerCooldownIdentity } = await import("../services/ai-connection-pool-cooldown.js");
+    await service().recordQuotaCooldown(companyId, member.binding.connectionId, kind === "runner"
+      ? poolRunnerCooldownIdentity(identity, selection.runtimeConfig, selection.runnerScope!.environmentId) : identity, deadline, identity);
+  });
+  const heartbeat = heartbeatService(db, { runtimeEnv: {}, afterPoolSelection: selected, nativeSessionBackendFactory: providerStart });
+  try {
+    const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" }, triggerDetail: "system" });
+    await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
+    expect(selected).toHaveBeenCalledOnce();
+    expect(providerStart).not.toHaveBeenCalled();
+    const saved = await heartbeat.getRun(run!.id);
+    expect(saved?.errorCode).toBe("ai_connection_pool_exhausted");
+    expect(saved?.resultJson).toMatchObject({ executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } });
+  } finally { await heartbeat.drainActiveRunExecutions(); await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); await instanceSettingsService(db).updateExperimental(original); }
+}, 30_000);
+
 it("rejects an unknown model before enabling a central harness pool", async () => {
   const { harnessPoolService } = await import("../services/harness-pools.js");
   const member = members[0]!;
@@ -357,7 +405,7 @@ describe("durable, authorized connection routing", () => {
     const { adapterType: _oldAdapterType, ...preUpgradeSelection } = source;
     await db.update(aiConnectionTaskPins).set({ selection: preUpgradeSelection }).where(and(
       eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
-    await service().recheckLegacyPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey, selection: source });
+    await service().recheckPinnedPoolAccount({ companyId, agentId, userId: "alice", taskKey, selection: source });
     const earliest = new Date(Date.now() + 60_000);
     await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(members[0]!.binding.grantId), earliest);
     await service().recordQuotaCooldown(companyId, members[1]!.binding.connectionId, await identityFor(members[1]!.binding.grantId), new Date(Date.now() + 120_000));
@@ -486,7 +534,10 @@ describe("durable, authorized connection routing", () => {
     });
     registerServerAdapter({ ...getServerAdapter("claude_local"), execute: primary });
     registerServerAdapter({ ...getServerAdapter("codex_local"), execute: backup });
-    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline usage fixture"));
+    const observedReset = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      five_hour: { utilization: primary.mock.calls.length ? 100 : 10, resets_at: observedReset }, extra_usage: { is_enabled: false },
+    })));
     const heartbeat = heartbeatService(db, { runtimeEnv: {} });
     try {
       const source = await heartbeat.wakeup(agent!.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, responsibleUserId: "alice" }, triggerDetail: "system" });
@@ -546,7 +597,7 @@ describe("durable, authorized connection routing", () => {
     const changed = await resolve(pool.id, taskKey, { adapterType: "claude_local", overrides: { model: "gpt-5.6-terra", modelReasoningEffort: "high" } });
     expect(changed.memberId).toBe(original.memberId);
     expect(changed.runtimeConfig).not.toEqual(original.runtimeConfig);
-    await service().recheckLegacyPinnedPoolAccount({ companyId, agentId, taskKey, userId: "alice", selection: changed });
+    await service().recheckPinnedPoolAccount({ companyId, agentId, taskKey, userId: "alice", selection: changed });
     if (changed.binding.mode === "responsible_user") throw new Error("Expected explicit account");
     await service().recordQuotaCooldown(companyId, changed.binding.connectionId, await identityFor(changed.binding.grantId), new Date(Date.now() + 60_000));
     try {
@@ -711,7 +762,7 @@ describe("durable, authorized connection routing", () => {
     registerServerAdapter({ ...getServerAdapter("claude_local"), execute });
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline fixture"));
     const selections: string[] = [];
-    const heartbeat = heartbeatService(db, { runtimeEnv: {}, afterLegacyPoolSelection: async (_runId, selection) => {
+    const heartbeat = heartbeatService(db, { runtimeEnv: {}, afterPoolSelection: async (_runId, selection) => {
       selections.push(selection.memberId);
       if (selection.memberId === first.id) await service().recordQuotaCooldown(companyId, first.binding.connectionId,
         await identityFor(first.binding.grantId), new Date(Date.now() + 3_600_000));

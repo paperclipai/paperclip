@@ -27,6 +27,20 @@ selection. This observation is a momentary preflight; it cannot guarantee that
 capacity remains available when the provider starts. Existing task pins are not
 changed by this check.
 
+Before a fresh provider start, the host rechecks the pinned account's global and
+scoped cooldowns. A concurrent cooldown defers fresh work without changing an
+already admitted native session. Temporary database contention leaves replacement
+pending for the existing recovery scheduler; it is not a permanent refusal.
+
+Legacy Claude quota text can come from model or tool output. It cannot by itself
+write an account-wide cooldown or authorize failover. The host confirms an
+account-wide exhausted allowance with extra usage disabled through the saved
+account's authenticated usage endpoint. It rechecks the credential epoch before
+committing attribution and uses the observed reset, ignoring CLI reset text.
+Unavailable or inconclusive usage evidence keeps the failed turn held. Historical
+legacy Claude quota receipts without account-side evidence cannot authorize a
+new pin transition; saved workspace and session evidence remain available.
+
 Healthy tasks stay on their selected account, including after a backup takes over.
 When a conversation fails because of quota, authentication, or confirmed runner
 failure, Paperclip can select the next available account after the previous
@@ -188,6 +202,8 @@ Smart, Mid and Cheap are editable starting names, not fixed model tiers. Add as
 many ordered members as needed (up to 100). Each member chooses its own saved
 account grant, concrete harness, model ID and optional effort. The same account
 can appear with different models. No credentials are copied into the pool.
+Saving validates model IDs against the saved connection's routing catalog or
+the supported harness catalog. OpenRouter members use its public catalog.
 
 On an agent's Harness / Runtime settings, choose **Harness: Pool**, then the
 central pool. This explicitly uses **Paperclip Runner** and requires the existing
@@ -198,6 +214,10 @@ Pool choice and tests it before the normal hiring/approval action. Several agent
 agent's selection does not change the others. Instructions, permissions and the
 execution environment belong to the agent and remain admission constraints.
 Models and accounts belong to the pool. Pool runs require a task.
+The selected execution environment must also support native Runner execution.
+Windows native agent qualification remains deferred; a successful Windows
+Runner build does not qualify agent execution. See the
+[Runner platform notes](../../packages/paperclip-runner/README.md).
 
 The host freezes the concrete driver profile, pool name/revision and selected
 member before claim. It uses the existing Codex, Claude/Grok ACPX or OpenCode
@@ -231,6 +251,10 @@ The `/companies/:companyId/harness-pools` management API shares the existing
 connection permissions, company boundaries, audit log, pool storage and cursor.
 Its inspection returns visible member status/account deadlines and referencing
 agents. Runner eligibility also depends on each task's environment and policy.
+The separate `/harness-pools/choices` endpoint returns only authorized pool
+IDs, names, revisions and enabled state for agent selection. It does not expose
+managed member/account details. Archive requires a successful affected-agent
+inspection in the editor.
 Legacy pool listings exclude V2 records. Existing OpenAI-compatible gateway
 connections remain qualified connection types; installing/managing a proxy is
 outside this feature, and hidden upstream accounts are not attributed by Paperclip.

@@ -66902,6 +66902,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             expect(firstAttempt).toMatchObject({ status: "failed", errorCode: "chat_failed_run_retry_not_authorized",
               resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
             expect(verified).toEqual([firstAttempt.id]);
+            if (mode === "legacy_execution") await db.update(heartbeatRuns).set({ runnerProfileJson: {
+              adapterDispatch: { adapterType: "paperclip_runner", configuredAdapterType: "paperclip_runner" },
+            } }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_log") await db.update(heartbeatRuns).set({ logBytes: 1 }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_profile") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" }, unexpectedExecution: true } }).where(eq(heartbeatRuns.id, firstAttempt.id));
             if (mode === "legacy_execution_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60000) }).where(eq(heartbeatRuns.id, firstAttempt.id));

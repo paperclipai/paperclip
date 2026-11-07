@@ -1018,15 +1018,9 @@ export async function reconcileSafeNativeReplacements(
       }
     } catch (error) {
       if (options.failpoint) throw error;
-      if (Boolean(poolFailure)) {
-        try {
-          await holdQuotaForOperator("quota_failover_reconciliation_failed", "Inspect the failed quota recovery and reconcile the original run before continuing.");
-        } catch (holdError) {
-          pendingFailures++;
-          logger.warn({ err: holdError, runId: run.id }, "Could not persist the quota recovery operator action");
-        }
-      }
-      else pendingFailures++;
+      // An interrupted decision is not evidence that replacement is unsafe.
+      // Only completed negative proofs above may permanently deny recovery.
+      pendingFailures++;
       logger.warn(
         { runId: run.id },
         "Native replacement remains pending; another sweep will retry its durable decision",

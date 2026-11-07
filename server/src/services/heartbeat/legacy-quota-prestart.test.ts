@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agentTaskSessions, agentWakeupRequests, agents, aiConnectionPools, aiConnectionQuotaCooldowns, aiConnectionTaskPins, authUsers, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRunEvents, heartbeatRuns, issues, toolInvocations, type Db } from "@paperclipai/db";
 import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
@@ -22,6 +22,12 @@ describe("legacy quota prestart retry", () => {
   beforeAll(async () => { home = await mkdtemp(path.join(os.tmpdir(), "quota-prestart-home-")); vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "legacy-quota-test"); database = await startEmbeddedPostgresTestDatabase("legacy-quota-prestart-"); db = createDb(database.connectionString, { maxConnections: 8 }); }, 90_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
+  let observedReset: string;
+  beforeEach(() => {
+    observedReset = new Date(Date.now() + 3_600_000).toISOString();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 100, resets_at: observedReset }, extra_usage: { is_enabled: false } })));
+  });
+  afterEach(() => vi.restoreAllMocks());
   async function fixture(postStart = false, taskless = false) {
     const companyId = randomUUID(), userId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Quota prestart", issuePrefix: `Q${companyId.slice(0, 8)}` });
@@ -40,10 +46,7 @@ describe("legacy quota prestart retry", () => {
     const runId = randomUUID(), taskKey = taskless ? runId : issue.id;
     const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: agent.id, scopeKind: taskless ? "company" : "issue", issueId: taskless ? null : issue.id, status: "running", startedAt,
       contextSnapshot: { ...(!taskless ? { issueId: issue.id } : {}), aiRouterTaskKey: taskKey }, responsibleUserId: userId }).returning();
-    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline fixture"));
-    let selected;
-    try { selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType: "claude_local", taskKey }); }
-    finally { fetch.mockRestore(); }
+    const selected = await router.resolve({ companyId, poolId: pool.id, agentId: agent.id, userId, adapterType: "claude_local", taskKey, skipUsageProbe: true });
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
     const ref = grant!.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
     const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
@@ -80,6 +83,33 @@ describe("legacy quota prestart retry", () => {
     return { companyId, userId, agent: updatedAgent!, issue, source: source!, pool, members, selected, schedule, router,
       credentialIdentity: `${first.grantId}:fixture:${ref.secretId}:${secret!.aiSessionEpoch}` };
   }
+  it.each(["healthy", "offline", "reconnected", "confirmed"] as const)("requires account-side evidence for model-visible quota text (%s)", async mode => {
+    const f = await fixture(true);
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    await db.update(heartbeatRuns).set({ stdoutExcerpt: "You've hit your limit. Resets 2099-01-01", error: "Provider quota exhausted" }).where(eq(heartbeatRuns.id, f.source.id));
+    const fetch = vi.mocked(globalThis.fetch);
+    if (mode === "healthy") fetch.mockImplementation(async () => new Response(JSON.stringify({ five_hour: { utilization: 10, resets_at: observedReset }, extra_usage: { is_enabled: false } })));
+    if (mode === "offline") fetch.mockRejectedValue(new Error("Provider usage endpoint unavailable"));
+    if (mode === "reconnected") fetch.mockImplementation(async () => {
+      const secretId = f.credentialIdentity.split(":").at(-2)!;
+      await db.update(companySecrets).set({ aiSessionEpoch: Number(f.credentialIdentity.split(":").at(-1)) + 1 }).where(eq(companySecrets.id, secretId));
+      return new Response(JSON.stringify({ five_hour: { utilization: 100, resets_at: observedReset }, extra_usage: { is_enabled: false } }));
+    });
+    expect(await recordVerifiedRouterQuotaCooldown(db, { companyId: f.companyId, agentId: f.agent.id, runId: f.source.id,
+      credentialIdentity: f.credentialIdentity, retryNotBefore: "2099-01-01T00:00:00.000Z" })).toBe(mode === "confirmed");
+    const receipts = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    const cooldowns = await db.select().from(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, f.companyId));
+    if (mode === "confirmed") {
+      expect(cooldowns).toHaveLength(1);
+      expect(cooldowns[0].retryAt.toISOString()).toBe(observedReset);
+      expect(receipts).toHaveLength(1);
+      expect((await f.schedule()).outcome).toBe("scheduled");
+    } else {
+      expect(cooldowns).toHaveLength(0); expect(receipts).toHaveLength(0);
+      expect((await f.schedule()).outcome).toBe("not_scheduled");
+    }
+  }, 30_000);
   it.each(["pending_invocation", "missing_result", "pending_provider_tool", "pending_semantic_tool", "incomplete_api_receipt"])("holds a local backup for %s until its outcome is receipted", async condition => {
     const f = await fixture(true);
     let invocationId: string | undefined;
@@ -224,11 +254,16 @@ describe("legacy quota prestart retry", () => {
     expect(successor?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: f.members[1]!.id });
     expect(successor?.contextSnapshot?.aiPoolFailover).toMatchObject({ reason: failureKind });
   }, 30_000);
-  it.each(["stop", "unsettled", "missing_receipt", "reassigned", "paused"] as const)("does not switch the failed pin when %s prevents continuation", async condition => {
+  it.each(["stop", "unsettled", "missing_receipt", "unverified_quota_receipt", "reassigned", "paused"] as const)("does not switch the failed pin when %s prevents continuation", async condition => {
     const f = await fixture(true);
     if (condition === "stop") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, legacyQuotaStopRequested: { requestedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.source.id));
     if (condition === "unsettled") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, executionSettlement: undefined } }).where(eq(heartbeatRuns.id, f.source.id));
     if (condition === "missing_receipt") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+    if (condition === "unverified_quota_receipt") {
+      const [receipt] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.source.id));
+      const { providerEvidence: _ignored, ...oldPayload } = receipt.payload!;
+      await db.update(heartbeatRunEvents).set({ payload: oldPayload }).where(eq(heartbeatRunEvents.id, receipt.id));
+    }
     if (condition === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
     if (condition === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
     expect((await f.schedule()).outcome).toBe("not_scheduled");

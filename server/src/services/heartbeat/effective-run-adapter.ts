@@ -29,7 +29,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   }
   const binding = parseObject(parseObject(agent.runtimeConfig).aiConnection);
   if (run.startedAt || binding.mode !== "router" || typeof binding.connectionId !== "string" || !LOCAL_POOL_ADAPTERS.includes(agent.adapterType))
-    return { adapterDispatch, context: {} };
+    return { adapterDispatch: { adapterType: agent.adapterType }, context: {} };
   const context: Record<string, unknown> = await reselectUnstartedPoolSuccessor(db, run, userId) ?? parseObject(run.contextSnapshot);
   const taskKey = typeof context.aiRouterTaskKey === "string" && context.aiRouterTaskKey.trim()
     ? context.aiRouterTaskKey : deriveTaskKeyWithHeartbeatFallback(context, null) ?? run.id;

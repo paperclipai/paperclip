@@ -105,6 +105,8 @@ export async function switchFailedPoolPin(db: Db, input: {
     const proof = parseObject(receipt?.payload);
     if (proof.schema !== `paperclip.ai-connection-${kind}-attribution.v1` || proof.taskKey !== taskKey ||
         !isDeepStrictEqual(proof.selection, selection)) return null;
+    if (kind === "quota" && run.runtimeMode !== "native" && (selection.adapterType ?? agent.adapterType) === "claude_local" &&
+        proof.providerEvidence !== "anthropic_oauth_usage_v1") return null;
   }
   return aiConnectionRouterService(db).transitionQuotaPin({ companyId: run.companyId, poolId: selection.poolId,
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
@@ -155,6 +157,8 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId))).for("share");
     const configured = parseObject(effectiveAiConnectionInput(agent?.runtimeConfig));
     if (!agent || ["paused", "terminated"].includes(agent.status) || configured.mode !== "router" || configured.connectionId !== selection.poolId) return;
+    if (kind === "quota" && source.runtimeMode !== "native" && (selection.adapterType ?? agent.adapterType) === "claude_local" &&
+        proof.providerEvidence !== "anthropic_oauth_usage_v1") return;
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
     if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
