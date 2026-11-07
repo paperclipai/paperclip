@@ -3519,7 +3519,6 @@ export function issueRoutes(
       {
         getCompanyIntakeAgentId: (companyId) => getCompanyIntakeAgentId(db, companyId),
         assertAssignableAgent: (companyId, agentId) => assertAssignableAgent(db, companyId, agentId),
-        hasAncestorPassedIntake: svc.hasAncestorPassedIntake,
       },
       input,
     );

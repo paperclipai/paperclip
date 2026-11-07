@@ -8878,26 +8878,6 @@ export function issueService(db: Db) {
       };
     },
 
-    hasAncestorPassedIntake: async (
-      companyId: string,
-      parentIssueId: string,
-      intakeAgentId: string,
-    ): Promise<boolean> => {
-      const rows = await db.execute(sql`
-        WITH RECURSIVE ancestors(id, parent_id) AS (
-          SELECT id, parent_id FROM issues WHERE id = ${parentIssueId} AND company_id = ${companyId}
-          UNION
-          SELECT parent.id, parent.parent_id FROM issues parent
-          JOIN ancestors ON parent.id = ancestors.parent_id
-          WHERE parent.company_id = ${companyId}
-        )
-        SELECT 1 AS passed FROM issues i JOIN ancestors a ON a.id = i.id
-        WHERE i.assignee_agent_id = ${intakeAgentId} OR i.created_by_agent_id = ${intakeAgentId}
-        LIMIT 1
-      `);
-      return Array.isArray(rows) && rows.length > 0;
-    },
-
     getById: async (raw: string) => {
       const id = raw.trim();
       const identifier = normalizeIssueReferenceIdentifier(id);

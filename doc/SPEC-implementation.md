@@ -1336,10 +1336,10 @@ All endpoints are under `/api` and return JSON.
 
 Board operators may set the optional `intakeAgentId` field on
 `PATCH /companies/:companyId` to route new board-created issues through an
-eligible intake agent. The default is null. An issue created by an agent, an
-issue assigned to a user, and a closed issue are not rerouted. A pre-assigned
-board issue is routed unless its parent chain already passed through the intake
-agent. The create activity and wake payload retain the requested assignee.
+eligible intake agent. The default is null. Only a board-created issue with no
+agent and no user assignee is routed. An issue created by an agent, an issue
+that names an agent or user assignee, and a closed issue are not rerouted. The
+create activity and wake payload record the routing.
 
 On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
 code `cloud_managed`; the trusted-header provisioning path and company import

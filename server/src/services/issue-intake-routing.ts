@@ -16,7 +16,6 @@ export interface IntakeRoutingInput {
 export interface IntakeRoutingDeps {
   getCompanyIntakeAgentId: (companyId: string) => Promise<string | null>;
   assertAssignableAgent: (companyId: string, agentId: string) => Promise<void>;
-  hasAncestorPassedIntake: (companyId: string, parentIssueId: string, intakeAgentId: string) => Promise<boolean>;
 }
 
 export interface IntakeRoutingDecision {
@@ -36,19 +35,17 @@ export async function resolveIssueIntakeRouting(
   deps: IntakeRoutingDeps,
   input: IntakeRoutingInput,
 ): Promise<IntakeRoutingDecision | null> {
-  if (input.actorType !== "user" || input.assigneeUserId) return null;
+  if (input.actorType !== "user" || input.assigneeUserId || input.assigneeAgentId) return null;
   if (input.status && CLOSED_CREATE_STATUSES.has(input.status)) return null;
   const intakeAgentId = await deps.getCompanyIntakeAgentId(input.companyId);
-  if (!intakeAgentId || input.assigneeAgentId === intakeAgentId) return null;
+  if (!intakeAgentId) return null;
   try {
     await deps.assertAssignableAgent(input.companyId, intakeAgentId);
   } catch (error) {
     if (error instanceof HttpError && [404, 409, 422].includes(error.status)) return null;
     throw error;
   }
-  const requestedAssigneeAgentId = input.assigneeAgentId ?? null;
-  if (requestedAssigneeAgentId && input.parentId && await deps.hasAncestorPassedIntake(input.companyId, input.parentId, intakeAgentId)) return null;
-  return { intakeAgentId, requestedAssigneeAgentId };
+  return { intakeAgentId, requestedAssigneeAgentId: null };
 }
 
 export function intakeRoutingActivityDetails(decision: IntakeRoutingDecision | null): Record<string, unknown> {
