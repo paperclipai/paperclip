@@ -68,6 +68,23 @@ durable checkpoint. Its `original_volume_source_evidence` manifest reason does
 not grant provider recovery or Runner execution authority. Publication checks
 the source bytes again and retains the first authenticated archive during a
 concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Retired authority epochs can use the same evidence archive with a closed
+inventory of their original controller and suspended Runner files, bytes and
+modes. Each epoch must match a retained same-session run and its canonical
+checkpoint identity when a header exists. A genuinely absent historical header
+instead requires the exact admitted authority binding and remains explicitly
+absent. Malformed, retired, or foreign headers cannot use this path. Current
+source checkpoint and artifact requirements remain unchanged. Source fences
+recheck the complete inventory before archive and receipt publication. Unknown
+children and other nonempty history directories remain blockers. The inventory
+and historical headers or their explicit absence stay bound in replacement
+validation. History-free manifests and receipts keep their exact
+existing shape; current-controller-only evidence remains retained when a later
+archive adds historical files. These archives do not become executable backups.
+This maintenance inventory is limited to 128 entries, 16 MiB per file and 64 MiB
+total. These bounds are intentionally smaller than the Runner control-plane
+state's 256 MiB maximum. A larger otherwise valid epoch remains on the original
+volume and blocks filesystem independence; it is never truncated or waived.
 Source locks and a final comparison fence publication; original files, stamps,
 warnings, failed statuses and session pointers remain unchanged. Startup can
 validate the published receipt using only database bindings, without the old
@@ -898,6 +915,17 @@ snapshot of the recorded allocation instead of merging into the retired local
 folder. The existing source, provider-stop and archive checks still apply.
 Completed copyback recovery receipts remain valid. Unknown or unverified recovery
 sources continue to block import.
+
+Online import can preserve an established provider session's prepared source
+after a terminal provider-artifact failure. It requires the exact board-owned
+native failure block and the task's current blocked status version, released
+controller and coordinator ownership, and all declared allocation bindings.
+Source locks and the finalizer lock protect the full action, task and source
+fingerprints through publication. Import saves only the current local files. It
+retains the prepared reference, provider checkpoint, remote allocations and
+recovery hold. The existing migration recipe routes later file recovery away
+from the retired local destination. This neither declares preexecution nor
+proves remote export, provider termination or permission to resume execution.
 
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this

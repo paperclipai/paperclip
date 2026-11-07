@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { inspectFinalizedWorkspaceRecoveryHold, type FinalizedWorkspaceRecoveryHold } from "./finalized-workspace-recovery-migration.js";
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
@@ -129,6 +129,27 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
   if (typeof recovery.evidence?.runId !== "string") return null;
   const settled = await settledRun(db, input.workspace, recovery.evidence.runId);
   if (!settled) return null;
+  const failureBlock = recovery.evidence.nativeFailureBlock as { runId?: unknown; statusVersion?: unknown } | undefined;
+  if (recovery.kind === "active_run_watchdog" && recovery.status === "active"
+    && recovery.cause === "runner_remote_provider_artifact_incompatible" && settled.run.status === "failed"
+    && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null && settled.owner.resultId === null
+    && settled.owner.failureCode === recovery.cause && recovery.sourceIssueId === settled.run.nativeIssueId
+    && recovery.ownerType === "board" && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId
+    && recovery.wakePolicy === null && recovery.evidence.sourceFailureCode === recovery.cause
+    && recovery.evidence.recoveryDisposition === recovery.cause && recovery.evidence.providerSessionEstablished === true
+    && recovery.evidence.recoveryMode === "exact_checkpoint_resume" && failureBlock?.runId === settled.run.id
+    && Number.isSafeInteger(failureBlock.statusVersion) && Number(failureBlock.statusVersion) > 0
+    && recovery.fingerprint === createHash("sha256").update(`${settled.run.id}:${recovery.cause}`).digest("hex")
+    && !fileKeys.filter(key => key !== "nativeFailureBlock").some(key => recovery.evidence?.[key] != null)) {
+    const [task] = await db.select({ id: issues.id, status: issues.status, statusVersion: issues.statusVersion,
+      executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
+      eq(issues.companyId, input.workspace.companyId), eq(issues.id, recovery.sourceIssueId)));
+    if (!task || task.status !== "blocked" || task.statusVersion !== failureBlock.statusVersion
+      || task.executionRunId !== null || task.checkoutRunId !== null) return null;
+    const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace: input.workspace, runId: settled.run.id });
+    if (source?.reference?.state === "prepared" && source.issueId === recovery.sourceIssueId && source.recoveryAllocations?.length)
+      return { fingerprint: fingerprint({ recovery, source, task }), finalizedHold: null, preparedSource: source };
+  }
   if (recovery.kind === "active_run_watchdog" && workspaceExportCauses.includes(recovery.cause)
     && settled.owner.phase === "terminal_failure" && settled.owner.nextAttemptAt === null
     && settled.owner.failureCode === recovery.cause && recovery.ownerType === "board"
