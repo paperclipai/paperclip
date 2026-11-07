@@ -18,6 +18,17 @@ const REFUSAL_SEPARATOR = "; exact checkpoint resume refused: ";
 /** Restart-recovery waits that keep the interrupted provider attempt. */
 const RECOVERY_WAIT_DISPOSITIONS: ReadonlySet<unknown> = new Set(["blocked", "awaiting_evidence"]);
 
+/**
+ * Cuts to at most `max` UTF-16 code units without splitting a surrogate pair.
+ * A lone surrogate is invalid Unicode, and PostgreSQL `jsonb` rejects it, so
+ * a split emoji would make the failure write itself fail.
+ */
+function cutWholeCharacters(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = max > 0 ? text.charCodeAt(max - 1) : 0;
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : Math.max(0, max));
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -69,7 +80,7 @@ export function interruptedExactResumeCause(coordinator: {
 
 /** The original message as the run result keeps it. Mask it before calling this. */
 export function boundOriginalMessage(message: string): string {
-  return message.slice(0, ORIGINAL_MESSAGE_MAX_CHARS);
+  return cutWholeCharacters(message, ORIGINAL_MESSAGE_MAX_CHARS);
 }
 
 /**
@@ -91,12 +102,12 @@ export function currentRunFailureText(run: { error?: string | null; resultJson?:
  * texts must already be masked, because a cut can split a username.
  */
 export function describeRefusedExactResume(cause: InterruptedExactResume, refusal: string): string {
-  const refused = `${REFUSAL_SEPARATOR}${refusal.slice(0, REFUSAL_MAX_CHARS)}`;
+  const refused = `${REFUSAL_SEPARATOR}${cutWholeCharacters(refusal, REFUSAL_MAX_CHARS)}`;
   const originalBudget = Math.max(0, FAILURE_DETAIL_MAX_CHARS - refused.length);
-  const code = cause.originalFailureCode.slice(0, originalBudget);
+  const code = cutWholeCharacters(cause.originalFailureCode, originalBudget);
   const messageBudget = originalBudget - code.length - 2;
   const original = cause.originalMessage && messageBudget > 0
-    ? `${code}: ${cause.originalMessage.slice(0, Math.min(ORIGINAL_MESSAGE_MAX_CHARS, messageBudget))}`
+    ? `${code}: ${cutWholeCharacters(cause.originalMessage, Math.min(ORIGINAL_MESSAGE_MAX_CHARS, messageBudget))}`
     : code;
   return `${original}${refused}`;
 }

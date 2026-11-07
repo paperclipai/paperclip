@@ -773,6 +773,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       for (const text of [failed.error!, recorded.originalMessage, recorded.refusal]) expect(text).not.toContain("casp");
     });
 
+    it("saves the failure when an emoji crosses each cut", async () => {
+      const emoji = "\u{1F642}";
+      const { f } = await resumeClaim([{ ...interruption, stderrTail: `${"x".repeat(1_499)}${emoji} could not resume` }]);
+      await f.completion.failRun(f.failure(new Error(`${"r".repeat(479)}${emoji} retained session is not authorized`)));
+      const failed = await read(f.run.id);
+      expect(failed.status).toBe("failed");
+      const recorded = (failed.resultJson as { nativeExactResumeRefusal: Record<string, string> }).nativeExactResumeRefusal;
+      expect(recorded.originalMessage).toBe("x".repeat(1_499));
+      expect(failed.error!.endsWith(`; exact checkpoint resume refused: ${"r".repeat(479)}`)).toBe(true);
+    });
+
     it.each([
       ["has no prior interruption", [], 0],
       ["follows a bootstrap retry", [{ ...interruption, checkpointExists: false, providerSessionEstablished: false }], 1],

@@ -112,3 +112,24 @@ describe("currentRunFailureText", () => {
     expect(currentRunFailureText(run)).toBe("spawn agent ENOENT");
   });
 });
+
+describe("cuts at whole Unicode characters", () => {
+  const emoji = "\u{1F642}";
+  const wellFormed = (text: string) => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(text);
+
+  it("does not split an emoji at the original-message bound", () => {
+    const bounded = boundOriginalMessage(`${"x".repeat(1_499)}${emoji}tail`);
+    expect(bounded).toBe("x".repeat(1_499));
+    expect(wellFormed(bounded)).toBe(true);
+  });
+
+  it("does not split an emoji at the refusal or dynamic original-message cuts", () => {
+    const message = describeRefusedExactResume(
+      { originalFailureCode: "native_session_interrupted", originalMessage: `${"o".repeat(1_449)}${emoji}${"o".repeat(200)}`, interruptedAttempt: 1 },
+      `${"r".repeat(479)}${emoji}${"r".repeat(100)}`,
+    );
+    expect(wellFormed(message)).toBe(true);
+    expect(message.endsWith(`; exact checkpoint resume refused: ${"r".repeat(479)}`)).toBe(true);
+    expect(message.length).toBeLessThanOrEqual(2_000);
+  });
+});
