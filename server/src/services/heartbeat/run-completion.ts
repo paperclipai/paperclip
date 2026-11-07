@@ -575,6 +575,20 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
       ? null : resolveCacheAdjustedCostUsd(adapterResult);
+    const ledgerCostStatus = adapterResult.costStatus ?? resolveLedgerCostStatus({
+      costUsd: cacheAdjustedCostUsd ?? (adapterResult.costUsdExact != null ? Number(adapterResult.costUsdExact) : null),
+      billingType: normalizeLedgerBillingType(adapterResult.billingType),
+      inputTokens: normalizedUsage?.inputTokens ?? 0,
+      cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+      outputTokens: normalizedUsage?.outputTokens ?? 0,
+    });
+    const processRunReportedNoUsage = agent.adapterType === "process"
+      && adapterResult.costStatus == null
+      && ledgerCostStatus === "unpriced"
+      && !readNonEmptyString(adapterResult.provider)
+      && (normalizedUsage?.inputTokens ?? 0) === 0
+      && (normalizedUsage?.cachedInputTokens ?? 0) === 0
+      && (normalizedUsage?.outputTokens ?? 0) === 0;
     const usageJson: Record<string, unknown> = {
       accountingReceiptReady: adapterResult.usageComplete !== false,
       costUsdExact: adapterResult.costUsdExact ?? null,
@@ -623,13 +637,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ? { cacheAdjustedCostUsd }
         : {}),
       pricingProvenance: adapterResult.pricingProvenance,
-      costStatus: adapterResult.costStatus ?? resolveLedgerCostStatus({
-        costUsd: cacheAdjustedCostUsd ?? (adapterResult.costUsdExact != null ? Number(adapterResult.costUsdExact) : null),
-        billingType: normalizeLedgerBillingType(adapterResult.billingType),
-        inputTokens: normalizedUsage?.inputTokens ?? 0,
-        cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
-        outputTokens: normalizedUsage?.outputTokens ?? 0,
-      }),
+      ...(processRunReportedNoUsage ? {} : { costStatus: ledgerCostStatus }),
       billingType: normalizeLedgerBillingType(
         adapterResult.billingType,
       ),

@@ -1907,7 +1907,9 @@ bound. A charge settled from a lost receipt never trips the blocking
 unpriced-usage policy by itself, and neither does an unpriced charge with a
 known partial cost or with no observed tokens on metered billing. A task's own
 continuation and finalization are never held by that task's pending
-accounting.
+accounting. A `process` run that reports no cost, tokens or provider records a
+reported zero charge, so it does not trip the blocking policy. Other adapters
+that report nothing stay unpriced.
 A controller that detaches for server restart loses checkpoint and completion
 write authority. A closing event stream is not proof that the governed run
 finished; the replacement controller must adopt and settle the original run.

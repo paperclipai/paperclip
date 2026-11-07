@@ -241,6 +241,7 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
+import { flushBudgetEvaluationWork } from "../services/budgets.ts";
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
@@ -8545,6 +8546,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       factory.mockRestore();
       append.mockRestore();
     }
+  });
+
+  it.each([
+    { name: "a process run with no usage", adapterType: "process", result: {}, costStatus: "reported", companyStatus: "active" },
+    { name: "a process run with token usage", adapterType: "process", result: { usage: { inputTokens: 10, outputTokens: 2 } }, costStatus: "unpriced", companyStatus: "paused" },
+    { name: "a process run with a named provider", adapterType: "process", result: { provider: "test" }, costStatus: "unpriced", companyStatus: "paused" },
+    { name: "a provider adapter run with no usage", adapterType: "codex_local", result: {}, costStatus: "unpriced", companyStatus: "paused" },
+  ])("applies the blocking unpriced-usage policy to $name", async ({ adapterType, result, costStatus, companyStatus }) => {
+    const { companyId, runId } = await seedRunFixture({ adapterType, runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued", includeIssue: false });
+    await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", amount: 10_000, isActive: true });
+    mockAdapterExecute.mockImplementationOnce(async () => ({ exitCode: 0, signal: null, timedOut: false, ...result }));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    await flushBudgetEvaluationWork(db);
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "succeeded", costAccountingPending: false });
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toMatchObject([{ costStatus, costCents: 0 }]);
+    expect((await db.select().from(companies).where(eq(companies.id, companyId)))[0]?.status).toBe(companyStatus);
   });
 
   it("persists a failed capture before heartbeat failure finalization settles an older receipt", async () => {
