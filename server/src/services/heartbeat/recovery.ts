@@ -1704,6 +1704,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
      * but cannot take over an in-flight cleanup attempt.
      */
     explicitRetry?: { companyId: string; runId: string; actorId: string; reason?: "retry_failed_run" | "queued_comment_interrupt" };
+    /** One cleanup attempt per lease of this environment, for an operator who
+     * asked to delete it with its sandboxes. It bypasses the cooldown in the
+     * same way as `explicitRetry`, and never takes over an in-flight attempt. */
+    environmentRetry?: { environmentId: string; actorId: string };
   }): Promise<{
     swept: number;
     destroyed: number;
@@ -1712,6 +1716,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     const backoffMs = opts?.backoffMs ?? 0;
     const now = new Date();
     const cutoff = new Date(now.getTime() - backoffMs);
+    const manualRetry = Boolean(opts?.explicitRetry || opts?.environmentRetry);
 
     let deferredFlushFailed = false;
     // Flush the in-process orphan-cleanup buffer first. A failed acquire buffers
@@ -1720,7 +1725,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // `pending_cleanup` row lands once the database recovers. The flush runs
     // before the read below, so this same tick tears down a freshly-landed row.
     try {
-      const flushed = opts?.explicitRetry ? null : await environmentRuntime.flushDeferredOrphanCleanups?.();
+      const flushed = manualRetry ? null : await environmentRuntime.flushDeferredOrphanCleanups?.();
       if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
         logger.info(
           { recovered: flushed.recovered, pending: flushed.pending },
@@ -1746,7 +1751,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           eq(environmentLeases.status, "pending_cleanup"),
           opts?.explicitRetry ? eq(environmentLeases.companyId, opts.explicitRetry.companyId) : undefined,
           opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
-          pendingCleanupRetryDueSql(Boolean(opts?.explicitRetry)),
+          opts?.environmentRetry ? eq(environmentLeases.environmentId, opts.environmentRetry.environmentId) : undefined,
+          pendingCleanupRetryDueSql(manualRetry),
           backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
         ),
       )
@@ -1824,7 +1830,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // The deadline survives a server restart; the counter saturates at the
       // escalation threshold while attempt identities remain unique.
       const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts,
-        opts?.explicitRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
+        manualRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
       if (!claimed) continue;
       pendingCleanupAttemptsInFlight.add(row.id);
       lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
@@ -1848,6 +1854,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
           action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
           runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
+        });
+        else if (opts?.environmentRetry) await logActivity(db, {
+          companyId: row.companyId, actorType: "user", actorId: opts.environmentRetry.actorId,
+          action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
+          runId: row.heartbeatRunId ?? undefined, details: { attempt: attempts + 1, reason: "environment_deleted" },
         });
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
