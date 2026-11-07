@@ -16,7 +16,7 @@ import type { NativeRunIdentity, NativeSession, PrpEvent } from "@paperclipai/pa
 import { randomUUID } from "node:crypto";
 import * as controllerProcess from "../services/controller-process-identity.js";
 import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, authUsers, budgetReservations, companyMemberships, completionContracts, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
+import { agents, createDb, agentWakeupRequests, authUsers, budgetReservations, companyMemberships, completionContracts, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
 import { releaseDeadControllerResultLeases } from "../services/native-runtime/native-dead-controller-result-lease.js";
@@ -32,8 +32,20 @@ import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
   const fixture = nativeRestartFixture();
 
-  async function seedRecoverableRun(label: string) {
-    const f = await fixture.seedRun(label);
+  async function freshExecutionAgent() {
+    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
+    const [template] = await db.select().from(agents).where(eq(agents.id, fixture.current.agentId));
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: template.companyId,
+      name: "Isolated useful recovery execution", role: template.role, status: "active",
+      adapterType: template.adapterType, adapterConfig: template.adapterConfig,
+      runtimeConfig: template.runtimeConfig, permissions: template.permissions });
+    return { db, agentId };
+  }
+
+  async function seedRecoverableRun(label: string, isolatedAgent = false) {
+    const isolated = isolatedAgent ? await freshExecutionAgent() : undefined;
+    const f = await fixture.seedRun(label, isolated?.db, { agentId: isolated?.agentId });
     await instanceSettingsService(f.db).updateExperimental({ enableNativeRunner: true });
     const userId = randomUUID();
     await f.db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.invalid`,
@@ -567,8 +579,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
   describe("restart claim process-space authority", () => {
     const priorPid = 2_000_000_001;
-    async function seedClaim(label: string, expires: "live" | "expired", hash: string | null) {
-      const f = await seedRecoverableRun(label);
+    async function seedClaim(label: string, expires: "live" | "expired", hash: string | null, isolatedAgent = false) {
+      const f = await seedRecoverableRun(label, isolatedAgent);
       await f.db.update(nativeRunFinalizations).set({
         leaseOwner: `old-controller:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() + (expires === "live" ? 1_200_000 : -1_000)),
         controllerBootId: randomUUID(), controllerHostHash: hash, controllerPid: priorPid,
@@ -667,8 +679,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(onClaim).not.toHaveBeenCalled();
     }, 60_000);
 
-    async function namespaceHold(label: string, live = false) {
-      const f = await seedClaim(label, live ? "live" : "expired", "foreign-process-space");
+    async function namespaceHold(label: string, live = false, isolatedAgent = false) {
+      const f = await seedClaim(label, live ? "live" : "expired", "foreign-process-space", isolatedAgent);
       const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
       await f.db.update(issues).set({ responsibleUserId: source.responsibleUserId }).where(eq(issues.id, f.issueId));
@@ -769,7 +781,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       const body = confirmation(f);
       const { controllerStopped: _stopped, controllerAuthorityDigest: _digest, ...providerOnly } = body.executionReconciliation;
       const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`)
-        .send({ ...body, executionReconciliation: providerOnly });
+        .send({ ...body, sourceIssueStatus: "todo", executionReconciliation: providerOnly });
       expect(response.status, JSON.stringify(response.body)).toBe(409);
       expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseOwner).not.toBeNull();
     }, 60_000);
@@ -928,7 +940,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     }
 
     it("records original-host containment then completes one useful successor only after a new ordinary Retry", async () => {
-      await completeContainedRetry(await namespaceHold("CLAIM-CONTAINMENT-ORDINARY-RETRY"));
+      await completeContainedRetry(await namespaceHold("CLAIM-CONTAINMENT-ORDINARY-RETRY", false, true));
     }, 90_000);
 
     /** Historical INITIAL fixture, not a failed execution manufactured by the
@@ -937,8 +949,8 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
      * failed+finished, setup_failed, no result/usage added, cleared issue and
      * checkout pointers, same assignee/responsible operator, observed resultless
      * expired foreign claim with its original token/generation/PID/birth. */
-    async function seedHistoricalFailedForeignSource(label: string) {
-      const f = await seedClaim(label, "expired", "foreign-process-space");
+    async function seedHistoricalFailedForeignSource(label: string, isolatedAgent = false) {
+      const f = await seedClaim(label, "expired", "foreign-process-space", isolatedAgent);
       const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
       await f.db.transaction(async tx => {
@@ -977,17 +989,17 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     }
 
     it("contains a historical already-failed foreign source with cleared pointer then completes a new ordinary Retry", async () => {
-      const initial = await seedHistoricalFailedForeignSource("CLAIM-HISTORICAL-FAILED-CLEARED-RETRY");
+      const initial = await seedHistoricalFailedForeignSource("CLAIM-HISTORICAL-FAILED-CLEARED-RETRY", true);
       // The journey begins after the declared INITIAL state above exists.
       await completeContainedRetry(await inspectHistoricalFailedSource(initial));
     }, 90_000);
 
-    it("rejects cleared-pointer containment when a newer coordinator binds the issue without a nativeIssueId column", async () => {
+    it("rejects cleared-pointer containment when a newer canonical Native coordinator binds the issue", async () => {
       const f = await inspectHistoricalFailedSource(await seedHistoricalFailedForeignSource("CLAIM-CONTAINMENT-NEWER-COORDINATOR"));
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
       const newerId = randomUUID();
       await f.db.insert(heartbeatRuns).values({ id: newerId, companyId: fixture.current.companyId,
-        agentId: fixture.current.agentId, status: "queued", runtimeMode: "native", contextSnapshot: {}, nativeIssueId: null });
+        agentId: fixture.current.agentId, status: "queued", runtimeMode: "native", contextSnapshot: { issueId: f.issueId }, nativeIssueId: f.issueId });
       await f.db.insert(nativeRunFinalizations).values({ runId: newerId, companyId: fixture.current.companyId,
         issueId: f.issueId, phase: "observed", attempt: 0 });
       const [currentTask] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
@@ -999,77 +1011,69 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
     }, 90_000);
 
-    it("recovers a known-current preparation failure through ordinary Retry without controller containment", async () => {
-      const actual = await controllerProcess.currentControllerProcess();
-      expect(actual.hostHash).not.toBe("unknown");
-      const f = await seedClaim("CLAIM-CURRENT-PREPARATION-RETRY", "expired", actual.hostHash);
-      const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-      if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
-      await f.db.update(issues).set({ responsibleUserId: source.responsibleUserId }).where(eq(issues.id, f.issueId));
-      const [initialOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
-      const forbiddenProvider = vi.fn(() => { throw new Error("Preparation failure must precede any provider dispatch"); });
-      let realClaimObserved = false;
-      const failureService = heartbeatService(f.db, { nativeSessionBackendFactory: forbiddenProvider,
-        beforeNativeRuntimeSelection: async () => {
-          const native = await currentNativeControllerIdentity();
-          const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
-          expect(owner).toMatchObject({ controllerBootId: native.bootId, controllerPid: native.pid,
-            controllerHostHash: actual.hostHash, phase: "observed", resultId: null });
-          expect(owner.leaseOwner).not.toBeNull();
-          expect(owner.leaseOwner).not.toBe(initialOwner.leaseOwner);
-          expect(owner.controllerGeneration).toBeGreaterThan(initialOwner.controllerGeneration);
-          realClaimObserved = true;
-          throw new Error("Controlled preparation failure after the normal current claim and before provider dispatch");
+    it("automatically completes one useful successor after a first-admission preparation failure without containment", async () => {
+      const isolated = await freshExecutionAgent();
+      const userId = randomUUID();
+      await isolated.db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.invalid`,
+        createdAt: new Date(), updatedAt: new Date() });
+      await isolated.db.insert(companyMemberships).values({ companyId: fixture.current.companyId,
+        principalType: "user", principalId: userId, membershipRole: "owner" });
+      await instanceSettingsService(isolated.db).updateExperimental({ enableNativeRunner: true });
+      const [task] = await isolated.db.insert(issues).values({ companyId: fixture.current.companyId,
+        title: "Recover a genuine first preparation failure", status: "in_progress", workMode: "standard",
+        assigneeAgentId: isolated.agentId, responsibleUserId: userId }).returning();
+      const opened: string[] = [];
+      const backend = vi.fn(retryBackend(isolated.db, opened));
+      let failedPreparationRunId: string | null = null;
+      const service = heartbeatService(isolated.db, { nativeSessionBackendFactory: backend,
+        beforeNativeRuntimeSelection: async runId => {
+          // A single dependency failure belongs to the original admission. The
+          // normal automatic successor must use the real controlled SDK backend.
+          if (failedPreparationRunId !== null) return;
+          failedPreparationRunId = runId;
+          expect(await isolated.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).toEqual([]);
+          throw new Error("Controlled first-admission preparation failure before native selection and provider dispatch");
         } });
       try {
-        const recovery = await failureService.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
-        expect(recovery.claims).toEqual([expect.objectContaining({ runId: f.runId })]);
-        await waitForCondition("normal known-current preparation failure and cleanup", async () => {
-          const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-          return run.status === "failed" && failureService.getTaskDrainStatus().quiescent;
+        const admitted = await service.wakeup(isolated.agentId, { source: "on_demand", triggerDetail: "manual",
+          reason: "issue_assigned", requestedByActorType: "user", requestedByActorId: userId, manualUserWake: true,
+          payload: { issueId: task.id }, contextSnapshot: { issueId: task.id, actorId: userId, responsibleUserId: userId } });
+        expect(admitted).not.toBeNull();
+        await waitForCondition("normal automatic preparation-recovery terminal successor and wakes to settle", async () => {
+          const successors = await isolated.db.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, fixture.current.companyId), eq(heartbeatRuns.agentId, isolated.agentId),
+            eq(heartbeatRuns.retryOfRunId, admitted!.id)));
+          return successors.length === 1 && !!successors[0].finishedAt
+            && ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(successors[0].status)
+            && service.getTaskDrainStatus().quiescent;
         });
-        expect(realClaimObserved).toBe(true);
-        expect(forbiddenProvider).not.toHaveBeenCalled();
-        const [failedOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
-        expect(failedOwner).toMatchObject({ phase: "terminal_failure", resultId: null, leaseOwner: null, leaseExpiresAt: null });
-        const [taskBefore] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
-        expect(taskBefore.executionRunId).toBeNull();
-        const actions = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+        expect(failedPreparationRunId).toBe(admitted!.id);
+        const [source] = await isolated.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, admitted!.id));
+        expect(source).toMatchObject({ status: "failed", responsibleUserId: userId, processPid: null });
+        expect(source.resultJson?.executionRecovery).toMatchObject({ kind: "bootstrap", providerWorkStarted: false });
+        expect(await isolated.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.id))).toEqual([]);
+        const successors = await isolated.db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, fixture.current.companyId), eq(heartbeatRuns.agentId, isolated.agentId),
+          eq(heartbeatRuns.retryOfRunId, source.id)));
+        expect(successors).toHaveLength(1);
+        const successor = successors[0];
+        expect(successor).toMatchObject({ status: "succeeded", retryOfRunId: source.id,
+          responsibleUserId: userId, nativeIssueId: task.id });
+        expect(successor.id).not.toBe(source.id);
+        expect(opened).toEqual([successor.id]);
+        expect(backend.mock.calls.map(([execution]) => execution.binding.runId)).not.toContain(source.id);
+        expect(successor.resultJson?.nativeResult).toMatchObject({ summary: "The explicitly retried task produced this useful completion." });
+        const wakes = await isolated.db.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, fixture.current.companyId), eq(agentWakeupRequests.runId, successor.id),
+          eq(agentWakeupRequests.reason, "issue_continuation_needed")));
+        expect(wakes).toHaveLength(1);
+        expect((await isolated.db.select().from(issues).where(eq(issues.id, task.id)))[0].status).toBe("done");
+        expect(await isolated.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, source.id))).toEqual([]);
+        expect(await isolated.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toHaveLength(1);
+        const actions = await isolated.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, task.id));
         expect(actions.every(action => action.evidence.reason !== "controller_process_space_unverified"
           && action.evidence.controllerAuthority === undefined)).toBe(true);
-        const opened: string[] = [];
-        const services: ReturnType<typeof heartbeatService>[] = [];
-        const actualFactory = heartbeatModule.heartbeatService;
-        const factory = vi.spyOn(heartbeatModule, "heartbeatService").mockImplementation((db, options) => {
-          const service = actualFactory(db, { ...options, nativeSessionBackendFactory: retryBackend(db, opened) });
-          services.push(service); return service;
-        });
-        try {
-          // An ordinary NEW user Retry uses existing stopped/preparation evidence;
-          // the foreign-host containment fields are neither submitted nor faked.
-          const app = boardRoutes({ db: f.db, userId: source.responsibleUserId });
-          const retried = await request(app).post(`/api/issues/${f.issueId}/retry`).send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
-          expect(retried.status, JSON.stringify(retried.body)).toBe(202);
-          await waitForCondition("ordinary known-current setup Retry useful execution", async () => {
-            const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
-            if (!wake?.runId || wake.runId === f.runId) return false;
-            const [successor] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId));
-            return !!successor?.finishedAt
-              && ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(successor.status)
-              && services.every(service => service.getTaskDrainStatus().quiescent);
-          });
-          const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
-          expect(wake.runId).not.toBe(f.runId);
-          expect(opened).toEqual([wake.runId]);
-          const [successor] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
-          expect(successor.status).toBe("succeeded");
-          expect(successor.resultJson?.nativeResult).toMatchObject({ summary: "The explicitly retried task produced this useful completion." });
-          expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
-          expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
-          expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toHaveLength(1);
-          expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseOwner).toBeNull();
-        } finally { factory.mockRestore(); for (const service of services) await service.drainActiveRunExecutions(); }
-      } finally { await failureService.drainActiveRunExecutions(); }
+      } finally { await service.drainActiveRunExecutions(); }
     }, 90_000);
 
     it("requires new Retry only for exact unadmitted receipts and keeps other accepted work", async () => {
@@ -1134,17 +1138,50 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(1);
     }, 60_000);
 
-    it("retains the real durable Stop until its actual owner acknowledges it", async () => {
-      const f = await namespaceHold("CLAIM-CONTAINMENT-STOP-PENDING");
-      const requestId = randomUUID();
-      await claimCancellationRequest(f.db, f.runId, fixture.current.companyId, requestId, f.userId);
-      await expect(cancelHeartbeatNativeRun({ db: f.db, runId: f.runId, reason: "Operator requested Stop",
-        runtimeMode: "native", cancellationRequestId: requestId })).rejects.toThrow("native_cancellation_pending_recovery");
-      const [pending] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-      expect(pending.resultJson?.nativeCancellation).toMatchObject({ dispatchState: "pending" });
-      const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(confirmation(f));
-      expect(response.status, JSON.stringify(response.body)).toBe(409);
-      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseOwner).not.toBeNull();
+    it.each([false, true] as const)("keeps a correlated Stop from automatically releasing foreign ownership (ephemeral: %s)", async ephemeral => {
+      const previous = process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      if (ephemeral) process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+      else delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+      try {
+        const f = await namespaceHold(`CLAIM-CONTAINMENT-STOP-${ephemeral}`);
+        const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        const requestId = randomUUID();
+        await claimCancellationRequest(f.db, f.runId, fixture.current.companyId, requestId, f.userId);
+        const cancellation = cancelHeartbeatNativeRun({ db: f.db, runId: f.runId, reason: "Operator requested Stop",
+          runtimeMode: "native", cancellationRequestId: requestId });
+        if (ephemeral) {
+          // The actual frontend waits its existing20s for the real owner's ACK;
+          // this isolated foreign-owner fixture has no local delivery handle.
+          await expect(cancellation).rejects.toThrow("native_cancellation_pending_recovery");
+        } else {
+          const acknowledgement = await cancellation;
+          expect(acknowledgement).toMatchObject({ dispatched: false });
+          expect(acknowledgement.auditId).toEqual(expect.any(String));
+        }
+        const [pending] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        expect(pending.status).toBe("running");
+        expect(pending.resultJson?.startupCancellation).toMatchObject({ cancellationRequestId: requestId,
+          requestedBy: { type: "board", userId: f.userId } });
+        const intent = pending.resultJson?.nativeCancellation;
+        expect(intent).toMatchObject({ dispatchState: ephemeral ? "pending" : "acknowledged", dispatched: false });
+        if (!intent || typeof intent !== "object" || Array.isArray(intent) || !("intentAuditId" in intent))
+          throw new Error("The normal cancellation owner must persist an audited intent");
+        expect(intent.intentAuditId).toEqual(expect.any(String));
+        if (!ephemeral) {
+          if (!("acknowledgementAuditId" in intent)) throw new Error("The local no-op acknowledgement must have its own audit");
+          expect(intent.acknowledgementAuditId).toEqual(expect.any(String));
+          expect(intent.acknowledgementAuditId).not.toBe(intent.intentAuditId);
+        }
+        if (ephemeral) {
+          const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(confirmation(f));
+          expect(response.status, JSON.stringify(response.body)).toBe(409);
+        }
+        expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+        expect((await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0].status).toBe("active");
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
+        else process.env.PAPERCLIP_EPHEMERAL_SERVER = previous;
+      }
     }, 60_000);
 
     it("keeps the authority digest stable across PostgreSQL session time zones", async () => {

@@ -223,7 +223,7 @@ describe("failed native run owner release", () => {
     expect(await coordinator(runId)).toMatchObject({ phase: "observed", leaseOwner: expect.any(String) });
   });
 
-  it("finishes bounded namespace inspection pages without polling surfaced owners or losing a local deadline", async () => {
+  it("finishes each requested namespace inspection pass and preserves the original local deadline", async () => {
     const foreign = [];
     for (let index = 0; index < 5; index++) foreign.push(await nativeRun({ status: "failed", coordinator: {
       leaseOwner: `foreign:${randomUUID()}`, controllerHostHash: null, leaseExpiresAt: new Date(0) } }));
@@ -238,8 +238,21 @@ describe("failed native run owner release", () => {
     const rows = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
     expect(rows).toHaveLength(foreign.length);
     expect(rows.every(row => row.attemptCount === 0 && row.wakePolicy === null && row.monitorPolicy === null)).toBe(true);
+    // Deadline reads do not request another pass or turn surfaced holds into timers.
+    for (let read = 0; read < 2; read++) {
+      expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    }
+    // A later explicit mutation inspection must recheck all retained authorities.
+    // Finish its known three-page pass before expecting the local timer again.
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
+    expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
+    expect((await nextAbandonedNativeOwnerReleaseAt(db))!.getTime()).toBeLessThan(localDeadline.getTime());
     expect(await releaseAbandonedNativeOwners(db, new Date(), 2)).toBe(0);
     expect((await nextAbandonedNativeOwnerReleaseAt(db))?.getTime()).toBe(localDeadline.getTime());
+    const reinspected = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, companyId));
+    const byId = (a: typeof rows[number], b: typeof rows[number]) => a.id.localeCompare(b.id);
+    expect(reinspected.sort(byId)).toEqual([...rows].sort(byId));
   });
 
   it("keeps a lower-sorting arrival durable when its notification coalesces between inspection pages", async () => {
