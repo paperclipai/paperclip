@@ -92,9 +92,14 @@ async function qualifyNativeCodex(input: { api: ChaosApi; companyId: string; env
  * encrypted company secrets, as in tests/runner-e2e/live-fixtures.ts, and the
  * agent payloads come from the shared runner-e2e catalog profiles.
  */
-/** adapterConfig for a forced runner lifecycle; warm uses the product's default idle window. */
-export function chaosLifecycleOverrides(lifecycle: "per_turn" | "warm" | undefined): Record<string, unknown> | undefined {
+/**
+ * adapterConfig for a forced runner lifecycle. warm uses the product's default
+ * idle window. default removes the catalog's pinned lifecycle so the agent is
+ * created without one and the server resolves the product default.
+ */
+export function chaosLifecycleOverrides(lifecycle: "per_turn" | "warm" | "default" | undefined): Record<string, unknown> | undefined {
   if (lifecycle === "warm") return { lifecycleMode: "warm", idleTimeoutMs: 300_000 };
+  if (lifecycle === "default") return { lifecycleMode: undefined, idleTimeoutMs: undefined };
   return lifecycle === "per_turn" ? { lifecycleMode: "per_turn" } : undefined;
 }
 

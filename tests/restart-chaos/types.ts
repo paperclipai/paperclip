@@ -50,7 +50,7 @@ export interface WaveOptions {
    * Runner lifecycle forced onto every seeded agent (`--lifecycle`). Absent
    * keeps the catalog profile's own setting.
    */
-  lifecycle?: "per_turn" | "warm";
+  lifecycle?: "per_turn" | "warm" | "default";
 }
 
 export interface StormFault {

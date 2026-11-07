@@ -114,7 +114,10 @@ describe("CLI parsing", () => {
   it("carries a forced runner lifecycle in the plan options", () => {
     expect(parseCommand(["--lifecycle", "warm", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "warm" } });
     expect(parseCommand(["--seed", "1"])).not.toHaveProperty("options.lifecycle");
-    expect(() => parseCommand(["--lifecycle", "sometimes"])).toThrow(/per_turn or warm/);
+    expect(() => parseCommand(["--lifecycle", "sometimes"])).toThrow(/per_turn, warm or default/);
+    expect(parseCommand(["--lifecycle", "default", "--seed", "1"])).toMatchObject({ mode: "wave", options: { lifecycle: "default" } });
+    // default drops the catalog's pinned lifecycle from the created agent.
+    expect(JSON.parse(JSON.stringify({ lifecycleMode: "per_turn", model: "m", ...chaosLifecycleOverrides("default") }))).toEqual({ model: "m" });
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--lifecycle", "warm"])).toThrow(/reproduces the saved plan/);
     expect(chaosLifecycleOverrides("warm")).toEqual({ lifecycleMode: "warm", idleTimeoutMs: 300_000 });
     expect(chaosLifecycleOverrides(undefined)).toBeUndefined();
