@@ -1,5 +1,5 @@
 import { completedSlackFormSessionReceipt } from "./form-idle-history.js";
-import { and, inArray, sql } from "drizzle-orm";
+import { and, gt, inArray, sql } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 import { projectSlackFormRetainedOwner, type SlackFormRetainedRow } from "./form-session.js";
 
@@ -39,9 +39,20 @@ export function selectSlackFormRetainedConsumer(rows: readonly SlackFormRetained
 export async function readSlackFormRetainedConsumer(db: Pick<Db, "select">, connector: unknown) {
   const identity = slackFormConnectorIdentity(connector);
   if (!identity) return { owner: null, attention: [] };
-  const rows = await db.select().from(chatActions).where(and(
-    inArray(chatActions.kind, ["slack_form_session", "slack_form_owner", "slack_form_grant"]),
-    sql`coalesce(${chatActions.payload}->'binding'->>'instanceId', ${chatActions.payload}->'enrollment'->>'instanceId') = ${identity.instanceId}`))
-    .orderBy(chatActions.id).limit(32);
-  return selectSlackFormRetainedConsumer(rows, identity);
+  let after: string | undefined;
+  const attention: { actionId: string; code: string }[] = [];
+  for (;;) {
+    const rows = await db.select().from(chatActions).where(and(
+      inArray(chatActions.kind, ["slack_form_session", "slack_form_owner", "slack_form_grant"]),
+      sql`coalesce(${chatActions.payload}->'binding'->>'instanceId', ${chatActions.payload}->'enrollment'->>'instanceId') = ${identity.instanceId}`,
+      after === undefined ? undefined : gt(chatActions.id, after)))
+      .orderBy(chatActions.id).limit(32);
+    const selected = selectSlackFormRetainedConsumer(rows, identity);
+    attention.push(...selected.attention.slice(0, Math.max(0, 32 - attention.length)));
+    if (selected.owner) return { owner: selected.owner, attention };
+    if (rows.length < 32) return { owner: null, attention };
+    const next = rows[rows.length - 1]?.id;
+    if (!next || next === after) throw new Error("Slack retained consumer cursor did not advance");
+    after = next;
+  }
 }

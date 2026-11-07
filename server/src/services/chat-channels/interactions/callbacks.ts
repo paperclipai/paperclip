@@ -1,7 +1,7 @@
 import { stageSlackFormSubmission } from "../slack/form-session.js";
 import { slackFormSubmissionEvidence } from "../slack/cloud-forms.js";
 import { slackFormOpenContext } from "../slack/cloud-forms.js";
-import { stageSlackFormSession, confirmSlackFormSessionUpdate } from "../slack/form-session.js";
+import { stageSlackFormOpenCallback, confirmSlackFormOpenCallback } from "../slack/form-open-callback.js";
 import { SlackCloudReceiptError } from "../slack/cloud-event.js";
 import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
@@ -1045,21 +1045,9 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             })
             .onConflictDoNothing()
             .returning({ id: chatActions.id });
-          if (cloudForm) {
-            if (!lease || !cloudForm.environment) throw new SlackCloudReceiptError("form_credential_lease_unavailable", "retry");
-            const held = await stageSlackFormSession(tx, { operation: cloudForm.operation, currentBinding: cloudForm.currentBinding,
-              principalId: principal.principal.id, resolved, lease, environment: cloudForm.environment });
-            cloudForm.sessionActionId = held.actionId;
-            if (held.kind !== "update") return { kind: "duplicate" as const };
-            if (!attempt) {
-              const [retainedAttempt] = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, record.endpoint.companyId),
-                eq(chatActions.endpointId, record.endpoint.id), eq(chatActions.conversationId, conversation.id),
-                eq(chatActions.principalId, principal.principal.id), eq(chatActions.kind, "question_form_open_attempt"),
-                eq(chatActions.providerActionId, attemptProviderActionId))).for("update");
-              if (!retainedAttempt || retainedAttempt.status !== "processing") throw new SlackCloudReceiptError("form_open_attempt_unresolved", "attention");
-              return { kind: "ready" as const, attemptActionId: retainedAttempt.id, resolved };
-            }
-          }
+          if (cloudForm) return stageSlackFormOpenCallback(tx, { context: cloudForm, lease, resolved,
+            companyId: record.endpoint.companyId, endpointId: record.endpoint.id, conversationId: conversation.id,
+            principalId: principal.principal.id, attemptProviderActionId, attemptActionId: attempt?.id ?? null });
           return attempt
             ? {
                 kind: "ready" as const,
@@ -1124,12 +1112,8 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           if (event.provider === "discord") return deny(safelyKnown);
           return;
         }
-        if (cloudForm) {
-          if (!cloudForm.sessionActionId || !cloudForm.updatedView) throw new SlackCloudReceiptError("form_update_receipt_unavailable", "retry");
-          const updated = await db.transaction(tx => confirmSlackFormSessionUpdate(tx, { companyId: record.endpoint.companyId,
-            endpointId: record.endpoint.id, principalId: principal.principal.id, operationId: cloudForm.operation.id }, cloudForm.operation.view!, cloudForm.updatedView!.hash));
-          if (!updated) throw new SlackCloudReceiptError("form_update_settlement_changed", "retry");
-        }
+        if (cloudForm) await db.transaction(tx => confirmSlackFormOpenCallback(tx, { context: cloudForm,
+          companyId: record.endpoint.companyId, endpointId: record.endpoint.id, principalId: principal.principal.id }));
         if (attemptActionId) {
           const [settledAttempt] = await db
             .update(chatActions)

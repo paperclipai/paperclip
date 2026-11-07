@@ -783,6 +783,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                       runtimeContext: currentPublicationRuntimeContext,
                     })
                   : null;
+              const stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
               const sent = await postSafePublication({
                 endpoint: authorizationClaim.endpoint,
                 conversation: authorizationClaim.conversation,
@@ -859,7 +860,6 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               }
               const { authorizationActionId } = authorizationClaim;
               const receiptRemovalActionIds: string[] = [];
-              const stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
               await db.transaction(async (tx) => {
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();

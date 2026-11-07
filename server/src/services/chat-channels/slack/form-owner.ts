@@ -242,7 +242,7 @@ export async function stageSlackFormPublication(tx: Tx, publicationId: string, i
   if (!open) return null;
   const resolved = await resolveChatQuestionFormOpen(tx, { companyId: endpoint.companyId, endpointId: endpoint.id,
     conversationId: publication.conversationId, interaction: form, openActionId: open.providerActionId });
-  if (!resolved) return attention("form_grant_current_question_changed");
+  if (!resolved) return null;
   return stageSlackFormGrant(tx, { binding, environment: owner.payload.environment, subject: owner.payload.subject, resolved });
 }
 

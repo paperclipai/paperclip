@@ -266,5 +266,58 @@ if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1" && !external) throw new Error(
     await completedWorker.pollOnce(); expect(lease).toHaveBeenCalledTimes(2); expect(completedWorker.nextPollAt()).toBeNull();
     await completedWorker.pollOnce(); expect(lease).toHaveBeenCalledTimes(2);
   });
+  it("bounded retained-consumer pages pass more than32 completed rows to discover an unfinished tail without dropping attention", async () => {
+    await acceptSlackFormRetirementLocally(db, await row(), identity, compactJws);
+    const retirementDigest = slackFormRetirementReceipt(binding, identity.environment, actorId).receiptId;
+    const retirementProtocol = async (input: { operation: Record<string, unknown> }) => input.operation.refreshRetirementReceipt
+      ? { retirementReceiptJws: compactJws } : input.operation.acceptedRetirementReceipt
+        ? { acceptedRetirementDigest: retirementDigest } : { releasedRetirementDigest: retirementDigest };
+    await transferSlackFormRetirement(db, await row(), identity, retirementProtocol);
+    await transferSlackFormRetirement(db, await row(), identity, retirementProtocol);
+    expect((await row()).result?.phase).toBe("transferred");
+    expect((await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId)))[0]?.status).toBe("paused");
+    const sessionId = randomUUID(), operationId = "c".repeat(64), deliveryId = `slack_form_${operationId}`, now = new Date().toISOString();
+    const receipt = parseSlackFormFinalizedReceipt({ version: 1, kind: "slack_form_finalized", environment: identity.environment, binding,
+      operationId, deliveryId, appReceiptId: sessionId, grantId: "grant", publicationId: "publication", interactionId: "interaction", userId: "UTEST",
+      viewDigest: null, terminalDigest: "d".repeat(64), outcome: "no_effect", finalizedAt: now });
+    const pair = generateKeyPairSync("ed25519"), kid = "session-canonical-control";
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const input = encode({ alg: "EdDSA", typ: "paperclip-connector-ack-receipt+jwt", kid }) + "." + encode({ v: 1, iss: "paperclip-cloud", aud: "paperclip-connector-ack-receipt/v1", sub: identity.instanceId, receipt });
+    const receiptJws = input + "." + sign(null, Buffer.from(input), pair.privateKey).toString("base64url");
+    const terminalIntent = { version: 1, binding, operationId, deliveryId, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction",
+      appReceiptId: sessionId, view: null, outcome: "no_effect", submitReceiptId: null, rejectionDigest: receipt.terminalDigest, encryptedEvidence: null };
+    await db.insert(chatActions).values({ id: sessionId, companyId, endpointId, kind: "slack_form_session", providerActionId: `slack-form-session:${operationId}`,
+      status: "failed", payload: { binding, environment: identity.environment, operationId, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction" },
+      result: { phase: "not_opened", terminalIntent,
+        cloudProofAcceptance: { version: 1, binding, operationId, appReceiptId: sessionId, outcome: "no_effect", terminalDigest: receipt.terminalDigest, acceptedAt: now },
+        formAck: { version: 1, phase: "gc_pending", leaseId: "exact-session-lease", deliveryId, receiptJws, receipt }, nextAttemptAt: now } });
+    await transferSlackFormAckReceipt(db, { companyId, actionId: sessionId, instanceId: identity.instanceId,
+      protocol: async () => ({ releasedAckDigest: slackFormFinalizedReceiptDigest(receipt) }) });
+    const [completed] = await db.select().from(chatActions).where(and(eq(chatActions.id, sessionId), eq(chatActions.companyId, companyId)));
+    if (!completed) throw new Error("Actual GC transition lost its session");
+    for (let n = 1; n <= 33; n++) {
+      const id = `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`, op = n.toString(16).padStart(64, "0"), delivery = `slack_form_${op}`;
+      const historyReceipt = { ...receipt, operationId: op, deliveryId: delivery, appReceiptId: id };
+      const body = encode({ alg: "EdDSA", typ: "paperclip-connector-ack-receipt+jwt", kid }) + "." + encode({ v: 1, iss: "paperclip-cloud", aud: "paperclip-connector-ack-receipt/v1", sub: identity.instanceId, receipt: historyReceipt });
+      const historyJws = body + "." + sign(null, Buffer.from(body), pair.privateKey).toString("base64url");
+      await db.insert(chatActions).values({ ...completed, id, providerActionId: `slack-form-session:${op}`,
+        payload: { ...completed.payload, operationId: op }, result: { phase: "not_opened",
+          terminalIntent: { ...terminalIntent, operationId: op, deliveryId: delivery, appReceiptId: id },
+          cloudProofAcceptance: { version: 1, binding, operationId: op, appReceiptId: id, outcome: "no_effect", terminalDigest: receipt.terminalDigest, acceptedAt: now },
+          formAck: { version: 1, phase: "transferred", leaseId: "exact-session-lease", deliveryId: delivery, receiptJws: historyJws, receipt: historyReceipt }, nextAttemptAt: null } });
+    }
+    const tailId = "ffffffff-ffff-4fff-8fff-ffffffffffff", tailOp = "f".repeat(64);
+    await db.insert(chatActions).values({ id: tailId, companyId, endpointId, kind: "slack_form_session", status: "processing", providerActionId: `slack-form-session:${tailOp}`,
+      payload: { binding, environment: identity.environment, operationId: tailOp, userId: "UTEST", grantId: "grant", publicationId: "publication", interactionId: "interaction" },
+      result: { phase: "update_attempted", view: { id: "VTAIL", hash: "same-loading-hash", externalId: `pc-form-${tailOp}` } } });
+    const connector = { instanceIdentity: () => identity };
+    expect((await readSlackFormRetainedConsumer(db, connector)).owner).toEqual({ subject: "github-bot-events", companyId, binding, requiresDelivery: true });
+    await db.insert(chatActions).values({ id: "00000000-0000-4000-8000-000000000000", companyId, endpointId, kind: "slack_form_session", status: "attention", providerActionId: "malformed-retained-page",
+      payload: { binding: { instanceId: identity.instanceId }, environment: identity.environment }, result: {} });
+    const withMalformed = await readSlackFormRetainedConsumer(db, connector);
+    expect(withMalformed.owner).toMatchObject({ companyId, requiresDelivery: true });
+    expect(withMalformed.attention).toContainEqual({ actionId: "00000000-0000-4000-8000-000000000000", code: "form_retained_owner_invalid" });
+    expect(withMalformed.attention.length).toBeLessThanOrEqual(32);
+  });
 
 });
