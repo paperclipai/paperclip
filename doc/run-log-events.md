@@ -391,6 +391,15 @@ clears a local run's process identity, after it verifies that its PID and proces
 group are absent. The payload contains only those process IDs. Remote process
 IDs are never checked against the control-plane host.
 
+A crash can land after `native.process_start_requested` and before the runner's
+process identity is recorded. Continuation admission then writes
+`native.local_process_stopped` with null process IDs and
+`basis: "unidentified_runner_absent"`. It does this only on the host named in
+the launch event's `hostname` payload, after it checks two things. First, no
+process carries the run's `--run-id` runner argument. Second, no
+saved runner control-plane state (canonical or quarantined) belongs to the run;
+a provider starts only after its runner connects and writes that state.
+
 The server writes `native.process_start_requested` before a backend can spawn,
 and `native.process_identity_recorded` when it stores a new native process
 identity. Either invalidates an earlier local stop receipt, including a crash
