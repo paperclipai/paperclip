@@ -53,7 +53,7 @@ type ShutdownHttpListener = {
  */
 export async function closeHttpListenerForShutdown(input: {
   server: ShutdownHttpListener;
-  signal: "SIGINT" | "SIGTERM";
+  signal: "SIGINT" | "SIGTERM" | "startup_failure";
   timeoutMs?: number;
   drainRequests?: (signal: AbortSignal) => Promise<void>;
   log: ShutdownLogger;
@@ -66,7 +66,11 @@ export async function closeHttpListenerForShutdown(input: {
     const closed = new Promise<"closed">((resolve) => {
       input.server.close((err) => {
         if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
-          input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+          if (input.signal === "startup_failure") {
+            input.log.error({ err }, "failed to close HTTP listener after startup failure");
+          } else {
+            input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+          }
         }
         resolve("closed");
       });
@@ -79,10 +83,12 @@ export async function closeHttpListenerForShutdown(input: {
       }) : closed,
       new Promise<"timed_out">((resolve) => {
         timer = setTimeout(() => {
-          input.log.info(
-            { signal: input.signal, timeoutMs },
-            "HTTP listener drain timed out; closing the remaining connections",
-          );
+          if (input.signal !== "startup_failure") {
+            input.log.info(
+              { signal: input.signal, timeoutMs },
+              "HTTP listener drain timed out; closing the remaining connections",
+            );
+          }
           input.server.closeAllConnections?.();
           resolve("timed_out");
         }, timeoutMs);
