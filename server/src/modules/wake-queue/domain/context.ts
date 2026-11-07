@@ -83,10 +83,18 @@ export function wakeMustNotJoinActiveRun(
 ): boolean {
   // A context compaction run does no task work, so ordinary wakes and
   // compactions never merge, in either arrival order.
-  return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+  return hasRetainedExternalChatRetry(activeRunContext) || interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
     Boolean(readNonEmptyString(parseObject(activeRunContext).contextCompactionRequestId)) ||
     Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
+}
+
+export function hasRetainedExternalChatRetry(context: unknown): boolean {
+  const active = parseObject(context);
+  const activeSource = readNonEmptyString(active.source);
+  return readNonEmptyString(active.retryOfRunId) !== null &&
+    (activeSource?.startsWith("chat:") === true ||
+      (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
 }
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
