@@ -21,6 +21,25 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+// A test can hold every caller of the exited-process proof until N callers
+// arrive, so overlapping sweeps all read a claim before any of them updates it.
+const exitProofBarrier = vi.hoisted(() => ({ parties: 0, waiting: [] as Array<() => void> }));
+vi.mock("../services/controller-process-identity.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/controller-process-identity.js")>();
+  return { ...actual, controllerProcessExited: async (...args: Parameters<typeof actual.controllerProcessExited>) => {
+    if (exitProofBarrier.parties > 1) {
+      await new Promise<void>(resolve => {
+        exitProofBarrier.waiting.push(resolve);
+        if (exitProofBarrier.waiting.length >= exitProofBarrier.parties) {
+          for (const release of exitProofBarrier.waiting.splice(0)) release();
+          exitProofBarrier.parties = 0;
+        }
+      });
+    }
+    return actual.controllerProcessExited(...args);
+  } };
+});
+
 vi.mock("../middleware/logger.js", () => ({
   logger: {
     child: vi.fn(function child(this: unknown) {
@@ -390,6 +409,21 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
         retryPendingSandboxTeardown: teardown,
       } as unknown as HeartbeatEnvironmentRuntime });
       await service.sweepPendingCleanupLeases();
+      expect(teardown).toHaveBeenCalledOnce();
+      expect(await readAttempts(leaseId)).toBe(3);
+    });
+    it("refunds a lost sweep attempt only once when recovery sweeps overlap", async () => {
+      const scope = await seedCompanyAndEnvironment();
+      const leaseId = await insertOrphanEphemeralLease({ ...scope, updatedAt: new Date(Date.now() - 60_000),
+        metadata: { ...claimMetadata({ ...await exitedClaimer(), countedAttempt: true }), [ATTEMPTS_KEY]: 3 } });
+      const teardown = vi.fn(async () => { throw new Error("Provider unavailable"); });
+      const runtime = { retryPendingSandboxTeardown: teardown } as unknown as HeartbeatEnvironmentRuntime;
+      exitProofBarrier.parties = 2;
+      await Promise.all([
+        heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases(),
+        heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases(),
+      ]);
+      // One refund (3 -> 2) and one new failed attempt (2 -> 3); never a second refund.
       expect(teardown).toHaveBeenCalledOnce();
       expect(await readAttempts(leaseId)).toBe(3);
     });
