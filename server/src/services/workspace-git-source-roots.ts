@@ -113,3 +113,31 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
   const result = { root, gitDirectory, commonDirectory, objectDirectories, metadata };
   return { ...result, fingerprint: sha256(JSON.stringify(result)) };
 }
+
+export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<WorkspaceGitSourceRoots[]> {
+  const roots: WorkspaceGitSourceRoots[] = [];
+  let entries = 0;
+  const visit = async (directory: string, depth: number, inRepository: boolean) => {
+    if (depth > 64) throw invalid();
+    await directoryIdentity(directory);
+    const children = (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    entries += children.length;
+    if (entries > 100_000) throw invalid();
+    if (children.some(child => child.name === ".git")) {
+      const source = await readWorkspaceGitSourceRoots(directory);
+      if (!source || roots.length >= 64) throw invalid();
+      roots.push(source); inRepository = true;
+    } else if (children.some(child => child.name === "objects") && children.some(child => child.name === "HEAD")) throw invalid();
+    for (const child of children) {
+      if (!child.isDirectory() || child.name === ".git" || child.name === ".paperclip-runtime") continue;
+      const next = path.join(directory, child.name);
+      if (!inRepository) {
+        const marker = await entry(child.name === "node_modules" ? path.join(directory, "package.json") : path.join(next, "pyvenv.cfg"));
+        if (marker?.isFile() && !marker.isSymbolicLink()) continue;
+      }
+      await visit(next, depth + 1, inRepository);
+    }
+  };
+  await visit(path.resolve(cwd), 0, false);
+  return roots;
+}

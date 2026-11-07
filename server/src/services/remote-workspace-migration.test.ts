@@ -19,6 +19,7 @@ import { migrateWorkspaceTrees } from "./remote-workspace-migration-batch.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
 import { captureTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { captureRestorePoint, sealRestorePoint } from "./git-restore-point.js";
 import type { TaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
@@ -34,6 +35,8 @@ import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { captureGitWorkspaceContents, readManagedCheckoutContents } from "./git-workspace-contents.js";
 import { isolatedRemoteSourcePath } from "./isolated-remote-workspace-source.js";
 import { verifiedGitCacheSource } from "./git-workspace-restoration.js";
+import { withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { inspectOnlineWorkspaceSource } from "./online-workspace-source.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -1142,6 +1145,130 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_snapshot_operation_content_changed");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("new local edits\n");
+  });
+  async function nestedGitWrapperFixture() {
+    const original = await seed();
+    vi.stubEnv("PAPERCLIP_HOME", await fs.realpath(root));
+    const cwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", original.companyId, original.issueId);
+    await fs.mkdir(path.dirname(cwd), { recursive: true }); await fs.rename(original.cwd, cwd);
+    await db.update(executionWorkspaces).set({ cwd, providerRef: cwd }).where(eq(executionWorkspaces.id, original.workspaceId));
+    const f = { ...original, cwd }, nested = path.join(cwd, ".review", "repository");
+    await fs.mkdir(nested, { recursive: true }); await fs.writeFile(path.join(nested, "tracked.txt"), "committed\n");
+    await git(nested, "init", "-q", "-b", "feature"); await git(nested, "add", "."); await git(nested, "commit", "-qm", "nested work");
+    const head = await git(nested, "rev-parse", "HEAD");
+    await fs.writeFile(path.join(nested, "tracked.txt"), "staged\n"); await git(nested, "add", "tracked.txt");
+    await fs.writeFile(path.join(nested, "tracked.txt"), "unstaged\n");
+    return { f, nested, head };
+  }
+  it.each([false, true])("imports a nested Git wrapper and retains its pending journal on resume (%s)", async resume => {
+    const { f, head } = await nestedGitWrapperFixture();
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: true });
+    let operationId: string | undefined, snapshotId: string | undefined;
+    if (resume) {
+      const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory")
+        .mockRejectedValueOnce(new Error("remote_workspace_archive_online_source_git_requires_shared_fence"));
+      try {
+        await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true }))
+          .rejects.toThrow("remote_workspace_archive_online_source_git_requires_shared_fence");
+      } finally { capture.mockRestore(); }
+      const [operation] = await db.select().from(workspaceOperations), [snapshot] = await db.select().from(executionWorkspaceSnapshots);
+      expect(operation).toMatchObject({ status: "running", metadata: { nestedWorkspaceScope: { state: "fixed", children: [] } } });
+      expect(snapshot).toMatchObject({ status: "pending", sourceOperationId: operation!.id, byteSize: null, sha256: null });
+      operationId = operation!.id; snapshotId = snapshot!.id;
+    }
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
+    const operations = await db.select().from(workspaceOperations), snapshots = await db.select().from(executionWorkspaceSnapshots);
+    expect(operations).toHaveLength(1); expect(snapshots).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ ...(operationId ? { id: operationId } : {}), status: "succeeded" });
+    expect(snapshots[0]).toMatchObject({ ...(snapshotId ? { id: snapshotId } : {}), status: "committed", sourceOperationId: operations[0]!.id });
+    expect(authority.snapshotId).toBe(snapshots[0]!.id);
+    const ref = await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "nested.pcws"), targetDir = path.join(root, "restored-nested");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+    await fs.rm(f.cwd, { recursive: true });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+    const restored = path.join(targetDir, ".review", "repository");
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+    expect(await git(restored, "rev-parse", "HEAD")).toBe(head);
+    expect(await git(restored, "show", ":tracked.txt")).toBe("staged");
+    expect(await fs.readFile(path.join(restored, "tracked.txt"), "utf8")).toBe("unstaged\n");
+  });
+  it.each(["linked", "alternate"])("fences a nested Git wrapper's shared %s source before journal creation", async mode => {
+    const { f, nested } = await nestedGitWrapperFixture();
+    const [sourceIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Shared Git source" }).returning();
+    const source = path.join(resolvePaperclipInstanceRoot(), "isolated-repository-sources", f.companyId, sourceIssue!.id, "checkout");
+    await fs.mkdir(source, { recursive: true }); await fs.writeFile(path.join(source, "source.txt"), "shared source\n");
+    await git(source, "init", "-q", "-b", "main"); await git(source, "add", "."); await git(source, "commit", "-qm", "shared source");
+    const sourceWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({ id: sourceWorkspaceId, companyId: f.companyId, sourceIssueId: sourceIssue!.id,
+      mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree", name: "Shared source", cwd: source, providerRef: source });
+    await fs.rm(nested, { recursive: true });
+    if (mode === "linked") await git(source, "worktree", "add", "-b", "nested", nested);
+    else { await git(root, "clone", "--shared", source, nested); await git(nested, "remote", "remove", "origin"); }
+    const scope = await inspectOnlineWorkspaceSource(db, await workspace(f.workspaceId));
+    expect(scope).toMatchObject({ kind: "git", root: f.cwd });
+    expect(scope!.workspaceIds).toEqual([f.workspaceId, sourceWorkspaceId].sort());
+    expect(scope!.issueIds).toEqual([f.issueId, sourceIssue!.id].sort());
+    let acquire!: () => void, release!: () => void;
+    const acquired = new Promise<void>(resolve => { acquire = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const holder = withWorkspaceSourceLocks(db, { companyId: f.companyId, issueIds: [sourceIssue!.id] }, async () => {
+      acquire(); await released;
+    });
+    await acquired;
+    try {
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("workspace_source_busy");
+      expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated workspace" }).returning();
+      const otherId = randomUUID(), otherCwd = path.join(resolvePaperclipInstanceRoot(), "isolated-workspaces", f.companyId, other!.id);
+      await fs.mkdir(otherCwd, { recursive: true }); await fs.writeFile(path.join(otherCwd, "other.txt"), "unrelated work\n");
+      await db.insert(executionWorkspaces).values({ id: otherId, companyId: f.companyId, sourceIssueId: other!.id,
+        name: "Unrelated workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: otherCwd, providerRef: otherCwd });
+      await db.update(issues).set({ executionWorkspaceId: otherId }).where(eq(issues.id, other!.id));
+      await expect(migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: otherId, apply: true }))
+        .resolves.toMatchObject({ applied: true });
+    }
+    finally { release(); await holder; }
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(await fs.readFile(path.join(nested, "source.txt"), "utf8")).toBe("shared source\n");
+  });
+  it.each(["foreign-alias", "unowned-alternate"])("keeps a nested Git wrapper blocked by %s", async mode => {
+    const { f, nested } = await nestedGitWrapperFixture();
+    if (mode === "foreign-alias") {
+      const foreignCompanyId = randomUUID(), foreignIssueId = randomUUID(), foreignCwd = path.join(root, "foreign-worktree");
+      await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign company", issuePrefix: "OTHER" });
+      await db.insert(issues).values({ id: foreignIssueId, companyId: foreignCompanyId, title: "Foreign task" });
+      await git(nested, "worktree", "add", "-b", "foreign", foreignCwd);
+      await db.insert(executionWorkspaces).values({ companyId: foreignCompanyId, sourceIssueId: foreignIssueId,
+        name: "Foreign alias", mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree", cwd: foreignCwd, providerRef: foreignCwd });
+    } else {
+      const objects = path.join(root, "unowned-objects"); await fs.mkdir(objects);
+      await fs.writeFile(path.join(nested, ".git", "objects", "info", "alternates"), objects + "\n");
+    }
+    expect(await inventoryRemoteWorkspaceMigration(db, f)).toMatchObject({ eligible: false, reasons: ["online_workspace_source_scope_unproven"] });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("online_workspace_source_scope_unproven");
+    expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    expect(await fs.readFile(path.join(nested, "tracked.txt"), "utf8")).toBe("unstaged\n");
+  });
+  it("rechecks a nested Git wrapper's alternate metadata before publication", async () => {
+    const { f, nested } = await nestedGitWrapperFixture(), objects = path.join(f.cwd, "alternate-objects");
+    await fs.mkdir(objects);
+    const before = await inspectOnlineWorkspaceSource(db, await workspace(f.workspaceId));
+    expect(before).toMatchObject({ kind: "git", root: f.cwd });
+    const putFile = storage.putFile.bind(storage);
+    vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {
+      const result = await putFile(input);
+      await fs.writeFile(path.join(nested, ".git", "objects", "info", "alternates"), objects + "\n");
+      return result;
+    });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_migration_source_changed");
+    const after = await inspectOnlineWorkspaceSource(db, await workspace(f.workspaceId));
+    expect(after).toMatchObject({ kind: "git", root: f.cwd });
+    expect(after!.gitSourceFingerprints).not.toEqual(before!.gitSourceFingerprints);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(nested, "tracked.txt"), "utf8")).toBe("unstaged\n");
   });
   it("imports dirty unpushed Git work and restores it after the original folder disappears", async () => {
     let f = await seed();
