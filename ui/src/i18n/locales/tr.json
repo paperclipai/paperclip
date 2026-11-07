@@ -4,6 +4,10 @@
       "title": "İlk şirketinizi oluşturun",
       "description": "Bir şirket oluşturarak başlayın.",
       "newCompany": "Yeni Şirket"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

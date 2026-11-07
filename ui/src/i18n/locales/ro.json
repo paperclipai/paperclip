@@ -4,6 +4,10 @@
       "title": "Creați prima companie",
       "description": "Începeți prin crearea unei companii.",
       "newCompany": "Companie nouă"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

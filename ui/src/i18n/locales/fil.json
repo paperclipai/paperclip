@@ -4,6 +4,10 @@
       "title": "Gumawa ng iyong unang kumpanya",
       "description": "Magsimula sa paggawa ng kumpanya.",
       "newCompany": "Bagong Kumpanya"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

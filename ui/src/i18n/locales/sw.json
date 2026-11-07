@@ -4,6 +4,10 @@
       "title": "Unda kampuni yako ya kwanza",
       "description": "Anza kwa kuunda kampuni.",
       "newCompany": "Kampuni Mpya"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }
