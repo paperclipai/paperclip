@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  /** The board can Stop this run now: any queued or running run, or a failed native run whose retry is still pending. */
   canStop?: boolean;
   phase:
     | "working"
@@ -114,4 +115,6 @@ export interface TaskInterruptionPresentation {
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];
   observedRunId: string | null;
+  /** The saved-work recovery step that must finish before the task continues. */
+  recoveryStep?: "checking_previous_run" | "saving_previous_files" | "finishing_recovery";
 }

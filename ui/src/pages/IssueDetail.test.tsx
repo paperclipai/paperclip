@@ -40,6 +40,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { clearLocalInboxArchive, filterLocalInboxArchivedIssues, getLocalInboxArchiveIssueIds } from "../lib/inboxArchiveCache";
@@ -105,6 +106,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
   getDocument: vi.fn(),
+  acceptInteraction: vi.fn(),
   rejectInteraction: vi.fn(),
 }));
 
@@ -2501,6 +2503,32 @@ describe("IssueDetail", () => {
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("opens a prefetched task without waiting on navigation reads (Coordinator: %s)", async coordinator => {
+    coordinatorPreference.enabled = coordinator;
+    queryClient.setDefaultOptions({ queries: { retry: false, staleTime: 30_000 } });
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ description: "Prefetched instruction" }));
+    mockIssuesApi.recentComments.mockResolvedValue({
+      comments: [createIssueComment({ body: "Prefetched answer" })],
+      latestCommentId: "comment-1", oldestCommentId: "comment-1", hasMore: true,
+    });
+    await prefetchIssueDetailForNavigation(queryClient, "PAP-1");
+    mockIssuesApi.getCore.mockClear().mockReturnValue(createDeferred<Issue>().promise);
+    mockIssuesApi.recentComments.mockClear().mockReturnValue(createDeferred<IssueRecentComments>().promise);
+    mockIssuesApi.get.mockReturnValue(createDeferred<Issue>().promise);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        compactHistory: true, initialHistoryPending: false,
+        comments: [expect.objectContaining({ body: "Prefetched answer" })],
+      });
+    });
+    expect(mockIssuesApi.getCore).not.toHaveBeenCalled();
+    expect(mockIssuesApi.recentComments).not.toHaveBeenCalled();
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+  });
+
   it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     const stalled = createDeferred<Issue>();
@@ -3873,7 +3901,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
-  it.each(["success", "failure", "pending question"])("connects the inline disposition retry to current state (%s)", async outcome => {
+  it.each(["success", "failure", "pending question", "outdated plan", "current plan"])("connects the inline disposition retry to current state (%s)", async outcome => {
     const fail = outcome === "failure";
     const actionId = "recovery-action-inline";
     const snapshot: DispositionRecoverySnapshot = { kind: "disposition_repair_escalated", actionId, attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: "agent-1" };
@@ -3886,13 +3914,28 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(issue);
     mockIssuesApi.listComments.mockResolvedValue([{ id: "notice-inline", companyId: issue.companyId, issueId: issue.id, authorType: "system", body: "Unrelated prose", createdAt: new Date(), updatedAt: new Date(), metadata: { version: 1, sections: [], recovery: snapshot } }]);
     if (outcome === "pending question") mockIssuesApi.listInteractions.mockResolvedValue([{ id: "question-1", kind: "ask_user_questions", status: "pending", payload: { version: 1, questions: [] } }]);
+    if (outcome.endsWith("plan")) {
+      mockIssuesApi.getDocument.mockResolvedValue({
+        id: "plan-document", companyId: issue.companyId, issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: "# Current plan",
+        latestRevisionId: "revision-4", latestRevisionNumber: 4,
+        createdAt: new Date("2026-11-01T10:00:00Z"), updatedAt: new Date("2026-11-01T10:03:00Z"),
+        createdByAgentId: "agent-1", createdByUserId: null, updatedByAgentId: "agent-1", updatedByUserId: null,
+        lockedAt: null, lockedByAgentId: null, lockedByUserId: null,
+      });
+      const fixture = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+      const revision = outcome === "outdated plan" ? 3 : 4;
+      mockIssuesApi.listInteractions.mockResolvedValue([{
+        ...fixture, companyId: issue.companyId, issueId: issue.id, createdAt: new Date("2026-11-01T10:01:00Z"),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", key: "plan", documentId: "plan-document", revisionId: `revision-${revision}`, revisionNumber: revision } },
+      }]);
+    }
     if (fail) mockIssuesApi.resolveRecoveryAction.mockRejectedValue(new Error("The task is now paused."));
     else mockIssuesApi.resolveRecoveryAction.mockResolvedValue({ issue: { ...issue, status: "todo", activeRecoveryAction: null }, recoveryAction: { ...issue.activeRecoveryAction, status: "resolved" } });
     await act(async () => renderIssueView());
     await flushReact(); await flushReact();
     const retry = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Retry agent");
     expect(retry).toBeDefined();
-    if (outcome === "pending question") {
+    if (outcome === "pending question" || outcome === "current plan") {
       expect(retry!.disabled).toBe(true);
       expect(container.textContent).toContain("Respond to the pending question or confirmation before retrying.");
       await act(async () => retry!.click());
@@ -6287,6 +6330,28 @@ describe("IssueDetail", () => {
     expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
       issueWorkMode: "planning",
     });
+  });
+
+  it.each(["accept", "reject"] as const)("refreshes the request after a superseded %s response", async action => {
+    const pending = (await import("@/fixtures/issueThreadInteractionFixtures")).genericPendingRequestConfirmationInteraction;
+    const expired = { ...pending, status: "expired", result: { version: 1, outcome: "superseded_by_newer_request" } };
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listInteractions.mockResolvedValue([pending]);
+    const error = new ApiError("Interaction has been superseded", 409, { details: { code: "interaction_superseded" } });
+    mockIssuesApi.acceptInteraction.mockRejectedValue(error);
+    mockIssuesApi.rejectInteraction.mockRejectedValue(error);
+    await act(async () => renderIssueView());
+    await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    const reads = mockIssuesApi.listInteractions.mock.calls.length;
+    mockIssuesApi.listInteractions.mockResolvedValue([expired]);
+    await act(async () => {
+      const resolve = action === "accept" ? props.onAcceptInteraction : props.onRejectInteraction;
+      await expect(resolve(pending)).rejects.toBe(error);
+    });
+    await flushReact();
+    expect(mockIssuesApi.listInteractions.mock.calls.length).toBeGreaterThan(reads);
+    expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1"))).toEqual([expired]);
   });
 
   it("reports the selected continuation action after rejecting completion", async () => {

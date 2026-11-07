@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -109,6 +109,22 @@ describe("heartbeat retry module callbacks", () => {
       retryExhaustion: { retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, scheduledRetryAttempt: 0, maxAttempts: 0 },
     }));
     expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledAfter(deps.appendRunEvent);
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("gives every caller the Runner wait budget for a Runner mismatch and reports its exhaustion", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "runner_revision_mismatch", scheduledRetryReason: "runner_revision_wait", scheduledRetryAttempt: 10,
+      contextSnapshot: { issueId: "issue", executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0 } } } as Run;
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent);
+    expect(retry).toMatchObject({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 });
+    expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
+      retryExhaustion: { retryReason: "runner_revision_wait", scheduledRetryAttempt: 10, maxAttempts: 10 },
+    }));
+    expect(extracted.failedRunRetryBudgetSpent(run)).toBe(true);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, scheduledRetryAttempt: 9 })).toBe(false);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, errorCode: "setup_failed" })).toBe(false);
     expect(database.access).not.toHaveBeenCalled();
   });
 
@@ -271,6 +287,42 @@ describePostgres("heartbeat retry module database wiring", () => {
       await db.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, companyId));
       await db.delete(projects).where(eq(projects.companyId, companyId));
     }
+  });
+
+  it("keeps the accepted interaction owner and its catalog provider deadline", async () => {
+    const { run, agent } = await fixture();
+    const retryAt = new Date(now.getTime() + 3600_000);
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "repository_catalog_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream", retryNotBefore: retryAt.toISOString() },
+      contextSnapshot: { ...run.contextSnapshot, interactionId: "answered-question", interactionStatus: "answered",
+        interactionKind: "ask_user_questions", mutation: "interaction", wakeReason: "issue_commented" },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, {
+      now, random: () => 0, retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, maxAttempts: 2,
+    })).toMatchObject({ outcome: "scheduled" });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+    expect(successor).toMatchObject({ scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    expect(successor!.contextSnapshot?.codexTransientFallbackMode).toBeUndefined();
+  });
+
+  it("waits for a Runner update without spending failure retries and keeps an answered interaction", async () => {
+    const { run, agent } = await fixture();
+    const snapshot = { ...run.contextSnapshot, interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented", executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } };
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "runner_revision_mismatch", contextSnapshot: snapshot })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "runner_revision_wait", scheduledRetryAttempt: 1 });
+    expect(successor!.contextSnapshot).toMatchObject({ mutation: "interaction", interactionId: "interaction-1",
+      executionRetryAccounting: { failureRetries: 1 } });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
+    expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "runner_revision_wait" });
   });
 
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {

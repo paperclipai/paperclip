@@ -1,5 +1,20 @@
 # Native workspace finalization ownership and recovery
 
+Online legacy workspace import may preserve an unresolved terminal source while
+unrelated object-backed work continues. This is a file-authority handoff. It
+does not finish the old result, clear its recovery action, stop a provider, or
+start another turn. Keep every descriptor, retained allocation, and finalization
+checkpoint for the recovery owner.
+
+The migration owner must hold the existing per-run physical finalizer advisory
+locks across capture and publication. It must reject a non-null coordinator
+owner, a durable physical copyback owner, a live controller lease, or an active
+adapter control. An expired owner is still an owner. Historical agent PID fields
+remain unchanged; they do not certify that the provider stopped. Recheck the
+exact source proof under publication row locks. A changed source or checkpoint
+keeps local authority. Provider stop verification and any later file export
+remain the recovery owner's separate obligations.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown
@@ -159,8 +174,12 @@ checks under short coordinator, issue and run row locks, atomically with the
 owner claim. The task must still be open, assigned to the run or its authoritative
 review participant, and bound to that running native execution and accepted
 result. A different checkout, newer execution or queued/running legacy execution
-prevents takeover. Publication checks repeat this validation; row locks are never
-held across physical copyback I/O.
+prevents takeover. A later wake for the same assignee that has never started,
+such as the answer to the run's question, does not. Its claim waits for this
+run's execution lock, so it waits for this copyback. Counting it would block both
+runs. Another agent's run and a recovery-action wake still prevent takeover.
+Publication checks repeat this validation, so a wake that starts during copyback
+stops publication. Row locks are never held across physical copyback I/O.
 
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be

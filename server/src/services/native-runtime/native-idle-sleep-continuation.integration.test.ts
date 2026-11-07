@@ -6,12 +6,14 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { agents, agentTaskSessions, agentWakeupRequests, authUsers, companies, companyMemberships, companySecretVersions, createDb, heartbeatRuns,
   issues, issueWorkProducts, nativeRunResults } from "@paperclipai/db";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
-import { nativeRestartFixture, describeEmbeddedPostgres } from "../../__tests__/helpers/native-restart.js";
+import { nativeRestartFixture } from "../../__tests__/helpers/native-restart-fixture.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { getRecoveryPostgresSupport } from "../../__tests__/helpers/recovery-postgres-fixture.js";
 import { heartbeatService } from "../heartbeat.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
@@ -20,9 +22,12 @@ import { readIdleSleepSafety } from "../idle-sleep-safety.js";
 import { closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "./native-session-executor.js";
 
 const dedicatedDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_TEST_DATABASE_URL");
+const recoveryOptions = { dedicatedDatabaseUrl };
+const recoverySupport = await getRecoveryPostgresSupport(recoveryOptions);
+const describeRecoveryPostgres = recoverySupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres("native idle sleep cold continuation", () => {
-  const fixture = nativeRestartFixture({ dedicatedDatabaseUrl });
+describeRecoveryPostgres("native idle sleep cold continuation", () => {
+  const fixture = nativeRestartFixture(recoveryOptions);
   afterEach(async () => {
     await closeIdleWarmNativeSessionsForRestart();
     vi.unstubAllEnvs();
@@ -125,6 +130,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual", { actorType: "user", actorId: userId });
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(1);
       expect(opened).toHaveLength(1);
       const [first] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, turns[0]));
@@ -181,6 +187,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
+      await flushBudgetEvaluationWork(db, { companyId });
       expect(turns).toHaveLength(2);
       expect(new Set(turns).size).toBe(2);
       expect(opened).toHaveLength(2);

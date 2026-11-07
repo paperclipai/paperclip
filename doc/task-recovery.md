@@ -253,7 +253,13 @@ Run the focused PostgreSQL/filesystem suites from `server/`:
 ../node_modules/.bin/vitest run --config vitest.config.ts \
   src/services/system-recovery-state.test.ts \
   src/services/task-retry.test.ts \
-  src/services/workspace-recovery.test.ts \
+  src/services/workspace-recovery-retry-copyback.test.ts \
+  src/services/workspace-recovery-preparation.test.ts \
+  src/services/workspace-recovery-preparation-proof.test.ts \
+  src/services/workspace-recovery-preparation-dispatch.test.ts \
+  src/services/workspace-recovery-preparation-gates.test.ts \
+  src/services/workspace-recovery-warm-handoff.test.ts \
+  src/services/workspace-recovery-admission.test.ts \
   src/services/explicit-native-continuation.test.ts \
   src/services/heartbeat/workspace-preparation.test.ts \
   src/services/native-runtime/native-chat-workspace.test.ts

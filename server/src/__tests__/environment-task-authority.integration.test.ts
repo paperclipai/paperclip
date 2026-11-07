@@ -6,6 +6,7 @@ import { resolvePluginTaskResume } from "../services/environment-task-runtime.js
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { createPluginRunnerTaskOwner } from "../services/native-runtime/plugin-runner-task.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -21,7 +22,7 @@ databaseSuite("environment task lease authority", () => {
   });
   afterAll(async () => { await stopDb?.(); });
 
-  it("replaces a stopped warm candidate within its tracked startup context", async () => {
+  it.each(["dispatch", "writeback"])("fences stale owner %s through maintained physical task replacement", async mode => {
     const companyId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID(), pluginId = randomUUID(), runId = randomUUID(), leaseId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Warm candidate", issuePrefix: `T${companyId.slice(0, 7).replace(/-/g, "").toUpperCase()}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
@@ -33,10 +34,17 @@ databaseSuite("environment task lease authority", () => {
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId,
       provider: "plugin:fixture:tasks", providerLeaseId: "stopped-task", status: "active", leasePolicy: "reuse_by_environment",
       metadata: { driver: "plugin", pluginId, pluginKey: pluginId, driverKey: "tasks", runnerTaskLease: true, runnerTaskReused: true } });
-    const calls: string[] = [];
+    const calls: string[] = [], stoppedTasks: string[] = [];
+    let holdStatus = false, releaseStatus!: () => void, enterStatus!: () => void;
+    const statusEntered = new Promise<void>(resolve => { enterStatus = resolve; });
+    const statusReleased = new Promise<void>(resolve => { releaseStatus = resolve; });
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask", "environmentAcquireLease"] }),
       call: async (_plugin: string, method: string, params: any, _timeout?: number, _sink?: unknown, settled?: () => void) => {
         calls.push(method === "environmentTask" ? params.operation.kind : method);
+        if (method === "environmentTask" && params.operation.kind === "stop") stoppedTasks.push(params.taskId);
+        if (method === "environmentTask" && params.operation.kind === "status" && holdStatus) {
+          holdStatus = false; enterStatus(); await statusReleased;
+        }
         try {
           if (method === "environmentAcquireLease") return { providerLeaseId: "replacement-task" };
           if (params.operation.kind === "status") return { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true };
@@ -47,16 +55,36 @@ databaseSuite("environment task lease authority", () => {
       },
     } as unknown as PluginWorkerManager;
     const context = new NativeExecutionContext({ binding: { companyId, agentId, runId } } as never, 1_000);
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
+    const task = (operation: unknown, options?: { expectedTaskId?: string }) => runtime.task({ companyId, leaseId,
+      operation: operation as never, ...options });
+    const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId, normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+    const oldOwner = createPluginRunnerTaskOwner({ taskId: "stopped-task", task, projectIds: [], harness: "codex", adoptIdentity: identity });
+    const oldRegistration = await oldOwner.registration({} as never, runId);
+    holdStatus = mode === "writeback";
+    const lateStatus = holdStatus ? task({ kind: "status" }, { expectedTaskId: "stopped-task" }) : Promise.resolve();
+    if (holdStatus) await statusEntered;
     try {
       await expect(environmentRuntimeService(db, { pluginWorkerManager: workers }).task({ companyId, leaseId,
         operation: { kind: "describe" }, executionContext: context })).resolves.toMatchObject({ kind: "description", taskId: "replacement-task" });
-      expect(calls).toEqual(["status", "status", "complete", "environmentAcquireLease", "describe"]);
+      expect(calls).toEqual([...(mode === "writeback" ? ["status"] : []), "status", "status", "complete", "environmentAcquireLease", "describe"]);
       expect(context.pending).toBe(false);
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
       expect(lease.providerLeaseId).toBe("replacement-task");
       expect(lease.metadata?.runnerTaskReused).toBe(false);
       expect(JSON.stringify(lease.metadata)).not.toContain(context.id);
-    } finally { context.finish(); }
+      releaseStatus(); await lateStatus;
+      const [afterLateStatus] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(afterLateStatus.metadata?.runnerTaskExecutionStopped).toBe(false);
+      const failedCleanup = await oldRegistration.checkpoint("unsettled").then(() => undefined, error => error);
+      expect(stoppedTasks).not.toContain("replacement-task");
+      expect(failedCleanup).toBeInstanceOf(Error);
+      const nextOwner = createPluginRunnerTaskOwner({ taskId: "replacement-task", task, projectIds: [], harness: "codex", adoptIdentity: identity });
+      const nextRegistration = await nextOwner.registration({} as never, runId);
+      try { await expect(nextRegistration.checkpoint("unsettled")).resolves.toBeUndefined(); }
+      finally { await nextRegistration.release("detach"); }
+      expect(stoppedTasks).toEqual(["replacement-task"]);
+    } finally { releaseStatus(); await lateStatus.catch(() => undefined); context.finish(); await oldRegistration.release("detach"); }
   });
 
   it.each(["late", "post-result", "retiring"])("queues a replacement instead of attaching after %s startup cancellation", async mode => {

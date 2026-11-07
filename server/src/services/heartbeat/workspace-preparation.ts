@@ -47,7 +47,7 @@ import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd } fro
 import { parseObject } from "../../adapters/utils.js";
 import { materializeNativeChatTaskRoot } from "../native-runtime/native-chat-workspace.js";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
-import { withIsolatedRepositorySourceLock } from "../isolated-remote-workspace-source.js";
+import { withWorkspaceSourceLocks } from "../workspace-source-lock.js";
 import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -170,9 +170,23 @@ function readNonEmptyString(value: unknown): string | null {
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const sourceIssueId = input.reuse.reusableExistingExecutionWorkspace?.sourceIssueId
     ?? input.reuse.existingExecutionWorkspace?.sourceIssueId ?? input.task.issueId;
-  if (!sourceIssueId || input.reuse.isDotRun || resolveProviderApiPlacement(input)) return prepareHeartbeatWorkspaceLocked(db, input);
-  return withIsolatedRepositorySourceLock(db, input.agent.companyId, sourceIssueId,
+  if (input.reuse.isDotRun || resolveProviderApiPlacement(input)) return prepareHeartbeatWorkspaceLocked(db, input);
+  if (!sourceIssueId) return withWorkspaceSourceLocks(db, { companyId: input.agent.companyId },
     () => prepareHeartbeatWorkspaceLocked(db, input));
+  return withWorkspaceSourceLocks(db, { companyId: input.agent.companyId,
+    issueIds: [...new Set([sourceIssueId, input.task.issueId].filter((id): id is string => Boolean(id)))] }, async () => {
+    const reuse = { ...input.reuse };
+    for (const key of ["existingExecutionWorkspace", "reusableExistingExecutionWorkspace"] as const) {
+      const selected = reuse[key];
+      if (!selected || readRemoteWorkspaceAuthority(selected.metadata)) continue;
+      const [fresh] = await db.select({ metadata: executionWorkspacesTable.metadata }).from(executionWorkspacesTable)
+        .where(and(eq(executionWorkspacesTable.companyId, input.agent.companyId), eq(executionWorkspacesTable.id, selected.id)));
+      if (!readRemoteWorkspaceAuthority(fresh?.metadata)) continue;
+      const current = await input.services.executionWorkspacesSvc.getStoredById(input.agent.companyId, selected.id);
+      if (current && readRemoteWorkspaceAuthority(current.metadata)) reuse[key] = current;
+    }
+    return prepareHeartbeatWorkspaceLocked(db, { ...input, reuse });
+  });
 }
 
 async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspacePreparationInput) {
@@ -1025,7 +1039,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, reserved.id);
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
       persistedExecutionWorkspace = await executionWorkspacesSvc.update(reserved.id, {
-        metadata: { ...nextExecutionWorkspaceMetadata, ...reserved.metadata,
+        metadata: { ...reserved.metadata, ...nextExecutionWorkspaceMetadata,
           remoteWorkspace: reserved.metadata?.remoteWorkspace },
       });
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
@@ -1425,7 +1439,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     projectRepositoryPaths.push(...repositories.map(repository => repository.relativePath));
     persistedExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, persistedExecutionWorkspace.id);
   }
-  if (remoteFresh?.mode === "fresh_isolated_workspace") {
+  if (remoteAuthority && persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles) {
     const recorded = persistedExecutionWorkspace?.metadata?.remoteWorkspaceRecoveredFiles;
     const recoveredFiles = (Array.isArray(recorded) ? recorded : []).map(value => {
       const file = parseObject(value);

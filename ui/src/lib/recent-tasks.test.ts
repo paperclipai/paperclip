@@ -63,6 +63,21 @@ describe("recent task persistence", () => {
     expect(readRecentTasks(storageKey, "company-1")[0]?.externalConversationState).toBe("active");
   });
 
+  it("keeps the covered-blocker state so the sidebar shows the same queued glyph as the task pane (BUG-07)", () => {
+    const covered = {
+      state: "covered" as const, reason: "active_child" as const, unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+      attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: "ONB-3", sampleStalledBlockerIdentifier: null,
+    };
+    const blocked = { ...issue("1"), status: "blocked" as const, updatedAt: new Date(10) };
+    recordRecentTask({ ...blocked, blockerAttention: covered }, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.blockerAttention).toEqual(covered);
+    // A same-version summary refresh can change only the derived blocker state.
+    const attention = { ...covered, state: "needs_attention" as const, reason: "attention_required" as const, coveredBlockerCount: 0, attentionBlockerCount: 1 };
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...blocked, externalConversationState: null, blockerAttention: attention }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.blockerAttention).toEqual(attention);
+  });
+
   it("accepts server settlement after an optimistic run-lock clear", () => {
     const running = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const, executionRunId: "run-1", updatedAt: new Date(10) } as Issue;
     recordRecentTask(running, "user-1");

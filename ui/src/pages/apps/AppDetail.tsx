@@ -715,7 +715,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 appName={appName}
                 agents={agents}
                 access={access}
-                install={connection.connectionPurpose === "ai" || managesRemoteMcpAccess ? installStateFrom([]) : install}
+                install={connection.connectionPurpose === "ai" || connection.connectionPurpose === "tool" ? installStateFrom([]) : install}
                 readOnly={readOnly}
                 canChange={canChange}
                 quarantined={quarantined}
@@ -728,7 +728,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                     ? "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls."
                     : undefined
                 }
-                onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" || managesRemoteMcpAccess ? next : accessIncludingInstalls(next, install) })}
+                onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" || connection.connectionPurpose === "tool" ? next : accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
                 onSetActionPermission={(ids, next) => apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}

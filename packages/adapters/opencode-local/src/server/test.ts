@@ -144,6 +144,7 @@ export async function testEnvironment(
   // `fs.mkdtemp` directory leaks on the early-throw path.
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let nativeProbeWorkspaceLocalDir: string | null = null;
+  let nativeProbeHomeLocalDir: string | null = null;
   try {
     let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
     let runtimeCwd = cwd;
@@ -152,6 +153,23 @@ export async function testEnvironment(
     if (!targetIsRemote && ctx.adapterType === "paperclip_runner" && !asString(config.cwd, "").trim()) {
       nativeProbeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-native-probe-"));
       runtimeCwd = nativeProbeWorkspaceLocalDir;
+    }
+    // The native runner gives every OpenCode process its own home and data
+    // directory. The probe must too: OpenCode keeps one SQLite database per
+    // data directory, and concurrent processes sharing the host user's
+    // database fail with "database is locked".
+    if (!targetIsRemote && ctx.adapterType === "paperclip_runner") {
+      nativeProbeHomeLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-native-probe-home-"));
+      Object.assign(preparedRuntimeConfig.env, {
+        HOME: nativeProbeHomeLocalDir,
+        XDG_DATA_HOME: path.join(nativeProbeHomeLocalDir, "data"),
+        XDG_CACHE_HOME: path.join(nativeProbeHomeLocalDir, "cache"),
+        XDG_STATE_HOME: path.join(nativeProbeHomeLocalDir, "state"),
+        // Match the native driver: a fresh cache must not fetch a catalog or
+        // install default plugins before the pinned model answers.
+        OPENCODE_DISABLE_MODELS_FETCH: "true",
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+      });
     }
     if (targetIsRemote) {
       preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-opencode-envtest-${runId}-`));
@@ -460,8 +478,8 @@ export async function testEnvironment(
       }
     }
   } finally {
-    if (nativeProbeWorkspaceLocalDir) {
-      await fs.rm(nativeProbeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    for (const dir of [nativeProbeWorkspaceLocalDir, nativeProbeHomeLocalDir]) {
+      if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
     await restoreWorkspace?.();
     if (!restoreWorkspace && preparedRuntimeWorkspaceLocalDir) {

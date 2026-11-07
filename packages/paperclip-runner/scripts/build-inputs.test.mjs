@@ -160,6 +160,7 @@ test("the digest is stable, ignores outputs and caches, and tracks every kind of
       "packages/paperclip-runner/node_modules/dep/index.js": "changed\n",
       "packages/paperclip-runner/.vite/cache.json": '{"changed":true}\n',
       "packages/paperclip-runner/runner/target/release/paperclip-runnerd": "rebuilt\n",
+      "packages/paperclip-runner/provider-assets/copilot/copilot": "installed by the build\n",
       "packages/paperclip-eval-kernel/dist/index.js": "changed\n",
     });
     assert.equal(computeBuildInputsDigest(repoRoot).digest, before.digest, "an output changed the digest");

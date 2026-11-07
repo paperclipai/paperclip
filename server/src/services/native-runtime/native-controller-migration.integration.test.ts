@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
-import { agentTaskSessions, environmentLeases, environments, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agentTaskSessions, environmentLeases, environments, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { captureLegacyDurablePrpCheckpoint, DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
-import { hasLocalNativeControllerObligations, migrateNativeControllers } from "./native-controller-migration.js";
+import { hasLocalNativeControllerObligations, migrateNativeControllers, prestageNativeControllers } from "./native-controller-migration.js";
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { createNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
@@ -22,7 +22,8 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
-describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
+describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
+  "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
@@ -30,7 +31,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
   "controller_observed_live", "controller_observed_result", "controller_observed_retry", "controller_observed_task", "controller_observed_old_receipt", "controller_observed_revoked",
   "controller_observed_handoff", "controller_observed_handoff_stopped", "controller_observed_handoff_broken", "controller_observed_handoff_fork"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
   async function fixture(commandCount = 1, warm = false) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));
     const f = await environment.seedRun(randomUUID());
@@ -90,6 +91,162 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
       taskKey: f.issueId, lastRunId: f.runId }).returning();
     return { ...f, companyId, agentId, paperclipHome, runtimeRoot, paths, file, source, profile, session, queuedId, identity, snapshot };
   }
+  if (scenario.startsWith("archive_online")) it("preserves a failed source online without changing its execution or unrelated work", async () => {
+    const f = await fixture();
+    await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    await f.db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId));
+    if (scenario === "archive_online_commit") {
+      const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        completionContractId: run.completionContractId!, serverFingerprint: "failed-committed-migration", schemaStatus: "accepted",
+        resultJson: {}, canonicalSha256: "failed-committed-migration" }).returning();
+      await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
+        leaseExpiresAt: null, recoveryState: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    } else {
+      await rm(join(f.paths.root, "provider-pack-authority.json"));
+      await f.db.update(nativeRunFinalizations).set({ recoveryState: "blocked", failureCode: "native_provider_terminal_failed" })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+    }
+    if (scenario === "archive_online_owned") await f.db.update(nativeRunFinalizations).set({
+      leaseOwner: "expired-is-still-owned", leaseExpiresAt: new Date(0),
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "archive_online_foreign") await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.profile,
+      nativeExecutionInput: { ...f.profile.nativeExecutionInput, binding: { ...f.profile.nativeExecutionInput.binding, companyId: randomUUID() } } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const unrelated = await environment.seedRun(randomUUID());
+    const [unrelatedBefore] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId));
+    const [runBefore] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [ownerBefore] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
+    const originalPut = storage.putFile.bind(storage);
+    const put = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const result = await originalPut(input);
+      if (scenario === "archive_online_changed") await writeFile(f.file, f.source + "\n", { mode: 0o600 });
+      if (scenario === "archive_online_active") await f.db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId,
+        agentId: f.agentId, issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId,
+        status: "queued", runtimeMode: "native" });
+      return result;
+    });
+    const counts = await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000) });
+    if (["archive_online_owned", "archive_online_changed", "archive_online_active", "archive_online_foreign"].includes(scenario)) {
+      expect(counts.archivedFailed).toBe(0);
+      expect(counts.deferred[scenario === "archive_online_foreign" ? "artifact_binding" : "archive_source_unsettled"]).toBe(1);
+      if (["archive_online_owned", "archive_online_changed"].includes(scenario)) expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(true);
+      const backups = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.runId, f.runId));
+      expect(backups.some(backup => backup.status === "current")).toBe(false);
+      if (scenario === "archive_online_owned") expect(put).not.toHaveBeenCalled();
+      if (scenario === "archive_online_changed") expect(put).toHaveBeenCalledOnce();
+      if (scenario === "archive_online_active") {
+        expect(put).toHaveBeenCalledOnce();
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, f.issueId))).some(run => run.status === "queued")).toBe(true);
+      }
+      if (scenario === "archive_online_foreign") expect(put).not.toHaveBeenCalled();
+      if (scenario === "archive_online_foreign") await expect(hasLocalNativeControllerObligations(f.db, storage))
+        .rejects.toThrow("native_controller_migration_artifact_binding");
+    } else if (scenario === "archive_online_commit") {
+      expect(counts.imported).toBe(1);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("failed");
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).not.toBeNull();
+    } else {
+      expect(counts.archivedFailed).toBe(1);
+      expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(false);
+      expect((await prestageNativeControllers(f.db, { storage, signal: AbortSignal.timeout(30_000) })).archivedFailed).toBe(1);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(runBefore);
+      const descriptor = legacyNativeControllerArchive({ companyId: f.companyId, issueId: f.issueId, runId: f.runId, controller: f.source });
+      const replacement = join(f.runtimeRoot, "online-archive-inspection");
+      await rm(f.paperclipHome, { recursive: true, force: true });
+      expect(await restoreDurableNativeHarnessBackup({ db: f.db, storage, companyId: f.companyId,
+        scopeDigest: descriptor.scopeDigest, backupRoot: replacement })).toBe(true);
+      expect(await readFile(join(replacement, "current", "control-plane-state.json"), "utf8")).toBe(f.source);
+    }
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(ownerBefore);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId)))[0]).toEqual(unrelatedBefore);
+  });
+  if (scenario.startsWith("online_")) it("prestages only a settled legacy controller while unrelated work continues", async () => {
+    const f = await fixture();
+    const settle = async (f: Awaited<ReturnType<typeof fixture>>) => {
+      const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        completionContractId: run.completionContractId!, serverFingerprint: "online-migration", schemaStatus: "accepted",
+        resultJson: {}, canonicalSha256: "online-migration" }).returning();
+      await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+      await f.db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId));
+      await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
+        leaseExpiresAt: null, recoveryState: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    };
+    await settle(f);
+    const unrelated = await environment.seedRun(randomUUID());
+    const [unrelatedBefore] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId));
+    if (scenario === "online_owned") await f.db.update(nativeRunFinalizations).set({
+      leaseOwner: "expired-owner-is-still-an-owner", leaseExpiresAt: new Date(0),
+    }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "online_same_source") await f.db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId,
+      agentId: f.agentId, issueId: f.issueId, nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId,
+      status: "running", runtimeMode: "native" });
+    const before = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "online_evidence") {
+      await rm(join(f.paths.root, "provider-pack-authority.json"));
+      await f.db.update(agentTaskSessions).set({ id: "00000000-0000-4000-8000-000000000001" }).where(eq(agentTaskSessions.id, f.session.id));
+      const next = await fixture();
+      await settle(next);
+      const actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) });
+      expect(actual).toMatchObject({ inspected: 2, imported: 1, deferred: { artifact_unproven: 1 } });
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: next.companyId, issueId: next.issueId, runId: next.runId })).not.toBeNull();
+      expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId)))[0]).toEqual(unrelatedBefore);
+      return;
+    }
+    if (scenario === "online_changed") {
+      const inode = (await stat(f.file)).ino;
+      const probe = await open(f.file, "r");
+      const prototype = Object.getPrototypeOf(probe);
+      const originalRead = prototype.readFile;
+      await probe.close();
+      let changed = false;
+      vi.spyOn(prototype, "readFile").mockImplementation(async function(this: { stat: () => Promise<{ ino: number }> }, ...args: unknown[]) {
+        const bytes = await originalRead.apply(this, args);
+        if (!changed && (await this.stat()).ino === inode) {
+          changed = true;
+          await writeFile(f.file, f.source + "\n", { mode: 0o600 });
+        }
+        return bytes;
+      });
+      expect(await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) }))
+        .toMatchObject({ imported: 0, deferred: { source_changed: 1 } });
+      expect(changed).toBe(true);
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
+      expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId)))[0]).toEqual(unrelatedBefore);
+      return;
+    }
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let acquired!: () => void;
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const writer = scenario === "online_busy" ? f.db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      acquired();
+      await gate;
+    }) : null;
+    if (writer) await locked;
+    let actual: Awaited<ReturnType<typeof prestageNativeControllers>>;
+    try { actual = await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) }); }
+    finally { release(); await writer; }
+    if (scenario === "online_busy") expect(actual.deferred.source_busy).toBe(1);
+    if (scenario === "online_success") {
+      expect(actual.imported).toBe(1);
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).not.toBeNull();
+      expect((await prestageNativeControllers(f.db, { signal: AbortSignal.timeout(30_000) })).unchanged).toBeGreaterThanOrEqual(1);
+    } else {
+      expect(actual.imported).toBe(0);
+      expect(await loadNativeRunnerCheckpoint(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId })).toBeNull();
+    }
+    expect(await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual(before);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, unrelated.runId)))[0]).toEqual(unrelatedBefore);
+    expect(await readFile(f.file, "utf8")).toBe(f.source);
+  });
   if (scenario === "import") it("imports an exact settled authority once, preserves queued work, and resumes from an empty home", async () => {
     const f = await fixture();
     const { companyId, agentId, paperclipHome, runtimeRoot, profile, file, source, session, queuedId, identity, snapshot } = f;

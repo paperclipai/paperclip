@@ -1,5 +1,5 @@
-import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -12,10 +12,13 @@ import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
   | { mode: "reuse_current_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
+  | { mode: "resume_stopped_native_workspace"; retryIntentId: string; sourceRunId: string; workspaceId: string; cwd: string }
   | { mode: "fresh_isolated_workspace"; retryIntentId: string; sourceRunId: string; retainedSourceIds: string[] };
 const freshReadinessSchema = z.object({
   mode: z.literal("fresh_isolated_workspace"), retryIntentId: z.string().uuid(),
@@ -108,11 +111,69 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
   return operation ? null : workspace;
 }
 
+async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbeatRuns.$inferSelect,
+  input: { runId: string; issueId: string; retryIntentId: string }) {
+  if (source.runtimeMode !== "native" || source.status !== "failed" ||
+      source.errorCode !== "native_session_cleanup_quarantined" || !source.nativeSessionId || !source.runnerInstanceId) return null;
+  const [proof] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, source.companyId), eq(heartbeatRunEvents.runId, source.id),
+    eq(heartbeatRunEvents.agentId, source.agentId), eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified"),
+    isNull(heartbeatRunEvents.sourceEventId),
+    sql`${heartbeatRunEvents.payload}->>'successorRunId' = ${input.runId}`,
+    sql`${heartbeatRunEvents.payload}->>'taskRetryRequestId' = ${input.retryIntentId}`,
+  )).limit(1);
+  if (!proof) return null;
+  const parsed = z.object({ schema: z.literal("paperclip.stopped_native_conversation.v1"),
+    runId: z.literal(source.id), nativeSessionId: z.literal(source.nativeSessionId), runnerInstanceId: z.literal(source.runnerInstanceId),
+    executionWorkspaceId: z.string().uuid(), workspaceCwd: z.string().min(1),
+  }).safeParse(proof.payload);
+  if (!parsed.success) throw new Error("Verified native continuation workspace is unavailable");
+  if (parsed.data.executionWorkspaceId === source.id) return null;
+  const [bound] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd }).from(issues).innerJoin(executionWorkspaces, and(
+    eq(executionWorkspaces.companyId, issues.companyId), eq(executionWorkspaces.id, issues.executionWorkspaceId),
+  )).where(and(eq(issues.companyId, source.companyId), eq(issues.id, input.issueId),
+    eq(issues.assigneeAgentId, source.agentId), eq(executionWorkspaces.id, parsed.data.executionWorkspaceId),
+    eq(executionWorkspaces.cwd, parsed.data.workspaceCwd), eq(executionWorkspaces.status, "active"),
+    eq(executionWorkspaces.providerType, "local_fs"),
+    or(isNull(executionWorkspaces.sourceIssueId), eq(executionWorkspaces.sourceIssueId, input.issueId)),
+  )).limit(1);
+  if (!bound) throw new Error("Verified native continuation workspace binding changed");
+  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.executionWorkspaceId, bound.id),
+    eq(workspaceOperations.status, "running"), or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.runId)),
+  )).limit(1);
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, source.companyId), eq(environmentLeases.executionWorkspaceId, bound.id),
+    or(isNull(environmentLeases.heartbeatRunId), ne(environmentLeases.heartbeatRunId, input.runId)),
+    or(isNull(environmentLeases.releasedAt), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
+  )).limit(1);
+  if (operation || lease) throw new Error("Verified native continuation workspace cleanup is pending");
+  return { mode: "resume_stopped_native_workspace" as const, retryIntentId: input.retryIntentId,
+    sourceRunId: source.id, workspaceId: bound.id, cwd: parsed.data.workspaceCwd };
+}
+
 /** Preparation trusts the committed admission receipt, not a raw wake payload. */
 export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot">): Promise<ContinuationReadiness | null> {
+  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "contextSnapshot" | "runtimeMode" | "runnerProfileJson">): Promise<ContinuationReadiness | null> {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   if (typeof issueId !== "string") return null;
+  const admittedInput = run.runnerProfileJson?.nativeExecutionInput;
+  if (run.runtimeMode === "native" && admittedInput !== undefined) {
+    const admitted = parseNativeExecutionInput(admittedInput);
+    if (admitted.binding.companyId !== run.companyId || admitted.binding.runId !== run.id
+      || admitted.binding.agentId !== run.agentId || admitted.binding.issueId !== issueId) {
+      throw new Error("native_execution_workspace_admission_binding_mismatch");
+    }
+    if (!nativeExecutionUsesTaskWorkspace(admitted)) return null;
+    if (!z.string().uuid().safeParse(admitted.binding.executionWorkspaceId).success) {
+      throw new Error("native_execution_workspace_admission_missing");
+    }
+    const [workspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, admitted.binding.executionWorkspaceId),
+    )).limit(1);
+    if (workspace) return null;
+    if (admitted.binding.executionWorkspaceId !== run.id) throw new Error("native_execution_workspace_admission_missing");
+  }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
@@ -151,6 +212,8 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     )).limit(1);
     if (!source) throw new Error("Fresh retry source changed");
     if (intent.strategy !== "fresh_isolated_workspace") {
+      const stoppedWorkspace = await stoppedNativeContinuationWorkspace(db, source, { runId: run.id, issueId, retryIntentId: wake.id });
+      if (stoppedWorkspace) return stoppedWorkspace;
       const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);
       if (preservationReceiptId) return { mode: "resume_preserved_workspace", preservationReceiptId };
       const [bound] = await db.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata }).from(issues)

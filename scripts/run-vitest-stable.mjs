@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 import { invocationEnv } from "./ci-profile/record.mjs";
+import { vitestRetryArgs } from "./ci/vitest-retry.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -104,6 +105,7 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
   "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
@@ -266,6 +268,7 @@ function parseCliOptions(argv) {
   let shardCount = null;
   let group = null;
   let dryRun = false;
+  let serialChat = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -311,6 +314,11 @@ function parseCliOptions(argv) {
       continue;
     }
 
+    if (arg === "--serial-chat") {
+      serialChat = true;
+      continue;
+    }
+
     if (arg === "--group") {
       group = readOptionValue(argv, index, arg);
       index += 1;
@@ -336,10 +344,12 @@ function parseCliOptions(argv) {
   const shardAllowed =
     mode === serializedModeName ||
     (mode === generalModeName &&
-      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)));
+      ([...generalServerGroups, generalChatGroupName, generalWorkspacesAGroupName].includes(group)
+        || Boolean(process.env.PAPERCLIP_CI_TEST_SELECTION)
+          && [generalWorkspacesBGroupName, generalWorkspacesCGroupName].includes(group)));
   if (!shardAllowed && shardIndex !== null) {
     fail(
-      "--shard-index/--shard-count are only valid with serialized mode or a shardable general server/chat/workspaces-a group.",
+      "--shard-index/--shard-count require serialized mode, a shardable general server/chat/workspaces-a group, or a selected workspace group.",
     );
   }
 
@@ -349,6 +359,10 @@ function parseCliOptions(argv) {
 
   if (group !== null && !allowedGeneralGroupNames.includes(group)) {
     fail(`Unknown group "${group}". Expected one of: ${allowedGeneralGroupNames.join(", ")}.`);
+  }
+
+  if (serialChat && (mode !== generalModeName || group !== generalChatGroupName)) {
+    fail("--serial-chat is only valid with --mode general --group general-chat.");
   }
 
   if (shardIndex !== null) {
@@ -373,6 +387,7 @@ function parseCliOptions(argv) {
     shardCount,
     group,
     dryRun,
+    serialChat,
   };
 }
 
@@ -455,7 +470,8 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
   await new Promise((resolve, reject) => {
     const command = exactFiles ? process.execPath : "pnpm";
     const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
-    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...args], {
+    // `vitest list` collection above never retries; only the run does.
+    const child = spawn(command, [...prefix, ...sourceOnlyVitestArgs, ...vitestRetryArgs(), ...args], {
       cwd: repoRoot,
       env: invocationEnv("vitest", env),
       stdio: "inherit",
@@ -492,7 +508,7 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
 }
 
 function chatShardWorkers(index, count) {
-  const workers = count > 1 && !hasSharedTestDatabase ? 2 : 1;
+  const workers = count > 1 && !hasSharedTestDatabase && !options.serialChat ? 2 : 1;
   return Array.from({ length: workers }, (_, offset) => ({
     index: (index ?? 0) * workers + offset,
     count: (count ?? 1) * workers,

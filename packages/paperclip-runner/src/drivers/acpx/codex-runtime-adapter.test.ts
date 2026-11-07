@@ -7,17 +7,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
+  AcpPermissionRequest,
   AcpAgentRegistry,
   AcpRuntime,
   AcpRuntimeHandle,
   AcpRuntimeOptions,
+  AcpSessionRecord,
   AcpSessionStore,
 } from "acpx/runtime";
 import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime, resetAbandonedBootstrapRecord } from "./codex-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
@@ -114,7 +116,7 @@ describe("Codex ACPX runtime adapter", () => {
       if (!restoring) spawnProvider();
       return HANDLE;
     });
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       if (restoring) spawnProvider();
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
@@ -226,6 +228,56 @@ describe("Codex ACPX runtime adapter", () => {
       }
     }
   }, 30_000);
+
+  it("captures Claude's ExitPlanMode plan for Paperclip approval and declines the native prompt", async () => {
+    const pending = pendingExtensionTurn("plan-turn");
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let exit!: () => void;
+    const providerExit = new Promise<void>(resolve => { exit = resolve; });
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(command);
+    options.profile = { ...options.profile, agent: "claude" };
+    options.permissionMode = "approve-all";
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: providerOwnershipEstablished, awaitProviderExit: () => providerExit,
+      createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
+    });
+    const onPlanProposal = vi.fn();
+    const handler = vi.fn();
+    const turn = port.startTurn({ text: "Plan it", requestId: "plan-turn", onPermissionRequest: handler, onPlanProposal });
+    await turn.promptStarted;
+    const exitPlanMode = {
+      sessionId: "backend-1",
+      raw: {
+        sessionId: "backend-1",
+        toolCall: { toolCallId: "toolu_plan", title: "Approve Plan", kind: "switch_mode", rawInput: { plan: "# Plan\n\n1. Ship it" } },
+      },
+      inferredKind: "other",
+    };
+    await expect(created.onPermissionRequest!(exitPlanMode as never, { signal: new AbortController().signal }))
+      .resolves.toEqual({ outcome: "reject_once" });
+    expect(onPlanProposal).toHaveBeenCalledWith({ toolCallId: "toolu_plan", markdown: "# Plan\n\n1. Ship it" });
+    // Other tools keep the normal approve-all policy.
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: { sessionId: "backend-1", toolCall: { kind: "read" } }, inferredKind: "read" } as never, { signal: new AbortController().signal }))
+      .resolves.toEqual({ outcome: "allow_once" });
+    expect(handler).not.toHaveBeenCalled();
+    pending.settle();
+    await turn.result;
+    exit();
+    await port.close({ reason: "test finished" });
+  });
+
+  it("recognises only a switch_mode request that carries plan text as a Claude plan proposal", () => {
+    expect(claudeExitPlanModeProposal({ raw: { toolCall: { toolCallId: "t1", kind: "switch_mode", rawInput: { plan: "  # P  " } } } }))
+      .toEqual({ toolCallId: "t1", markdown: "# P" });
+    expect(claudeExitPlanModeProposal({ raw: { toolCall: { kind: "switch_mode", rawInput: {} } } })).toBeNull();
+    expect(claudeExitPlanModeProposal({ raw: { toolCall: { kind: "edit", rawInput: { plan: "x" } } } })).toBeNull();
+    expect(claudeExitPlanModeProposal({})).toBeNull();
+  });
 
   it("rejects preconfigured Codex before creating a provider runtime", async () => {
     const createRuntime = vi.fn();
@@ -496,7 +548,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "cursor" };
     options.refreshConsumedCommand = vi.fn(async () => undefined);
     let created!: AcpRuntimeOptions;
-    vi.mocked(runtime.setConfigOption).mockImplementation(async () => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
       const guard = created.protocolGuardFactory!();
       const binding = cursorInstructionBinding(options.systemInstructions);
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
@@ -524,7 +576,7 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions;
     const binding = cursorInstructionBinding(options.systemInstructions);
     const configs = (mode: string) => [{ id: "mode", currentValue: mode }];
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
       guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: configs("agent"), _meta: { paperclipCursorInstructions: {
@@ -536,7 +588,7 @@ describe("Codex ACPX runtime adapter", () => {
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
-    expect(vi.mocked(runtime.setConfigOption).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
+    expect(vi.mocked(runtime.setConfigOption!).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
     expect(options.refreshConsumedCommand).toHaveBeenCalledTimes(2);
     expect(await port.identity()).toMatchObject({ mode: selected });
     expect(runtime.startTurn).not.toHaveBeenCalled();
@@ -567,7 +619,10 @@ describe("Codex ACPX runtime adapter", () => {
     expect(JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls)).not.toContain("clientCapabilities");
     const notification = vi.fn();
     const request = vi.fn(async (_method, _params, context) => ({ requestId: context.requestId }));
-    const admittedFirst = port.startTurn({ text: "First", requestId: "turn-1", onExtensionRequest: request, onExtensionNotification: notification });
+    const onTerminalSessionFailure = vi.fn();
+    const admittedFirst = port.startTurn({ text: "First", requestId: "turn-1", onExtensionRequest: request, onExtensionNotification: notification, onTerminalSessionFailure });
+    // ACPX reports only a generic terminal error; the typed reason must reach the host.
+    expect(vi.mocked(runtime.startTurn).mock.calls.at(-1)?.[0]).toMatchObject({ onTerminalSessionFailure });
     const signal = new AbortController().signal;
     await expect(created.onExtensionRequest!("cursor/ask_question", { sessionId: "backend-1" }, { requestId: 0, signal })).resolves.toEqual({ requestId: 0 });
     const sessionless = { toolCallId: "native-cursor-plan", plan: "Review the complete plan" };
@@ -599,13 +654,13 @@ describe("Codex ACPX runtime adapter", () => {
 
   it("requires the Pi capability handshake and acknowledgments, preserves follow-up order, and never starts a second prompt", async () => {
     const pending = pendingExtensionTurn("turn-1");
-    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({ accepted: true })) });
+    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async (_input: unknown) => ({ accepted: true })) });
     vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
     let created!: AcpRuntimeOptions & { onAgentInitialize?: (result: unknown) => void };
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "pi" };
     options.piThinkingLevel = "low";
-    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       const guard = created.protocolGuardFactory!();
       guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
       guard("inbound", { id: 0, result: { modes: { currentModeId: "high" }, configOptions: [{ id: "thought_level", currentValue: "high" }] } });
@@ -681,9 +736,7 @@ describe("Codex ACPX runtime adapter", () => {
     expect(runtimeOptions!.permissionPolicy).toMatchObject({ defaultAction: "escalate" });
     const turn = port.startTurn({ text: "Attempt a write.", requestId: "permission-test" });
     try {
-      await runtimeOptions!.onPermissionRequest!({
-        sessionId: "backend-1", inferredKind: "write", raw: {},
-      }, { signal: new AbortController().signal });
+      await runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "edit"), { signal: new AbortController().signal });
       expect(signal?.aborted).toBe(true);
       await expect(turn.result).rejects.toThrow("Approval required");
       await expect((async () => { for await (const _event of turn.events) { /* drain */ } })())
@@ -2308,21 +2361,13 @@ describe("Codex ACPX runtime adapter", () => {
     ]);
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "execute",
-          raw: { _meta: { is_mcp_tool_approval: true } },
-        },
+        permissionRequest("session-1", "execute", { _meta: { is_mcp_tool_approval: true } }),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "execute",
-          raw: {},
-        },
+        permissionRequest("session-1", "execute"),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
@@ -2346,11 +2391,7 @@ describe("Codex ACPX runtime adapter", () => {
 
     await expect(
       runtimeOptions?.onPermissionRequest?.(
-        {
-          sessionId: "session-1",
-          inferredKind: "write",
-          raw: {},
-        },
+        permissionRequest("session-1", "edit"),
         { signal: new AbortController().signal },
       ),
     ).resolves.toEqual({ outcome: "reject_once" });
@@ -2385,11 +2426,7 @@ describe("Codex ACPX runtime adapter", () => {
       expect(runtimeOptions?.nonInteractivePermissions).toBe("fail");
       await expect(
         runtimeOptions?.onPermissionRequest?.(
-          {
-            sessionId: "backend-1",
-            inferredKind: "write",
-            raw: {},
-          },
+          permissionRequest("backend-1", "edit"),
           { signal: new AbortController().signal },
         ),
       ).resolves.toEqual(expected);
@@ -2472,6 +2509,101 @@ describe("Codex ACPX runtime adapter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each([
+    { agent: "claude" as const, admitted: true },
+    { agent: "codex" as const, admitted: false },
+  ])("bounds a 45 s cold $agent session handshake by the agent's admission budget", async ({ agent, admitted }) => {
+    expect(acpxSessionHandshakeTimeoutMs(agent)).toBe(admitted ? 60_000 : 30_000);
+    // Pi shares Claude's budget; its admission needs Pi-only options, so only the bound is checked here.
+    expect(acpxSessionHandshakeTimeoutMs("pi")).toBe(60_000);
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValue(child);
+      const runtime = fakeRuntime();
+      const options = openOptions(command);
+      const opening = openCodexAcpxRuntime({ ...options, profile: { ...options.profile, agent } }, {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (runtimeOptions) => {
+          vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+            runtimeOptions.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+            await new Promise((resolve) => setTimeout(resolve, 45_000));
+            return HANDLE;
+          });
+          return runtime;
+        },
+      });
+      const settled = opening.then(() => "admitted", (error: unknown) => error instanceof Error ? error.message : String(error));
+      await vi.advanceTimersByTimeAsync(46_000);
+      const outcome = await settled;
+      if (admitted) expect(outcome).toBe("admitted");
+      else expect(outcome).toContain("handshake exceeded its admission deadline");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("a record left by a bootstrap that stopped before any prompt", () => {
+    const savedRecord = (overrides: Partial<AcpSessionRecord> = {}): AcpSessionRecord => ({
+      schema: "acpx.session.v1", acpxRecordId: "provider-key", acpSessionId: "never-prompted", agentCommand: "agent",
+      cwd: "/workspace", name: "provider-key", createdAt: "2026-11-07T00:32:24.053Z", lastUsedAt: "2026-11-07T00:32:24.053Z",
+      lastSeq: 0, eventLog: {} as AcpSessionRecord["eventLog"], messages: [], updated_at: "2026-11-07T00:32:24.053Z",
+      cumulative_token_usage: {}, request_token_usage: {}, acpx: { current_model_id: "claude-sonnet-5" },
+      ...overrides,
+    }) as AcpSessionRecord;
+
+    it("asks ACPX for a new session instead of reusing a never-prompted record", async () => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord());
+      expect(await resetAbandonedBootstrapRecord(sessions, "provider-key")).toBe(true);
+      expect(sessions.save).toHaveBeenCalledWith(expect.objectContaining({
+        acpSessionId: "never-prompted", acpx: { current_model_id: "claude-sonnet-5", reset_on_next_ensure: true },
+      }));
+    });
+
+    it.each([
+      ["holds a conversation", { messages: [{ User: { id: "m", content: [] } }] as unknown as AcpSessionRecord["messages"] }],
+      ["recorded a prompt", { lastPromptAt: "2026-11-07T00:33:09.553Z" }],
+      ["recorded provider events", { lastSeq: 3 }],
+    ])("keeps a record that %s", async (_label, overrides) => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord(overrides));
+      expect(await resetAbandonedBootstrapRecord(sessions, "provider-key")).toBe(false);
+      expect(sessions.save).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])("resets it before a fresh open only (restoring=%s)", async (restoring) => {
+      const sessions = store();
+      vi.mocked(sessions.load).mockResolvedValue(savedRecord());
+      const child = fakeChild();
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValue(child);
+      const runtime = fakeRuntime();
+      const order: string[] = [];
+      vi.mocked(sessions.save).mockImplementation(async () => { order.push("save"); });
+      const port = await openCodexAcpxRuntime({ ...openOptions(command), restoringSession: restoring }, {
+        createRegistry: () => registry(),
+        createStore: () => sessions,
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (runtimeOptions) => {
+          vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+            order.push("ensure");
+            runtimeOptions.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+            return HANDLE;
+          });
+          return runtime;
+        },
+      });
+      expect(order).toEqual(restoring ? ["ensure"] : ["save", "ensure"]);
+      await port.close({ reason: "test complete" });
+    });
   });
 
   it("terminates a provider spawned before the session handshake rejects", async () => {
@@ -3565,8 +3697,18 @@ function fakeCommand(): VerifiedAcpxCommandLease {
   return { spawn: vi.fn(), close: vi.fn() };
 }
 
-function fakeChild(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+type FakeChildProcess = ChildProcess & { exitCode: number | null; signalCode: NodeJS.Signals | null };
+
+function permissionRequest(
+  sessionId: string,
+  inferredKind: AcpPermissionRequest["inferredKind"],
+  raw: Record<string, unknown> = {},
+): AcpPermissionRequest {
+  return { sessionId, inferredKind, raw: raw as unknown as AcpPermissionRequest["raw"] };
+}
+
+function fakeChild(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     exitCode: { value: null, writable: true },
     signalCode: { value: null, writable: true },
@@ -3580,10 +3722,10 @@ function fakeChild(): ChildProcess {
 }
 
 function failingSignalChild(): {
-  child: ChildProcess;
+  child: FakeChildProcess;
   errors: [Error, Error];
 } {
-  const child = new EventEmitter() as ChildProcess;
+  const child = new EventEmitter() as FakeChildProcess;
   const errors: [Error, Error] = [
     new Error("SIGTERM delivery failed"),
     new Error("SIGKILL delivery failed"),
@@ -3601,8 +3743,8 @@ function failingSignalChild(): {
   return { child, errors };
 }
 
-function childThatExitsAfterSignalCalls(exitAfter: number): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function childThatExitsAfterSignalCalls(exitAfter: number): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     exitCode: { value: null, writable: true },
     signalCode: { value: null, writable: true },
@@ -3623,8 +3765,8 @@ function childThatExitsAfterSignalCalls(exitAfter: number): ChildProcess {
   return child;
 }
 
-function stubbornChild(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function stubbornChild(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     pid: { value: 71_001 },
     exitCode: { value: null, writable: true },
@@ -3638,8 +3780,8 @@ function stubbornChild(): ChildProcess {
   return child;
 }
 
-function childThatExitsOnKill(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
+function childThatExitsOnKill(): FakeChildProcess {
+  const child = new EventEmitter() as FakeChildProcess;
   Object.defineProperties(child, {
     pid: { value: 71_002 },
     exitCode: { value: null, writable: true },
