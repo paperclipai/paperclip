@@ -196,6 +196,17 @@ export function stormFaultDue(storm: StormPlan, state: StormState, now: number):
   return now >= (state.lastSettledAt ?? state.startedAt) + next.gapMs ? next : null;
 }
 
+/** Written after every fault: each task's launch time and the faults that crossed it so far. */
+export const TASK_FAULT_LOG = "task-faults.json";
+export type TaskFaultLog = Record<string, { createdAt: number | null; faultIds: string[] }>;
+
+/** The crossing record for a replay: the graded record, else the live fault log (interrupted or wedged waves). */
+export function replayRecordFor(taskId: string, graded: { createdAt: number | null; faultIds: string[] } | null,
+  logged: TaskFaultLog | null): { createdAt: number | null; faultIds: string[] } | null {
+  if (graded?.faultIds.length) return graded;
+  return logged?.[taskId] ?? graded;
+}
+
 /** Faults that actually crossed a task, as offsets from its launch. */
 export function observedFaultSchedule(createdAt: number | null, faultIds: readonly string[],
   faults: ReadonlyArray<{ faultId: string; kind: FaultKind; holdMs: number; startedAt: number; requestedBy?: string;

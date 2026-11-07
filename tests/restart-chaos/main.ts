@@ -20,11 +20,11 @@ import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
+import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
-import { worktreeFingerprint } from "./wave-guard.js";
+import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -43,8 +43,11 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     // Replay the faults that actually crossed the task, including other tasks' faults.
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+    // An interrupted or wedged wave has no grade files; its fault log was written after every fault.
+    const logged = await readFile(path.join(sourceDir, TASK_FAULT_LOG), "utf8").then(text => JSON.parse(text) as TaskFaultLog).catch(() => null);
+    const crossed = replayRecordFor(command.ref.taskId, graded?.record ?? null, logged);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
-    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults, command.ref.taskId) : [];
+    const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
   }
@@ -105,10 +108,11 @@ async function main(): Promise<number> {
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
   // Builds and branch switches must happen before the wave, never during it.
-  const startFingerprint = worktreeFingerprint(repositoryRoot);
+  const guardedOutputs = guardedRunnerOutputs(repositoryRoot);
+  let startFingerprint: string | null = null;
   let worktreeChanged = false;
   const checkWorktree = (at: string) => {
-    if (worktreeChanged || worktreeFingerprint(repositoryRoot) === startFingerprint) return;
+    if (worktreeChanged || startFingerprint === null || worktreeFingerprint(repositoryRoot, guardedOutputs) === startFingerprint) return;
     worktreeChanged = true;
     timeline.add("worktree_changed_mid_wave", { at, gitSha: git(["rev-parse", "HEAD"]) });
   };
@@ -117,6 +121,8 @@ async function main(): Promise<number> {
     ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
   preflight(plan);
   const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
+  startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
   let sweeper: DaytonaWaveSweeper | null = null;
@@ -125,6 +131,12 @@ async function main(): Promise<number> {
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
   const faults: FaultReceipt[] = [];
+  // Written after every fault, so an interrupted or wedged storm can still replay what crossed each task.
+  const taskFaultLog: TaskFaultLog = {};
+  const persistFaultLog = async () => {
+    await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+    await writeFile(path.join(waveDir, TASK_FAULT_LOG), `${JSON.stringify(taskFaultLog, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+  };
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
@@ -181,9 +193,14 @@ async function main(): Promise<number> {
       faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
         checkWorktree(receipt.faultId);
-        for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+        for (const candidate of exposed) {
+          candidate.noteFault(receipt.faultId, receipt.startedAt);
+          candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
+          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+        }
+        void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
-        if (error.receipt) faults.push(error.receipt);
+        if (error.receipt) { faults.push(error.receipt); void persistFaultLog(); }
         faultFailures += 1;
         timeline.add("fault_error", { taskId: requestedBy, error: error.message });
       }));
