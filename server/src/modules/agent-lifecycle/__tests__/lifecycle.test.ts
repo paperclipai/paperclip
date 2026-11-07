@@ -443,7 +443,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       deploymentMode: "local_trusted", deploymentExposure: "private", allowedHostnames: [], bindHost: "127.0.0.1",
       authReady: true, companyDeletionEnabled: false,
       decisionServiceOptions: { wakeOriginAgent: async () => { throw new Error("Unexpected decision wake"); } }, managedPluginAutoInstall: [],
-      announcements: { enabled: false, feedUrl: "https://unused.example.test" } });
+      announcements: { enabled: false, feedUrl: "https://unused.example.test" },
+      agentLifecycleAwaitsStartupReconcile: true });
     try {
       await app.locals.bundledPluginsStartup;
       expect((await current(rows[0].id)).lifecycleState).toBe("pausing");

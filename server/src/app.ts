@@ -472,6 +472,12 @@ export async function createApp(
     managedPluginAutoInstall?: readonly string[] | null;
     /** Test override for the bundled plugin catalog root. */
     bundledPluginCatalogRoot?: string;
+    /**
+     * Server startup sets this. Lifecycle workers then wait until startup
+     * calls `app.locals.reconcileAgentLifecycleOnStartup()` after heartbeat run
+     * recovery. Without it, lifecycle workers start as soon as plugins are ready.
+     */
+    agentLifecycleAwaitsStartupReconcile?: boolean;
   },
 ) {
   const app = express();
@@ -563,8 +569,9 @@ export async function createApp(
   app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
-  // Lifecycle workers wait for this boot's run recovery, so stop proof reads recovered runs.
-  let lifecycleRunRecoveryReady = false;
+  // With server startup, lifecycle workers wait for this boot's run recovery,
+  // so stop proof reads recovered runs.
+  let lifecycleRunRecoveryReady = opts.agentLifecycleAwaitsStartupReconcile !== true;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && lifecycleRunRecoveryReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,

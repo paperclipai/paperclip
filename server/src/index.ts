@@ -948,6 +948,7 @@ async function startServerWithDatabaseTeardown(
       ? async () => (await runServerDatabaseBackup("idle")) !== null
       : undefined,
     cloudWarmStandby: isWarmStandby,
+    agentLifecycleAwaitsStartupReconcile: true,
     uiMode,
     serverPort: listenPort,
     storageService,
