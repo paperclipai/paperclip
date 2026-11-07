@@ -2374,6 +2374,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     attempt?: number; leaseExpired?: boolean; liveController?: boolean;
     event?: { eventType: string; sourceEventId?: string };
     run?: Partial<typeof heartbeatRuns.$inferInsert>;
+    /** RC-29c: the executor settled a same-run bootstrap retry before the restart. */
+    bootstrapRetry?: boolean;
   } = {}) {
     const fixture = await seedRun(`REMOTE-UNLAUNCHED-${label}`);
     await fixture.db.update(heartbeatRuns).set({
@@ -2391,8 +2393,77 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       leaseOwner: `previous:${randomUUID()}`,
       leaseExpiresAt: new Date(Date.now() + (options.leaseExpired ? -1_000 : 20 * 60_000)),
     }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    if (options.bootstrapRetry) {
+      // Shape persisted by the executor when shutdown closed the local runtime
+      // listener during remote startup (local_runtime_api_listener_unavailable).
+      await fixture.db.update(nativeRunFinalizations).set({
+        phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null,
+        nextAttemptAt: new Date(Date.now() - 1_000), failureCode: "local_runtime_api_listener_unavailable",
+        failureDetail: { message: "local_runtime_api_listener_unavailable", recoverable: true,
+          recoveryMode: "bootstrap_retry", checkpointExists: false, providerEventsExist: false,
+          providerSessionEstablished: false, originalFailureCode: "local_runtime_api_listener_unavailable" },
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      await fixture.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        errorCode: "local_runtime_api_listener_unavailable" }).where(eq(heartbeatRuns.id, fixture.runId));
+    }
     return fixture;
   }
+
+  it("restarts a remote bootstrap retry that shutdown cut before any runner was requested", async () => {
+    const fixture = await seedUnlaunchedRemoteClaim("BOOTSTRAP-RETRY", { bootstrapRetry: true });
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 1, controllerGeneration: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", recoveryState: "bootstrap_incomplete", failureCode: null,
+      nextAttemptAt: null });
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_launched" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null, finishedAt: null });
+    expect(await fixture.db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+  });
+
+  it.each<[string, Parameters<typeof seedUnlaunchedRemoteClaim>[1], { kind: string; reason: string }]>([
+    ["a runner process start was requested", { bootstrapRetry: true, event: { eventType: "native.process_start_requested" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["a runner event was committed", { bootstrapRetry: true, event: { eventType: "item.updated", sourceEventId: "runner-event-1" } },
+      { kind: "blocked", reason: "ambiguous_remote_recovery_evidence" }],
+    ["the bootstrap budget is spent", { bootstrapRetry: true, attempt: 3 },
+      { kind: "blocked", reason: "execution_recovery_budget_exhausted" }],
+  ])("keeps a remote bootstrap retry held when %s", async (label, options, expected) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`RETRY-${label.replace(/\W+/g, "-")}`, options);
+    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
+  });
+
+  it("keeps a paused agent's remote bootstrap retry waiting instead of starting it", async () => {
+    const fixture = await seedUnlaunchedRemoteClaim("PAUSED-RETRY", { bootstrapRetry: true });
+    await fixture.db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    try {
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+        kind: "blocked", runId: fixture.runId, reason: "native_retry_admission_ineligible" })]);
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run.status).toBe("failed");
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator).toMatchObject({ phase: "retryable_failure", leaseOwner: null });
+      expect(coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      await fixture.db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+    }
+  });
+
+  it("leaves a remote exact-checkpoint retry to its own admission path", async () => {
+    const fixture = await seedUnlaunchedRemoteClaim("EXACT-RETRY", { bootstrapRetry: true });
+    await fixture.db.update(nativeRunFinalizations).set({ failureDetail: { recoveryMode: "exact_checkpoint_resume" } })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [disposition] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(disposition.kind).not.toBe("bootstrap_incomplete");
+  });
 
   it.each([false, true])("restarts a claimed remote run that never requested a runner (lease expired=%s)", async (leaseExpired) => {
     const fixture = await seedUnlaunchedRemoteClaim(`PROVEN-${leaseExpired}`, { leaseExpired });
