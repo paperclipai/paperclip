@@ -1,5 +1,6 @@
 {
   "name": "@paperclipai/mcp-server",
+  "mcpName": "io.github.paperclipai/mcp-server",
   "version": "0.1.0",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",

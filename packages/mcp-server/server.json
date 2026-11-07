@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.paperclipai/mcp-server",
+  "title": "Summon (Paperclip)",
+  "description": "MCP server for Summon/Paperclip: read and manage issues, comments, approvals, docs, and agents.",
+  "websiteUrl": "https://summon.company",
+  "repository": {
+    "url": "https://github.com/paperclipai/paperclip",
+    "source": "github"
+  },
+  "version": "2026.707.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@paperclipai/mcp-server",
+      "version": "2026.707.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        { "name": "PAPERCLIP_API_URL", "description": "Paperclip API base URL, e.g. https://api.summon.company", "isRequired": true },
+        { "name": "PAPERCLIP_API_KEY", "description": "Bearer token used for /api requests", "isRequired": true, "isSecret": true },
+        { "name": "PAPERCLIP_COMPANY_ID", "description": "Optional default company for company-scoped tools", "isRequired": false },
+        { "name": "PAPERCLIP_AGENT_ID", "description": "Optional default agent for checkout helpers", "isRequired": false },
+        { "name": "PAPERCLIP_RUN_ID", "description": "Optional run id forwarded on mutating requests", "isRequired": false }
+      ]
+    }
+  ]
+}
