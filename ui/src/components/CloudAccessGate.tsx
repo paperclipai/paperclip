@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -112,6 +112,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
 
   const sessionBootstrap = sessionQuery.isSuccess ? sessionQuery.data?.boardBootstrap : undefined;
   const sessionUserId = sessionQuery.data?.user.id ?? null;
+  const previousSessionUserId = useRef<string | null>(null);
   const accessError = queryClient.getQueryState([...queryKeys.access.currentBoardAccess, sessionUserId])?.error;
   const accessDenied = (sessionUserId !== null && deniedBootstrapAccounts.get(queryClient)?.has(sessionUserId))
     || (accessError instanceof ApiError && (accessError.status === 401 || accessError.status === 403));
@@ -151,6 +152,13 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     retry: retryWhileTransient,
     retryDelay: reconnectDelayFor,
   }, bootstrap ? { identity: bootstrap, data: bootstrap.boardAccess, updatedAt: sessionQuery.dataUpdatedAt } : undefined);
+  useEffect(() => {
+    const previous = previousSessionUserId.current;
+    previousSessionUserId.current = sessionUserId;
+    if (!previous || previous === sessionUserId) return;
+    deniedBootstrapAccounts.get(queryClient)?.delete(previous);
+    queryClient.removeQueries({ queryKey: [...queryKeys.access.currentBoardAccess, previous], exact: true });
+  }, [queryClient, sessionUserId]);
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),
     onSuccess: async () => {

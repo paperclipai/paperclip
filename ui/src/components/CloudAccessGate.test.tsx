@@ -280,6 +280,37 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.textContent).toContain("No organization access");
   });
 
+  it("ignores a canceled denial after returning to the same account with a fresh snapshot", async () => {
+    await render();
+    let finishOld!: (response: Response) => void;
+    let oldSignal: AbortSignal | undefined;
+    const delayed = new Promise<Response>(resolve => { finishOld = resolve; });
+    fetchMock.mockImplementationOnce(async (_path: string, init?: RequestInit) => {
+      oldSignal = init?.signal ?? undefined;
+      return delayed;
+    });
+    const boot = (userId: string) => ({
+      session: { id: `fresh-${userId}`, userId },
+      user: { id: userId, name: "Operator", email: `${userId}@example.com`, image: null },
+      boardBootstrap: { userId, companies: [], boardAccess: { userId, isInstanceAdmin: false, companyIds: [`company-${userId}`] } },
+    });
+    void client.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, boot("other"));
+    await flushReact();
+    client.setQueryData(queryKeys.auth.session, boot("user"));
+    await flushReact();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    const sessionCalls = callsTo("/api/auth/get-session");
+    finishOld(Response.json({ error: "Unauthorized" }, { status: 401 }));
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(callsTo("/api/auth/get-session")).toBe(sessionCalls);
+    expect(oldSignal?.aborted).toBe(true);
+    expect(client.getQueryData([...queryKeys.access.currentBoardAccess, "user"])).toMatchObject({ companyIds: ["company-user"] });
+  });
+
   it.each(["401", "success"])("ignores a late %s from the previous account after an account change", async outcome => {
     await render();
     let rejectOld!: (response: Response) => void;

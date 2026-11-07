@@ -19,16 +19,18 @@ export function boardAccessQueryOptions(
     queryKey: [...queryKeys.access.currentBoardAccess, userId] as const,
     initialData,
     initialDataUpdatedAt: initialData ? updatedAt : undefined,
-    queryFn: async (): Promise<BoardBootstrap["boardAccess"]> => {
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<BoardBootstrap["boardAccess"]> => {
+      signal.throwIfAborted();
       const snapshot = captureAccessSnapshot?.();
       // Path-only request coalescing must not join reads from two accounts.
       detachInflightGet("/cli-auth/me");
       let access: Awaited<ReturnType<typeof accessApi.getCurrentBoardAccess>>;
       try {
-        access = await accessApi.getCurrentBoardAccess();
+        access = await accessApi.getCurrentBoardAccess(signal);
+        signal.throwIfAborted();
       } catch (error) {
-        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) onAccessDenied?.();
-        if (error instanceof ApiError && error.status === 401) onAccountChanged();
+        if (!signal.aborted && error instanceof ApiError && (error.status === 401 || error.status === 403)) onAccessDenied?.();
+        if (!signal.aborted && error instanceof ApiError && error.status === 401) onAccountChanged();
         throw error;
       }
       if (access.userId !== userId) {
