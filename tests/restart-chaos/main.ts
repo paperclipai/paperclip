@@ -23,7 +23,7 @@ import { TaskObserver } from "./observer.js";
 import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
-import { Timeline } from "./timeline.js";
+import { isBrokenStdoutError, Timeline } from "./timeline.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -120,8 +120,15 @@ async function main(): Promise<number> {
   const lines: LedgerLine[] = [];
   let anyFailure = false;
   let harnessError: unknown;
+  let stdoutLossRecorded = false;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
+    // A reader of our stdout went away. Keep running (results go to files), and
+    // record it once rather than once per echo.
+    if (isBrokenStdoutError(error)) {
+      if (!stdoutLossRecorded) { stdoutLossRecorded = true; timeline.add("harness_stdout_lost", { error: String(error) }); }
+      return;
+    }
     timeline.add("harness_uncaught_exception", { error: error.stack ?? String(error) });
     harnessError ??= error;
     interrupted = true;
