@@ -37,6 +37,11 @@ an enclosing transaction because a savepoint cannot confirm the outer commit.
 
 Reservation runs serially on the original pool. Capture, encryption, upload,
 authenticated readback, restore, and recapture run concurrently on that pool.
+Each reservation checks its current workspace fingerprint against the member
+fingerprint used in the aggregate source proof before writing a journal. Source
+changes in that interval refuse the attempt; a fresh attempt can replan when no
+journal was reserved. Source changes after a partial reservation remain blocked
+by the saved aggregate proof.
 One nested-child verifier belongs to the complete cohort fence. Its prepare
 calls are queued; each call retains the existing two-child bound and completed
 authenticated immutable proof. Every member still rechecks current local bytes,

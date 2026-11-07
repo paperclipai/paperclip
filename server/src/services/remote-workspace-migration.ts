@@ -341,7 +341,8 @@ async function resolveMigrationSource(input: MigrationInput) {
   return onlineSource;
 }
 
-async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWorkspaceSource, cohort?: WorkspaceMigrationCohort) {
+async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWorkspaceSource, cohort?: WorkspaceMigrationCohort,
+  expectedSourceFingerprint?: string) {
   return input.db.transaction(async tx => {
     const [selected] = await tx.select({ sourceIssueId: executionWorkspaces.sourceIssueId }).from(executionWorkspaces)
       .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId)));
@@ -356,6 +357,7 @@ async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWork
     const nativeSessionContinuity = await inspectNativeWorkspaceMigration(tx as unknown as Db, workspace);
     const source = remoteWorkspaceSourceSchema.parse(input.source ?? current.source);
     const sourceFingerprint = fingerprint(workspace);
+    if (cohort && sourceFingerprint !== expectedSourceFingerprint) throw new Error("workspace_cohort_source_changed");
     const marker = current.marker;
     if (marker.schema === SCHEMA && typeof marker.operationId === "string") {
       if (marker.sourceFingerprint !== sourceFingerprint || canonical(marker.source) !== canonical(source)) throw new Error("remote_workspace_migration_source_changed");
@@ -747,7 +749,8 @@ export async function migrateRemoteWorkspaceCohort(input: {
     await preflight(input.db);
     const plans: MigrationPlan[] = [];
     for (const member of members) {
-      const reserved = await reserveMigration(member.input, member.onlineSource, cohort);
+      const reserved = await reserveMigration(member.input, member.onlineSource, cohort,
+        fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!));
       if (reserved.authority) throw new Error("workspace_cohort_membership_changed");
       plans.push({ ...member, reserved });
     }

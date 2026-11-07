@@ -21,6 +21,7 @@ import { tryLockNativeWorkspaceFinalization } from "./native-runtime/native-work
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
+import * as onlineWorkspaceSource from "./online-workspace-source.js";
 
 const support = await getEmbeddedPostgresTestSupport(), execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
@@ -227,6 +228,65 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const operations = await db.select().from(workspaceOperations);
     expect(operations).toHaveLength(2);
     expect(operations.every(row => row.status === "succeeded" && JSON.stringify(row.metadata!.cohortMigration) === JSON.stringify(membership))).toBe(true);
+  });
+  it("does not persist a stale cohort source proof when a member changes before reservation", async () => {
+    const f = await fixture(), [first, second] = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id));
+    await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${second.id}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_reserve_fault before insert on workspace_operations for each row execute function cohort_reserve_fault()`);
+    const inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource; let changed = false;
+    vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
+      if (!changed) {
+        changed = true;
+        await db.update(executionWorkspaces).set({ metadata: { ...first.metadata, preservedEvidence: "new source metadata" } })
+          .where(eq(executionWorkspaces.id, first.id));
+      }
+      return inspect(...args);
+    });
+    await expect.soft(run(f)).rejects.toThrow("workspace_cohort_source_changed");
+    expect.soft(await db.select().from(workspaceOperations)).toHaveLength(0);
+    expect.soft(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    await assertLocal(f);
+    vi.restoreAllMocks();
+    await db.execute(sql`drop trigger cohort_reserve_fault on workspace_operations`);
+    await expect(run(f)).resolves.toMatchObject({ applied: true });
+  });
+  it("refuses changed source fingerprints after partial reservation before storage or more journal work", async () => {
+    const f = await fixture(), second = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id))[1];
+    await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${second.id}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_reserve_fault before insert on workspace_operations for each row execute function cohort_reserve_fault()`);
+    await expect(run(f)).rejects.toThrow();
+    await db.execute(sql`drop trigger cohort_reserve_fault on workspace_operations`);
+    const operations = await db.select().from(workspaceOperations);
+    expect(operations).toHaveLength(1);
+    await db.update(executionWorkspaces).set({ metadata: { ...second.metadata, preservedEvidence: "changed after reservation" } })
+      .where(eq(executionWorkspaces.id, second.id));
+    const calls: string[] = [], noStorage = new Proxy(storage, { get(_target, key) {
+      calls.push(String(key)); throw new Error("unexpected_storage_operation");
+    } });
+    await expect(run(f, { storage: noStorage, apply: false })).rejects.toThrow("workspace_cohort_membership_changed");
+    await expect(run(f, { storage: noStorage })).rejects.toThrow("workspace_cohort_membership_changed");
+    expect(calls).toEqual([]);
+    expect(await db.select().from(workspaceOperations)).toEqual(operations);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    await assertLocal(f);
+  });
+  it("refuses mixed local and independently imported members before storage or journal work", async () => {
+    const f = await fixture(), [first, second] = f.leaves;
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: first.id, apply: true,
+      signal: AbortSignal.timeout(50_000) });
+    const operations = await db.select().from(workspaceOperations), snapshots = await db.select().from(executionWorkspaceSnapshots);
+    const workspaces = await rows(f);
+    expect(readRemoteWorkspaceAuthority(workspaces.find(row => row.id === first.id)!.metadata)).not.toBeNull();
+    const calls: string[] = [], noStorage = new Proxy(storage, { get(_target, key) {
+      calls.push(String(key)); throw new Error("unexpected_storage_operation");
+    } });
+    await expect(run(f, { storage: noStorage, apply: false })).rejects.toThrow("workspace_cohort_membership_changed");
+    await expect(run(f, { storage: noStorage })).rejects.toThrow("workspace_cohort_membership_changed");
+    expect(calls).toEqual([]);
+    expect(await db.select().from(workspaceOperations)).toEqual(operations);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(snapshots);
+    expect(await rows(f)).toEqual(workspaces);
+    expect(await fs.readFile(path.join(second.cwd!, "saved.txt"), "utf8")).toBe(`${second.name} dirty tracked work\n`);
   });
   it.each(["cancelled", "failed", "running-finished"] as const)("refuses a %s member journal before preflight or snapshot work", async status => {
     const f = await fixture(), second = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id))[1];
