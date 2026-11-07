@@ -435,7 +435,7 @@ describe("deferred receipt durable dispatch", () => {
     deps.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(db).getExperimental());
     for (const gate of ["budget", "agent"] as const) {
       deps.budgets.getInvocationBlock.mockResolvedValue(gate === "budget"
-        ? { scopeType: "agent", scopeId: f.agent.id, scopeName: f.agent.name, reason: "Budget blocked" } : null);
+        ? { scopeType: "agent", scopeId: f.agent.id, scopeName: f.agent.name, cause: "budget_exhausted", reason: "Budget blocked" } : null);
       deps.getAgentInvokability.mockResolvedValue({ invokable: false, message: "Paused", reason: "paused", details: {}, invalidOrgChain: false });
       const error = await queue.enqueueWakeup(f.agent.id, { source: "on_demand", reason: "task_retry",
         requestedByActorType: "user", requestedByActorId: f.actorId, payload: { issueId: f.issue.id },
