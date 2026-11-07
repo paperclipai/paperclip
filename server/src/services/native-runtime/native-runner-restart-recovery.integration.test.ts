@@ -2438,6 +2438,24 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
   });
 
+  it("keeps a paused agent's remote bootstrap retry waiting instead of starting it", async () => {
+    const fixture = await seedUnlaunchedRemoteClaim("PAUSED-RETRY", { bootstrapRetry: true });
+    await fixture.db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    try {
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
+        kind: "blocked", runId: fixture.runId, reason: "native_retry_admission_ineligible" })]);
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run.status).toBe("failed");
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(coordinator).toMatchObject({ phase: "retryable_failure", leaseOwner: null });
+      expect(coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      await fixture.db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+    }
+  });
+
   it("leaves a remote exact-checkpoint retry to its own admission path", async () => {
     const fixture = await seedUnlaunchedRemoteClaim("EXACT-RETRY", { bootstrapRetry: true });
     await fixture.db.update(nativeRunFinalizations).set({ failureDetail: { recoveryMode: "exact_checkpoint_resume" } })

@@ -1143,6 +1143,14 @@ export async function claimNativeRestartRecoveries(input: {
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
         && !hasCheckpoint && !hasProviderEvidence
         && !(await hasNativeExecutionStartEvidence(tx, row.run));
+      // A settled retry starts new work, so it needs the same current
+      // admission as the resumption reconciler: task pause, agent status,
+      // dependencies, ownership and competing runs. Keep it waiting otherwise.
+      if (remoteRunnerNeverLaunched && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+        && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
+      }
 
       // A claimed remote bootstrap (runner launched, perhaps connected) has no
       // provider evidence when its controller dies before session.open
