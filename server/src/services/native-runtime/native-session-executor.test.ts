@@ -428,6 +428,7 @@ import {
   REMOTE_RUNNER_AUTHORITY_ARCHIVE_SCRIPT,
   verifyRemoteRunnerReattachment,
   stopStaleRemoteRunnerBeforeBootstrap,
+  verifyRemoteRunnerOrSettledExit,
   readRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
   resolveRemoteProviderPackSource,
@@ -881,11 +882,152 @@ describe("remote controller restart adoption", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     const error = await outcome;
     const diagnostic = readRemoteRunnerRecoveryError(error);
-    expect(diagnostic).toEqual({ stage: "process_verification", reason: failure === "liveness" ? "process_not_running" : failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
+    expect(diagnostic).toEqual(failure === "liveness"
+      ? { stage: "process_verification", reason: "process_not_running", runnerLifecycle: "running", runnerSettled: false }
+      : { stage: "process_verification", reason: failure === "timeout" ? "probe_timeout" : "probe_transport_failed" });
     expect(JSON.stringify(diagnostic)).not.toContain("private");
     if (failure === "transport") {
       expect(error).toBe(transportError);
       expect(nativeSessionFailureSourceCode(error)).toBe("provider_transport_failed");
+    }
+  });
+  it.each([
+    [{ lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null }, "suspended", true],
+    [{ lifecycle: "turn_active", outbox: [{ id: 1 }], pendingTerminalDelivery: null }, "turn_active", false],
+    [{ lifecycle: "private free text", outbox: [] }, "other", true],
+    [{ lifecycle: undefined }, "unavailable", false],
+  ] as const)("records how an exited runner last left its durable state (%j)", async (state, runnerLifecycle, runnerSettled) => {
+    const { target, execute } = fixture(state);
+    const original = execute.getMockImplementation()!;
+    execute.mockImplementation(async request => request.args[2] === "paperclip-runner-recovery-check"
+      ? { stdout: "", stderr: "private probe output", exitCode: 45, timedOut: false }
+      : original(request));
+    const error = await verifyRemoteRunnerReattachment({ claim, target: target as never, identity, runId: "run", normalizedSessionId: "session" })
+      .catch(caught => caught);
+    const diagnostic = readRemoteRunnerRecoveryError(error);
+    expect(diagnostic).toEqual({ stage: "process_verification", reason: "process_not_running", runnerLifecycle, runnerSettled });
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+  });
+  const settledSuspension = { lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+  const exitedRunner = (state: Record<string, unknown>, afterExit = state) => {
+    const { target, execute } = fixture(state);
+    const original = execute.getMockImplementation()!;
+    let exited = false;
+    execute.mockImplementation(async request => {
+      if (request.args[2] === "paperclip-runner-recovery-check") {
+        exited = true;
+        return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+      }
+      if (exited && request.args[1].includes("base64")) {
+        return { stdout: Buffer.from(JSON.stringify({ ...identity, ...afterExit })).toString("base64"),
+          stderr: "", exitCode: 0, timedOut: false };
+      }
+      return original(request);
+    });
+    return target;
+  };
+  it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
+    await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+  });
+  it.each([
+    ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
+    ["a pending provider cleanup", { ...settledSuspension, pendingProviderCleanup: { pid: 7 } }, 2],
+    ["a pending terminal delivery", { ...settledSuspension, pendingTerminalDelivery: { eventId: "event" } }, 2],
+    ["a pending warm transition", { ...settledSuspension, warmTransition: { transitionId: "t" } }, 2],
+    ["a runner that stopped mid-turn", { ...settledSuspension, lifecycle: "turn_active" }, 2],
+    ["an exhausted attempt budget", settledSuspension, 4],
+  ] as const)("keeps reattachment fail-closed after %s", async (_case, state, providerAttempt) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(state) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+  });
+  it.each([
+    ["an unsettled outbox", { ...settledSuspension, outbox: [{ id: 1 }] }],
+    ["a different runner", { ...settledSuspension, runnerInstanceId: "different" }],
+    ["an active turn", { ...settledSuspension, lifecycle: "turn_active" }],
+    ["a pending terminal delivery", { ...settledSuspension, pendingTerminalDelivery: { eventId: "event" } }],
+    ["a pending provider cleanup", { ...settledSuspension, pendingProviderCleanup: { pid: 7 } }],
+    ["a pending warm transition", { ...settledSuspension, warmTransition: { transitionId: "t" } }],
+  ] as const)("keeps reattachment fail-closed when the state read after the exit shows %s", async (_case, afterExit) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension, afterExit) as never,
+      identity, runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+  });
+  it.each(["timeout", "command", "json", "transport", "shared-deadline"] as const)("labels a post-exit state read %s failure within the recovery deadline", async failure => {
+    vi.useFakeTimers();
+    try {
+      const { target, execute } = fixture(settledSuspension);
+      const original = execute.getMockImplementation()!;
+      const postExitTimeouts: number[] = [];
+      let exited = false;
+      execute.mockImplementation(async request => {
+        if (request.args[2] === "paperclip-runner-recovery-check") {
+          exited = true;
+          return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+        }
+        if (request.args[1].includes("base64")) {
+          if (!exited && failure === "shared-deadline") await new Promise(resolveWait => setTimeout(resolveWait, 25_000));
+          if (exited) {
+            postExitTimeouts.push(Number(Reflect.get(request, "timeoutMs")));
+            if (failure === "transport") throw new Error("private sandbox transport detail");
+            if (failure === "json") return { stdout: Buffer.from("not json").toString("base64"), stderr: "", exitCode: 0, timedOut: false };
+            return { stdout: "", stderr: "private command output", exitCode: failure === "command" ? 1 : 0,
+              timedOut: failure !== "command" };
+          }
+        }
+        return original(request);
+      });
+      const startedAt = Date.now();
+      const outcome = verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const diagnostic = readRemoteRunnerRecoveryError(await outcome);
+      expect(diagnostic).toEqual({ stage: "runner_state", reason: failure === "command" ? "state_read_failed"
+        : failure === "json" ? "state_invalid" : failure === "transport" ? "probe_transport_failed" : "probe_timeout" });
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(30_000);
+      expect(postExitTimeouts.length).toBeGreaterThan(0);
+      if (failure === "shared-deadline") expect(postExitTimeouts.every(timeout => timeout > 0 && timeout <= 5_000)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([
+    ["launches from", settledSuspension],
+    ["stays fail-closed for", { ...settledSuspension, lifecycle: "turn_active" }],
+  ] as const)("%s an exited runner when a scheduled retry builds its backend", async (outcome, runnerState) => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-remote-settled-exit-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const current = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run" },
+      session: { ...execution.session, normalizedSessionId: "session" },
+    };
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "runner",
+        runnerExecutionTarget: fixture().target as never });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+      state.createTransport.mockClear();
+      const retry = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "runner",
+        runnerExecutionTarget: exitedRunner(runnerState) as never, restartRecovery: { ...claim, providerAttempt: 2 } });
+      if (outcome === "stays fail-closed for") {
+        expect(readRemoteRunnerRecoveryError(await retry.catch(caught => caught)))
+          .toMatchObject({ stage: "process_verification", reason: "process_not_running", runnerLifecycle: "turn_active" });
+        expect(state.createTransport).not.toHaveBeenCalled();
+        return;
+      }
+      await retry;
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      expect(state.createTransport.mock.calls.at(-1)![0].adoptExistingRunner).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(stateBase, { recursive: true, force: true });
     }
   });
   it("rejects a stale process marker", async () => {

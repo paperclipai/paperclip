@@ -256,6 +256,16 @@ export async function persistNativeHarnessBackup(input: {
           sql`${heartbeatRuns.createdAt} >= (select created_at from heartbeat_runs where id = ${input.owner.runId}::uuid)`)).limit(1);
       if (successor) fail("owner_superseded");
       await fence(tx, input.owner, inactiveSource, input.signal);
+      if ("kind" in input.owner && input.owner.kind === "settled_controller_archive" && input.owner.filesystemIndependence) {
+        const [existing] = await tx.select({ id: nativeHarnessBackups.id }).from(nativeHarnessBackups).where(and(scope(ref),
+          eq(nativeHarnessBackups.runId, input.owner.runId), eq(nativeHarnessBackups.manifestSha256, manifestSha256),
+          eq(nativeHarnessBackups.status, "current"))).limit(1);
+        if (existing) {
+          await tx.update(nativeHarnessBackups).set({ status: "superseded", updatedAt: new Date() })
+            .where(and(eq(nativeHarnessBackups.id, ref.id), eq(nativeHarnessBackups.status, "pending")));
+          return;
+        }
+      }
       await tx.update(nativeHarnessBackups).set({ status: "superseded", updatedAt: new Date() })
         .where(and(scope(ref), eq(nativeHarnessBackups.status, "current")));
       await tx.update(nativeHarnessBackups).set({ status: "current", updatedAt: new Date() })
@@ -265,6 +275,12 @@ export async function persistNativeHarnessBackup(input: {
           action: "native_harness_backup_preserved", entityType: "heartbeat_run", entityId: input.owner.runId,
           agentId: input.owner.agentId, runId: input.owner.runId,
           details: { scopeDigest: ref.scopeDigest, manifestSha256, backupId: ref.id, originalFilesRetained: true } }, publications);
+      }
+      if ("kind" in input.owner && input.owner.kind === "settled_controller_archive" && input.owner.filesystemIndependence) {
+        await logActivity(tx as unknown as Db, { companyId: input.owner.companyId, actorType: "system", actorId: "native-harness-preservation",
+          action: "native_controller_source_evidence_preserved", entityType: "heartbeat_run", entityId: input.owner.runId,
+          agentId: input.owner.agentId, runId: input.owner.runId, details: { scopeDigest: ref.scopeDigest, manifestSha256,
+            backupId: ref.id, sourceCapabilityFingerprint: input.owner.filesystemIndependence.source.fingerprint } }, publications);
       }
     });
     for (const publication of publications) publishActivity(publication);
@@ -324,10 +340,11 @@ export async function restoreDurableNativeHarnessBackup(input: {
 }
 
 export async function verifyDurableNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; signal?: AbortSignal;
+  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; backupId?: string; signal?: AbortSignal;
 }): Promise<boolean> {
   const [row] = await input.db.select().from(nativeHarnessBackups).where(and(scope(input),
-    eq(nativeHarnessBackups.manifestSha256, input.manifestSha256), inArray(nativeHarnessBackups.status, ["current", "superseded"]))).limit(1);
+    eq(nativeHarnessBackups.manifestSha256, input.manifestSha256), input.backupId ? eq(nativeHarnessBackups.id, input.backupId) : undefined,
+    inArray(nativeHarnessBackups.status, ["current", "superseded"]))).limit(1);
   if (!row) return false;
   await receive(input.storage, reference(row), undefined, input.signal);
   return true;
