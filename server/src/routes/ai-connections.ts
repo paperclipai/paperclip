@@ -234,8 +234,6 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       ?.some(m => m.companyId === companyId && m.membershipRole === "viewer");
     const management = connectionManagementService(db);
     const context = connectionRequestContext(req);
-    // Probe the existing write policy only for the caller's personal accounts.
-    // Reuse the captured request identity across the account capability probes.
     const connections = await Promise.all(accounts.map(async account => ({
       ...account,
       canSetDefault: !viewer && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing

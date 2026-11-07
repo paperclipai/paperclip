@@ -147,8 +147,6 @@ test("personal provider defaults move the crown only after saving and survive re
   await page.keyboard.press("Shift+Tab");
   await expect(page.getByRole("tooltip")).toHaveText("Your default for OpenAI");
 
-  // One failed preference write retains the saved crown; retry sends the same
-  // explicit target through the real endpoint without starting provider login.
   await page.route(`**/api/companies/${companyId}/ai-connections/default`, async route => {
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Disposable QA save failure" }) });
   }, { times: 1 });

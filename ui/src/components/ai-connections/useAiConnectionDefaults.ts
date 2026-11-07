@@ -12,7 +12,6 @@ export function isOwnAiAccount(account: Pick<AiManagedConnectionSummary, "owners
   return account.ownership === "personal" && account.ownerUserId === userId && !account.routing;
 }
 
-/** A catalog row must identify a particular authorized grant, never a provider/list-order guess. */
 export function aiAccountForConnection(connection: ToolConnection, accounts: AiManagedConnectionSummary[], userId: string) {
   if (connection.connectionPurpose !== "ai" || aiConnectionRouterPluginKey(connection)) return undefined;
   const candidates = accounts.filter(account => account.id === connection.id && account.companyId === connection.companyId && isOwnAiAccount(account, userId));
@@ -21,7 +20,6 @@ export function aiAccountForConnection(connection: ToolConnection, accounts: AiM
 
 type DefaultTarget = { account: AiManagedConnectionSummary; retry: boolean; scope: string };
 
-/** Shared by Connectors and account details; the server owns eligibility and saved selection. */
 export function useAiConnectionDefaults(companyId: string | null, identity: { userId: string | null; settled: boolean }, enabled = true) {
   const client = useQueryClient();
   const toast = useOptionalToastActions();
@@ -63,7 +61,6 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
       if (!account.isDefault) await aiConnectionsApi.setDefault(account.companyId, account.grantId);
     },
     onSuccess: async (_result, target) => {
-      // All agent selectors and account panels use this prefix. Never move a crown optimistically.
       await client.invalidateQueries({ queryKey: ["ai-connections", target.account.companyId] });
       if (activeScope.current !== target.scope) return;
       const saved = client.getQueryData<AiConnectionList>(listKey)?.connections.find(account => account.grantId === target.account.grantId);
@@ -79,8 +76,6 @@ export function useAiConnectionDefaults(companyId: string | null, identity: { us
   });
   function choose(account: AiManagedConnectionSummary, retry = false, targetScope = scope) {
     if (activeScope.current !== targetScope || !identity.settled || !companyId) return;
-    // This also covers a second click before React has rendered the pending state,
-    // and another mounted account panel for the same user/company/provider.
     if (client.getMutationCache().findAll({ mutationKey, status: "pending" }).some(
       entry => (entry.state.variables as DefaultTarget).account.provider === account.provider,
     )) return;
