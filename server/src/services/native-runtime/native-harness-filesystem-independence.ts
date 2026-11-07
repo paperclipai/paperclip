@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { basename, join, posix } from "node:path";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { agentTaskSessions, companySkillRepositorySnapshots, companySkillVersions, environmentLeases,
-  heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+  heartbeatRuns, issues, nativeHarnessBackups, nativeRunnerCheckpoints, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
@@ -14,7 +14,7 @@ import { skillPackageStore } from "../skill-package-store.js";
 import { skillPackageManifest } from "../skill-package-files.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "../skill-snapshot.js";
 import { REPOSITORY_CONTENT_DIR, repositorySkillProjection } from "../skill-repository-package.js";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./canonical.js";
 import { readRuntimeSkillPreservation } from "./runtime-skill-preservation-reference.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
@@ -23,6 +23,12 @@ import { readNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { assertOriginalHarnessVolumeSource, type OriginalHarnessVolumeCapability } from "./native-harness-original-volume.js";
 import { isKnownNativeSessionRootEntry } from "./native-session-root-entries.js";
+import { readLegacyNativeControllerArchiveSource, readLegacyNativeControllerArchiveDigests } from "./native-controller-migration.js";
+import { archiveNativeControllerSourceEvidence, legacyNativeControllerArchive } from "./native-controller-archive.js";
+import { nativeControllerArchiveCoordinatorDigest, nativeControllerArchiveProfileDigest, type SettledControllerArchiveOwner } from "./native-controller-archive-source.js";
+import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { readNativeControllerRecovery } from "./native-controller-recovery.js";
+import { verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 const KEY = "nativeHarnessFilesystemIndependence";
 const SCHEMA = "paperclip.native-harness-filesystem-independence.v1";
@@ -33,11 +39,14 @@ function fail(): never { throw new Error("native_harness_filesystem_independence
 const profile = (value: Record<string, unknown> | null) => { const copy = { ...value }; delete copy[KEY]; return copy; };
 type PackageBinding = { id: string; digest: string };
 type VersionBinding = { id: string; digest: string };
+type ControllerBinding = { checkpointPartsDigest: string; archive: null | { id: string; digest: string;
+  controllerDigest: string; supervisorDigest: string | null } };
 type Receipt = { schema: typeof SCHEMA; selectedSessionId: string; lastRunId: string; sourceRunId: string; scopeDigest: string;
   factsDigest: string; sourceCapabilityFingerprint: string; localFactsDigest: string; assetsDigest: string;
-  packages: PackageBinding[]; versions: VersionBinding[]; observedAt: string };
+  packages: PackageBinding[]; versions: VersionBinding[]; controller: ControllerBinding; observedAt: string };
 type Scope = { companyId: string; selectedSessionId: string; scopeDigest: string };
 type Run = typeof heartbeatRuns.$inferSelect;
+const evidenceOwners = new WeakMap<SettledControllerArchiveOwner, { scope: Scope; factsDigest: string }>();
 
 async function databaseFacts(db: Db, input: Scope, lock: boolean) {
   const [selection] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId),
@@ -153,18 +162,95 @@ async function assetBindings(db: Db, anchor: Run, sourceRunId: string) {
         contentHash: row.contentHash, storage: row.storage }) })).sort((a, b) => a.id.localeCompare(b.id)) } };
 }
 
-export async function hasValidNativeHarnessFilesystemIndependence(db: Db, input: Scope): Promise<boolean> {
-  try {
-    const facts = await databaseFacts(db, input, false);
-    const receipt = facts.anchor.runnerProfileJson?.[KEY] as Receipt | undefined;
+function matchingReceipt(value: unknown, facts: Awaited<ReturnType<typeof databaseFacts>>, input: Scope,
+  bindings: Awaited<ReturnType<typeof assetBindings>>["bindings"], controller: ControllerBinding): Receipt | null {
+    const receipt = value as Receipt | undefined;
     if (receipt?.schema !== SCHEMA || receipt.selectedSessionId !== input.selectedSessionId || receipt.scopeDigest !== input.scopeDigest
       || receipt.lastRunId !== facts.anchor.id || receipt.sourceRunId !== facts.source.id || receipt.factsDigest !== facts.factsDigest
       || !/^[a-f0-9]{64}$/.test(receipt.sourceCapabilityFingerprint) || !/^[a-f0-9]{64}$/.test(receipt.localFactsDigest)
-      || !Number.isFinite(Date.parse(receipt.observedAt))) return false;
+      || !Number.isFinite(Date.parse(receipt.observedAt)) || !Array.isArray(receipt.packages) || !Array.isArray(receipt.versions)) return null;
+    return digest(bindings) === receipt.assetsDigest && digest(receipt.packages) === digest(bindings.packages)
+      && digest(receipt.versions) === digest(bindings.versions) && receipt.controller != null
+      && digest(receipt.controller) === digest(controller) ? receipt : null;
+}
+
+export async function hasValidNativeHarnessFilesystemIndependence(db: Db, input: Scope): Promise<boolean> {
+  try {
+    const facts = await databaseFacts(db, input, false);
     const assets = await assetBindings(db, facts.anchor, facts.source.id);
-    return digest(assets.bindings) === receipt.assetsDigest && digest(receipt.packages) === digest(assets.bindings.packages)
-      && digest(receipt.versions) === digest(assets.bindings.versions);
+    const existing = facts.anchor.runnerProfileJson?.[KEY] as Receipt | undefined;
+    const controller = await controllerBinding(db, facts, existing?.controller?.archive ?? null, false);
+    return matchingReceipt(existing, facts, input, assets.bindings, controller) !== null;
   } catch { return false; }
+}
+
+export async function assertNativeHarnessFilesystemArchiveSource(db: Db, owner: SettledControllerArchiveOwner) {
+  const registered = evidenceOwners.get(owner);
+  if (!registered || !owner.filesystemIndependence) fail();
+  const facts = await databaseFacts(db, registered.scope, true);
+  if (facts.factsDigest !== registered.factsDigest || facts.factsDigest !== owner.filesystemIndependence.factsDigest
+    || facts.source.id !== owner.runId || facts.anchor.id !== owner.selectedLastRunId) fail();
+}
+
+async function controllerBinding(db: Db, facts: Awaited<ReturnType<typeof databaseFacts>>, archive: ControllerBinding["archive"], lock: boolean): Promise<ControllerBinding> {
+  const partsQuery = db.select().from(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, facts.anchor.companyId),
+    eq(nativeRunnerCheckpoints.issueId, facts.anchor.nativeIssueId!), eq(nativeRunnerCheckpoints.runId, facts.source.id)))
+    .orderBy(asc(nativeRunnerCheckpoints.part));
+  const parts = await (lock ? partsQuery.for("share") : partsQuery);
+  if (archive) {
+    if (!parts.some(row => row.part === "header") || !readNativeControllerRecovery(
+      facts.source.runnerProfileJson.nativeControllerRecovery, facts.source.runnerProfileJson.sessionCheckpoint)) fail();
+    const rowQuery = db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.companyId, facts.anchor.companyId),
+      eq(nativeHarnessBackups.runId, facts.source.id), eq(nativeHarnessBackups.id, archive.id)));
+    const [row] = await (lock ? rowQuery.for("share") : rowQuery);
+    if (!row || !["current", "superseded"].includes(row.status) || digest(row) !== archive.digest) fail();
+  }
+  return { checkpointPartsDigest: digest(parts), archive };
+}
+
+async function preserveControllerEvidence(db: Db, facts: Awaited<ReturnType<typeof databaseFacts>>, input: Scope & {
+  source: OriginalHarnessVolumeCapability; storage: StorageService; signal: AbortSignal;
+}): Promise<ControllerBinding> {
+  const material = await readLegacyNativeControllerArchiveSource(facts.source);
+  if (material.paths.root !== scopedRunnerdStateRoot(facts.execution)) fail();
+  if (material.controller === undefined) {
+    if (material.supervisor !== undefined) fail();
+    return controllerBinding(db, facts, null, false);
+  }
+  const identity = JSON.parse(material.controller).identity as Record<string, unknown> | undefined;
+  if (identity?.runId !== facts.source.id || identity.runnerInstanceId !== facts.source.runnerInstanceId
+    || identity.normalizedSessionId !== facts.anchor.nativeSessionId) fail();
+  const checkpoint = await loadNativeRunnerCheckpoint(db, { companyId: input.companyId, issueId: facts.anchor.nativeIssueId!, runId: facts.source.id });
+  if (!checkpoint || !readNativeControllerRecovery(facts.source.runnerProfileJson.nativeControllerRecovery,
+    facts.source.runnerProfileJson.sessionCheckpoint)) fail();
+  const captured = captureLegacyDurablePrpCheckpoint(material.controller, { runId: facts.source.id,
+    runnerInstanceId: facts.source.runnerInstanceId!, normalizedSessionId: facts.anchor.nativeSessionId! },
+    { version: checkpoint.runnerVersion, digest: checkpoint.runnerDigest });
+  if (captured.records.size !== checkpoint.records.size || [...captured.records].some(([key, value]) => {
+    const durable = checkpoint.records.get(key); return durable === undefined || digest(JSON.parse(value)) !== digest(JSON.parse(durable));
+  })) fail();
+  const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, facts.source.id)));
+  if (!coordinator) fail();
+  const owner: SettledControllerArchiveOwner = Object.freeze({ kind: "settled_controller_archive", companyId: input.companyId,
+    issueId: facts.anchor.nativeIssueId!, agentId: facts.anchor.agentId, runId: facts.source.id, sessionId: facts.anchor.nativeSessionId!,
+    selectedSessionId: input.selectedSessionId, selectedLastRunId: facts.anchor.id,
+    profileDigest: nativeControllerArchiveProfileDigest(facts.source.runnerProfileJson), coordinatorDigest: nativeControllerArchiveCoordinatorDigest(coordinator),
+    controllerDigest: sha(material.controller), supervisorDigest: material.supervisor === undefined ? null : sha(material.supervisor),
+    filesystemIndependence: Object.freeze({ source: input.source, scopeDigest: input.scopeDigest, factsDigest: facts.factsDigest }) });
+  evidenceOwners.set(owner, { scope: { companyId: input.companyId, selectedSessionId: input.selectedSessionId, scopeDigest: input.scopeDigest }, factsDigest: facts.factsDigest });
+  const source = { companyId: input.companyId, issueId: facts.anchor.nativeIssueId!, runId: facts.source.id,
+    controller: material.controller, supervisor: material.supervisor, purpose: "filesystem_independence" as const };
+  await archiveNativeControllerSourceEvidence(db, { ...source, onlineOwner: owner, storage: input.storage, signal: input.signal });
+  const descriptor = legacyNativeControllerArchive(source);
+  const [row] = await db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.companyId, input.companyId),
+    eq(nativeHarnessBackups.runId, facts.source.id), eq(nativeHarnessBackups.scopeDigest, descriptor.scopeDigest),
+    eq(nativeHarnessBackups.manifestSha256, descriptor.manifestSha256), eq(nativeHarnessBackups.status, "current")));
+  if (!row) fail();
+  if (!await verifyDurableNativeHarnessBackup({ db, storage: input.storage, companyId: input.companyId,
+    scopeDigest: descriptor.scopeDigest, manifestSha256: descriptor.manifestSha256, backupId: row.id, signal: input.signal })) fail();
+  return controllerBinding(db, facts, { id: row.id, digest: digest(row), controllerDigest: owner.controllerDigest,
+    supervisorDigest: owner.supervisorDigest }, false);
 }
 
 function runtimeFiles(skill: { bundle: { digest: string; manifestDigest: string; fileCount: number; totalBytes: number } },
@@ -188,7 +274,7 @@ function runtimeFiles(skill: { bundle: { digest: string; manifestDigest: string;
 }
 
 async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, assets: Awaited<ReturnType<typeof assetBindings>>,
-  storage: StorageService, db: Db, verifyStorage: boolean, signal: AbortSignal, plans = new Map<string, FileManifestEntry[]>()) {
+  storage: StorageService, db: Db, verifyStorage: boolean, signal: AbortSignal, controller: ControllerBinding, plans = new Map<string, FileManifestEntry[]>()) {
   const root = scopedRunnerdStateRoot(facts.execution), metadata: unknown[] = [], store = skillPackageStore(db, storage);
   const stat = async (path: string) => lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
   const rootStat = await stat(root);
@@ -196,11 +282,19 @@ async function localFacts(facts: Awaited<ReturnType<typeof databaseFacts>>, asse
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) fail();
     const names = await readdir(root);
     if (names.some(name => !isKnownNativeSessionRootEntry(name))) fail();
+    const control = await stat(join(root, "control-plane"));
+    if (control && (!control.isDirectory() || control.isSymbolicLink()
+      || (await readdir(join(root, "control-plane"))).some(name => name !== "control-plane-state.json"))) fail();
     for (const name of ["continuity-breaks", "authority-epochs", "provider-artifacts", "failover-backups"]) {
       const entry = await stat(join(root, name));
       if (entry && (!entry.isDirectory() || entry.isSymbolicLink() || (await readdir(join(root, name))).length)) fail();
     }
   }
+  const material = await readLegacyNativeControllerArchiveDigests(facts.source);
+  if (controller.archive ? material.controllerDigest !== controller.archive.controllerDigest
+    || (material.supervisorDigest ?? null) !== controller.archive.supervisorDigest
+    : material.controllerDigest !== undefined || material.supervisorDigest !== undefined) fail();
+  metadata.push({ controller: material.controllerDigest ?? null, supervisor: material.supervisorDigest ?? null });
   for (const candidate of ["current", "previous"]) if (await stat(join(root, "failover-backups", candidate))) fail();
   if (verifyStorage) for (const row of assets.packages.values()) if (!await store.verifyDurable(row.companyId, row.id, signal)) fail();
   const runtime = "runtimeContext" in facts.execution ? facts.execution.runtimeContext : null;
@@ -281,7 +375,8 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
   await assertOriginalHarnessVolumeSource(input.source); input.signal.throwIfAborted();
   if (input.storage.provider !== "s3") fail();
   const facts = await databaseFacts(db, input, false), assets = await assetBindings(db, facts.anchor, facts.source.id);
-  const local = await localFacts(facts, assets, input.storage, db, true, input.signal), localFactsDigest = local.digest;
+  const controller = await preserveControllerEvidence(db, facts, input);
+  const local = await localFacts(facts, assets, input.storage, db, true, input.signal, controller), localFactsDigest = local.digest;
   const previous = facts.anchor.runnerProfileJson?.[KEY];
   if (previous != null) {
     if (!await hasValidNativeHarnessFilesystemIndependence(db, input)) fail();
@@ -289,7 +384,8 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
   }
   const receipt: Receipt = { schema: SCHEMA, selectedSessionId: input.selectedSessionId, scopeDigest: input.scopeDigest,
     lastRunId: facts.anchor.id, sourceRunId: facts.source.id, factsDigest: facts.factsDigest,
-    sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest, assetsDigest: digest(assets.bindings), ...assets.bindings, observedAt: new Date().toISOString() };
+    sourceCapabilityFingerprint: input.source.fingerprint, localFactsDigest, assetsDigest: digest(assets.bindings), ...assets.bindings, controller, observedAt: new Date().toISOString() };
+  let publishedReceipt = receipt;
   const publications: ActivityPublication[] = [];
   await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
@@ -304,9 +400,18 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
         .where(eq(companySkillRepositorySnapshots.id, row.id)).for("update");
     }
     const currentAssets = await assetBindings(tx, current.anchor, current.source.id);
+    const currentController = await controllerBinding(tx, current, controller.archive, true);
     if (digest(currentAssets.bindings) !== receipt.assetsDigest
-      || (await localFacts(current, currentAssets, input.storage, tx, false, input.signal, local.plans)).digest !== localFactsDigest) fail();
+      || digest(currentController) !== digest(controller)
+      || (await localFacts(current, currentAssets, input.storage, tx, false, input.signal, controller, local.plans)).digest !== localFactsDigest) fail();
     await assertOriginalHarnessVolumeSource(input.source); input.signal.throwIfAborted();
+    const existing = current.anchor.runnerProfileJson?.[KEY];
+    if (existing != null) {
+      const winner = matchingReceipt(existing, current, input, currentAssets.bindings, currentController);
+      if (!winner) fail();
+      publishedReceipt = winner;
+      return;
+    }
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...current.anchor.runnerProfileJson, [KEY]: receipt } })
       .where(and(eq(heartbeatRuns.id, current.anchor.id), eq(heartbeatRuns.companyId, input.companyId)));
     await logActivity(tx, { companyId: input.companyId, actorType: "system", actorId: "native-harness-preservation",
@@ -315,5 +420,5 @@ export async function preserveNativeHarnessFilesystemIndependence(db: Db, input:
         sourceRunId: current.source.id, sourceCapabilityFingerprint: receipt.sourceCapabilityFingerprint, factsDigest: receipt.factsDigest } }, publications);
   });
   for (const publication of publications) publishActivity(publication);
-  return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(receipt) };
+  return { scopeDigest: input.scopeDigest, sourceRunId: facts.source.id, receiptDigest: digest(publishedReceipt) };
 }

@@ -61,6 +61,13 @@ Publication binds the retained session, canonical newest resume source, frozen
 inputs and checkpoints, every associated lease and destroyed-provider receipt,
 released controller/finalizer ownership, and existing immutable skill references.
 Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
 Source locks and a final comparison fence publication; original files, stamps,
 warnings, failed statuses and session pointers remain unchanged. Startup can
 validate the published receipt using only database bindings, without the old
@@ -69,6 +76,10 @@ invalidate it. Existing resume and replacement policies remain authoritative,
 including governed-wait failures and warm-session refusals. No provider history
 is reconstructed or declared recovered, and uncertain provider sources remain
 enrollment blockers.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
 
 ### Proactive agent chat messages
 
