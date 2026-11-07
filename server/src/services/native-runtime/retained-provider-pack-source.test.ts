@@ -148,7 +148,7 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
 }
 
 function upload(input: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof uploadVerifiedProviderPack>[0]> = {}) {
-  return uploadVerifiedProviderPack({ root: input.current.pack, expectedDigest: input.selected.manifest.digest,
+  return uploadVerifiedProviderPack({ root: input.current.pack, sourceDigest: input.current.manifest.digest, expectedDigest: input.selected.manifest.digest,
     manifest: input.selected.manifest, runner: input.runner, cwd: input.root, targetPath: input.targetPath,
     reuseRoots: [], verifyDirectory: () => { throw Error("current_directory_fallback_forbidden"); },
     stageDirectory: async () => { throw Error("current_directory_fallback_forbidden"); }, verifyUploaded: async () => {}, ...extra } as Parameters<typeof uploadVerifiedProviderPack>[0]);
@@ -167,7 +167,7 @@ it("installs the exact retained pack through the real uploader on an empty host 
 
 it("keeps a matching current pack on its existing path without registry or cache reads", async () => {
   const input = await fixture();
-  await upload(input, { root: input.selected.pack });
+  await upload(input, { root: input.selected.pack, sourceDigest: input.selected.manifest.digest });
   expect(input.requests).toEqual([]);
   await expect(fs.stat(path.join(input.temporary, `paperclip-provider-pack-sources-${process.getuid?.()}`))).rejects.toMatchObject({ code: "ENOENT" });
   expect(await fs.readFile(path.join(input.targetPath, "bin/tool"), "utf8")).toBe("retained provider code");
@@ -184,7 +184,15 @@ it("refuses a different historical code pack even when OCI source labels and all
 it("does not mask a corrupt matching current archive by looking up a different code source", async () => {
   const input = await fixture();
   await fs.writeFile(input.selected.pack + ".archive.json", "{");
-  await expect(upload(input, { root: input.selected.pack })).rejects.toThrow("runner_remote_provider_archive_invalid");
+  await expect(upload(input, { root: input.selected.pack, sourceDigest: input.selected.manifest.digest })).rejects.toThrow("runner_remote_provider_archive_invalid");
+  expect(input.requests).toEqual([]);
+  expect(input.runner.execute).not.toHaveBeenCalled();
+  expect(input.runner.syncIn).not.toHaveBeenCalled();
+});
+
+it("rejects a changed controller code identity before looking up a historical source", async () => {
+  const input = await fixture();
+  await expect(upload(input, { sourceDigest: input.selected.manifest.digest })).rejects.toThrow("runner_remote_provider_source_invalid");
   expect(input.requests).toEqual([]);
   expect(input.runner.execute).not.toHaveBeenCalled();
   expect(input.runner.syncIn).not.toHaveBeenCalled();

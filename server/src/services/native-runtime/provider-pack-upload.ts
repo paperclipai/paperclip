@@ -25,10 +25,7 @@ export async function uploadVerifiedProviderPack(input: {
   stageDirectory: (root: string) => Promise<void>;
   verifyUploaded: () => Promise<void>;
 }): Promise<void> {
-  // The controller can only stage the pack it ships. A retained continuation
-  // pinned to an earlier release's pack cannot be satisfied by these bytes, by
-  // either transport. Fail before clearing the remote pack or uploading.
-  if (input.sourceDigest !== input.expectedDigest) {
+  if (input.sourceDigest !== input.expectedDigest && !input.manifest) {
     const short = (digest: string) => digest.replace(/^sha256:/, "").slice(0, 12);
     throw new Error(`runner_remote_provider_artifact_incompatible: selected provider pack ${short(input.expectedDigest)} is not the controller's pack ${short(input.sourceDigest)}; install the matching Paperclip package and Daytona image`);
   }
@@ -36,7 +33,7 @@ export async function uploadVerifiedProviderPack(input: {
   input.signal?.throwIfAborted();
   if (input.manifest && input.manifest.digest !== input.expectedDigest) throw Error("runner_remote_provider_source_invalid");
   const source = input.manifest ? await measure("provider_pack.source", () => resolveProviderPackUploadSource({
-    root: input.root, manifest: input.manifest!, signal: input.signal,
+    root: input.root, sourceDigest: input.sourceDigest, manifest: input.manifest!, signal: input.signal,
   })) : { root: input.root, archiveOnly: false };
   const verifyDirectory = () => measure("provider_pack.directory.verify", async () => input.verifyDirectory(source.root));
   // Archive installation reads the sealed archives, not the expanded tree.

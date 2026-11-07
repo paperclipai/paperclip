@@ -265,6 +265,7 @@ async function importSource(cache: string, pointer: string, manifest: ProviderPa
 
 export async function resolveProviderPackUploadSource(input: {
   root: string;
+  sourceDigest?: string;
   manifest: ProviderPackIdentity;
   signal?: AbortSignal;
 }): Promise<{ root: string; archiveOnly: boolean }> {
@@ -272,7 +273,8 @@ export async function resolveProviderPackUploadSource(input: {
   if (manifest?.schema !== "paperclip-runner/remote-provider-pack/v1" || manifest.digest !== `sha256:${digest(canonicalProviderPackJson(manifest.payload))}`) fail();
   input.signal?.throwIfAborted();
   const configured = JSON.parse((await readStable(join(input.root, "provider-pack.json"))).toString()) as ProviderPackIdentity;
-  if (configured?.schema !== manifest.schema || configured.digest !== `sha256:${digest(canonicalProviderPackJson(configured.payload))}`) fail();
+  if (configured?.schema !== manifest.schema || configured.digest !== `sha256:${digest(canonicalProviderPackJson(configured.payload))}`
+    || input.sourceDigest !== undefined && input.sourceDigest !== configured.digest) fail();
   if (configured.digest === manifest.digest) return { root: input.root, archiveOnly: false };
   const cache = join(await realpath(tmpdir()), `paperclip-provider-pack-sources-${process.getuid?.()}`);
   await mkdir(cache, { recursive: true, mode: 0o700 });
