@@ -2327,6 +2327,7 @@ registry.registerPath({
   request: { params: z.object({ companyId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatEndpointResponseSchema)),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
   },
@@ -2367,6 +2368,7 @@ registry.registerPath({
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(chatEndpointResponseSchema),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2569,7 +2571,7 @@ registry.registerPath({
   method: "get", path: "/api/companies/{companyId}/chat-slack/setup-options", tags: ["chat-channels"],
   summary: "Discover Slack setup methods and the current user's authorized workspaces",
   description: "Managed setup is advertised only for approved Cloud deployments with the broker profile enabled. Self-hosted discovery makes no hosted-service requests. Grants are personal and company scoped.",
-  request: { params: z.object({ companyId: z.string().uuid() }) }, responses: { 200: r.ok(slackSetupOptionsSchema), 401: r.unauthorized, 403: r.forbidden },
+  request: { params: z.object({ companyId: z.string().uuid() }) }, responses: { 200: r.ok(slackSetupOptionsSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 for (const action of ["authorize", "provision"] as const) registry.registerPath({
   method: "post", path: `/api/chat-endpoints/{endpointId}/slack/managed/${action}`, "x-paperclip-transport": "rest", "x-paperclip-connection-management": "connections:configure", tags: ["chat-channels"],
@@ -2584,7 +2586,7 @@ registry.registerPath({
   method: "delete", path: "/api/companies/{companyId}/chat-slack/manager-grants/{grantId}", tags: ["chat-channels"],
   summary: "Revoke the current user's workspace grant for future managed provisioning",
   description: "Removes local manager credentials and invalidates pending manager authorization. Installed bots remain connected; this does not uninstall Slack apps.",
-  request: { params: z.object({ companyId: z.string().uuid(), grantId: z.string().uuid() }) }, responses: { 204: { description: "Personal manager grant revoked" }, 401: r.unauthorized, 403: r.forbidden },
+  request: { params: z.object({ companyId: z.string().uuid(), grantId: z.string().uuid() }) }, responses: { 204: { description: "Personal manager grant revoked" }, 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 registry.registerPath({
   method: "get", path: "/api/chat-slack/managed/oauth/callback", tags: ["chat-channels"],
@@ -2634,6 +2636,7 @@ registry.registerPath({
   responses: {
     200: r.ok(chatEndpointCredentialHandoffSchema),
     201: r.ok(chatEndpointSetupSecretResponseSchema),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2686,7 +2689,7 @@ registry.registerPath({
   summary: "Finish Slack or GitHub onboarding with an optional conversation test",
   description: "Requires verified provider delivery and an authorized identity linked to the current user. GitHub also checks the assigned agent’s current bot capabilities. Records that a full conversation test was not required.",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
-  responses: { 200: r.ok(chatEndpointResponseSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(chatEndpointResponseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 registry.registerPath({
   "x-paperclip-transport": "rest",
@@ -2694,7 +2697,7 @@ registry.registerPath({
   method: "get", path: "/api/chat-endpoints/{endpointId}/test-status", tags: ["chat-channels"],
   summary: "Check for the current user's first setup message",
   request: { params: z.object({ endpointId: z.string().uuid() }) },
-  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  responses: { 200: r.ok(z.object({ messageReceivedAt: z.string().nullable() })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 registry.registerPath({
   method: "post", path: "/api/chat-identity-links/request-access", tags: ["chat-channels"],
@@ -2716,6 +2719,7 @@ registry.registerPath({
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(chatEndpointResponseSchema),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2735,6 +2739,7 @@ registry.registerPath({
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2777,6 +2782,7 @@ registry.registerPath({
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatPrincipalLinkResponseSchema)),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2827,6 +2833,7 @@ registry.registerPath({
   },
   responses: {
     204: r.noContent,
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2882,6 +2889,7 @@ registry.registerPath({
   request: { params: z.object({ endpointId: z.string().uuid() }) },
   responses: {
     200: r.ok(z.array(chatConversationResponseSchema)),
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2922,6 +2930,7 @@ registry.registerPath({
   },
   responses: {
     204: r.noContent,
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
@@ -2945,6 +2954,7 @@ registry.registerPath({
   },
   responses: {
     204: r.noContent,
+    400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
