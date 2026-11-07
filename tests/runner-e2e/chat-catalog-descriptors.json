@@ -3401,7 +3401,7 @@
       "chat-catalog-domains/identity-auth.ts",
       "../../packages/shared/src/validators/issue.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.decision-search.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
