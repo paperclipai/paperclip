@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -160,6 +160,17 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       source: { kind: "git", repoUrl: origin, ref: "main", branchName: "feature/missing", branchMode: "existing" },
       resolveGitAuth: async () => null })).rejects.toThrow();
     expect(await fs.lstat(root).catch(() => null)).toBeNull();
+  });
+
+  it("verifies a multi-chunk downloaded archive and restores every byte", async () => {
+    const content = randomBytes(3 * 1024 * 1024 + 137);
+    await fs.writeFile(path.join(workspace, "large.bin"), content);
+    const captured = await captureRemoteWorkspaceArchive({ target: target().remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const targetDir = path.join(scratch, "large-restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir, expectedManifestDigest: captured.manifestDigest });
+      expect((await fs.readFile(path.join(targetDir, "large.bin"))).equals(content)).toBe(true);
+    } finally { await captured.cleanup(); }
   });
 
   it("adopts an atomic restored folder after a lost reply without overwriting later edits", async () => {

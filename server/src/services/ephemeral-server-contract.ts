@@ -9,7 +9,9 @@ import { hasLocalNativeControllerObligations } from "./native-runtime/native-con
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 
-export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
+import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
+
+export { ephemeralServerEnabled };
 
 /** Validate before consumers can generate a replacement local identity. Error
  * messages name settings only, never credential values or connection URLs. */
