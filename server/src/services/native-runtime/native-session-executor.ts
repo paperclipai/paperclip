@@ -9335,6 +9335,7 @@ async function executePaperclipNativeSessionWithinScope(
           const nextAttempt = nextNativeProviderAttempt(
             incidentAttempts,
             recovering?.kind,
+            !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");

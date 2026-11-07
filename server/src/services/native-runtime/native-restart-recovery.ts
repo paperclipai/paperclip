@@ -96,6 +96,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     }
   | {
       kind: "bootstrap_incomplete";
@@ -105,6 +107,8 @@ export type NativeRestartRecoveryClaim =
       providerAttempt: number;
       restartKind: NativeRestartKind;
       recoveryRequestId: string | null;
+      /** False when the prior controller suspended this run in a clean drain. */
+      chargesProviderAttempt?: boolean;
     };
 
 export type NativeRestartRecoveryDisposition =
@@ -120,11 +124,39 @@ export type NativeRestartRecoveryDisposition =
 export function nextNativeProviderAttempt(
   currentAttempt: number,
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
+  chargesProviderAttempt = true,
 ): number {
-  return recoveryKind === "reattach_existing_runner" ||
+  return !chargesProviderAttempt ||
+    recoveryKind === "reattach_existing_runner" ||
     recoveryKind === "reattach_remote_runner"
     ? currentAttempt
     : currentAttempt + 1;
+}
+
+/**
+ * The execution recovery budget bounds runs that keep failing their provider
+ * turn. A graceful drain that suspended the run for reattachment is an
+ * infrastructure restart the run did not cause, so the next controller's
+ * resume of that turn does not spend an attempt. A crash (no drain record)
+ * still charges one. The drain record is consumed by the next claim; waits for
+ * ownership evidence or a deferred block in between do not erase it.
+ */
+const RECOVERY_CLAIM_DISPOSITIONS: ReadonlySet<unknown> = new Set<NativeRestartRecoveryClaim["kind"]>([
+  "reattach_existing_runner", "reattach_remote_runner", "resume_dead_runner", "bootstrap_incomplete",
+]);
+export function suspendedByCleanDrain(coordinator: {
+  attempt: number;
+  recoveryHistory: ReadonlyArray<{ disposition?: unknown }>;
+}): boolean {
+  // Attempt 0 means no execution has claimed the run yet. Its first provider
+  // start must still be counted, whatever interrupted preparation.
+  if (coordinator.attempt <= 0) return false;
+  for (let index = coordinator.recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const disposition = coordinator.recoveryHistory[index]?.disposition;
+    if (disposition === "restart_suspended") return true;
+    if (RECOVERY_CLAIM_DISPOSITIONS.has(disposition)) return false;
+  }
+  return false;
 }
 
 const controllerBootId = randomUUID();
@@ -465,6 +497,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   checkpointFailed?: boolean;
   stagedAttachmentVerified?: boolean;
   providerAttempt?: number;
+  /** False when resuming keeps the current attempt (a clean drain). */
+  resumeChargesAttempt?: boolean;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
   reason: string;
@@ -486,7 +520,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     }
     if (input.remoteBootstrapProvenIncomplete === true && !input.hasCheckpoint && !input.hasProviderEvidence) {
       // Each same-run bootstrap is another provider attempt; keep restarts bounded.
-      if ((input.providerAttempt ?? 0) >= 3)
+      if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
         return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
       return { claimKind: "bootstrap_incomplete",
         reason: input.remoteBootstrapIncompleteReason ?? "remote_bootstrap_proven_incomplete" };
@@ -526,7 +560,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       reason: "live_provider_process_identity_unverifiable",
     };
   }
-  if ((input.providerAttempt ?? 0) >= 3)
+  // Continuing an attempt already counted needs no budget; a new one does.
+  if (input.resumeChargesAttempt !== false && (input.providerAttempt ?? 0) >= 3)
     return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
@@ -935,6 +970,8 @@ export async function claimNativeRestartRecoveries(input: {
           input.coordinatedPreviousController ?? null,
       });
       if (!takeover.allowed) {
+        const previous = row.coordinator.recoveryHistory.at(-1);
+        const waitAlreadyRecorded = previous?.disposition === "awaiting_evidence" && previous.reason === takeover.reason;
         const event = historyEntry({
           now,
           restartKind: input.restartKind,
@@ -956,7 +993,9 @@ export async function claimNativeRestartRecoveries(input: {
           .set({
             recoveryState: "awaiting_evidence",
             recoveryRequestId: input.recoveryRequestId ?? null,
-            recoveryHistory: appendBoundedRecoveryHistory(event),
+            // Repeated scans of one ownership wait record it once, so the
+            // bounded history keeps the drain record the next claim reads.
+            ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
             updatedAt: now,
           })
           .where(
@@ -1112,6 +1151,8 @@ export async function claimNativeRestartRecoveries(input: {
           companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
         }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! });
 
+      // Read before this claim appends its own history entry.
+      const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
@@ -1134,6 +1175,7 @@ export async function claimNativeRestartRecoveries(input: {
             ?.runTerminalState === "failed" &&
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
+        resumeChargesAttempt: !cleanDrainSuspension,
       });
       if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
         return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
@@ -1397,6 +1439,7 @@ export async function claimNativeRestartRecoveries(input: {
         providerAttempt,
         restartKind: input.restartKind,
         recoveryRequestId: input.recoveryRequestId ?? null,
+        chargesProviderAttempt: !cleanDrainSuspension,
       };
       if (claimKind === "reattach_remote_runner") {
         return {
