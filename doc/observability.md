@@ -746,10 +746,17 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
-dispatch. The interval includes queueing, Core preparation, workspace preparation,
+The span starts at the earliest accepted input. The accepted comment or attested
+question response is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run starts at run creation from the queue span and reports `run_created`. The
+durable wake request's acceptance time replaces the start when it is earlier
+(deferred, coalesced and retried wakes). The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
+wait before `turn.start` and never delays event delivery. Callers without
+preparation history start at native dispatch and report `run_created`. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
 using the Core clock rather than the provider event timestamp. Browser delivery
@@ -1019,7 +1026,16 @@ receives a successful HTTP delivery response. The process retains the latest
 processing backpressure, network errors and rate limits can discard the event.
 Unconfirmed captures wait 60 seconds before a later task read can try again;
 this pending cache also holds at most 1,000 entries and starts no background
-timer. A server restart or cache eviction can report an old failure again.
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
 This task-state event can accompany a separate terminal run-failure report;
 the `failure_source` tag distinguishes them.
 

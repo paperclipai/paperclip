@@ -91,12 +91,64 @@ validate the published receipt using only database bindings, without the old
 volume, a fresh source witness, or storage reads. Changed or missing bindings
 invalidate it. Existing resume and replacement policies remain authoritative,
 including governed-wait failures and warm-session refusals. No provider history
-is reconstructed or declared recovered, and uncertain provider sources remain
-enrollment blockers.
+is reconstructed or declared recovered.
+
+The same original-volume maintenance owner has a separate `web_evidence` mode.
+It stores a `paperclip.native-harness-web-evidence.v1` receipt. This mode proves
+that the web server's retained files have durable byte coverage. It does not
+require an external VM's termination receipt and does not settle that VM's
+recovery obligation. It requires the same settled web controller, finalizer,
+task and physical-writer fences. The encrypted `original_volume_source_evidence`
+archive includes a closed inventory of all nonexcluded files under the canonical
+session root, the separate warm supervisor, and each admitted skill manifest.
+Files retain their bytes and modes, including local edits and a skill whose
+version row was deleted. Such a skill remains forensic evidence: the owner does
+not recreate its version or make it executable. Canonical credential exclusions
+stay excluded. Unknown directories, symlinks, incomplete manifests, active web
+writers and changed source facts fail closed. This WEB inventory permits at most
+10,000 entries, 4 MiB of manifest metadata, and 4,096 bytes per path. The 16-MiB
+per-file and 64-MiB total payload limits remain unchanged. Authority history keeps
+its separate 128-entry and 32-epoch bounds.
+
+A genuinely absent raw controller stays absent. A supervisor-only archive still
+requires the exact durable controller checkpoint and source identity. Old
+terminated-provider receipts and history-free manifests keep their existing
+shape. External lease status and cleanup observations can change without
+creating a new web filesystem dependency. Allocation, stamp, selected source,
+checkpoint and admitted-input changes invalidate coverage. VM references,
+recovery actions, warnings and continuation policies stay unchanged. Replacement
+validation uses only the published archive and database bindings; it needs no
+original-volume anchor or filesystem read. These validations add bounded
+per-retained-scope database reads during startup. They do not add a worker or a
+poll. Missing or invalid byte evidence remains an enrollment blocker.
 
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
+
+### Original local Git sources for archived workspaces
+
+When an archived runtime branch has an exact successful deletion receipt, its
+saved commit can be imported from the recorded original file-URL repository if
+the canonical private/project cache is definitively absent. A present, corrupt,
+foreign or unreadable primary source never falls through to this path.
+
+This fallback requires the matching company/project source record, a real bare
+repository under the same instance root, and the exact full saved base SHA matching
+the deleted tip (`baseRefSnapshot.resolvedSha`, with the legacy `baseRefSha` form
+accepted when no canonical snapshot exists). Conflicting records fail closed. It accepts self-contained SHA-1 storage with a bounded standard
+configuration and at most 10,000 metadata entries. Aliases, special files,
+alternates, replacement/graft/shallow state and execution hooks fail closed.
+Every retained branch or lightweight tag must still name that full base commit.
+Saved retries and final publication recheck that all recorded private and generated
+primary sources remain absent. Returned or unreadable primary files block the
+original-source path. Git reads use a restricted environment and local-file transport only.
+
+Materialization uses private migration scratch. Existing encrypted snapshot
+readback, journal identity, source reinspection and publication fences still
+apply. Original repository bytes and cleanup history remain unchanged. This
+imports the retained workspace tree; it does not turn a configured local file
+URL into a portable source for future fresh project work.
 
 ### Proactive agent chat messages
 
@@ -926,6 +978,20 @@ retains the prepared reference, provider checkpoint, remote allocations and
 recovery hold. The existing migration recipe routes later file recovery away
 from the retired local destination. This neither declares preexecution nor
 proves remote export, provider termination or permission to resume execution.
+
+An exhausted prepared-export hold can also retain the canonical historical-source
+marker added by recovery backfill. Its schema and run must match, and every unique
+recorded lease must already belong to the proven prepared source or its declared
+recovery allocations. The existing historical-source inspector verifies those
+same allocation bindings. Unknown fields, malformed markers and foreign, duplicate
+or uncovered lease references still block import.
+
+The full historical marker stays in the action fingerprint. Existing source,
+task, lifecycle and finalizer locks and publication reinspection remain required.
+This permits preservation of the current local files only. It neither clears the
+hold nor claims that remote files were copied or a provider stopped. Marked holds
+add bounded database reads during maintenance inspection; they add no provider
+calls or recurring background work.
 
 The workspace fingerprint pins the recorded source. An arriving reservation can
 reach a legacy workspace before refusing it, so publication must follow this
