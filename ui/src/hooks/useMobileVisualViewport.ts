@@ -9,12 +9,16 @@ export function useMobileVisualViewport(enabled: boolean) {
     const viewport = window.visualViewport;
     if (!enabled || !shell || !viewport) return;
     const restoreDocumentPosition = () => {
-      if (viewport.scale !== 1 || shell.dataset.keyboardOpen !== "true" || !shell.querySelector("[data-task-chat-shell]")) return;
+      if (viewport.scale !== 1 || shell.dataset.keyboardOpen !== "true" || !shell.querySelector("[data-task-chat-shell], [data-classic-task-shell]")) return;
       const page = document.scrollingElement ?? document.documentElement;
       if (page.scrollTop !== 0) page.scrollTop = 0;
     };
     const update = () => {
-      if (viewport.scale !== 1 || !Number.isFinite(viewport.height) || viewport.height <= 0) return;
+      if (viewport.scale !== 1) {
+        delete shell.dataset.keyboardOpen;
+        return;
+      }
+      if (!Number.isFinite(viewport.height) || viewport.height <= 0) return;
       // Read geometry before writing styles, avoiding a forced layout after our
       // own height update. Nothing here subscribes to input or thread updates.
       const keyboardOpen = document.documentElement.clientHeight - viewport.height > 120;

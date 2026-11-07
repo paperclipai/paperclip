@@ -5,8 +5,17 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
+import { Layout as ProductionLayout } from "./Layout.production";
+import { existsSync, readFileSync } from "node:fs";
+import { act as reactAct } from "react";
 
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
+vi.mock("./Sidebar.production", async () => await import("./Sidebar"));
+vi.mock("./CompanySettingsSidebar.production", async () => await import("./CompanySettingsSidebar"));
+vi.mock("./AppsSidebar.production", async () => await import("./AppsSidebar"));
+vi.mock("./AppConnectionSidebar.production", async () => await import("./AppConnectionSidebar"));
+vi.mock("./BreadcrumbBar.production", async () => await import("./BreadcrumbBar"));
+vi.mock("./SidebarAccountMenu.production", async () => await import("./SidebarAccountMenu"));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
 }));
@@ -316,6 +325,64 @@ function renderLayoutView(root: ReturnType<typeof createRoot>, queryClient: Quer
 
 describe("Layout", () => {
   let container: HTMLDivElement;
+
+  it.each([
+    { ShellLayout: Layout, width: 1024 },
+    { ShellLayout: Layout, width: 1366 },
+    { ShellLayout: ProductionLayout, width: 1024 },
+    { ShellLayout: ProductionLayout, width: 1366 },
+  ])("sizes a desktop-width conversation above the keyboard (%#)", async ({ ShellLayout, width }) => {
+    const viewport = Object.assign(new EventTarget(), { height: 1024, scale: 1, offsetTop: 0 });
+    vi.stubGlobal("visualViewport", viewport);
+    vi.stubGlobal("innerWidth", width);
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 1024 });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await reactAct(async () => root.render(<QueryClientProvider client={queryClient}><ShellLayout /></QueryClientProvider>));
+      const shell = container.querySelector(".paperclip-app-shell") as HTMLElement;
+      const conversation = document.createElement("div");
+      conversation.dataset.taskChatShell = "";
+      shell.querySelector("#main-content")!.append(conversation);
+      viewport.height = 600;
+      viewport.dispatchEvent(new Event("resize"));
+      expect(shell.dataset.mobile).toBeUndefined();
+      expect(shell.dataset.keyboardOpen).toBe("true");
+      expect(shell.style.getPropertyValue("--mobile-chat-viewport-height")).toBe("600px");
+
+      const style = document.createElement("style");
+      const css = readFileSync(existsSync("ui/src/index.css") ? "ui/src/index.css" : "src/index.css", "utf8");
+      style.textContent = css.slice(css.indexOf("html:has(.paperclip-app-shell"), css.indexOf("@media (prefers-reduced-motion: reduce)", css.indexOf("html:has(.paperclip-app-shell")));
+      document.head.append(style);
+      try {
+        expect(getComputedStyle(shell).position).toBe("fixed");
+        const sizingRule = Array.from(style.sheet!.cssRules).find((rule) =>
+          "selectorText" in rule && shell.matches((rule as CSSStyleRule).selectorText) && (rule as CSSStyleRule).style.height,
+        ) as CSSStyleRule;
+        expect(sizingRule.style.height).toBe("var(--mobile-chat-viewport-height)");
+        expect(getComputedStyle(shell.querySelector(".app-main-row")!).minHeight).toBe("0px");
+        expect(getComputedStyle(shell.querySelector("#main-content")!).overflow).toBe("hidden");
+        viewport.scale = 2;
+        viewport.height = 300;
+        viewport.dispatchEvent(new Event("resize"));
+        expect(shell.style.getPropertyValue("--mobile-chat-viewport-height")).toBe("600px");
+        viewport.scale = 1;
+        viewport.height = 1024;
+        viewport.dispatchEvent(new Event("resize"));
+        expect(shell.dataset.keyboardOpen).toBeUndefined();
+        expect(getComputedStyle(shell).position).not.toBe("fixed");
+        viewport.height = 600;
+        viewport.dispatchEvent(new Event("resize"));
+        conversation.remove();
+        expect(getComputedStyle(shell).position).not.toBe("fixed");
+      } finally { style.remove(); }
+    } finally {
+      await reactAct(async () => root.unmount());
+      queryClient.clear();
+      Reflect.deleteProperty(document.documentElement, "clientHeight");
+      vi.unstubAllGlobals();
+    }
+  });
 
   beforeEach(() => {
     classicWorkspace.enabled = true;
