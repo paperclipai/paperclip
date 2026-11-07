@@ -5282,7 +5282,7 @@
       "chat-catalog-domains/integrator-status-cards.ts",
       "chat-scenarios/status-cards.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.status-card.archive.v2",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
