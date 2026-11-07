@@ -76505,6 +76505,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const scopedWork = await import("../services/scoped-deadline-work.js");
     const register = scopedWork.registerScopedDeadlineWork;
     let invalidated = false;
+    let invalidationRevision: string | undefined;
     let invalidateSource: (() => void) | undefined;
     const registration = vi.spyOn(scopedWork, "registerScopedDeadlineWork").mockImplementation((owner, options, canRun) =>
       register(owner, { ...options, load: async (scope, signal) => {
@@ -76518,14 +76519,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         return entries;
       } }, canRun));
     const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
-    invalidateSource = () => worker.invalidate();
+    invalidateSource = () => {
+      worker.invalidate();
+      invalidationRevision = worker.reconciliationSnapshot().revision;
+    };
     registration.mockRestore();
     try {
       await worker.ready;
       await expect.poll(() => idleWorkSnapshot().active, { timeout: 10_000 }).toBe(0);
       if (mode === "rescoped") {
         expect(invalidated).toBe(true);
-        expect(coordinator.nextWakeAt()).not.toBeNull();
+        expect(invalidationRevision).toBeTypeOf("string");
+        // Independent admission can finish the rescope before this check.
+        // Observe its settled generation rather than an intermediate timer.
+        await expect.poll(() => worker.reconciliationSnapshot().reconciled, { timeout: 10_000 }).toBe(true);
+        expect(worker.reconciliationSnapshot().revision).not.toBe(invalidationRevision);
       }
       await expect.poll(async () => Promise.all(contexts.map(async context =>
         (await db.select({ id: issueComments.id }).from(issueComments)
