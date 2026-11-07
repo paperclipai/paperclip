@@ -9473,6 +9473,46 @@ export function issueService(db: Db) {
       return listIssueReviewAttentionMap(dbOrTx, companyId, issueRows);
     },
 
+    getCancelledDependencyHandoff: async (dependentIssueId: string) => db.transaction(async (tx) => {
+      // Serialize concurrent route/backstop deliveries for this dependent.
+      const dependent = await tx.select().from(issues)
+        .where(eq(issues.id, dependentIssueId)).for("update")
+        .then(rows => rows[0] ?? null);
+      if (!dependent?.assigneeAgentId || !["blocked", "todo", "in_progress"].includes(dependent.status)) return null;
+      const cancelled = await tx.select({ id: issues.id, identifier: issues.identifier, cancelledAt: issues.cancelledAt })
+        .from(issueRelations).innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(and(
+          eq(issueRelations.companyId, dependent.companyId),
+          eq(issues.companyId, dependent.companyId),
+          eq(issueRelations.relatedIssueId, dependent.id),
+          eq(issueRelations.type, "blocks"),
+          eq(issues.status, "cancelled"),
+        )).orderBy(asc(issues.id));
+      if (cancelled.length === 0) return null;
+      const state = JSON.stringify({
+        cancelled: cancelled.map(row => [row.id, row.cancelledAt?.toISOString() ?? null]),
+        blockedCycle: dependent.blockedTransitionAt?.toISOString() ?? null,
+      });
+      const marker = `<!-- cancelled-dependency-handoff:${createHash("sha256").update(state).digest("hex")} -->`;
+      const names = cancelled.map(row => row.identifier ?? row.id).join(", ");
+      const body = `System dependency handoff: ${names} cancelled.\n\n` +
+        "The required result has not been completed. As this issue's owner, reassess the dependency: " +
+        "use an existing valid result, replace/remove an obsolete dependency, or cancel work that is no longer needed. " +
+        "Keep other blockers and human approvals intact. Do not wait for a cancelled task to finish.\n\n" + marker;
+      let comment = await tx.select({ id: issueComments.id }).from(issueComments)
+        .where(and(eq(issueComments.companyId, dependent.companyId), eq(issueComments.issueId, dependent.id),
+          eq(issueComments.authorType, "system"), eq(issueComments.body, body)))
+        .then(rows => rows[0] ?? null);
+      if (!comment) {
+        comment = await tx.insert(issueComments).values({ companyId: dependent.companyId,
+          issueId: dependent.id, authorType: "system", body }).returning({ id: issueComments.id })
+          .then(rows => rows[0]!);
+        await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, dependent.id));
+      }
+      return { issueId: dependent.id, assigneeAgentId: dependent.assigneeAgentId,
+        commentId: comment.id, cancelledBlockerIssueIds: cancelled.map(row => row.id) };
+    }),
+
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
       const blockerIssue = await db
         .select({ id: issues.id, companyId: issues.companyId })

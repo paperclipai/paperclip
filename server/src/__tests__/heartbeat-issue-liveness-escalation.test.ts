@@ -645,6 +645,52 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     }
   });
 
+  it("recovers a lost cancellation handoff, invokes the owner once, and preserves the missing dependency", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } = await seedResolvedDependencyBackstopFixture();
+    await db.update(issues).set({ status: "cancelled", cancelledAt: new Date() }).where(eq(issues.id, blockerIssueId));
+    const svc = issueService(db);
+    const relays = await Promise.all(Array.from({ length: 4 }, () => svc.getCancelledDependencyHandoff(blockedIssueId)));
+    expect(new Set(relays.map(relay => relay?.commentId)).size).toBe(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, blockedIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0].body).toContain("required result has not been completed");
+    await expect(svc.getDependencyReadiness(blockedIssueId)).resolves.toMatchObject({ isDependencyReady: false,
+      unresolvedBlockerIssueIds: [blockerIssueId] });
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.dependencyWakesHealed).toBe(1);
+    await heartbeat.drainActiveRunExecutions();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    const handoffs = wakes.filter(wake => wake.idempotencyKey?.startsWith("issue_dependency_cancelled:"));
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0].status).toBe("completed");
+    const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, handoffs[0].id))
+      .then(rows => rows[0]);
+    expect(run.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerIssueId] });
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.dependencyWakesHealed).toBe(0);
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId))).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.id, blockedIssueId)).then(rows => rows[0].status)).toBe("blocked");
+  });
+
+  it("does not hand cancellation to an unassigned issue or a human review, and recognizes a later cancellation cycle", async () => {
+    const { blockedIssueId, blockerIssueId, agentId } = await seedResolvedDependencyBackstopFixture();
+    const svc = issueService(db);
+    await db.update(issues).set({ status: "cancelled", cancelledAt: new Date("2026-11-07T10:00:00Z") }).where(eq(issues.id, blockerIssueId));
+    const initial = await svc.getCancelledDependencyHandoff(blockedIssueId);
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, blockedIssueId));
+    expect(await svc.getCancelledDependencyHandoff(blockedIssueId)).toBeNull();
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: null }).where(eq(issues.id, blockedIssueId));
+    expect(await svc.getCancelledDependencyHandoff(blockedIssueId)).toBeNull();
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, blockedIssueId));
+    await db.update(issues).set({ status: "todo", cancelledAt: null }).where(eq(issues.id, blockerIssueId));
+    expect(await svc.getCancelledDependencyHandoff(blockedIssueId)).toBeNull();
+    await db.update(issues).set({ status: "cancelled", cancelledAt: new Date("2026-11-07T11:00:00Z") }).where(eq(issues.id, blockerIssueId));
+    expect((await svc.getCancelledDependencyHandoff(blockedIssueId))?.commentId).not.toBe(initial?.commentId);
+  });
+
   it("keeps resolved dependency wake reconciliation active", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });

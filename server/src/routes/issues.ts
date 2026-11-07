@@ -319,6 +319,8 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
   shouldWakeOnRestoredBlockedDependency,
+  buildCancelledDependencyHandoffWake,
+  findExistingCancelledDependencyHandoffWake,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import {
@@ -16579,7 +16581,24 @@ export function issueRoutes(
           }
         }
 
-        const restoredBlockedReadyDependency = shouldWakeOnRestoredBlockedDependency({
+        if (existing.status !== "cancelled" && issue.status === "cancelled" &&
+          typeof svc.getCancelledDependencyHandoff === "function") {
+        const relations = await svc.getRelationSummaries(issue.id);
+        for (const dependent of relations.blocks) {
+          if (await treeControlSvc.getActivePauseHoldGate(issue.companyId, dependent.id)) continue;
+          const handoff = await svc.getCancelledDependencyHandoff(dependent.id);
+          if (!handoff || await findExistingCancelledDependencyHandoffWake(db, {
+            companyId: issue.companyId, commentId: handoff.commentId,
+          })) continue;
+          addWakeup(handoff.assigneeAgentId, {
+            ...buildCancelledDependencyHandoffWake(handoff),
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+        }
+      }
+
+      const restoredBlockedReadyDependency = shouldWakeOnRestoredBlockedDependency({
           previousStatus: existing.status,
           nextStatus: issue.status,
           previousAssigneeAgentId: existing.assigneeAgentId ?? null,
