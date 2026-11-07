@@ -12,7 +12,7 @@ Plan: [`2026-11-07-durable-ownership-and-reconciliation.md`](2026-11-07-durable-
   - claude: faster (7.7 s against 13.6 s), but it waits 3.7 s between `turn.submitted` and `turn.started`.
 
   Session resume (`runner.session.resume`) has the worst p95 of any pre-turn step: 48.7 s. Keeping a live runner and provider session between turns (plan rule 2) is the largest TTFT lever this baseline found.
-- **Control-plane restart: 13–20 s to ready, then 3–16 s to the next provider event.** Of the restart, `recovering` → `ready` takes under 1 s. Process boot takes the rest (a dev-mode `tsx` server with UI middleware; production boot was not measured). After ready, the recovered run's next provider event arrives in 3–5 s for codex, 4–40 s for claude and 12–16 s for opencode. The overnight chaos evidence shows longer tails, 40–150 s at p95. On Daytona, `awaiting_evidence` recoveries take 33–43 s, which is consistent with the 60 s remote controller lease that only age releases (inventory: `remoteLeaseFenced`, "Record kinds from the zero-downtime upgrade work").
+- **Control-plane restart: 13–30 s to ready, then 5–21 s to the next provider event.** Of the restart, `recovering` → `ready` takes 0.3–1.7 s. Process boot takes the rest (a dev-mode `tsx` server with UI middleware; production boot was not measured). After ready, the recovered run's next provider event arrives in 5–6.5 s for codex, 8–18.5 s for claude and 17.6–32 s for opencode (p50–p95, run 4). The overnight chaos evidence shows longer tails, 40–150 s at p95. On Daytona, `awaiting_evidence` recoveries take 33–43 s, which is consistent with the 60 s remote controller lease that only age releases (inventory: `remoteLeaseFenced`, "Record kinds from the zero-downtime upgrade work").
 - **Remote paths were not measured.** Code reading found larger waits before `turn.start` on remote paths:
   - a full workspace capture and upload on a first remote run;
   - a sandbox resume loop of up to 60 s;
@@ -35,7 +35,7 @@ Plan: [`2026-11-07-durable-ownership-and-reconciliation.md`](2026-11-07-durable-
   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/ttft-baseline.ts --adapters codex,claude,opencode --samples 6 --restarts 3
   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/ttft-baseline.ts --report tests/restart-chaos/results/<wave>/baseline-data.json
   ```
-- **Revision:** `origin/master` `f2d8a51027`, plus #19838 (the TTFT anchor). The run had #19838 applied, so TTFT carries its `anchor` attribute.
+- **Revision:** `origin/master` `f2d8a51027`, plus #19838 (the TTFT anchor, since merged as `e2d490c61b`). Runs 1 and 3 had #19838 applied, so TTFT carries its `anchor` attribute. Run 4 measured restart recovery only.
 - **Host:** Apple M5 Max, 18 cores, 128 GB, macOS. The adapters run in parallel, one task per adapter at a time. The host also ran other agent worktrees, so the p95 tails include machine load.
 - **Models:** the runner-e2e profiles. These are `runner-codex` (`gpt-6.1-sol`), `runner-acpx-claude` (`claude-sonnet-5`) and `runner-opencode` (`openrouter/deepseek/deepseek-v4-flash-0731`). Every task is a one-line reply, so TTFT is dominated by startup, not by generation.
 - **Environment:** local only. Daytona was not measured fresh. The Daytona credential is present, but a Daytona wave needs an immutable runner image whose content matches this controller (`assertControllerMatchesImage` in `tests/restart-chaos/daytona-image.ts`). No such image exists for this revision, and building and qualifying one costs more than Phase 0 allows. The driver also seeds only `--env local` today. Daytona restart recovery comes from the overnight chaos evidence (below), with that evidence's bias.
@@ -123,18 +123,22 @@ The inventory readers found these waits and writes on the path before `turn.star
 
 ### Measured by the driver (local)
 
+Run 4 is the source. In it, the driver injected each fault only while every tracked run was inside an open shell tool call, and it checked that again just before the fault. Run 3 had used `sleep 75`, which Claude Code's Bash tool refuses, so run 3's claude samples did not reliably interrupt a tool call and are not used. Run 3's codex and opencode samples agree with run 4 (codex 3.2–5.1 s, opencode 12.5–16.5 s).
+
 | Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |
 |---|---|---|---|---|---|---|
-| claude | K1 | none | 1 | 22.07 s | 22.07 s | 0 |
-| claude | K1 | resume_dead_runner | 2 | 6.42 s | 39.68 s | 0 |
-| claude | K2 | awaiting_runner_reattach | 1 | 4.11 s | 4.11 s | 0 |
-| claude | K2 | none | 2 | 4.76 s | 15.85 s | 0 |
-| codex | K1 | resume_dead_runner | 3 | 4.20 s | 5.14 s | 0 |
-| codex | K2 | awaiting_runner_reattach | 3 | 3.24 s | 3.39 s | 0 |
-| opencode | K1 | resume_dead_runner | 3 | 13.24 s | 16.45 s | 0 |
-| opencode | K2 | awaiting_runner_reattach | 3 | 12.49 s | 12.51 s | 0 |
+| claude | K1 | resume_dead_runner | 2 | 8.30 s | 18.55 s | 0 |
+| claude | K2 | awaiting_runner_reattach | 2 | 12.37 s | 14.55 s | 0 |
+| codex | K1 | resume_dead_runner | 2 | 5.06 s | 6.49 s | 0 |
+| codex | K2 | awaiting_runner_reattach | 2 | 5.23 s | 5.26 s | 0 |
+| opencode | K1 | resume_dead_runner | 2 | 17.64 s | 31.95 s | 0 |
+| opencode | K2 | awaiting_runner_reattach | 2 | 21.21 s | 22.38 s | 0 |
 
-Fault → ready for the 6 driver faults: 13.2, 20.0, 15.0, 14.2, 19.5 and 15.4 s. In each one, `recovering` → `ready` took 0.27–0.85 s. The host's 1-minute load average was 11.7–21.7 during the faults. "none" means that the run log had no `native.recovery.transition` after the fault. For claude, the tool call had ended or the turn was between items, so the run continued without a recovery claim.
+Fault → ready:
+- run 4 (4 faults): 24.3, 27.6, 29.9 and 27.2 s, at a 1-minute load average of 17–30;
+- run 3 (6 faults): 13.2–20.0 s, at a load average of 12–22.
+
+In every fault, `recovering` → `ready` took 0.27–1.7 s. The rest is process boot.
 
 ### From the overnight chaos campaign (2026-11-06/07)
 
@@ -172,7 +176,7 @@ Copyback and sync-out do not appear here, because local runs use the workspace i
 ## Findings, ranked
 
 1. **Every local turn launches a runner and starts or resumes a provider session.** This costs 1.6–17.4 s at p50 and up to 50 s at p95, and it makes follow-up turns slower than new tasks for codex and opencode. Plan rule 2 ("a follow-up turn on a still-valid lease uses what is already there") is not met locally. `lifecycleMode: warm` exists and keeps the runner alive between turns, but it is not the default and this baseline did not measure it. Phase 1 target: measure `warm`, then make the follow-up path reuse a live runner and provider session by default, and add sub-spans for `runner.process.launch`, `runner.runtime.stage` and provider session load, which the local path does not emit today.
-2. **Control-plane restart time is almost all process boot.** It takes 13–20 s to ready, with recovery logic under 1 s. A recovered run then waits 3–16 s more for its next provider event (p50). Measure production boot, and keep recovery work off the path to `ready`. The inventory found that restart recovery runs a full finalization reconcile before it reattaches runners (`heartbeat/recovery.ts:945-1006`).
+2. **Control-plane restart time is almost all process boot.** It takes 13–30 s to ready, with recovery logic at 0.3–1.7 s. A recovered run then waits 5–21 s more for its next provider event (p50, by adapter). Measure production boot, and keep recovery work off the path to `ready`. The inventory found that restart recovery runs a full finalization reconcile before it reattaches runners (`heartbeat/recovery.ts:945-1006`).
 3. **Remote recovery waits out a TTL.** On Daytona, `awaiting_evidence` takes 33–43 s, because the remote controller lease (60 s) is released by age, not by a fenced handoff (inventory: section A, `remoteLeaseFenced`).
 4. **Claude spends 3.7 s (p50) between `turn.submitted` and `turn.started` on a resumed session**, against 0.1 s on a fresh one. This is provider-side session load, and it is a separate target from runner launch.
 5. **Core preparation is not the bottleneck today, but it holds hidden fixed waits.** Queue plus prepare is about 0.6 s at p50. Its p95 tails (1.4 s `heartbeat.prepare_before_environment`, plus 8–11 s for the first task after server start) and the code-reading table show where restart-safety work must not add more:
@@ -183,7 +187,7 @@ Copyback and sync-out do not appear here, because local runs use the workspace i
 ## Gaps in this baseline
 
 - **Daytona was not measured fresh.** See "Method". Phase 1 needs a Daytona baseline before it sets remote budgets.
-- **The samples are small.** There are 12 cold and 12 warm samples per adapter for codex and claude (two runs), 6 for opencode, and 3 per fault kind for restart recovery. The host was shared, with a 1-minute load average of 9–22, so the p95 values carry machine load.
+- **The samples are small.** There are 12 cold and 12 warm samples per adapter for codex and claude (two runs), 6 for opencode, and 2 per adapter and fault kind for restart recovery (run 4). The host was shared, with a 1-minute load average of 9–22, so the p95 values carry machine load.
 - **The `wake_request` TTFT anchor never fired here.** The driver's wakes were never deferred or coalesced, so every anchor was `run_created` (new task) or `comment` (follow-up). Deferred-wake latency needs a workload that queues behind a busy issue.
 - **No sub-spans exist inside local runner startup.** `runner.session.bootstrap` and `runner.session.resume` cover process launch, staging and the provider handshake together. Finding 1 needs them split.
 - **The server ran in dev mode** (`tsx`, Vite middleware). This inflates control-plane boot and probably Core preparation.
