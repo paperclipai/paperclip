@@ -741,7 +741,20 @@ describe("remote controller restart adoption", () => {
         runId: "run",
         normalizedSessionId: "session",
       }),
-    ).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    ).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=provider_lease_id"));
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("names the missing durable runner identity before reading the sandbox", async () => {
+    const { execute, target } = fixture();
+    await expect(
+      verifyRemoteRunnerReattachment({
+        claim,
+        target: target as never,
+        identity: {},
+        runId: "run",
+        normalizedSessionId: "session",
+      }),
+    ).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=identity_run_id"));
     expect(execute).not.toHaveBeenCalled();
   });
   it.each([

@@ -105,8 +105,10 @@ Files retain their bytes and modes, including local edits and a skill whose
 version row was deleted. Such a skill remains forensic evidence: the owner does
 not recreate its version or make it executable. Canonical credential exclusions
 stay excluded. Unknown directories, symlinks, incomplete manifests, active web
-writers and changed source facts fail closed. The same 128-entry, 16-MiB-file and
-64-MiB-total limits apply independently to this inventory.
+writers and changed source facts fail closed. This WEB inventory permits at most
+10,000 entries, 4 MiB of manifest metadata, and 4,096 bytes per path. The 16-MiB
+per-file and 64-MiB total payload limits remain unchanged. Authority history keeps
+its separate 128-entry and 32-epoch bounds.
 
 A genuinely absent raw controller stays absent. A supervisor-only archive still
 requires the exact durable controller checkpoint and source identity. Old
