@@ -471,6 +471,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.block())?.reason).toMatch(/hard-stop|await accounting/);
   });
 
+  // s7504 run bda81857 (ACPX Claude, K4): succeeded with a committed result,
+  // a fenced receipt source, its provider process still recorded, and an
+  // estimated 27.38-cent observation under the blocking policy.
+  it("does not hold other work for the s7504 succeeded row shape", async () => {
+    const f = await acceptedResultFixture({ stopEvidence: false });
+    await db.update(budgetPolicies).set({ amount: 3000, unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null, processPid: 28893, processGroupId: 28893,
+      processStartedAt: new Date(),
+      usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({ costStatus: "estimated",
+        budgetExposure: { sourceId: f.sourceId, sequence: 40, costCents: "27.3762400" } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    expect(await f.block()).toBeNull();
+  });
+
   it("closes a result-accepted run's lost receipt once its local stop is verified", async () => {
     const f = await acceptedResultFixture();
     expect(await f.block()).toMatchObject({ reason: "Company cannot start work while completed runs await accounting." });

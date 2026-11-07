@@ -1771,7 +1771,11 @@ outstanding does not hold new work: its provider work is over, so it is bounded
 like a running run. Its observed cost counts toward spend and reservation
 capacity, and its settled charge can still reach the hard stop. A run that
 failed, was cancelled, timed out or was interrupted still holds new work,
-because its provider may not have stopped. Provider reporting and cancellation delays
+because its provider may not have stopped. Temporary holds (accounting that awaits
+settlement, recovering runs, budget inputs that await evaluation) gate new work
+only. They never refuse an admitted run's own tool mutations or an owned
+recovery; a hard stop or pause still does, through the normal pause and
+cancellation path. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.

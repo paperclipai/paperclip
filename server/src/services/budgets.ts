@@ -202,10 +202,12 @@ export function budgetPoliciesForRun(companyId: string, agentId: string | null, 
 
 /** `runId` names the run being admitted, so its own pending accounting never holds it. */
 type AdmissionContext = { issueId?: string | null; projectId?: string | null; runId?: string | null;
-  /** A validated recovery owner is continuing work that was already admitted.
-   * Accounting holds gate new work only; recoveries must be able to finish,
-   * or concurrent recoveries after a restart storm wait on each other. Hard
-   * stops and pauses still apply. */
+  /** The caller continues work that was already admitted: a validated
+   * recovery owner, or a running run's own tool mutations. Temporary holds
+   * (accounting that awaits settlement, recovering runs, budget inputs that
+   * await evaluation) gate new work only; admitted work must be able to
+   * finish, or concurrent recoveries after a restart storm wait on each other.
+   * Hard stops and pauses still apply. */
   admittedRecovery?: boolean };
 
 async function readAdmissionScopes(db: Db, companyId: string, agentId: string | null, context?: AdmissionContext) {
@@ -858,7 +860,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       if (scope.budgetHeld) return admission({ scopeType, scopeId, scopeName: scope.name,
         reason: "Budget hold is awaiting reconciliation." });
     }
-    if (reservationIndexes.length > 0) {
+    if (reservationIndexes.length > 0 && !context?.admittedRecovery) {
       for (const index of reservationIndexes) {
         const policy = policies[index];
         const oldest = await oldestBudgetInputAt(db, { companyId,
