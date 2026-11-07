@@ -16,7 +16,7 @@ keeps local authority. Provider stop verification and any later file export
 remain the recovery owner's separate obligations.
 
 The same local file handoff can preserve a blocked prepared source after an
-established native session is interrupted, or after its file export recovery is
+established native session is interrupted with ambiguous state, or after its file export recovery is
 exhausted. The interrupted source must retain its exact task failure block and
 declared recovery allocations. The exhausted source must retain its accepted
 result, bound original allocation, exhausted system recovery and blocked file

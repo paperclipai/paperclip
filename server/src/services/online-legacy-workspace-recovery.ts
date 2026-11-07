@@ -139,7 +139,8 @@ export async function inspectOnlineLegacyWorkspaceRecoveryHold(db: ReadDb, input
     && recovery.ownerType === "board" && recovery.ownerAgentId === null && recovery.returnOwnerAgentId === settled.run.agentId
     && recovery.wakePolicy === null && recovery.evidence.sourceFailureCode === recovery.cause
     && recovery.evidence.recoveryDisposition === recovery.cause && recovery.evidence.providerSessionEstablished === true
-    && recovery.evidence.recoveryMode === "exact_checkpoint_resume" && failureBlock?.runId === settled.run.id
+    && recovery.evidence.recoveryMode === (recovery.cause === "native_session_interrupted" ? "ambiguous_state" : "exact_checkpoint_resume")
+    && failureBlock?.runId === settled.run.id
     && Number.isSafeInteger(failureBlock.statusVersion) && Number(failureBlock.statusVersion) > 0
     && recovery.fingerprint === createHash("sha256").update(`${settled.run.id}:${recovery.cause}`).digest("hex")
     && !fileKeys.filter(key => key !== "nativeFailureBlock").some(key => recovery.evidence?.[key] != null)) {
