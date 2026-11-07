@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { processExists } from "./controller-process-identity.js";
+import * as hotRestart from "./hot-restart.js";
 import {
   currentLocalOwnerStamp,
   currentProcessProbe,
@@ -152,9 +153,11 @@ describe("proveOwnerGone: local owners", () => {
       .toEqual({ verdict: "unprovable", reason: "process_group_ambiguous" });
   });
 
-  it("stamps this process from cached identity and proves it alive", async () => {
-    const own = await currentLocalOwnerStamp("test", 3);
+  it("stamps this process without I/O and proves it alive", async () => {
+    const read = vi.spyOn(hotRestart, "readProcessStartedAt");
+    const own = currentLocalOwnerStamp("test", 3);
     expect(own).toMatchObject({ kind: "local", pid: process.pid, generation: 3 });
+    expect(read).not.toHaveBeenCalled();
     expect(await proveOwnerGone(own)).toEqual({ verdict: "alive", reason: "current_process" });
   });
 });
