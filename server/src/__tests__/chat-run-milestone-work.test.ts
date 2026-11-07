@@ -46,7 +46,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("chat-milestones-");
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     fixtures = createChatMilestoneFixtures(db);
   }, 60_000);
   const fixture = (companyId?: string) => fixtures.create(companyId);
@@ -764,6 +764,32 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await flush();
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
     await quiet();
+  });
+  it.each([
+    ["not_started", false, "retry"],
+    ["possible", false, "delivery_unknown"],
+    ["not_started", true, "delivery_unknown"],
+  ] as const)("settles local preparation context %s with accepted=%s as %s", async (providerInvocation, providerAccepted, state) => {
+    const [claimed] = await db.insert(chatPublications).values({
+      companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
+      issueId: f.issueId, idempotencyKey: `preparation:${randomUUID()}`,
+      payload: { text: "Original publication" }, state: "streaming", attempts: 1,
+    }).returning();
+    const failures = createChatPublicationFailures(db, {
+      FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null,
+      invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null,
+    });
+    const before = Date.now();
+    await expect(failures.finalizePublicationFailure({ ...claimed, attempts: 0 },
+      new Error("form_publication_enrollment_pending"), providerAccepted, null, undefined, providerInvocation)).resolves.toBe(true);
+    const [settled] = await db.select().from(chatPublications).where(eq(chatPublications.id, claimed.id));
+    expect(settled).toMatchObject({ state, attempts: 1, providerMessageId: null, payload: claimed.payload });
+    if (state === "retry") {
+      expect(settled.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(before + 2000);
+      expect(settled.nextAttemptAt?.getTime()).toBeLessThanOrEqual(Date.now() + 2000);
+      expect(settled.redactedError).toBe("form_publication_enrollment_pending");
+    } else expect(settled.nextAttemptAt).toBeNull();
   });
   it.each([
     ["retry", null], ["failed", null], ["delivery_unknown", "cancel"], ["delivery_unknown", "mark_delivered"],

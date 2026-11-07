@@ -58,6 +58,7 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
     providerAccepted = false,
     runtimeContext?: LifecycleRuntimeFence | null,
     credentialLease?: CredentialMutationLeaseGuard,
+    providerInvocation: "possible" | "not_started" = "possible",
   ): Promise<boolean> {
     const attempts = publication.attempts + 1;
     const disposition = providerAccepted
@@ -88,7 +89,7 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
                   ),
                   reason: error.message,
                 }
-              : classifyChatPublicationError(error, attempts);
+              : classifyChatPublicationError(error, attempts, providerInvocation);
     const failure = redactSensitiveText(disposition.reason).slice(
       0,
       MAX_ERROR_TEXT,

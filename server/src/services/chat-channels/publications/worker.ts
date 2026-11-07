@@ -425,6 +425,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
       const settlePublicationFailure = async (
         error: unknown,
         credentialLease?: CredentialMutationLeaseGuard,
+        providerInvocation: "possible" | "not_started" = "possible",
       ) => {
         try {
           await finalizePublicationFailure(
@@ -433,6 +434,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
             providerAccepted,
             publicationRuntimeContext,
             credentialLease ?? publicationLease,
+            providerInvocation,
           );
         } catch (finalizationError) {
           // If the provider accepted the message, a failed receipt write
@@ -783,7 +785,13 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                       runtimeContext: currentPublicationRuntimeContext,
                     })
                   : null;
-              const stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
+              let stageSlackForm: Awaited<ReturnType<NonNullable<PublicationWorkerOptions["prepareSlackFormPublication"]>>> | undefined;
+              try {
+                stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
+              } catch (error) {
+                await settlePublicationFailure(error, credentialLease, "not_started");
+                return;
+              }
               const sent = await postSafePublication({
                 endpoint: authorizationClaim.endpoint,
                 conversation: authorizationClaim.conversation,
