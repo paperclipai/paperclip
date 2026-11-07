@@ -52,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { buildRunTokenGuidance, startRunTokenFile, type RunTokenFile } from "./run-token-file.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
@@ -582,6 +583,22 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
+  let runTokenFile: RunTokenFile | null = null;
+  if ((ctx as any).authToken) {
+    try {
+      runTokenFile = await startRunTokenFile((ctx as any).authToken);
+      env.HERMES_EPHEMERAL_SYSTEM_PROMPT = joinPromptSections([
+        env.HERMES_EPHEMERAL_SYSTEM_PROMPT,
+        buildRunTokenGuidance(runTokenFile.path),
+      ]);
+    } catch (err) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes] Could not create the run token file: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
@@ -589,7 +606,7 @@ export async function execute(
     graceSec,
     onLog: wrappedOnLog,
     onSpawn: ctx.onSpawn,
-  });
+  }).finally(() => runTokenFile?.stop());
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
