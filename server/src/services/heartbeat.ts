@@ -1875,7 +1875,9 @@ export function heartbeatService(
   ) {
     const attemptStartedAtMs = Date.now();
     let attestedQuestionResponseAtMs: number | null = null;
-    if (shutdownInProgress || (await getSchedulingSuppression()).suppressed) {
+    const suppressed = (await getSchedulingSuppression()).suppressed;
+    const freshQueueClaim = !runOptions.nativeLeaseOwner && !runOptions.nativeRestartRecovery;
+    if (suppressed || (shutdownInProgress && freshQueueClaim)) {
       try {
         await releaseRunClaimedJustBeforeSuppression(runId);
       } catch (err) {

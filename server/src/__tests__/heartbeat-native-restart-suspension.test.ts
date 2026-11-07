@@ -160,6 +160,23 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       .not.toBe("execution_recovery_budget_exhausted");
   });
 
+  it("keeps a native restart recovery running when graceful shutdown has begun", async () => {
+    const f = await seedRecoverableRun("SHUTDOWN-RECOVERY");
+    const opened = vi.fn(() => { throw new Error("recovery reached provider dispatch"); });
+    const heartbeat = heartbeatService(f.db, { nativeSessionBackendFactory: opened });
+    heartbeat.setShutdownInProgress();
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      heartbeat.setShutdownInProgress(false);
+    }
+    expect(opened).toHaveBeenCalledOnce();
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.status).not.toBe("queued");
+  }, 90_000);
+
   it("hands a recovery to the next controller when shutdown closed the listener before backend setup", async () => {
     const f = await seedRecoverableRun("LISTENER-CLOSED");
     const listener = fixture.current.server!;

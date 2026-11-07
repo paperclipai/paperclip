@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { registerTaskDrainExpiryWork } from "../services/task-admission.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   costEvents,
   activityLog,
@@ -23,6 +23,7 @@ import {
   heartbeatRuns,
   issues,
   issueComments,
+  instanceSettings,
   plugins,
 } from "@paperclipai/db";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
@@ -39,6 +40,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { withAgentStartLock } from "../services/agent-start-lock.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -362,7 +364,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         return value;
       });
     };
-    installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agentWakeupRequests }, capture);
+    installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agentWakeupRequests, instanceSettings }, capture);
     return {
       db: observed,
       async close() {
@@ -412,6 +414,41 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await routeHeartbeat.drainActiveRunExecutions();
     } finally {
       unsubscribe();
+    }
+    expect(shutdownBegan).toBe(true);
+    await expectQueuedClaim(fixture);
+  });
+
+  it("keeps the claim queued when shutdown begins while the run start waits for its settings lookup", async () => {
+    const worktreeEnv = { ...process.env, PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "shutdown-worktree" };
+    await instanceSettingsService(db, { runtimeEnv: worktreeEnv, now: () => new Date(Date.now() - 60_000) })
+      .updateExperimental({ enableWorktreeRunExecution: true });
+    const fixture = await seedQueuedRun();
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offsetMs);
+    let claimed = false;
+    let shutdownBegan = false;
+    const unsubscribe = subscribeCompanyLiveEvents(fixture.companyId, (event) => {
+      if (event.type !== "heartbeat.run.status" || event.payload.runId !== fixture.runId || event.payload.status !== "running") return;
+      claimed = true;
+      offsetMs = 10_000;
+    });
+    const client = observedClient((info) => {
+      if (!claimed || shutdownBegan || info.operation !== "select" || info.table !== "instance_settings") return;
+      shutdownBegan = true;
+      heartbeatService(db).setShutdownInProgress();
+    });
+    try {
+      const routeHeartbeat = heartbeatService(client.db, { runtimeEnv: worktreeEnv });
+      expect((await routeHeartbeat.resolveSchedulingSuppression()).suppressed).toBe(false);
+      await routeHeartbeat.resumeQueuedRunsForAgent(fixture.companyId, fixture.agentId);
+      await routeHeartbeat.drainActiveRunExecutions();
+    } finally {
+      unsubscribe();
+      clock.mockRestore();
+      await client.close();
+      await db.delete(instanceSettings);
     }
     expect(shutdownBegan).toBe(true);
     await expectQueuedClaim(fixture);
