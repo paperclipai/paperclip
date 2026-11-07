@@ -491,32 +491,35 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect(readRemoteWorkspaceAuthority((await stored(f.workspaceId)).metadata)).toBeNull();
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
   });
-  async function recoveryFixture() {
+  async function recoveryFixture(descendant = false) {
     const f = await fixture(), runId = randomUUID();
+    const issue = descendant ? (await db.insert(issues).values({ companyId: f.companyId, projectId: f.projectId,
+      parentId: f.aliases[0].issue.id, title: "Descendant prepared recovery", executionWorkspaceId: f.workspaceId }).returning())[0]
+      : f.aliases[0].issue;
     const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Terminal native worker", adapterType: "paperclip_runner" }).returning();
     const reference = { schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: f.workspaceId,
       leaseId: randomUUID(), providerLeaseId: randomUUID(), remoteCwd: "/workspaces/retained",
       descriptorSha256: "12".repeat(32), baselineSha256: "34".repeat(32), resourceDisposition: "destroy" };
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: agent.id,
-      nativeIssueId: f.aliases[0].issue.id, status: "failed", runtimeMode: "native", runnerProfileJson: { nativeWorkspaceSync: reference } }).returning();
-    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.aliases[0].issue.id,
+      nativeIssueId: issue.id, status: "failed", runtimeMode: "native", runnerProfileJson: { nativeWorkspaceSync: reference } }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: issue.id,
       runId, phase: "observed" });
     const [environment] = await db.insert(environments).values({ name: runId, driver: "daytona" }).returning();
     const [lease] = await db.insert(environmentLeases).values({ id: reference.leaseId, companyId: f.companyId,
-      issueId: f.aliases[0].issue.id, heartbeatRunId: runId, executionWorkspaceId: f.workspaceId, environmentId: environment.id,
+      issueId: issue.id, heartbeatRunId: runId, executionWorkspaceId: f.workspaceId, environmentId: environment.id,
       provider: "daytona", providerLeaseId: reference.providerLeaseId, status: "retained", leasePolicy: "retain_on_failure",
       metadata: { remoteCwd: reference.remoteCwd } }).returning();
     await recordNativeFinalizationFailure({ db, runId, error: new Error("native_workspace_sync_out_unrecoverable"),
       failureScope: "workspace", permanent: true });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
-    const [warning] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.aliases[0].issue.id));
+    const [warning] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id));
     expect(warning).toMatchObject({ kind: "active_run_watchdog", cause: "native_workspace_sync_out_unrecoverable",
       status: "active", evidence: { runId } });
     return { ...f, run, owner, lease, warning };
   }
-  async function artifactFailureFixture() {
-    const f = await recoveryFixture(), cause = "runner_remote_provider_artifact_incompatible", statusVersion = 2;
+  async function artifactFailureFixture(descendant = false) {
+    const f = await recoveryFixture(descendant), cause = "runner_remote_provider_artifact_incompatible", statusVersion = 2;
     const profile = { ...f.run.runnerProfileJson, sessionCheckpoint: { backendKind: "runner", providerSessionId: "fixture-established-session" } };
     const restore = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
     await db.update(heartbeatRuns).set({ runnerProfileJson: profile, nextEventSeq: 250,
@@ -630,6 +633,31 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0]).toEqual(f.owner);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
     expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("saved legacy edits\n");
+  });
+  it.each(["selected", "companion"])("does not publish a %s source while its descendant recovery task is locked", async mode => {
+    const recovery = await artifactFailureFixture(true), linked = mode === "companion" ? await gitFixture(recovery) : null;
+    const f = { ...recovery, ...linked };
+    const descendant = f.issue;
+    const input = { companyId: f.companyId, workspaceId: linked?.child.id ?? f.workspaceId };
+    expect(await inventoryRemoteWorkspaceMigration(db, input)).toMatchObject({ eligible: true });
+    const other = createDb(database.connectionString, { maxConnections: 1 });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const held = other.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, descendant.id)).for("update");
+      entered(); await pending;
+    });
+    await started;
+    try {
+      await expect(migrateRemoteWorkspace({ db, storage, ...input, apply: true }))
+        .rejects.toThrow("remote_workspace_migration_blocked:execution_rows_busy");
+      expect(readRemoteWorkspaceAuthority((await stored(input.workspaceId)).metadata)).toBeNull();
+      expect((await db.select().from(workspaceOperations))[0].status).toBe("running");
+      expect((await db.select().from(issues).where(eq(issues.id, descendant.id)))[0]).toEqual(descendant);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.warning.id)))[0])
+        .toMatchObject({ status: "active", sourceIssueId: descendant.id, evidence: f.warning.evidence });
+    } finally { release(); await held; await other.$client.end({ timeout: 1 }); }
   });
   it("discovers all Git companions in one fresh company-scoped scan per inspection", async () => {
     const recovery = await recoveryFixture(), f = await gitFixture(recovery);
