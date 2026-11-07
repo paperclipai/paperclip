@@ -3235,7 +3235,7 @@
       "chat-catalog-domains/internal-goals.ts",
       "chat-scenarios/goals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.goal-hierarchy.v2",
+    "oracleVersion": "paperclip.chat-catalog.goal-hierarchy.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
