@@ -1,4 +1,4 @@
-import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
@@ -310,13 +310,16 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
 }
 
 /** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
-async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
-  if (!sourceHome?.trim()) return "";
+async function managedCodexProviders(sourceHome?: string | null): Promise<{
+  providers: Record<string, unknown>;
+  modelProvider: string;
+} | null> {
+  if (!sourceHome?.trim()) return null;
   const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
-  if (!source) return "";
+  if (!source) return null;
   let parsed;
-  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
-  if (parsed.model_provider !== "paperclip") return "";
+  try { parsed = parseToml(source.toString("utf8")); } catch { return null; }
+  if (parsed.model_provider !== "paperclip") return null;
   const providers = parsed.model_providers as Record<string, unknown> | undefined;
   const provider = providers?.paperclip as Record<string, unknown> | undefined;
   if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
@@ -329,7 +332,154 @@ async function managedCodexProviderConfig(sourceHome?: string | null): Promise<s
     || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
     throw new Error("Invalid managed Codex provider URL");
   }
-  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}`;
+  const block: Record<string, unknown> = {
+    name: "Paperclip connection",
+    base_url: provider.base_url,
+    wire_api: "responses",
+    requires_openai_auth: false,
+  };
+  if (provider.env_key) block.env_key = CODEX_PROVIDER_KEY_ENV;
+  if (isOpenRouterUrl(provider.base_url)) block.http_headers = { ...OPENROUTER_ATTRIBUTION_HEADERS };
+  return { providers: { paperclip: block }, modelProvider: "paperclip" };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const CODEX_PROVIDER_KEY_ENV = "PAPERCLIP_AI_PROVIDER_KEY";
+
+/**
+ * Read `PAPERCLIP_CODEX_PROVIDERS`, the same contract the Codex harness probe
+ * reads, and convert it into `[model_providers.*]` tables.
+ *
+ * Only providers that declare their own `base_url` are accepted: a provider
+ * without an endpoint overrides a built-in one and cannot carry a credential
+ * here. Every `{env:...}` reference is resolved before it reaches the file,
+ * except in `env_key`, which is a variable name.
+ */
+export function codexCustomProviders(
+  environment: Record<string, string | undefined> | undefined,
+): { providers: Record<string, unknown>; modelProvider: string | null; providerKey: string | null } {
+  const empty = { providers: {}, modelProvider: null, providerKey: null };
+  const raw = environment?.PAPERCLIP_CODEX_PROVIDERS;
+  if (typeof raw !== "string" || raw.trim().length === 0) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.providers)) return empty;
+  const providers: Record<string, unknown> = {};
+  const keys = new Map<string, string>();
+  for (const [providerId, entry] of Object.entries(parsed.providers)) {
+    if (!isRecord(entry) || providerId.trim().length === 0) continue;
+    const resolved = resolveProviderFields(entry, environment);
+    if (!resolved) continue;
+    if (typeof resolved.base_url !== "string" || resolved.base_url.trim().length === 0) continue;
+    // Codex has no proxy in this path, so every header value it accepts is
+    // written into the agent-readable `config.toml`. `env_http_headers` would
+    // name a variable the sanitized child does not keep. Both forms are skipped
+    // rather than shipped either broken or in the clear.
+    if (isRecord(resolved.http_headers) || isRecord(resolved.env_http_headers)) continue;
+    const envKey = typeof entry.env_key === "string" ? entry.env_key.trim() : "";
+    const key = envKey ? environment?.[envKey] : undefined;
+    if (key) {
+      keys.set(providerId, key);
+      resolved.env_key = CODEX_PROVIDER_KEY_ENV;
+    }
+    providers[providerId] = resolved;
+  }
+  if (Object.keys(providers).length === 0) return empty;
+  const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
+  const modelProvider = selected && selected in providers ? selected : null;
+  return { providers, modelProvider, providerKey: modelProvider ? keys.get(modelProvider) ?? null : null };
+}
+
+/**
+ * Resolve `{env:...}` references in provider fields, keeping credentials out of
+ * the file. Only `base_url` may carry a reference; every other field that still
+ * holds one is dropped, because header names are arbitrary and no name-based
+ * rule can tell a routing header from a credential one.
+ */
+function resolveProviderFields(
+  entry: Record<string, unknown>,
+  environment: Record<string, string | undefined> | undefined,
+): Record<string, unknown> | null {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (typeof value === "string") {
+      if (!value.includes("{env:")) {
+        out[key] = value;
+        continue;
+      }
+      if (key !== "base_url") continue;
+      out[key] = value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+        environment?.[name] ?? match,
+      );
+      continue;
+    }
+    if (Array.isArray(value)) {
+      if (value.some((item) => typeof item === "string" && item.includes("{env:"))) continue;
+      out[key] = value;
+      continue;
+    }
+    if (isRecord(value)) {
+      const nested = resolveProviderFields(value, environment);
+      if (nested && Object.keys(nested).length > 0) out[key] = nested;
+      continue;
+    }
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Merge the managed projection and the custom tables into one TOML document. */
+function codexProviderToml(
+  custom: { providers: Record<string, unknown>; modelProvider: string | null },
+  managed: { providers: Record<string, unknown>; modelProvider: string } | null,
+): { toml: string; modelProvider: string | null } {
+  const providers: Record<string, unknown> = { ...(managed?.providers ?? {}) };
+  for (const [providerId, block] of Object.entries(custom.providers)) {
+    const previous = providers[providerId];
+    providers[providerId] = isRecord(previous) && isRecord(block)
+      ? { ...previous, ...block }
+      : block;
+  }
+  if (Object.keys(providers).length === 0) return { toml: "", modelProvider: null };
+  const document: Record<string, unknown> = { model_providers: providers };
+  const selected = custom.modelProvider ?? managed?.modelProvider ?? null;
+  const modelProvider = selected && selected in providers ? selected : null;
+  if (modelProvider) document.model_provider = modelProvider;
+  return { toml: `${stringifyToml(document)}\n`, modelProvider };
+}
+
+/**
+ * Resolve the provider tables this run writes.
+ *
+ * A selected custom provider owns routing, so the source home is not read: a
+ * stale managed entry the run never uses must not stop it.
+ */
+async function codexProviderConfigFor(input: {
+  environment?: Record<string, string | undefined>;
+  sourceCodexHome?: string | null;
+}): Promise<{ toml: string; modelProvider: string | null; providerKey: string | null }> {
+  const custom = codexCustomProviders(input.environment);
+  const managed = custom.modelProvider ? null : await managedCodexProviders(input.sourceCodexHome);
+  return { ...codexProviderToml(custom, managed), providerKey: custom.providerKey };
+}
+
+/**
+ * A custom provider credential reaches Codex through the one variable its
+ * sanitized child environment keeps.
+ */
+function applyProviderKey(
+  environment: Record<string, string | undefined> | undefined,
+  providerKey: string | null,
+): void {
+  if (!environment || !providerKey) return;
+  environment[CODEX_PROVIDER_KEY_ENV] = providerKey;
 }
 
 export async function prepareIsolatedCodexHome(input: {
@@ -339,15 +489,18 @@ export async function prepareIsolatedCodexHome(input: {
   sourceCodexHome?: string | null;
   nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
+  environment?: Record<string, string | undefined>;
 }): Promise<void> {
   await materializeNativeRuntimeSkills(
     input.context,
     join(input.codexHome, "skills"),
   );
 
-  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
+  const { toml: providerConfig, modelProvider: selectedProvider, providerKey } =
+    await codexProviderConfigFor(input);
+  applyProviderKey(input.environment, providerKey);
   await writeIsolatedCodexConfig(input, providerConfig);
-  await writeIsolatedCodexAuth(input, providerConfig);
+  await writeIsolatedCodexAuth(input, selectedProvider);
 }
 
 async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }, providerConfig: string): Promise<void> {
@@ -388,20 +541,25 @@ type CodexAuthInput = {
   codexHome: string;
   sourceCodexHome?: string | null;
   apiKey?: string | null;
+  environment?: Record<string, string | undefined>;
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
 };
 
 export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }): Promise<void> {
-  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
+  const { toml: providerConfig, modelProvider: selectedProvider, providerKey } =
+    await codexProviderConfigFor(input);
+  applyProviderKey(input.environment, providerKey);
   await writeIsolatedCodexConfig(input, providerConfig);
-  await writeIsolatedCodexAuth(input, providerConfig);
+  await writeIsolatedCodexAuth(input, selectedProvider);
 }
 
-async function writeIsolatedCodexAuth(input: CodexAuthInput, providerConfig: string): Promise<void> {
+async function writeIsolatedCodexAuth(input: CodexAuthInput, selectedProvider: string | null): Promise<void> {
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
-  if (providerConfig) return;
+  // Only a selected provider replaces the auth fallback; an unselected table
+  // leaves Codex on its default provider, which still needs the key or auth file.
+  if (selectedProvider) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its

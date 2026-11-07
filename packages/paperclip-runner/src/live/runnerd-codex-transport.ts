@@ -2789,6 +2789,7 @@ async function settleRetainedRunnerdSessionOwned(
           input.sourceCodexHome ?? resolveSourceCodexHome(input.environment),
         apiKey:
           input.environment?.CODEX_API_KEY ?? input.environment?.OPENAI_API_KEY,
+        environment: input.environment,
       }),
     );
   }
@@ -5611,6 +5612,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        environment: this.options.environment,
       });
     }
     this.#assertStartupOpen();
@@ -6632,6 +6634,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         codexHome: localCodexHome,
         sourceCodexHome: this.options.sourceCodexHome ?? resolveSourceCodexHome(this.options.environment),
         apiKey: this.options.environment?.CODEX_API_KEY ?? this.options.environment?.OPENAI_API_KEY,
+        environment: this.options.environment,
       };
       if (this.#sourceRecoveryIdentity !== null) {
         await prepareIsolatedCodexRecoveryHome({

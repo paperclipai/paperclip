@@ -2347,7 +2347,14 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
+async function startOpenCodeProviderProxy(
+  baseUrl: string,
+  key: string,
+  models: string | readonly string[],
+  environment: NodeJS.ProcessEnv,
+  configuredHeaders: Record<string, string> = {},
+) {
+  const acceptedModels = new Set((Array.isArray(models) ? models : [models]).filter((entry) => entry.length > 0));
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2395,7 +2402,8 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(body.toString("utf8")); }
       catch { response.writeHead(400).end(); return; }
-      if (!payload || typeof payload !== "object" || payload.model !== model ||
+      if (!payload || typeof payload !== "object" || typeof payload.model !== "string" ||
+        !acceptedModels.has(payload.model) ||
         ["models", "route", "plugins", "transforms"].some(field => Object.hasOwn(payload, field))) {
         response.writeHead(400).end();
         return;
@@ -2404,7 +2412,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: upstreamHeadersFor(baseUrl, key, body.length, configuredHeaders, request.headers),
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
@@ -2448,6 +2456,43 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       agent.destroy();
       await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
     },
+  };
+}
+
+const HOP_BY_HOP_REQUEST_HEADERS = new Set([
+  "host", "connection", "keep-alive", "proxy-authorization", "proxy-connection",
+  "te", "trailer", "transfer-encoding", "upgrade", "content-length", "accept-encoding",
+]);
+
+function upstreamHeadersFor(
+  baseUrl: string,
+  key: string,
+  contentLength: number,
+  configuredHeaders: Record<string, string>,
+  incomingHeaders: Record<string, string | string[] | undefined>,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  // OpenCode sends the provider's headers with each request; forward them so a
+  // gateway that needs a routing header behaves as it did in the probe.
+  for (const [name, value] of Object.entries(incomingHeaders)) {
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
+    // The client authenticates to the proxy. That token must never reach the
+    // upstream; the run's key or a configured header is the only authorization.
+    if (lower === "authorization") continue;
+    if (typeof value === "string") headers[name] = value;
+    else if (Array.isArray(value)) headers[name] = value.join(", ");
+  }
+  for (const [name, value] of Object.entries(configuredHeaders)) {
+    if (key && name.toLowerCase() === "authorization") continue;
+    headers[name] = value;
+  }
+  return {
+    ...headers,
+    ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}),
+    "Content-Type": "application/json",
+    "Content-Length": String(contentLength),
+    ...(key ? { Authorization: `Bearer ${key}` } : {}),
   };
 }
 
@@ -2535,13 +2580,62 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const providerRoute = modelProvider === "openrouter"
-    ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
-    : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-      ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
-      : null;
+  const {
+    providers: parsedCustomProviders,
+    credentials: customProviderCredentials,
+    warnings: customProviderWarnings,
+  } = parseOpenCodeCustomProviders(input.options.environment);
+  for (const warning of customProviderWarnings) input.options.onDiagnostic?.(warning);
+  const customProviders: Record<string, Record<string, unknown>> = { ...parsedCustomProviders };
+  const customProviderProxies: Array<{ close: () => Promise<void> }> = [];
+  if (customProviderCredentials.length > 0) {
+    sensitiveValues.push(...customProviderCredentials.map((entry) => entry.apiKey));
+    input.trace?.addSensitiveValues(customProviderCredentials.map((entry) => entry.apiKey));
+  }
+  for (const credential of customProviderCredentials) {
+    try {
+      const proxy = await startOpenCodeProviderProxy(
+        credential.baseUrl,
+        credential.apiKey,
+        credential.providerId === modelProvider
+          ? [...new Set([...credential.models, providerModelId])]
+          : credential.models,
+        providerEnvironment,
+        credential.headers,
+      );
+      customProviderProxies.push(proxy);
+      sensitiveValues.push(proxy.token);
+      const current = record(customProviders[credential.providerId]);
+      customProviders[credential.providerId] = {
+        ...current,
+        options: { ...record(current.options), baseURL: proxy.baseURL, apiKey: proxy.token },
+      };
+    } catch (error) {
+      // This runs before the outer cleanup scope, so release what it created.
+      for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
+      await bridge.close().catch(() => {});
+      await removeIsolatedHome(isolatedHome).catch(() => {});
+      throw error;
+    }
+  }
+  // An explicit custom provider for the selected model already owns the route
+  // and the credential, so the built-in OpenRouter and Paperclip routes must not
+  // replace them.
+  const hasCustomRouteForModel = customProviderCredentials.some(
+    (credential) => credential.providerId === modelProvider,
+  );
+  const providerRoute = hasCustomRouteForModel
+    ? null
+    : modelProvider === "openrouter"
+      ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
+      : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+        ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
+        : null;
   const providerProxy = providerRoute
     ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
+        // The custom proxies already listen; this path runs before the outer
+        // cleanup scope, so release them here as well.
+        for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
@@ -2587,19 +2681,31 @@ async function startRuntime(input: {
       // catalog. Bind the already-qualified exact model slug into the built-in
       // provider instead of silently falling back or rejecting a newer model.
       provider: {
+        ...customProviders,
         [modelProvider!]: {
-          ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
+          ...customProviders[modelProvider!],
+          ...(modelProvider === "openrouter"
+            ? {
+                options: {
+                  ...record(customProviders[modelProvider!]?.options),
+                  headers: OPENROUTER_ATTRIBUTION_HEADERS,
+                },
+              }
+            : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
             name: modelProvider === "openrouter" ? "OpenRouter" : "Paperclip connection",
             options: {
+              ...record(customProviders[modelProvider!]?.options),
               ...(modelProvider === "openrouter" ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
               baseURL: providerProxy.baseURL,
               apiKey: providerProxy.token,
             },
           } : {}),
           models: {
+            ...record(customProviders[modelProvider!]?.models),
             [providerModelId]: {
+              ...record(record(customProviders[modelProvider!]?.models)[providerModelId]),
               name: providerModelId,
               ...(modelProvider === "openrouter"
                 ? { variants: {
@@ -2668,7 +2774,7 @@ async function startRuntime(input: {
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
         ...performanceDiagnostics?.environment,
-        ...(providerProxy ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+        ...(providerProxy || customProviderProxies.length > 0 ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
@@ -2768,6 +2874,7 @@ async function startRuntime(input: {
       performanceDiagnostics,
       close: async (closeInput = {}) => {
         await providerProxy?.close();
+        for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
         await bridge.close().catch(() => {});
         if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
@@ -2802,6 +2909,7 @@ async function startRuntime(input: {
   } catch (error) {
     await performanceDiagnostics?.close().catch(() => {});
     await providerProxy?.close();
+    for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
     if (child?.pid) await waitForExit(child, 2_000);
@@ -3260,6 +3368,99 @@ function record(value: unknown): Record<string, unknown> {
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const OPENCODE_CUSTOM_PROVIDERS_ENV = "PAPERCLIP_OPENCODE_PROVIDERS";
+
+export interface OpenCodeCustomProviderCredential {
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  /** Upstream headers the provider needs, kept out of the generated config. */
+  headers: Record<string, string>;
+  /** Model ids the provider serves, so the proxy can accept exactly those. */
+  models: string[];
+}
+
+/**
+ * Read the custom provider table from the run environment.
+ *
+ * Only providers that declare their own `baseURL` are supported: the run writes
+ * them behind a loopback proxy and puts nothing but the short-lived proxy token
+ * in the agent-readable config. Credentials and headers stay in process memory,
+ * the same boundary the OpenRouter and Paperclip provider routes already use.
+ */
+export function parseOpenCodeCustomProviders(
+  environment: Record<string, string | undefined> | undefined,
+): {
+  providers: Record<string, Record<string, unknown>>;
+  credentials: OpenCodeCustomProviderCredential[];
+  warnings: string[];
+} {
+  const empty = { providers: {}, credentials: [], warnings: [] };
+  const raw = environment?.[OPENCODE_CUSTOM_PROVIDERS_ENV];
+  if (typeof raw !== "string" || raw.trim().length === 0) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (!isRecord(parsed)) return empty;
+  const resolve = (name: string) => environment?.[name];
+  const providers: Record<string, Record<string, unknown>> = {};
+  const credentials: OpenCodeCustomProviderCredential[] = [];
+  const warnings: string[] = [];
+  for (const [providerId, entry] of Object.entries(parsed)) {
+    if (!isRecord(entry)) continue;
+    const sanitized = structuredClone(entry);
+    const options = isRecord(sanitized.options) ? { ...sanitized.options } : {};
+    const declaredBaseUrl = typeof options.baseURL === "string" ? options.baseURL.trim() : "";
+    const baseUrl = declaredBaseUrl
+      ? resolveEnvironmentReference(declaredBaseUrl, resolve)
+      : "";
+    // A provider without its own endpoint overrides a built-in one, which this
+    // path cannot proxy. Skip it and say so, whatever it declares.
+    if (!baseUrl || baseUrl.includes("{env:")) {
+      warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" has no usable baseURL; only providers with an explicit endpoint are supported. The entry was ignored.`);
+      continue;
+    }
+    options.baseURL = baseUrl;
+    const rawKey = typeof options.apiKey === "string" ? options.apiKey.trim() : "";
+    delete options.apiKey;
+    const headers: Record<string, string> = {};
+    if (isRecord(options.headers)) {
+      for (const [name, value] of Object.entries(options.headers)) {
+        if (typeof value === "string") headers[name] = resolveEnvironmentReference(value, resolve);
+      }
+      // The proxy sends them upstream, so the file never holds a header value.
+      delete options.headers;
+    }
+    sanitized.options = options;
+    providers[providerId] = sanitized;
+    const apiKey = resolveApiKeyReference(rawKey, resolve);
+    // A proxy is only useful when it carries a credential: a key or a header.
+    if (!apiKey && Object.keys(headers).length === 0) continue;
+    const models = isRecord(sanitized.models) ? Object.keys(sanitized.models) : [];
+    credentials.push({ providerId, baseUrl, apiKey, headers, models });
+  }
+  return { providers, credentials, warnings };
+}
+
+function resolveEnvironmentReference(
+  value: string,
+  resolve: (name: string) => string | undefined,
+): string {
+  return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+    resolve(name) ?? match,
+  );
+}
+
+function resolveApiKeyReference(raw: string, resolve: (name: string) => string | undefined): string {
+  if (!raw) return "";
+  const reference = /^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(raw);
+  if (!reference) return raw;
+  return resolve(reference[1]!) ?? "";
 }
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
