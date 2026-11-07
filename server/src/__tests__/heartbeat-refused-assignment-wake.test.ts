@@ -83,8 +83,8 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
       requestedByActorType: "user", requestedByActorId: f.userId, rethrowOnError: true });
   }
 
-  const issueRuns = (f: { companyId: string; issueId: string }) => db.select().from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, (f as { agentId: string }).agentId)));
+  const issueRuns = (f: { companyId: string; agentId: string }) => db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.agentId, f.agentId)));
 
   it("keeps the task waiting during the hold and starts exactly one run once it clears", async () => {
     const f = await seedHeldCompany();

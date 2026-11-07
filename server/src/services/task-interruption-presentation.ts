@@ -118,9 +118,12 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
         || issue.status !== "todo" || admission.agentId !== issue.assigneeAgentId) return null;
     const waiting: TaskInterruptionPresentation = { intentId: admission.id, responsibility: "system", state: "working",
       nextRetryAt: null, canRetry: false, userAction: null, sourceRunIds: [], observedRunId: null };
-    // A budget pause waits on a person raising the budget; an accounting hold settles by itself.
-    if ([agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded"))
-      return { ...waiting, responsibility: "user", state: "waiting_for_user", userAction: "budget" };
+    // Budget pauses, ordinary pauses and approvals wait on a person; only an
+    // accounting hold settles by itself. Admission records all of them as budget.blocked.
+    const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval ? "approval"
+      : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
+        ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
+    if (userAction) return { ...waiting, responsibility: "user", state: "waiting_for_user", userAction };
     return { ...waiting, retryWait: { reason: admission.reason!, message: admissionWaitMessages[admission.reason!] } };
   }
   const system = readSystemRecovery(action?.evidence);
