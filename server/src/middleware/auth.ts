@@ -32,6 +32,7 @@ import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
 import { notifyChatCompanyAuthorityChange } from "../services/chat-run-milestone-notifications.js";
+import { isClientMembershipRole } from "../services/company-member-roles.js";
 
 export {
   isTransientDbConnectionError,
@@ -668,6 +669,27 @@ async function resolveCloudTenantActorOnce(
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, userId),
       )).for("update");
+      // An explicit `client` assignment survives Cloud sync. The Cloud
+      // headers cannot express it -- `stackMembershipRole` accepts only
+      // owner, admin, member and support -- so the derived role always
+      // differs from a stored `client`, the guarded upsert below always
+      // fires, and the membership an owner had deliberately reduced to a
+      // client would be restored to staff and re-seeded with the staff
+      // default grants on the next trusted-header request.
+      //
+      // This deliberately differs from `viewer`, which the branch below
+      // does restore. A client is not a weaker staff role whose authority
+      // Cloud is the source of truth for; it is a separate principal class
+      // with no default surface, so a header that cannot name it must not
+      // be read as naming something else. The branch can only fire for the
+      // new role, so no membership that exists today changes.
+      if (isClientMembershipRole(existing?.membershipRole)) {
+        return {
+          companyId,
+          membershipRole: existing!.membershipRole,
+          status: existing!.status,
+        };
+      }
       // Serialize authority restoration and its notice while retaining the
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {

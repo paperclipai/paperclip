@@ -668,9 +668,17 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     // Both gate a `notifyChatRunMilestones(tx, { companyId })` call when a
     // membership becomes active or is restored. The predicate chooses whether
     // to send a company notice, not what a principal may reach, and the notice
-    // is company-scoped with no principal in it. A `client` membership does
-    // trip these notices, which is untidy but grants nothing; left alone here
-    // because it is behavior in code this PR does not otherwise touch.
+    // is company-scoped with no principal in it.
+    //
+    // `middleware/auth.ts` no longer reaches its notice for a client: the
+    // Cloud sync returns early on a stored client membership, above the
+    // `viewer` branch, so that the header-derived staff role cannot overwrite
+    // an explicit client assignment. Its `viewer` predicate is unchanged and
+    // still decides only the notice, so the file stays classified here.
+    //
+    // `services/access.ts` does still trip its notice for a client, which is
+    // untidy but grants nothing; left alone because it is behavior in code
+    // this change does not otherwise touch.
     "middleware/auth.ts",
     "services/access.ts",
   ] as const;

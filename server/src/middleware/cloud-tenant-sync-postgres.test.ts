@@ -8,7 +8,9 @@ import {
   instanceUserRoles, principalPermissionGrants, resourceLifecycleEvents, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import type { Request } from "express";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
+import { hasCompanyAccess } from "../routes/authz.js";
 import { errorHandler } from "./error-handler.js";
 import { userProfileRoutes } from "../routes/user-profiles.js";
 
@@ -145,6 +147,41 @@ const aliasFields = ["name", "email-local", "email", "principal"] as const;
     expect(changedUser.updatedAt.getTime()).toBeGreaterThan(oldUpdatedAt.getTime());
     expect(changedMembership.membershipRole).toBe("member");
     expect(changedMembership.updatedAt.getTime()).toBeGreaterThan(oldUpdatedAt.getTime());
+  });
+
+  it("keeps an explicit client membership instead of restoring staff access from the stack role", async () => {
+    // The Cloud headers cannot name `client`: stackMembershipRole accepts
+    // only owner, admin, member and support. So the derived role always
+    // differs from a stored `client`, and without the guard the upsert
+    // restores staff access to a principal an owner had deliberately reduced
+    // to a client, and re-seeds the staff default grants with it.
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    const membershipWhere = and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalId, userId),
+    );
+    const grantWhere = and(
+      eq(principalPermissionGrants.companyId, companyId),
+      eq(principalPermissionGrants.principalId, userId),
+    );
+
+    // An owner assigns `client` through the member routes.
+    await db.update(companyMemberships).set({ membershipRole: "client" }).where(membershipWhere);
+    await db.delete(principalPermissionGrants).where(grantWhere);
+
+    // A later trusted-header request still carries the staff stack role.
+    const synced = await resolve(freshDb(), value);
+
+    const [membership] = await db.select().from(companyMemberships).where(membershipWhere);
+    expect(membership.membershipRole).toBe("client");
+    expect(synced?.memberships?.[0]).toEqual({ companyId, membershipRole: "client", status: "active" });
+    // A client's default grant set is empty, so the sync must seed nothing.
+    expect(await db.select().from(principalPermissionGrants).where(grantWhere)).toEqual([]);
+    // The point of the guard: the deny still holds after the sync.
+    expect(hasCompanyAccess({ actor: synced } as unknown as Request, companyId)).toBe(false);
   });
 
   it("preserves runtime invalidation on real membership changes while no-op conflicts produce no invalidation", async () => {
