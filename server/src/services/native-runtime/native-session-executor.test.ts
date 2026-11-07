@@ -8460,9 +8460,8 @@ describe("native terminal-turn accounting", () => {
         onAccountingEvent: capture, runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin",
           leaseId: "plugin-lifecycle-lease", remoteCwd: "/unused", runnerTask: task } });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
-      const recover = state.createTransport.mock.calls.at(-1)![0].onRecoveryAccountingEvent as
-        (event: PrpEvent, source: Record<string, string>) => Promise<void>;
-      const source = { runnerInstanceId: "plugin-producer", environmentLeaseId: "plugin-lifecycle-lease", runId: "plugin-lifecycle-source",
+      const recover = state.createTransport.mock.calls.at(-1)![0].onRecoveryAccountingEvent!;
+      const source: Parameters<NonNullable<RunnerTransportOptions["onRecoveryAccountingEvent"]>>[1] = { runnerInstanceId: "plugin-producer", environmentLeaseId: "plugin-lifecycle-lease", runId: "plugin-lifecycle-source",
         normalizedSessionId: "plugin-lifecycle-session", turnId: "turn-source", itemId: "item-source" };
       for (const eventType of ["session.resumed", "session.capabilities.updated", "session.goal.snapshot", "run.attached"]) {
         await expect(recover({ eventType, runId: source.runId, sourceInstanceId: "plugin-producer" } as PrpEvent, source)).resolves.toBeUndefined();
