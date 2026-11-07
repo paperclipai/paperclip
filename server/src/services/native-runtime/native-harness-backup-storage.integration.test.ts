@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { and, eq, inArray } from "drizzle-orm";
 import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults,
   nativeProviderArtifacts, nativeProviderArtifactReferences, nativeRunnerCheckpoints } from "@paperclipai/db";
@@ -830,6 +831,73 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect((await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.id, current.id)))[0].status).toBe("current");
     const [retired] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest), eq(nativeHarnessBackups.status, "retired")));
     expect(await deleteRetiredNativeHarnessBackup(f.db, f.storage, retired.id)).toBe(true);
+  });
+  /** Durable reads that deliver `chunkBytes` every `delayMs`, optionally stopping after `stallAfter` chunks. */
+  function throttledStorage(storage: Awaited<ReturnType<typeof fixture>>["storage"], delayMs: number, chunkBytes: number, stallAfter?: number) {
+    let sent = 0;
+    return Object.assign(Object.create(storage), {
+      async getObject(companyId: string, objectKey: string, options?: { signal?: AbortSignal }) {
+        const object = await storage.getObject(companyId, objectKey, options);
+        async function* slow() {
+          for await (const part of object.stream as AsyncIterable<Buffer>) {
+            for (let offset = 0; offset < part.length; offset += chunkBytes) {
+              if (stallAfter !== undefined && sent >= stallAfter) {
+                await new Promise<void>(resolve => options?.signal?.addEventListener("abort", () => resolve(), { once: true }));
+                options?.signal?.throwIfAborted();
+              }
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+              options?.signal?.throwIfAborted();
+              sent++;
+              yield part.subarray(offset, offset + chunkBytes);
+            }
+          }
+        }
+        return { ...object, stream: Readable.from(slow()) };
+      },
+    }) as typeof storage;
+  }
+  it("keeps restoring a backup whose download outlasts the idle window while bytes keep arriving", async () => {
+    const f = await artifactFixture(); await persistNativeHarnessBackup(f);
+    const idle = 250, slow = throttledStorage(f.storage, 20, 64);
+    // The former total deadline aborted this same progressing transfer with
+    // the generic "The operation was aborted" seen on resumed sessions.
+    const aborted = join(environment.current.runtimeRoot, randomUUID(), "failover-backups"); ownedHomes.push(aborted);
+    await expect(restoreDurableNativeHarnessBackup({ ...f, storage: slow, backupRoot: aborted, signal: AbortSignal.timeout(idle) }))
+      .rejects.toThrow("The operation was aborted");
+    await expect(stat(join(aborted, "current"))).rejects.toMatchObject({ code: "ENOENT" });
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "failover-backups"); ownedHomes.push(replacement);
+    const startedAt = Date.now();
+    expect(await restoreDurableNativeHarnessBackup({ ...f, storage: slow, backupRoot: replacement, downloadIdleTimeoutMs: idle })).toBe(true);
+    expect(Date.now() - startedAt).toBeGreaterThan(idle * 2);
+    expect(JSON.parse(await readFile(join(replacement, "current/opencode/sessions/history.json"), "utf8"))).toEqual(f.identity);
+    expect(await readFile(join(replacement, "current/provider-artifacts/opencodeProxy"), "utf8")).toBe(f.original.opencodeProxy);
+    const [row] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")));
+    expect(await verifyDurableNativeHarnessBackup({ ...f, manifestSha256: row.manifestSha256, storage: slow,
+      downloadIdleTimeoutMs: idle })).toBe(true);
+  });
+  it("names a download that stops sending bytes and publishes no partial backup", { timeout: 10_000 }, async () => {
+    const f = await artifactFixture(); await persistNativeHarnessBackup(f);
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "failover-backups"); ownedHomes.push(replacement);
+    await expect(restoreDurableNativeHarnessBackup({ ...f, storage: throttledStorage(f.storage, 5, 64, 3), backupRoot: replacement,
+      downloadIdleTimeoutMs: 250 })).rejects.toThrow("native_harness_storage_download_stalled");
+    await expect(stat(join(replacement, "current"))).rejects.toMatchObject({ code: "ENOENT" });
+    const [row] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")));
+    await expect(verifyDurableNativeHarnessBackup({ ...f, manifestSha256: row.manifestSha256,
+      storage: throttledStorage(f.storage, 5, 64, 3), downloadIdleTimeoutMs: 250 }))
+      .rejects.toThrow("native_harness_storage_download_stalled");
+    // The saved backup is untouched and restores once the store responds again.
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement, downloadIdleTimeoutMs: 250 })).toBe(true);
+  });
+  it("keeps caller cancellation distinct from a stalled download", async () => {
+    const f = await artifactFixture(); await persistNativeHarnessBackup(f);
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "failover-backups"); ownedHomes.push(replacement);
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(new Error("caller_stopped")), 50);
+    await expect(restoreDurableNativeHarnessBackup({ ...f, storage: throttledStorage(f.storage, 20, 64), backupRoot: replacement,
+      signal: stop.signal, downloadIdleTimeoutMs: 5_000 })).rejects.not.toThrow("native_harness_storage_download_stalled");
+    await expect(stat(join(replacement, "current"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("rejects corrupt objects and cross-company lookups without publishing a local cache", async () => {
     const f = await fixture(); await persistNativeHarnessBackup(f);

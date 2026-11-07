@@ -57,7 +57,7 @@ export async function verifyRecoverableNativeHarnessBackup(input: {
   const storage = durableNativeHarnessStorage();
   if (!storage) return verifyNativeHarnessBackupStamp(stamp, input.providerLeaseId);
   const durable = await verifyDurableNativeHarnessBackup({ db: input.db, storage, companyId: input.companyId,
-    scopeDigest: stamp.sessionScopeSha256, manifestSha256: stamp.manifestSha256, signal: AbortSignal.timeout(300_000) });
+    scopeDigest: stamp.sessionScopeSha256, manifestSha256: stamp.manifestSha256, downloadIdleTimeoutMs: NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS });
   return durable || process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" && verifyNativeHarnessBackupStamp(stamp, input.providerLeaseId);
 }
 function reference(row: Row): Reference {
@@ -287,7 +287,67 @@ export async function persistNativeHarnessBackup(input: {
   } finally { key.fill(0); await removeNativeHarnessBackup(scratch); }
 }
 
+/** How long a durable read may go without receiving a byte. */
+export const NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS = 300_000;
+export const NATIVE_HARNESS_DOWNLOAD_STALLED = "native_harness_storage_download_stalled";
+
+/**
+ * Bound each durable read by inactivity, not by total time. A large or slow
+ * backup keeps restoring while bytes arrive; a read that stops for the idle
+ * window aborts the whole restore with a named error. Local decrypt, digest and
+ * extraction never run under this timer.
+ */
+async function withDownloadProgressDeadline<T>(
+  input: { storage: StorageService; signal?: AbortSignal; downloadIdleTimeoutMs?: number },
+  run: (storage: StorageService, signal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  const idleMs = input.downloadIdleTimeoutMs;
+  if (idleMs === undefined) return run(input.storage, input.signal);
+  if (!Number.isSafeInteger(idleMs) || idleMs <= 0) throw new Error("native_harness_storage_idle_timeout_invalid");
+  const stall = new AbortController();
+  const signal = input.signal ? AbortSignal.any([input.signal, stall.signal]) : stall.signal;
+  const base = input.storage;
+  const storage: StorageService = Object.assign(Object.create(base) as StorageService, {
+    async getObject(companyId: string, objectKey: string, options?: Parameters<StorageService["getObject"]>[2]) {
+      let timer: NodeJS.Timeout | undefined;
+      const disarm = () => { if (timer) clearTimeout(timer); timer = undefined; };
+      const arm = () => {
+        disarm();
+        timer = setTimeout(() => stall.abort(new Error(NATIVE_HARNESS_DOWNLOAD_STALLED)), idleMs);
+        timer.unref?.();
+      };
+      arm();
+      let object: Awaited<ReturnType<StorageService["getObject"]>>;
+      try {
+        object = await base.getObject(companyId, objectKey, {
+          ...options, signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal });
+      } catch (error) { disarm(); throw error; }
+      arm();
+      const observed = new Transform({
+        transform(bytes, _encoding, callback) { arm(); callback(null, bytes); },
+        flush(callback) { disarm(); callback(); },
+      });
+      observed.once("close", disarm);
+      pipeline(object.stream, observed, { signal }).catch(() => disarm());
+      return { ...object, stream: observed };
+    },
+  });
+  try {
+    return await run(storage, signal);
+  } catch (error) {
+    if (stall.signal.aborted && !input.signal?.aborted) throw stall.signal.reason;
+    throw error;
+  }
+}
+
 export async function restoreDurableNativeHarnessBackup(input: {
+  db: Db; storage: StorageService; companyId: string; scopeDigest: string;
+  backupRoot: string; signal?: AbortSignal; downloadIdleTimeoutMs?: number;
+}): Promise<boolean> {
+  return withDownloadProgressDeadline(input, (storage, signal) => restoreCurrentNativeHarnessBackup({ ...input, storage, signal }));
+}
+
+async function restoreCurrentNativeHarnessBackup(input: {
   db: Db; storage: StorageService; companyId: string; scopeDigest: string;
   backupRoot: string; signal?: AbortSignal;
 }): Promise<boolean> {
@@ -340,13 +400,14 @@ export async function restoreDurableNativeHarnessBackup(input: {
 }
 
 export async function verifyDurableNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; backupId?: string; signal?: AbortSignal;
+  db: Db; storage: StorageService; companyId: string; scopeDigest: string; manifestSha256: string; backupId?: string;
+  signal?: AbortSignal; downloadIdleTimeoutMs?: number;
 }): Promise<boolean> {
   const [row] = await input.db.select().from(nativeHarnessBackups).where(and(scope(input),
     eq(nativeHarnessBackups.manifestSha256, input.manifestSha256), input.backupId ? eq(nativeHarnessBackups.id, input.backupId) : undefined,
     inArray(nativeHarnessBackups.status, ["current", "superseded"]))).limit(1);
   if (!row) return false;
-  await receive(input.storage, reference(row), undefined, input.signal);
+  await withDownloadProgressDeadline(input, (storage, signal) => receive(storage, reference(row), undefined, signal));
   return true;
 }
 

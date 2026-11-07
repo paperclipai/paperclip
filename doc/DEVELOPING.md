@@ -4041,6 +4041,11 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+  A resumed session restores its failover backup from durable storage before the
+  provider starts. Each read has a five-minute idle limit, not a total limit: a
+  large or slow backup keeps restoring while bytes arrive. A read that receives no
+  bytes for five minutes fails with `native_harness_storage_download_stalled` and
+  publishes no partial backup. Local decrypt, digest and extraction are not timed.
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
