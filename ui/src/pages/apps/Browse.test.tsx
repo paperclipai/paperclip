@@ -266,7 +266,7 @@ describe("Connectors landing page", () => {
   }
 
   it("shows provider catalog rows and splits legacy gateway accounts by API format", async () => {
-    const slugs = ["notion", "openrouter", "bedrock", "google", "responses-api", "messages-api", "chat-completions-api", "local"];
+    const slugs = ["notion", "openrouter", "litellm", "bedrock", "google", "responses-api", "messages-api", "chat-completions-api", "local"];
     listGalleryMock.mockResolvedValue({ apps: slugs.map(slug => getAppStoreDefinition(slug)) });
     listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Model gateway", applicationKey: "app-gallery:gateway", metadata: { sourceTemplateKey: "gateway" } })] });
     listConnectionsMock.mockResolvedValue({ connections: ["responses", "messages"].map(protocol => connection({

@@ -1961,6 +1961,7 @@ const aiCatalogEntries = [
   { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
   { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
   { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
+  { slug: "litellm", name: "LiteLLM", provider: "openai", envKey: "OPENAI_API_KEY", description: "Route agents through your LiteLLM proxy to 100+ model providers with one virtual key." },
   { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
   { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },
   { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
