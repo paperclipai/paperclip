@@ -5142,7 +5142,7 @@
       "../../server/src/services/company-skills.ts",
       "../../packages/shared/src/validators/skill-policy.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-enable.standard-config.v2",
+    "oracleVersion": "paperclip.chat-catalog.skill-enable.standard-config.v3",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
