@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { DEFAULT_AGENT_INSTRUCTION_FILES, DEFAULT_AGENT_INSTRUCTIONS } from "./templates.js";
+import { GIT_MIRROR_CONFIG_SCHEMA, GIT_MIRROR_JOB_KEY } from "./wiki/git-mirror-config.js";
 
 export const PLUGIN_ID = "paperclipai.plugin-llm-wiki";
 export const WIKI_ROOT_FOLDER_KEY = "wiki-root";
@@ -88,6 +89,10 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["automation", "ui"],
   capabilities: [
     "events.subscribe",
+    "events.emit",
+    "jobs.schedule",
+    "http.outbound",
+    "secrets.read-ref",
     "api.routes.register",
     "database.namespace.migrate",
     "database.namespace.read",
@@ -126,6 +131,15 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui"
   },
+  instanceConfigSchema: GIT_MIRROR_CONFIG_SCHEMA,
+  jobs: [
+    {
+      jobKey: GIT_MIRROR_JOB_KEY,
+      displayName: "Sync Git mirror",
+      description: "Copy changed Markdown from the configured GitHub branch into the mirrored wiki space. Does nothing unless the Git mirror is enabled.",
+      schedule: "*/15 * * * *"
+    }
+  ],
   database: {
     namespaceSlug: "llm_wiki",
     migrationsDir: "migrations",

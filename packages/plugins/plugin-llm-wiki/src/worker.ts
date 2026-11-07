@@ -7,10 +7,20 @@ import {
   type PluginManagedRoutineResolution,
 } from "@paperclipai/plugin-sdk";
 import {
+  PLUGIN_ID,
   PAPERCLIP_DISTILL_SKILL_KEY,
   WIKI_MAINTENANCE_ROUTINE_KEYS,
   WIKI_ROOT_FOLDER_KEY,
 } from "./manifest.js";
+import { GIT_MIRROR_JOB_KEY, GIT_MIRROR_SYNC_EVENT, readGitMirrorConfig } from "./wiki/git-mirror-config.js";
+import {
+  getGitMirrorStatus,
+  gitMirrorTuning,
+  isGitMirrorSyncRunning,
+  requestForcedGitMirrorRewrite,
+  syncGitMirror,
+  type GitMirrorSyncResult,
+} from "./wiki/git-mirror.js";
 import {
   bootstrapWikiRoot,
   bootstrapSpace,
@@ -86,6 +96,40 @@ function routineOverridesFromParams(params: Record<string, unknown>) {
 }
 
 let activeContext: PluginContext | null = null;
+/**
+ * Companies whose config enables the Git mirror, as reported by onConfigChanged (the host replays every
+ * configured company's config when the worker starts). The job iterates these: listing companies from a
+ * job is refused by the host, which only admits proactive calls that name one configured company.
+ */
+const mirroredCompanies = new Set<string>();
+
+/**
+ * Sync requests that arrived while that company's sync was running. Waiting inside the event handler would
+ * spend the new event's 15-minute scope, so the running sync re-emits one fresh event for them when it ends;
+ * that run reads the config afresh, which is how a config change during a sync is reconciled.
+ */
+const followUps = new Map<string, { force: boolean }>();
+/**
+ * Recently handled sync event ids. A delivery seen twice (a duplicate subscription, a host retry) must not
+ * become a follow-up of its own run, or each finishing run would queue the next one forever.
+ */
+const handledSyncEvents = new Set<string>();
+const HANDLED_SYNC_EVENTS_KEPT = 500;
+
+function firstDelivery(eventId: string): boolean {
+  if (handledSyncEvents.has(eventId)) return false;
+  handledSyncEvents.add(eventId);
+  if (handledSyncEvents.size > HANDLED_SYNC_EVENTS_KEPT) {
+    const oldest = handledSyncEvents.values().next().value;
+    if (oldest !== undefined) handledSyncEvents.delete(oldest);
+  }
+  return true;
+}
+
+/** Queue one company's sync as a company-scoped plugin event; its handler runs the sync (see GIT_MIRROR_SYNC_EVENT). */
+function requestGitMirrorSync(ctx: PluginContext, companyId: string, force: boolean): Promise<void> {
+  return ctx.events.emit(GIT_MIRROR_SYNC_EVENT, companyId, { force });
+}
 const PAPERCLIP_EVENT_INGESTION_EVENTS = [
   "issue.created",
   "issue.updated",
@@ -184,9 +228,56 @@ function withManagedRoutineDefaultDrift(
 }
 
 const plugin = definePlugin({
+  // Every config read is keyed by companyId (the Git mirror reads ctx.config.get(companyId) per call).
+  multiCompanyConfig: true,
+
   async setup(ctx) {
     activeContext = ctx;
     await registerWikiTools(ctx);
+
+    ctx.events.on(`plugin.${PLUGIN_ID}.${GIT_MIRROR_SYNC_EVENT}`, async (event) => {
+      const companyId = event.companyId;
+      if (!companyId || !firstDelivery(event.eventId)) return;
+      const force = (event.payload as { force?: unknown } | null)?.force === true;
+      if (isGitMirrorSyncRunning(companyId)) {
+        followUps.set(companyId, { force: force || followUps.get(companyId)?.force === true });
+        return;
+      }
+      let result: GitMirrorSyncResult | null = null;
+      try {
+        result = await syncGitMirror(ctx, companyId, { force, budgetMs: gitMirrorTuning.syncBudgetMs });
+      } catch (error) {
+        // The sync already recorded the scrubbed error in its state, where the Wiki banner shows it.
+        ctx.logger.warn("LLM Wiki Git mirror sync failed", {
+          companyId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // A partial run (time budget) continues, and requests that arrived meanwhile run, in a fresh event
+      // with a fresh scope. A forced rewrite already marked its files pending, so continuing need not force.
+      const followUp = followUps.get(companyId);
+      followUps.delete(companyId);
+      if (result?.status === "partial" || followUp) {
+        await requestGitMirrorSync(ctx, companyId, followUp?.force === true);
+      }
+    });
+
+    ctx.jobs.register(GIT_MIRROR_JOB_KEY, async () => {
+      for (const companyId of mirroredCompanies) await requestGitMirrorSync(ctx, companyId, false);
+    });
+
+    ctx.data.register("git-mirror", async (params) => getGitMirrorStatus(ctx, readCompanyIdFromParams(params)));
+
+    ctx.actions.register("sync-git-mirror", async (params, context) => {
+      // Board users and the host run syncs; an agent has no need, and a loop of forced syncs would spend the
+      // credential's GitHub rate limit.
+      if (context?.actor?.type === "agent") throw new Error("Agents cannot run a Git mirror sync");
+      const companyId = readCompanyIdFromParams(params);
+      if (!readGitMirrorConfig(await ctx.config.get(companyId))) throw new Error("The Git mirror is not enabled for this company");
+      if (params.force === true) await requestForcedGitMirrorRewrite(ctx, companyId);
+      await requestGitMirrorSync(ctx, companyId, params.force === true);
+      return { status: "queued" };
+    });
 
     for (const eventName of PAPERCLIP_EVENT_INGESTION_EVENTS) {
       ctx.events.on(eventName, async (event) => {
@@ -1060,6 +1151,19 @@ const plugin = definePlugin({
     }
 
     return { status: 404, body: { error: `Unknown LLM Wiki route: ${input.routeKey}` } };
+  },
+
+  async onConfigChanged(newConfig, context) {
+    const companyId = context?.companyId;
+    if (!companyId || !activeContext) return;
+    if (!readGitMirrorConfig(newConfig)) {
+      mirroredCompanies.delete(companyId);
+      return;
+    }
+    mirroredCompanies.add(companyId);
+    // Unforced: a changed repository, branch, space or root already resets the ledger and reconciles in full,
+    // and the host replays configs at every worker start, which should not refetch everything.
+    await requestGitMirrorSync(activeContext, companyId, false);
   },
 
   async onHealth() {
