@@ -75,6 +75,18 @@ describe("inboxArchiveCache", () => {
     expect(filterLocalInboxArchivedIssues("company-1", issues)).toEqual(issues);
   });
 
+  it("does not let a completed archive release a newer operation's hide flag", () => {
+    const releaseOld = beginLocalInboxArchive("company-1", "issue-a");
+    const releaseNew = beginLocalInboxArchive("company-1", "issue-a");
+    releaseOld();
+    expect(getLocalInboxArchiveIssueIds("company-1").has("issue-a")).toBe(true);
+    releaseNew();
+    expect(getLocalInboxArchiveIssueIds("company-1").has("issue-a")).toBe(false);
+    releaseOld();
+    releaseNew();
+    expect(getLocalInboxArchiveIssueIds("company-1").size).toBe(0);
+  });
+
   it("does not expire an in-flight archive before post-settle bounding starts", () => {
     vi.useFakeTimers();
     beginLocalInboxArchive("company-1", "issue-a");

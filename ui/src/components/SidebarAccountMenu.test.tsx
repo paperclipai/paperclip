@@ -448,7 +448,7 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("rounded-xl");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("min-h-(--profile-popover-min-height)");
+      .not.toContain("min-h-");
     expect(document.body.querySelector('a[href="/company/settings"]')?.className)
       .not.toContain("bg-muted");
     expect(document.body.textContent).not.toContain("Manage company and instance settings.");

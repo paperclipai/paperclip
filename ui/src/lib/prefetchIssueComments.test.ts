@@ -9,6 +9,8 @@ import { queryKeys } from "./queryKeys";
 vi.mock("@/api/issues", () => ({
   issuesApi: {
     get: vi.fn(),
+    getCore: vi.fn(),
+    recentComments: vi.fn(),
     listComments: vi.fn(),
   },
 }));
@@ -88,10 +90,23 @@ describe("prefetchIssueComments", () => {
     expect(issuesApi.listComments).toHaveBeenCalledTimes(1);
   });
 
-  it("seeds both the detail snapshot and the first comments page for navigation", async () => {
+  it.each(["index", "rows"] as const)("fetches the compact task when navigating from a %s projection", async (listProjection) => {
+    const issue = createIssue();
+    vi.mocked(issuesApi.getCore).mockResolvedValue(issue);
+    vi.mocked(issuesApi.recentComments).mockResolvedValue({ comments: [], latestCommentId: null, oldestCommentId: null, hasMore: false });
+    await prefetchIssueDetailForNavigation(queryClient, issue.identifier!, {
+      issue: { ...issue, listProjection, description: null },
+    });
+    expect(issuesApi.getCore).toHaveBeenCalledWith(issue.identifier!, { signal: expect.any(AbortSignal) });
+    expect(queryClient.getQueryData([...queryKeys.issues.detail(issue.id), "core"])).toEqual(issue);
+    expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toBeUndefined();
+  });
+
+  it("seeds a complete snapshot and warms recent messages for navigation", async () => {
     const issue = createIssue();
     const firstPage = [createComment({ id: "c1" })];
-    vi.mocked(issuesApi.listComments).mockResolvedValue(firstPage);
+    vi.mocked(issuesApi.getCore).mockResolvedValue(issue);
+    vi.mocked(issuesApi.recentComments).mockResolvedValue({ comments: firstPage, latestCommentId: "c1", oldestCommentId: "c1", hasMore: false });
 
     await prefetchIssueDetailForNavigation(queryClient, issue.identifier!, { issue });
 
@@ -100,10 +115,10 @@ describe("prefetchIssueComments", () => {
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toEqual(issue);
     expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
 
-    const cachedComments = queryClient.getQueryData<{ pages: IssueComment[][] }>(
-      queryKeys.issues.comments(issue.identifier!),
+    const cachedComments = queryClient.getQueryData<{ comments: IssueComment[] }>(
+      [...queryKeys.issues.comments(issue.identifier!), "recent"],
     );
-    expect(cachedComments?.pages).toEqual([firstPage]);
+    expect(cachedComments?.comments).toEqual(firstPage);
     // Hover/focus uses this helper too. Full history starts only once the task
     // page mounts, so moving across links does not fan out expensive reads.
     expect(activityApi.forIssue).not.toHaveBeenCalled();

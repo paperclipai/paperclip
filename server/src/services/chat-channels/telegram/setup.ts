@@ -108,3 +108,15 @@ export function createTelegramSetup(db: Db, options: TelegramSetupOptions) {
 
   return { registerTelegramWebhook };
 }
+
+const TELEGRAM_WEBHOOK_PORTS = new Set(["", "80", "88", "443", "8443"]);
+
+export function isSupportedTelegramWebhookBaseUrl(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && TELEGRAM_WEBHOOK_PORTS.has(url.port);
+  } catch {
+    return false;
+  }
+}

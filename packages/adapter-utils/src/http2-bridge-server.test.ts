@@ -1967,6 +1967,60 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("relays diagnostic reads and controller denials without admitting execution writes", async () => {
+    const seen: Http2BridgeForwardRequest[] = [];
+    const { gateway, handle } = createTestPair({
+      routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+      forwardRequest: async (request) => {
+        seen.push(request);
+        return {
+          status: request.pathname.includes("other-company") ? 403 : 200,
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({ path: request.pathname })),
+        };
+      },
+    });
+    const query = "?limit=25&summary=true";
+    try {
+      for (const requestPath of [
+        "/api/companies/co-1/heartbeat-runs",
+        "/api/companies/co-1/live-runs",
+        "/api/heartbeat-runs/run-1",
+        "/api/heartbeat-runs/run-1/events",
+        "/api/heartbeat-runs/run-1/log",
+        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/heartbeat-runs/run-1/issues",
+        "/api/issues/issue-1/runs",
+        "/api/issues/issue-1/recovery-actions",
+        "/api/companies/other-company/heartbeat-runs",
+      ]) {
+        const response = await gateway.forwardRequest({
+          method: "GET", path: requestPath, query, headers: {},
+          body: Buffer.alloc(0), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status, requestPath).toBe(requestPath.includes("other-company") ? 403 : 200);
+        expect(JSON.parse(response.body.toString("utf8"))).toEqual({ path: requestPath });
+        expect(seen.at(-1)).toMatchObject({ method: "GET", pathname: requestPath, query });
+        expect(seen.at(-1)?.headers.authorization).toBeUndefined();
+      }
+      const forwardedCount = seen.length;
+      for (const requestPath of [
+        "/api/heartbeat-runs/run-1/cancel",
+        "/api/issues/issue-1/recovery-actions/resolve",
+      ]) {
+        const response = await gateway.forwardRequest({
+          method: "POST", path: requestPath, query: "", headers: {},
+          body: Buffer.from("{}"), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status).toBe(403);
+      }
+      expect(seen).toHaveLength(forwardedCount);
+    } finally {
+      await gateway.close();
+      await handle.close();
+    }
+  });
+
   it("test_a_maximum_size_multipart_attachment_upload_fits_through_the_bridge", async () => {
     // A file at the exact attachment content ceiling (10 MiB — the same
     // figure `MAX_ATTACHMENT_BYTES` in `server/src/attachment-types.ts`

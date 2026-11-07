@@ -15,7 +15,7 @@ import {
 
 export interface CodexAcpxNativeSessionBackendOptions extends Omit<
   CodexAcpxDriverOptions,
-  "model" | "permissionMode" | "mode" | "piThinkingLevel" | "systemInstructions" | "providerPolicy" | "runtimeContext"
+  "model" | "permissionMode" | "mode" | "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "systemInstructions" | "providerPolicy" | "runtimeContext"
 > {}
 
 export type AcpxNativeSessionBackendOptions =
@@ -76,6 +76,9 @@ export function createAcpxNativeSessionBackend(
       permissionMode: input.provider.permissionMode ?? "approve-reads",
       mode: input.provider.mode,
       piThinkingLevel: input.provider.piThinkingLevel,
+      claudeEffort: "claudeEffort" in input.provider ? input.provider.claudeEffort : undefined,
+      grokEffort: "grokEffort" in input.provider ? input.provider.grokEffort : undefined,
+      grokDisableWebSearch: "grokDisableWebSearch" in input.provider ? input.provider.grokDisableWebSearch : undefined,
       systemInstructions,
       runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
       providerPolicy: { readOnly: "executionMode" in input && input.executionMode === "plan" },

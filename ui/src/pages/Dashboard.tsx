@@ -1,11 +1,11 @@
 import { AgentIdentity } from "../components/AgentIdentity";
+import { TaskSummaryList } from "../components/TaskSummaryList";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
-import {
-  onboardingStepForCompany,
-  shouldRouteAgentlessCompanyToOnboarding,
-} from "../lib/onboarding-route";
-import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
+import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
+import { claimOnboardingOffer, dashboardOnboardingOptions } from "../lib/onboarding-auto-open";
+import { onboardingDraftStorage } from "../lib/onboarding-state";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -25,6 +25,7 @@ import { StatusIcon } from "../components/StatusIcon";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { ActivityRow } from "../components/ActivityRow";
+import { ActivityList } from "../components/ActivityList";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
@@ -32,12 +33,14 @@ import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle }
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -71,6 +74,7 @@ export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgen
 }
 
 export function Dashboard() {
+  const designSandbox = useDesignSandbox();
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const location = useLocation();
@@ -132,11 +136,17 @@ export function Dashboard() {
   // start the wizard at the front door with no company, and the new-company
   // path there would create a *second* company instead of giving this one an
   // agent.
+  // A saved agent that is still in setup is unfinished onboarding after reload.
+  // Only the matching browser draft may resume it; other setup records stay put.
+  const onboardingOptions = selectedCompanyId
+    ? dashboardOnboardingOptions(selectedCompanyId, agents, onboardingDraftStorage.read())
+    : null;
+  const onboardingInitialStep = onboardingOptions?.initialStep;
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
     agentsRefreshing,
-    agentCount: agents?.length ?? 0,
+    agentCount: onboardingOptions ? 0 : agents?.length ?? 0,
   });
   // Auto-open once per company. Every input to the effect sits behind a query,
   // so a refetch re-runs it, and the customer can also navigate away and come
@@ -144,15 +154,12 @@ export function Dashboard() {
   // wizard that was deliberately closed. `claimOnboardingOffer` holds the
   // companies already offered; see it for why that outlives this component.
   useEffect(() => {
-    if (!shouldOpenOnboarding || !selectedCompanyId) return;
+    if (!shouldOpenOnboarding || !selectedCompanyId || !onboardingInitialStep) return;
     if (!claimOnboardingOffer(selectedCompanyId)) return;
-    openOnboarding({
-      companyId: selectedCompanyId,
-      initialStep: onboardingStepForCompany(),
-    });
+    openOnboarding({ companyId: selectedCompanyId, initialStep: onboardingInitialStep });
     // No mission lookup to wait on any more: the step this opens is the same
     // whatever the goals say, so waiting only delayed the open.
-  }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
+  }, [shouldOpenOnboarding, selectedCompanyId, onboardingInitialStep, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -165,11 +172,13 @@ export function Dashboard() {
     queryKey: dashboardQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data, isLoading, error, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data, isLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
+  const dashboardView = useQueryView(dashboardQuery);
   usePublishSharedQueryData(sharedDashboard, data, dashboardUpdatedAt);
 
   const activityQueryKey = [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }] as const;
@@ -308,8 +317,21 @@ export function Dashboard() {
     );
   }
 
-  if (isLoading) {
+  // An outage before the first load shows the skeleton; loaded data stays on
+  // screen through a failed refetch, and only a real failure replaces it.
+  if (isLoading || dashboardView.kind === "reconnecting") {
     return <PageSkeleton variant="dashboard" />;
+  }
+  if (dashboardView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={dashboardView.error}
+        action="load the dashboard"
+        onRetry={dashboardView.retry}
+        retrying={dashboardView.isFetching}
+      />
+    );
   }
 
   // Same rule as the auto-offer above: a list still being refreshed may be the
@@ -322,8 +344,6 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
       {pausedBanner?.kind === "imported" ? (
         <InlineBanner
           tone="warning"
@@ -397,8 +417,9 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+          <div className={cn("grid grid-cols-2 xl:grid-cols-4", designSandbox ? "gap-4" : "gap-1 sm:gap-2")}>
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={Bot}
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
@@ -412,6 +433,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={CircleDot}
               value={data.tasks.inProgress}
               label="Tasks In Progress"
@@ -424,6 +446,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={DollarSign}
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
@@ -437,6 +460,7 @@ export function Dashboard() {
               }
             />
             <MetricCard
+              appearance={designSandbox ? "card" : "plain"}
               icon={ShieldCheck}
               value={data.pendingApprovals + data.budgets.pendingApprovals}
               label="Pending Approvals"
@@ -487,7 +511,7 @@ export function Dashboard() {
                   Recent Activity
                 </h3>
                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">
-                  {recentActivity.map((event) => (
+                  {designSandbox ? <ActivityList events={recentActivity} agentMap={agentMap} userProfileMap={userProfileMap} entityNameMap={entityNameMap} entityTitleMap={entityTitleMap} rowClassName={event => animatedActivityIds.has(event.id) ? "activity-row-enter" : undefined} /> : recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
                       event={event}
@@ -512,7 +536,9 @@ export function Dashboard() {
                   <p className="text-sm text-muted-foreground">No tasks yet.</p>
                 </Card>
               ) : (
-                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
+                designSandbox ? <Card className="block overflow-hidden py-0">
+                  <TaskSummaryList issues={recentIssues.slice(0, 10)} />
+                </Card> : <Card className="@container block py-0 divide-y divide-border overflow-hidden">
                   {recentIssues.slice(0, 10).map((issue) => (
                     <Link
                       key={issue.id}
@@ -521,7 +547,7 @@ export function Dashboard() {
                     >
                       <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
                         <span className="flex size-6 shrink-0 items-center justify-end @xl:self-center">
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
+                          <StatusIcon {...taskStatusIconProps(issue)} />
                         </span>
                         <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
                           <span className="flex min-w-0 items-baseline gap-2 @xl:contents">

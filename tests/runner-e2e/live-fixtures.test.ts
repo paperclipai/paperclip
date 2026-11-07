@@ -1,10 +1,98 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { transformSync } from "esbuild";
+import * as fixtureReadiness from "./live-fixtures.js";
+import { describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { RunnerApi } from "./api.js";
 import { buildRuntimeUsage } from "./billing.js";
 import { runnerMatrix } from "./catalog.js";
-import { setupLiveFixtures, selectFixtureRuntimeLeases } from "./live-fixtures.js";
+import { deleteDaytonaEnvironment, setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
+  it.each([
+    ["daytona", "native-write-permission-stop", false],
+    ["daytona", "native-write-provider-loss", false],
+    ["daytona", "message-marker", true],
+    ["local", "native-write-permission-stop", null],
+    ["local", "native-write-provider-loss", null],
+  ] as const)("produces the Kimi lease lifecycle for %s %s", async (environment, task, reusable) => {
+    const execution = runnerMatrix.find(row => row.id === `kimi-qualification.runner-acpx-kimi.${environment}.${task}`)!;
+    let environmentBody: any;
+    let agentBody: any;
+    const api = {
+      async get() { return [{ id: "local", driver: "local", config: {} }]; },
+      async postSensitive(_url: string, data: any) { return { id: `secret-${data.key}` }; },
+      async post(url: string, data: any) {
+        if (url === "/api/plugins/install") return { id: "plugin", status: "ready" };
+        if (url === "/api/companies") return { id: "company", name: "Fixture" };
+        if (url.endsWith("/environments")) { environmentBody = data; return { id: "environment", driver: "sandbox", config: data.config }; }
+        if (url.endsWith("/agents")) { agentBody = data; return { id: "agent", companyId: "company", ...data }; }
+        throw new Error(`Unexpected POST ${url}`);
+      },
+      async delete() {},
+    } as unknown as RunnerApi;
+    const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "lifecycle-contract", workspacePath: "/tmp/fixture",
+      credentials: { KIMI_API_KEY: "synthetic-kimi-key", DAYTONA_API_KEY: "synthetic-daytona-key" },
+      daytonaImage: `registry.example.test/runtime@sha256:${"a".repeat(64)}` });
+    try {
+      if (reusable === null) {
+        expect(environmentBody).toBeUndefined();
+        expect(fixtures.environment).toEqual({ id: "local", driver: "local", config: {} });
+      } else {
+        expect(environmentBody.config).toMatchObject({ reuseLease: reusable, runnerLifecycleMode: reusable ? "warm" : "per_turn",
+          apiKey: { type: "secret_ref", secretId: "secret-DAYTONA_API_KEY", version: "latest" } });
+        expect(fixtures.environment.config).toEqual(environmentBody.config);
+      }
+      expect(agentBody.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "kimi", model: "kimi-for-coding" });
+    } finally { await fixtures.teardown(); }
+  });
+
+  it.each([
+    ["receipt-smoke", 100], ["same-task-roundtrip", 1_000],
+  ] as const)("bounds %s before creating its initial subscription agent", async (taskId, budget) => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "case-fixture-limits-")));
+    const home = path.join(root, "paperclip-home");
+    await mkdir(home);
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_TEMP_ROOT", root);
+    vi.stubEnv("PAPERCLIP_HOME", home);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "runner-e2e-case-fixture-test");
+    const execution = runnerMatrix.find(row => row.id === `case-handoffs.runner-codex-subscription.local.${taskId}`)!;
+    const companyId = "11111111-2222-4333-8444-555555555555";
+    let companyBody: any;
+    let agentBody: any;
+    let fixtures: Awaited<ReturnType<typeof setupLiveFixtures>> | undefined;
+    const api = {
+      async get() { return [{ id: "local", driver: "local" }]; },
+      async post(url: string, data: any) {
+        if (url === "/api/companies") { companyBody = data; return { id: companyId, name: "Test" }; }
+        if (url.endsWith("/agents")) { agentBody = data; return { id: "triage", ...data }; }
+        throw new Error(`Unexpected POST ${url}`);
+      },
+    } as unknown as RunnerApi;
+    try {
+      fixtures = await setupLiveFixtures({ api, execution, executionNonce: "fixture-limit-test", workspacePath: path.join(root, "workspace"),
+        credentials: { CODEX_AUTH_JSON: JSON.stringify({ tokens: { account_id: "synthetic-account", access_token: "synthetic-access",
+          refresh_token: "synthetic-refresh", id_token: "synthetic-id" } }) } });
+      expect(companyBody.budgetMonthlyCents).toBe(budget);
+      expect(agentBody.budgetMonthlyCents).toBe(budget);
+      expect(agentBody).not.toHaveProperty("instructionsBundle");
+      expect(agentBody.adapterConfig.env).toMatchObject({ OPENAI_API_KEY: "", CODEX_API_KEY: "" });
+      if (taskId === "receipt-smoke") {
+        expect(agentBody.adapterConfig).toMatchObject({ provider: "codex", timeoutSec: 90, modelReasoningEffort: "low" });
+        expect(agentBody.runtimeConfig.heartbeat).toMatchObject({ enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 1, maxDailyCostCents: 100 });
+      } else {
+        expect(agentBody.adapterConfig).not.toHaveProperty("modelReasoningEffort");
+        expect(agentBody.runtimeConfig).not.toHaveProperty("heartbeat");
+      }
+    } finally {
+      await fixtures?.teardown();
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"].flatMap(profile =>
     ["hire-reuse", "delegate-feedback"].map(task => [profile, task]))) (
     "applies %s %s budget stops in actual setup with a nonce and only its selected credential", async (profile, task) => {
@@ -396,5 +484,151 @@ describe("live runner fixtures", () => {
       calls.indexOf("POST /api/companies/company-1/environments"),
     ).toBeLessThan(calls.indexOf("POST /api/companies/company-1/projects"));
     await fixtures.teardown();
+  });
+});
+
+describe("owned browser setup lease accounting", () => {
+  it("includes both exact setup IDs and task runs while excluding unrelated leases", () => {
+    const leases = [{ id: "platform", provider: "daytona" }, { id: "adapter", provider: "daytona" },
+      { id: "task", provider: "daytona", heartbeatRunId: "run" }, { id: "unrelated", provider: "daytona" }];
+    expect(selectFixtureRuntimeLeases({ leases, runIds: ["run"], setupLeaseIds: ["platform", "adapter"] }).map(lease => lease.id)).toEqual(["platform", "adapter", "task"]);
+    expect(selectFixtureRuntimeLeases({ leases, runIds: [], setupLeaseIds: ["platform"] }).map(lease => lease.id)).toEqual(["platform"]);
+    expect(selectFixtureRuntimeLeases({ leases, runIds: [], setupLeaseIds: [] })).toEqual([]);
+  });
+});
+
+describe("managed setup runtime cost coverage", () => {
+  it("prices both exact setup windows with task usage and keeps missing attribution unknown", () => {
+    const leases = ["platform", "adapter", "task", "unrelated"].map((id, index) => ({ id, provider: "daytona", heartbeatRunId: id === "task" ? "run" : null,
+      acquiredAt: "2026-10-13T00:00:00Z", releasedAt: `2026-10-13T00:00:0${index + 1}Z`, metadata: { cpu: 4, memory: 4, disk: 10 } }));
+    const selected = selectFixtureRuntimeLeases({ leases, runIds: ["run"], setupLeaseIds: ["platform", "adapter"] });
+    const usage = buildRuntimeUsage({ environmentId: "daytona", runs: [], leases: selected });
+    expect(usage.leaseCount).toBe(3);
+    expect(usage.leaseDurationMs).toBe(6000);
+    expect(usage.estimatedListCostUsd).toBeGreaterThan(0);
+    expect(fixtureRuntimeCostCoverage(usage, {})).toEqual(usage);
+    const incomplete = fixtureRuntimeCostCoverage(usage, { setupLeaseAccountingIncomplete: true });
+    expect(incomplete.costStatus).toBe("unavailable");
+    expect(incomplete.costSource).toBe("provider_cost_unavailable");
+    expect(incomplete).not.toHaveProperty("estimatedListCostUsd");
+    expect(incomplete.leaseCount).toBe(3);
+  });
+});
+
+describe("Daytona fixture readiness after candidate startup", () => {
+  const companyId = "11111111-2222-4333-8444-555555555555";
+  const pluginId = "22222222-2222-4333-8444-555555555555";
+  const pluginKey = "paperclip.daytona-sandbox-provider";
+  const waitReady = () => (fixtureReadiness as unknown as {
+    waitForFixtureDaytonaProvider: (api: Pick<RunnerApi, "get">, input: { companyId: string; deadlineAt: number }) => Promise<void>;
+  }).waitForFixtureDaytonaProvider;
+  function candidateCompanyCallback(execution: unknown, api: unknown, restart: () => Promise<void>, deadlineAt: number) {
+    const source = readFileSync(new URL("./runner.spec.ts", import.meta.url), "utf8");
+    const start = source.indexOf("    const onCompanyCreated = async (id: string) => {");
+    const end = source.indexOf("    const api = new RunnerApi(request);", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const js = transformSync(source.slice(start, end), { loader: "ts", format: "cjs" }).code;
+    return new Function("kimiCandidateAdmissionForExecution", "execution", "api", "nonce", "startedAtMs", "deadlineMs", "trace", "saveTrace", "restartIsolatedPaperclipServer", "waitForFixtureDaytonaProvider", js + ";return onCompanyCreated;")(
+      () => ({}), execution, api, "fixture", 0, deadlineAt, undefined, async () => {}, restart, waitReady(),
+    ) as (id: string) => Promise<void>;
+  }
+  function apiAt(readiness: () => boolean, mismatch = false) {
+    const calls: string[] = [];
+    return {
+      calls,
+      async get<T>(route: string): Promise<T> {
+        calls.push(route);
+        if (route.endsWith("/dashboard")) return { pluginId, worker: { status: readiness() ? "running" : "starting" } } as T;
+        return { sandboxProviders: { daytona: readiness() ? { status: "supported", source: "plugin", pluginKey, pluginId: mismatch ? "foreign" : pluginId, supportsRunExecution: true } : { status: "unsupported" } } } as T;
+      },
+      async post() { calls.push("ENV_POST"); if (!readiness()) throw new Error("environment POST422: plugin worker starting"); return { id: "environment" }; },
+    };
+  }
+  it("awaits real public provider readiness before the environment POST after HTTP restart ACK", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      let running = false; setTimeout(() => { running = true; }, 1_000);
+      const api = apiAt(() => running);
+      const callback = candidateCompanyCallback({ environment: { id: "daytona" } }, api, async () => {}, 5_000);
+      const outcome = (async () => { await callback(companyId); return api.post(); })().then(value => ({ ok: true, value }), error => ({ ok: false, error: error.message }));
+      await vi.advanceTimersByTimeAsync(1_250);
+      expect(await outcome).toMatchObject({ ok: true, value: { id: "environment" } });
+      expect(api.calls.filter(x => x === "ENV_POST")).toHaveLength(1);
+      expect(api.calls.some(x => x.endsWith("/dashboard"))).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("leaves local candidate restart sequencing free of Daytona readiness requests", async () => {
+    const api = apiAt(() => false);
+    await candidateCompanyCallback({ environment: { id: "local" } }, api, async () => {}, Date.now() + 5_000)(companyId);
+    expect(api.calls).toEqual([]);
+  });
+  it("does not admit a DB-ready provider whose live worker never runs", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    try {
+      const api = apiAt(() => false);
+      const result = waitReady()(api, { companyId, deadlineAt: 1_000 }).then(() => null, error => error);
+      await vi.advanceTimersByTimeAsync(1_100);
+      const error = await result;
+      expect(error).toMatchObject({ failureClass: "candidate_failure" });
+      expect(api.calls).not.toContain("ENV_POST");
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects a different advertised plugin identity before creating an environment", async () => {
+    const api = apiAt(() => true, true);
+    await expect(waitReady()(api, { companyId, deadlineAt: Date.now() + 5_000 })).rejects.toThrow(/plugin identity/);
+    expect(api.calls).not.toContain("ENV_POST");
+  });
+});
+
+
+describe("absolute Daytona fixture cleanup deadline", () => {
+  it("waits for an ordinary pending cleanup to succeed beyond the default120s without extending the original Kimi window", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const times: number[] = [];
+    const remove = vi.fn(async (_path: string, options?: { allowNotFound?: boolean; timeout?: number }) => {
+      times.push(Date.now());
+      expect(options?.allowNotFound).toBe(true);
+      expect(options!.timeout).toBeLessThanOrEqual(660_000 - Date.now());
+      if (Date.now() < 300_000) throw new Error("DELETE409 pending_cleanup");
+    });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment", 660_000);
+      await vi.advanceTimersByTimeAsync(300_000);
+      await completed;
+      expect(times.at(-1)).toBe(300_000);
+      expect(times.length).toBe(101);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("stops at the absolute deadline and clamps final request/sleep time", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const times: number[] = [], timeouts: number[] = [];
+    const remove = vi.fn(async (_path: string, options?: { timeout?: number }) => {
+      times.push(Date.now()); timeouts.push(options!.timeout!);
+      throw new Error("DELETE409 pending_cleanup");
+    });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment", 3_500).catch(error => error);
+      await vi.advanceTimersByTimeAsync(3_500);
+      expect(await completed).toMatchObject({ message: expect.stringContaining("Daytona lease cleanup failed") });
+      expect(times).toEqual([0, 3_000]);
+      expect(timeouts).toEqual([3_500, 500]);
+      await expect(deleteDaytonaEnvironment({ delete: remove }, "environment", 3_500)).rejects.toThrow("cleanup failed");
+      expect(remove).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(0);
+      const lateSuccess = vi.fn(async () => { vi.setSystemTime(3_500); });
+      await expect(deleteDaytonaEnvironment({ delete: lateSuccess }, "environment", 3_500)).rejects.toThrow("deadline expired");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("preserves the120s default for callers without an absolute cleanup deadline", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
+    const remove = vi.fn(async () => { throw new Error("DELETE409 pending_cleanup"); });
+    try {
+      const completed = deleteDaytonaEnvironment({ delete: remove }, "environment").catch(error => error);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await completed).toMatchObject({ message: expect.stringContaining("cleanup failed") });
+      expect(remove).toHaveBeenCalledTimes(40);
+    } finally { vi.useRealTimers(); }
   });
 });

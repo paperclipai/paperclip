@@ -1,0 +1,76 @@
+--- scripts/benchmark-native-controller-recovery.ts
++++ scripts/benchmark-native-controller-recovery.ts
+@@ -0,0 +1 @@
++// Temporary qualification probe derived from frozen benchmark SHA256 abaa29d50eb95013836b54b8dacc94c72e080edf24744cc5d291cc5eb1ff2818.
+@@ -14 +15 @@
+-const repoRoot = fileURLToPath(new URL("../", import.meta.url));
++const repoRoot = path.resolve(required("BENCH_CANDIDATE_ROOT"));
+@@ -187 +188 @@
+-    const byPool = Object.fromEntries(["benchmark-application", "paperclip-controller-lease", "paperclip-runner-checkpoint"].map(pool => {
++    const byPool = Object.fromEntries(["benchmark-application", "benchmark-replacement-application", "paperclip-controller-lease", "paperclip-runner-checkpoint"].map(pool => {
+@@ -250,0 +252 @@
++  const replacementDb = createDb(u, { maxConnections: 10, applicationName: "benchmark-replacement-application" });
+@@ -256,0 +259 @@
++  const replacementOwner = { ...owner, bootId: randomUUID() };
+@@ -299,0 +303,3 @@
++    ["replacement_request", replacementDb.$client],
++    ["replacement_liveness", livenessDb(replacementDb).$client],
++    ["replacement_checkpoint", checkpointDb(replacementDb).$client],
+@@ -369,0 +376 @@
++  replacementDb.$client.options.debug = db.$client.options.debug;
+@@ -386,0 +394,2 @@
++  livenessDb(replacementDb).$client.options.debug = livenessDb(db).$client.options.debug;
++  checkpointDb(replacementDb).$client.options.debug = checkpointDb(db).$client.options.debug;
+@@ -389,0 +399,2 @@
++    const controllerDb = i % 2 ? replacementDb : db;
++    const controllerOwner = i % 2 ? replacementOwner : owner;
+@@ -443,3 +454,3 @@
+-        controllerBootId: owner.bootId,
+-        controllerPid: owner.pid,
+-        controllerProcessStartedAt: owner.processStartedAt,
++        controllerBootId: controllerOwner.bootId,
++        controllerPid: controllerOwner.pid,
++        controllerProcessStartedAt: controllerOwner.processStartedAt,
+@@ -467 +478 @@
+-      const writer = (variant === "candidate" ? CandidateWriter : BaselineWriter)(db, {
++      const writer = (variant === "candidate" ? CandidateWriter : BaselineWriter)(controllerDb, {
+@@ -472 +483 @@
+-        bootId: owner.bootId,
++        bootId: controllerOwner.bootId,
+@@ -511 +522 @@
+-      db,
++      controllerDb,
+@@ -531 +542 @@
+-                bootId: owner.bootId,
++                bootId: controllerOwner.bootId,
+@@ -544,0 +556,2 @@
++      db: controllerDb,
++      owner: controllerOwner,
+@@ -592 +605 @@
+-  for (let i = 0; i < 100; i++) await loadAgentRunAuthentication(db, items[i % n]);
++  for (let i = 0; i < 100; i++) await loadAgentRunAuthentication(items[i % n].db, items[i % n]);
+@@ -639 +652 @@
+-    const input = { db, ...item, attempt: 1, controller: owner };
++    const input = { ...item, attempt: 1, controller: item.owner };
+@@ -664 +677 @@
+-              const rows = await loadAgentRunAuthentication(db, item);
++              const rows = await loadAgentRunAuthentication(item.db, item);
+@@ -700 +713 @@
+-            await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, item.issueId));
++            await item.db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, item.issueId));
+@@ -713 +726 @@
+-            await db.transaction(async (tx: any) => {
++            await (metrics.admissionsOffered % 2 ? replacementDb : db).transaction(async (tx: any) => {
+@@ -917,6 +930 @@
+-    const profile = [
+-      ["baseline", 300],
+-      ["candidate", 300],
+-      ["candidate", 300],
+-      ["baseline", 300],
+-    ] as const;
++    const profile = [["baseline", 300], ["candidate", 300], ["candidate", 300], ["baseline", 300]] as const;
+@@ -929 +937 @@
+-        "Paired baseline/candidate, including real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
++        "Two logical servers in one client process, 150 controllers each, separate request/liveness/checkpoint pools at unchanged caps; same aggregate aligned-burst workload. Matched baseline/candidate ABBA pool-overlap component qualification; no takeover latency or provider reattachment claim. Includes real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
+@@ -930,0 +939 @@
++        logicalServers: 2,

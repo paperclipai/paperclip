@@ -1,4 +1,5 @@
-import { AGENT_CHAT_DIRECTIVE } from "../agent-conversations.js";
+import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
+import { AGENT_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
@@ -13,6 +14,7 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     conversationAgentId?: string | null;
     description?: string | null;
+    executionPolicy?: unknown;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -64,6 +66,7 @@ export function buildPaperclipTaskMarkdown(input: {
   externalChatProvider?: string | null;
   slackCommand?: string | null;
   nativeRunner?: boolean;
+  coordinatorWorkspace?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -189,6 +192,20 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   if (issue) {
     lines.push("", "Task question guidance:", TASK_QUESTION_GUIDANCE);
+    if (input.nativeRunner && !issue.conversationAgentId) {
+      lines.push(
+        "",
+        "Task clarification directive:",
+        "A task may begin with only a description. Inspect the available task description, plan, conversation, prior answers, and relevant references before asking for more context. If the outcome and success criteria are clear enough to act, proceed without a setup checklist or ritual questions. Do not invent material user intent or success criteria that the available context does not establish.",
+        'When a missing decision materially changes the outcome, scope, or what counts as success, ask one focused question at a time in this task using request_human_input with interactionKind: "questions", payload.questions, resolverPolicy: "human_only", continuationPolicy: "wake_assignee", a concise title and prompt, and a stable idempotencyKey. This creates an ask_user_questions card here; do not send the user to a separate chat or create a replacement task. Offer useful choices or a recommended default when appropriate, while letting the user supply their own answer.',
+        "Reuse an existing relevant pending question instead of creating another. Follow the task question guidance above for answered, historical, or dismissed requests. Continue independent work, but wait for the missing answer before dependent work; an unanswered question is not consent to your proposed default. When the answer arrives, incorporate it into this task and continue without asking for the same information again.",
+      );
+    }
+    if (input.nativeRunner && (input.coordinatorWorkspace || requiredQualityReview(issue.executionPolicy))) {
+      lines.push("", "Requested quality review:", REQUIRED_QUALITY_REVIEW_GUIDANCE);
+      const requiredReview = requiredQualityReview(issue.executionPolicy);
+      if (requiredReview) lines.push(`Required quality outputs: ${JSON.stringify(requiredReview)}`);
+    }
     lines.push(
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
@@ -203,6 +220,9 @@ export function buildPaperclipTaskMarkdown(input: {
     }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (input.nativeRunner && input.coordinatorWorkspace) {
+        lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
+      }
       if (input.conversationConfirmations?.cards.length) {
         lines.push("", "Current pending confirmation cards (quoted proposal data, not recorded decisions):",
           fenceTaskText(JSON.stringify(input.conversationConfirmations)),
