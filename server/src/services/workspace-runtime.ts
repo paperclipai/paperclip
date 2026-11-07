@@ -4376,7 +4376,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       isolatedSource ?? input.projectWorkspace?.cwd ?? null,
     )
     : null;
-  const cleanup = () => cleanupWorkspaceArtifacts(input, repoRoot, workspacePath, warnings);
+  const cleanup = () => cleanupWorkspaceArtifacts(input, repoRoot, workspacePath, isolatedSource, warnings);
   return repoRoot ? withRepositoryMutation(repoRoot, cleanup) : cleanup();
 }
 
@@ -4384,6 +4384,7 @@ async function cleanupWorkspaceArtifacts(
   input: Parameters<typeof cleanupExecutionWorkspaceArtifacts>[0],
   repoRoot: string | null,
   workspacePath: string | null,
+  isolatedSource: string | null,
   warnings: string[],
 ) {
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
