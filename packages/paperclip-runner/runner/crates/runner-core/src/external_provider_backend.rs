@@ -388,6 +388,136 @@ impl State {
     }
 }
 
+fn is_external_tool_result_outcome(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == 3
+        && object.get("status").and_then(Value::as_str) == Some("completed")
+        && object.get("isError").is_some_and(Value::is_boolean)
+        && object.contains_key("result")
+}
+
+fn external_tool_result_control_changed(original: &Value, sanitized: &Value) -> bool {
+    !is_external_tool_result_outcome(sanitized)
+        || original.get("status") != sanitized.get("status")
+        || original.get("isError") != sanitized.get("isError")
+}
+
+fn is_external_operation_settled_tool_result(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(binding) = object.get("binding").and_then(Value::as_object) else {
+        return false;
+    };
+    object.len() == 3
+        && object
+            .get("requestId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && object
+            .get("outcome")
+            .is_some_and(is_external_tool_result_outcome)
+        && binding.len() == 8
+        && [
+            "companyId",
+            "agentId",
+            "bindingId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+        ]
+        .iter()
+        .all(|key| {
+            binding
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+        && ["bindingGeneration", "assignmentRevision"]
+            .iter()
+            .all(|key| {
+                binding
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|generation| generation > 0)
+            })
+}
+
+fn is_external_tool_operation_command(command: &Command) -> bool {
+    let Some(payload) = command.payload.as_object() else {
+        return false;
+    };
+    let Some(input) = payload.get("input").and_then(Value::as_object) else {
+        return false;
+    };
+    command.command_type == "external_provider.operation"
+        && payload.len() == 10
+        && payload.get("action").and_then(Value::as_str) == Some("tool")
+        && [
+            "requestId",
+            "bindingId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+        ]
+        .iter()
+        .all(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+        && ["bindingGeneration", "assignmentRevision"]
+            .iter()
+            .all(|key| {
+                payload
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|generation| generation > 0)
+            })
+        && input.len() == 2
+        && input
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+        && input.get("arguments").is_some_and(Value::is_object)
+        && payload.get("digest")
+            == Some(&json!(semantic_value_digest(&json!({
+                "action": "tool", "input": input,
+            }))))
+}
+
+pub(crate) fn external_tool_event_semantics_changed(
+    event_type: &str,
+    original: &Value,
+    sanitized: &Value,
+) -> Option<bool> {
+    if event_type != "external_provider.operation_settled"
+        || !is_external_operation_settled_tool_result(original)
+    {
+        return None;
+    }
+    Some(
+        !is_external_operation_settled_tool_result(sanitized)
+            || original.get("binding") != sanitized.get("binding")
+            || original.get("requestId") != sanitized.get("requestId")
+            || external_tool_result_control_changed(&original["outcome"], &sanitized["outcome"]),
+    )
+}
+
+pub(crate) fn external_tool_command_semantics_changed(
+    command: &Command,
+    original: &Value,
+    sanitized: &Value,
+) -> Option<bool> {
+    if !is_external_tool_operation_command(command) || !is_external_tool_result_outcome(original) {
+        return None;
+    }
+    Some(external_tool_result_control_changed(original, sanitized))
+}
+
 pub struct ExternalCommandExecutor {
     state_dir: PathBuf,
     config: DurableRunnerConfig,
@@ -1318,6 +1448,9 @@ mod tests {
             "one"
         );
     }
+
+    mod tool_result_replay;
+
     #[test]
     fn revoked_authority_never_replays_and_late_effect_receipts_remain_settleable() {
         let dir = TestDirectory::new();

@@ -595,7 +595,11 @@ impl DurableState {
         // Their contents are execution data, not a redacted diagnostic preview.
         let sanitized_payload =
             finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
-        if durable_semantics_changed_by_sanitization(&payload, &sanitized_payload) {
+        if durable_event_semantics_changed_by_sanitization(
+            event_type.as_str(),
+            &payload,
+            &sanitized_payload,
+        ) {
             return Err(DurableRunnerError::invalid(
                 "durable identity or validation semantics contain credential-shaped material",
             ));
@@ -906,7 +910,11 @@ impl DurableState {
             }
         }
         let sanitized_result = sanitize_value(&result);
-        if durable_semantics_changed_by_sanitization(&result, &sanitized_result) {
+        if durable_command_result_semantics_changed_by_sanitization(
+            command,
+            &result,
+            &sanitized_result,
+        ) {
             return Err(DurableRunnerError::invalid(
                 "durable command result identity or validation semantics contain credential-shaped material",
             ));
@@ -1644,6 +1652,28 @@ fn sanitized_object_field(key: &str, value: &Value) -> Value {
     } else {
         sanitize_value(value)
     }
+}
+
+fn durable_event_semantics_changed_by_sanitization(
+    event_type: &str,
+    original: &Value,
+    sanitized: &Value,
+) -> bool {
+    crate::external_provider_backend::external_tool_event_semantics_changed(
+        event_type, original, sanitized,
+    )
+    .unwrap_or_else(|| durable_semantics_changed_by_sanitization(original, sanitized))
+}
+
+fn durable_command_result_semantics_changed_by_sanitization(
+    command: &Command,
+    original: &Value,
+    sanitized: &Value,
+) -> bool {
+    crate::external_provider_backend::external_tool_command_semantics_changed(
+        command, original, sanitized,
+    )
+    .unwrap_or_else(|| durable_semantics_changed_by_sanitization(original, sanitized))
 }
 
 fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value) -> bool {
@@ -3744,6 +3774,8 @@ mod tests {
             .contains("identity or validation semantics contain credential-shaped material"));
         assert!(state.outbox.is_empty());
     }
+
+    mod external_tool_result_redaction;
 
     #[test]
     fn protocol_authorization_boundary_is_not_redacted_as_a_credential() {
