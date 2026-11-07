@@ -36,6 +36,7 @@ import { promptLogging } from "../prompts/logging.js";
 import { defaultSecretsConfig } from "../prompts/secrets.js";
 import { defaultStorageConfig, promptStorage } from "../prompts/storage.js";
 import { promptServer } from "../prompts/server.js";
+import { resolveAnthropicBaseUrl } from "../checks/llm-check.js";
 import { buildPresetServerConfig } from "../config/server-bind.js";
 import {
   describeLocalInstancePaths,
@@ -603,7 +604,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       s.start("Validating API key...");
       try {
         if (llm.provider === "claude") {
-          const res = await fetch("https://api.anthropic.com/v1/messages", {
+          const res = await fetch(`${resolveAnthropicBaseUrl()}/v1/messages`, {
             method: "POST",
             headers: {
               "x-api-key": llm.apiKey,
