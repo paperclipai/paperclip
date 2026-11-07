@@ -275,7 +275,9 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
   // A verified source makes this panel the governed recovery path. Otherwise the
   // task's own Retry (renewed, re-verified recovery) remains the next action.
   const ownsRecoveryControl = canMutate && (sourceLoading || Boolean(current && verified && !saved));
-  const unverified = Boolean(current && !verified && !saved && !waiting && !failedReceipt);
+  // `waiting` already excludes a failed accepted request, so the reason stays
+  // visible after a failed attempt and hides only while recovery is running.
+  const unverified = Boolean(current && !verified && !saved && !waiting);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
     <ReportRecoveryControl owns={ownsRecoveryControl} onChange={onRecoveryControlChange} />
     <p role="status">{saved ? "Saved files recovered. Task recovery is still being checked."

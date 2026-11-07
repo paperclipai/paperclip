@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
+import { writePendingSend } from "../lib/pending-send";
 import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
 const api = vi.hoisted(() => ({ inspect: vi.fn(), recover: vi.fn(), resume: vi.fn() }));
@@ -187,6 +188,28 @@ describe("governed retained-file recovery", () => {
     expect(container.textContent).not.toContain("has changed");
     expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
     expect(container.textContent).toContain("company owner or administrator");
+    expect(api.recover).not.toHaveBeenCalled();
+  });
+
+  it("keeps naming the unverified source after an accepted request failed", async () => {
+    const key = "accepted-request";
+    writePendingSend("workspace-file-recovery:company-1:issue-1:legacy-hold:run-1:board-1",
+      { idempotencyKey: key, payload: { actionId: "legacy-hold", runId: "run-1" }, createdAt: Date.now() });
+    const failed = { ...legacyHold, evidence: { ...legacyHold.evidence, workspaceRecovery: {
+      ...(legacyHold.evidence.workspaceRecovery as object), requestIds: [key] } } } as IssueRecoveryAction;
+    api.inspect.mockResolvedValue(blockedInspection(failed));
+    await mount(failed);
+    expect(container.textContent).toContain("File recovery has not finished");
+    expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
+    expect(container.textContent).toContain("company owner or administrator");
+    // While recovery is running, the panel shows progress instead of the reason.
+    const running = { ...failed, evidence: { ...failed.evidence, workspaceRecovery: {
+      ...(failed.evidence.workspaceRecovery as object), status: "recovering" } } } as IssueRecoveryAction;
+    api.inspect.mockResolvedValue(blockedInspection(running));
+    await act(async () => client.invalidateQueries({ queryKey: queryKeys.issues.recoveryActions("issue-1", "legacy-hold", "run-1") }));
+    await settle();
+    expect(container.textContent).toContain("Recovering saved files");
+    expect(container.textContent).not.toContain("can’t confirm that this run alone used the sandbox");
     expect(api.recover).not.toHaveBeenCalled();
   });
 

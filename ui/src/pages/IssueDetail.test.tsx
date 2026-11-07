@@ -3756,7 +3756,12 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it.each(["verified", "unverified", "stale", "denied"] as const)("offers exactly one native export recovery control with %s preservation access or source", async mode => {
+  it.each(["verified", "unverified", "unverified-plain-http", "stale", "denied"] as const)("offers exactly one native export recovery control with %s preservation access or source", async mode => {
+    // Plain-HTTP LAN and tailnet previews have no crypto.randomUUID.
+    const originalCrypto = globalThis.crypto;
+    if (mode === "unverified-plain-http")
+      vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
     const action = {
       id: "file-recovery", companyId: "company-1", sourceIssueId: "issue-1",
       kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
@@ -3781,7 +3786,7 @@ describe("IssueDetail", () => {
     });
     mockIssuesApi.recoveryActions.mockResolvedValue({ active: action, actions: [action], sourceInspection: {
       actionId: mode === "stale" ? "other-action" : action.id, runId: "stopped-run",
-      status: mode === "unverified" ? "blocked" : "verified", scope: "recorded_source_identity",
+      status: mode.startsWith("unverified") ? "blocked" : "verified", scope: "recorded_source_identity",
     } });
     mockIssuesApi.recoverWorkspace.mockResolvedValue({ actionId: action.id, status: "queued" });
     mockIssuesApi.retryTask.mockResolvedValue({ requestId: "export-retry", accepted: true, stale: false, presentation: interruption });
@@ -3803,7 +3808,8 @@ describe("IssueDetail", () => {
       const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
       await act(async () => retry.click());
       await waitForAssertion(() => expect(mockIssuesApi.retryTask).toHaveBeenCalledExactlyOnceWith(issue.id, {
-        idempotencyKey: expect.any(String), observedRunId: "stopped-run",
+        idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+        observedRunId: "stopped-run",
       }));
       expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
       expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
@@ -3821,6 +3827,7 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     expect(issue.executionBlocker?.workspaceRepairRequired).toBe(true);
     expect(container.textContent).not.toContain("Saved files recovered");
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("keeps the existing Retry path for exhausted legacy workspace restoration", async () => {
