@@ -52,6 +52,16 @@ describe("Daytona plugin build staleness", () => {
     expect(pluginBuildState(root, [sdk]).needsBuild).toBe(true);
   });
 
+  it("detects a change to an inherited tsconfig passed as a single-file extra input", async () => {
+    const { root, sdk } = await plugin();
+    const baseConfig = path.join(path.dirname(root), "tsconfig.base.json");
+    await writeFile(baseConfig, "{\"compilerOptions\":{\"target\":\"ES2022\"}}");
+    await stamp(root, pluginBuildInputHash(root, [sdk, baseConfig]));
+    expect(pluginBuildState(root, [sdk, baseConfig]).needsBuild).toBe(false);
+    await writeFile(baseConfig, "{\"compilerOptions\":{\"target\":\"ES2024\"}}");
+    expect(pluginBuildState(root, [sdk, baseConfig])).toMatchObject({ needsBuild: true, reason: "plugin sources changed since the last build" });
+  });
+
   it("ignores node_modules and build output, and requires dependencies and outputs", async () => {
     const { root, sdk } = await plugin();
     const hash = pluginBuildInputHash(root, [sdk]);

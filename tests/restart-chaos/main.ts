@@ -68,8 +68,12 @@ function run(command: string, args: string[], cwd: string, label: string) {
  */
 function ensureDaytonaPlugin(timeline: Timeline) {
   const root = path.join(repositoryRoot, "packages/plugins/sandbox-providers/daytona");
-  const sdkInputs = ["src", "package.json"].map(file => path.join(repositoryRoot, "packages/plugins/sdk", file));
-  const state = pluginBuildState(root, sdkInputs);
+  // Inputs outside the plugin directory: the linked plugin SDK and the tsconfig chain both packages extend.
+  const extraInputs = [
+    ...["src", "package.json", "tsconfig.json"].map(file => path.join(repositoryRoot, "packages/plugins/sdk", file)),
+    ...["tsconfig.json", "tsconfig.base.json"].map(file => path.join(repositoryRoot, file)),
+  ];
+  const state = pluginBuildState(root, extraInputs);
   timeline.add("daytona_plugin_build_state", { reason: state.reason, inputHash: state.inputHash });
   if (!state.needsBuild) return;
   run("pnpm", ["install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"], root, "Daytona plugin install");
