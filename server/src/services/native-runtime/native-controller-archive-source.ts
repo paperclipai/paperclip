@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { agentTaskSessions, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { nativeSha256 } from "./canonical.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
-import { readLegacyNativeControllerArchiveSource } from "./native-controller-migration.js";
+import { readLegacyNativeControllerArchiveDigests, readLegacyNativeControllerArchiveSource } from "./native-controller-migration.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { archiveFailedLegacyNativeController } from "./native-controller-archive.js";
 import type { StorageService } from "../../storage/types.js";
@@ -59,9 +59,9 @@ export async function assertSettledControllerArchiveSource(db: Db, owner: Settle
   const selected = await findNativeSessionResumeRun(db, { companyId: owner.companyId, agentId: owner.agentId, issueId: owner.issueId,
     normalizedSessionId: owner.sessionId, beforeCreatedAt: selectedRun.createdAt, includeProgressBarrier: true });
   if (!selected || selected.id !== owner.runId || nativeControllerArchiveProfileDigest(selected.runnerProfileJson) !== owner.profileDigest) fail();
-  const material = await readLegacyNativeControllerArchiveSource(selected);
-  if (material.controller === undefined || fileDigest(material.controller) !== owner.controllerDigest
-    || (material.supervisor === undefined ? null : fileDigest(material.supervisor)) !== owner.supervisorDigest) fail();
+  const material = await readLegacyNativeControllerArchiveDigests(selected);
+  if (material.controllerDigest !== owner.controllerDigest
+    || (material.supervisorDigest ?? null) !== owner.supervisorDigest) fail();
 }
 
 export async function archiveSettledFailedNativeController(db: Db, input: {

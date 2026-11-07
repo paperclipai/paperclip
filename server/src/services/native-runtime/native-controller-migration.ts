@@ -18,6 +18,7 @@ import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js"
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
+import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
@@ -133,6 +134,13 @@ export async function readLegacyNativeControllerArchiveSource(source: NonNullabl
   const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
     ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
   return { paths, controller, supervisor };
+}
+
+export async function readLegacyNativeControllerArchiveDigests(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
+  const paths = await localPaths(source);
+  return { controllerDigest: await nativeControllerSourceDigest(paths.controlFile, 256 * 1024 * 1024),
+    supervisorDigest: paths.execution.session.lifecyclePolicy.mode === "warm"
+      ? await nativeControllerSourceDigest(paths.supervisorPath, 4 * 1024 * 1024) : undefined };
 }
 
 function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
