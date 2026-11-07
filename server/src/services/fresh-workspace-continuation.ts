@@ -13,6 +13,7 @@ import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from 
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { nativeExecutionUsesTaskWorkspace } from "./heartbeat/external-provider.js";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -162,6 +163,10 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     if (admitted.binding.companyId !== run.companyId || admitted.binding.runId !== run.id
       || admitted.binding.agentId !== run.agentId || admitted.binding.issueId !== issueId) {
       throw new Error("native_execution_workspace_admission_binding_mismatch");
+    }
+    if (!nativeExecutionUsesTaskWorkspace(admitted)) return null;
+    if (!z.string().uuid().safeParse(admitted.binding.executionWorkspaceId).success) {
+      throw new Error("native_execution_workspace_admission_missing");
     }
     const [workspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
       eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, admitted.binding.executionWorkspaceId),

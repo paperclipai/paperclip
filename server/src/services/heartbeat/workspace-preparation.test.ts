@@ -450,12 +450,23 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
       nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, executionWorkspaceId: randomUUID() } },
     } })).rejects.toThrow("native_execution_workspace_admission_missing");
+    await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+      nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, executionWorkspaceId: "opaque-workspace" } },
+    } })).rejects.toThrow("native_execution_workspace_admission_missing");
     expect(await readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
       nativeExecutionInput: { ...admittedInput, binding: { ...admittedInput.binding, executionWorkspaceId: input.run.id } },
     } })).toEqual(readiness);
     await expect(readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
       nativeExecutionInput: { binding: admittedInput.binding },
     } })).rejects.toThrow();
+    expect(await readFreshWorkspaceReadiness(db, { ...input.run, runnerProfileJson: {
+      nativeExecutionInput: { ...admittedInput,
+        binding: { ...admittedInput.binding, executionWorkspaceId: "opaque-controller" },
+        provider: { kind: "cursor_cloud", model: "explicit-cloud-model",
+          cursorCloud: { schema: "paperclip.cursor-cloud.config.v1", repos: [{ url: "https://github.com/example/fixture" }] } },
+        session: { ...admittedInput.session, driverKind: "cursor_cloud_api" },
+      },
+    } })).toBeNull();
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(admitted.id);
     expect(await db.select().from(executionWorkspaces)).toHaveLength(1);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
