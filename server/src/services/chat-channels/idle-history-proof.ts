@@ -1,3 +1,4 @@
+import { sql, type SQL } from "drizzle-orm";
 import { finishedIdleRun, finishedIdleWake } from "../idle-work-proof.js";
 import { completedGithubAction } from "./github/idle-history-proof.js";
 import { completedSlackAction } from "./slack/idle-history-proof.js";
@@ -8,15 +9,19 @@ import { completedVoiceAction } from "../voice/idle-history-proof.js";
 import { completedTeamsAction } from "./microsoft-teams/idle-history-proof.js";
 import { completedTelegramAction } from "./telegram/idle-history-proof.js";
 
+function actionGraph(a: string): string {
+  return `jsonb_typeof(${a}.payload) = 'object'
+    AND EXISTS (SELECT 1 FROM chat_endpoints e WHERE e.id = ${a}.endpoint_id AND e.company_id = ${a}.company_id)
+    AND (${a}.delivery_id IS NULL OR EXISTS (SELECT 1 FROM chat_deliveries d
+      WHERE d.id = ${a}.delivery_id AND d.company_id = ${a}.company_id AND d.endpoint_id = ${a}.endpoint_id))`;
+}
+
 /** A processed inbound receipt can still own an unconsumed wake. */
 function completedAction(a: string): string {
   const wake = `EXISTS (SELECT 1 FROM agent_wakeup_requests w WHERE w.company_id = ${a}.company_id
     AND w.id = ${a}.id AND w.agent_id::text = ${a}.payload->>'agentId'
     AND w.payload->>'issueId' = ${a}.payload->>'issueId' AND ${finishedIdleWake('w')})`;
-  return `jsonb_typeof(${a}.payload) = 'object'
-    AND EXISTS (SELECT 1 FROM chat_endpoints e WHERE e.id = ${a}.endpoint_id AND e.company_id = ${a}.company_id)
-    AND (${a}.delivery_id IS NULL OR EXISTS (SELECT 1 FROM chat_deliveries d
-      WHERE d.id = ${a}.delivery_id AND d.company_id = ${a}.company_id AND d.endpoint_id = ${a}.endpoint_id))
+  return `${actionGraph(a)}
     AND CASE
       WHEN ${a}.kind = 'inbound_wakeup' THEN (${a}.status IN ('processed', 'failed') AND ${wake})
         OR (${a}.status = 'failed' AND ${a}.result->>'code' = 'inbound_wakeup_delivery_rejected'
@@ -127,3 +132,17 @@ export const idleChatHistoryChecks = [
         AND (r.native_issue_id = h.conversation_id OR r.context_snapshot->>'issueId' = h.conversation_id::text)
         AND ${finishedIdleRun('r')}))) IS NOT TRUE` },
 ] as const;
+
+export function idleChatHistoryChecksForOwner(completedActionIds: readonly string[] = []): readonly { reason: string; query: string | SQL }[] {
+  if (!completedActionIds.length) return idleChatHistoryChecks;
+  const ids = [...new Set(completedActionIds)];
+  if (ids.length > 1000 || ids.some(id => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))) throw new Error("Invalid completed chat action identity");
+  const normal = completedAction("a");
+  const completed = sql`(${sql.raw(normal)}) OR (${sql.raw(actionGraph("a"))} AND a.id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)}))`;
+  return idleChatHistoryChecks.map(check => {
+    if (check.reason !== "chat_actions" && check.reason !== "chat_deliveries") return check;
+    const pieces = check.query.split(normal);
+    if (pieces.length !== 2) throw new Error("Chat history completion predicate changed");
+    return { ...check, query: sql`${sql.raw(pieces[0]!)}${completed}${sql.raw(pieces[1]!)}` };
+  });
+}

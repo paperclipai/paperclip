@@ -2517,6 +2517,19 @@ for (const operation of githubBotOperations) {
 registry.registerPath({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/provider-work/{actionId}/retry",
+  tags: ["chat-channels"],
+  summary: "Retry retained provider receipt work",
+  description: "Requires current company connection-management access. Rearms only the same authorized retained Slack receipt or cleanup responsibility. Does not create a new form or spend a trigger. Revoked, foreign, or changed ownership is refused.",
+  request: { params: z.object({ endpointId: z.string().uuid(), actionId: z.string().uuid() }), body: jsonBody(z.object({}).strict()) },
+  responses: { 200: r.ok(z.object({ actionId: z.string().uuid(), state: z.enum(["scheduled", "already_scheduled", "complete"]) })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
   method: "patch",
   path: "/api/chat-endpoints/{endpointId}",
   tags: ["chat-channels"],

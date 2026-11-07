@@ -90,6 +90,7 @@ import type { createChatPublicationPreparation } from "./preparation.js";
 import type { createChatPublicationTransport } from "./transport.js";
 type PublicationWorkerOptions = Pick<ReturnType<typeof createChatPublicationReplacement>, "runOwnershipMilestoneSupersessionReason" | "runPublicationToReplace" | "receiptReactionCompletionRunId" | "inboundWakePublicationToReplace" | "interactionResolutionPublicationToReplace" | "interactionPromptPublicationToReplace" | "progressSupersededByFastResponse" | "runProgressSupersededByPublishedInteraction" | "taskStatusPublicationToReplace" | "closeProgressToReplace"> & {
   CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities>;
+  prepareSlackFormPublication?: ReturnType<typeof import("../slack/form-publication.js").createSlackFormPublicationStage>;
   authorizeRetainedChatSourcePublication: (tx: DbOrTransaction, publication: typeof chatPublications.$inferSelect) => Promise<boolean>;
   claimPublicationTransportAuthorization: ReturnType<typeof createChatPublicationAuthorization>["claimPublicationTransportAuthorization"];
   commitTaskControlCompletion: ReturnType<typeof createChatPublicationTaskControl>["commitTaskControlCompletion"];
@@ -858,6 +859,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
               }
               const { authorizationActionId } = authorizationClaim;
               const receiptRemovalActionIds: string[] = [];
+              const stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
               await db.transaction(async (tx) => {
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();
@@ -886,6 +888,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                     "Chat publication ownership changed before commit",
                   );
                 }
+                await stageSlackForm?.(tx);
                 if (telegramDraft) {
                   const completedDraft = await tx
                     .update(chatActions)
