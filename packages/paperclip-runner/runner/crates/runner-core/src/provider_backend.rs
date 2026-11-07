@@ -429,6 +429,27 @@ fn restart_lost_turn_is_continuable(provider: &str) -> bool {
     matches!(provider, "codex" | "opencode")
 }
 
+/// True only when signal 0 reports that no such process (or process group)
+/// exists. A live process, a permission error, or an invalid id is not proof.
+#[cfg(unix)]
+fn local_process_definitely_gone(id: u32, group: bool) -> bool {
+    use rustix::process::{test_kill_process, test_kill_process_group, Pid};
+    let Some(pid) = i32::try_from(id).ok().and_then(Pid::from_raw) else {
+        return false;
+    };
+    let probe = if group {
+        test_kill_process_group(pid)
+    } else {
+        test_kill_process(pid)
+    };
+    matches!(probe, Err(rustix::io::Errno::SRCH))
+}
+
+#[cfg(not(unix))]
+fn local_process_definitely_gone(_id: u32, _group: bool) -> bool {
+    false
+}
+
 fn facade_provider_name(provider: &str) -> &'static str {
     match provider {
         "opencode" => "OpenCode",
@@ -2302,7 +2323,63 @@ impl CodexCommandExecutor {
 
     fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
         self.load_state_without_provider()?;
+        self.retire_orphaned_startup_attempt(
+            &|pid| local_process_definitely_gone(pid, false),
+            &|group| local_process_definitely_gone(group, true),
+        )?;
         self.restore_provider_if_needed()
+    }
+
+    /// A runner killed between spawning a provider and admitting it leaves a
+    /// `spawned` startup fence in durable state while the session is still
+    /// restorable. The executor that loads that state owns no provider
+    /// process. When the recorded process and its process group have both
+    /// exited, nothing can still act for the attempt, so this retires it with
+    /// a diagnostic and lets restore relaunch the provider through the normal
+    /// resume path.
+    ///
+    /// Every other fence stays closed: an intent with no recorded process, a
+    /// provider whose process or group may still run, a startup that failed
+    /// initialization or spawn (a real provider failure that needs
+    /// reconciliation), and a session that recovery deliberately closed.
+    fn retire_orphaned_startup_attempt(
+        &mut self,
+        process_gone: &dyn Fn(u32) -> bool,
+        group_gone: &dyn Fn(u32) -> bool,
+    ) -> Result<(), DurableRunnerError> {
+        if self.provider.is_some() || self.startup_evidence_error.is_some() {
+            return Ok(());
+        }
+        let Some(state) = self.state.as_ref() else {
+            return Ok(());
+        };
+        let Some(attempt) = state.startup_attempt.clone() else {
+            return Ok(());
+        };
+        let restorable = matches!(
+            state.lifecycle.as_str(),
+            "session_open" | "turn_active" | "provider_exited"
+        );
+        let process_exited = match (attempt.process_id, attempt.process_group_id) {
+            (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
+            _ => false,
+        };
+        if attempt.phase != ProviderStartupPhase::Spawned || !restorable || !process_exited {
+            return Ok(());
+        }
+        let mut next = self
+            .state
+            .clone()
+            .ok_or_else(|| DurableRunnerError::invalid("provider startup state missing"))?;
+        next.startup_attempt = None;
+        next.push_terminal_event(NormalizedProviderEvent {
+            event_type: "harness.diagnostic".to_owned(),
+            priority: EventPriority::P0,
+            payload: json!({"code":"provider_startup_retired", "startup": attempt}),
+        })?;
+        self.persist_state(&next)?;
+        self.state = Some(next);
+        Ok(())
     }
 
     fn load_state_without_provider(&mut self) -> Result<(), DurableRunnerError> {
@@ -5979,10 +6056,13 @@ mod tests {
         executor
             .begin_startup(ProviderStartupTrigger::Ensure, 1)
             .unwrap();
+        // The unadmitted provider is still running, so a restarted executor
+        // must keep the fence closed.
+        let mut live_provider = process_group_leader();
         executor
             .observe_startup(ProviderStartupObservation::Spawned {
-                process_id: 123,
-                process_group_id: 123,
+                process_id: live_provider.id(),
+                process_group_id: live_provider.id(),
             })
             .unwrap();
         let path = executor.state_path();
@@ -6023,6 +6103,168 @@ mod tests {
                 .phase,
             ProviderStartupPhase::Spawned
         );
+        let _ = live_provider.kill();
+        let _ = live_provider.wait();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A child that leads its own process group, as provider launches do.
+    fn process_group_leader() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn a process group leader")
+    }
+
+    /// A runner killed after spawning a provider and before admitting it.
+    fn orphaned_startup_fixture(
+        prefix: &str,
+        lifecycle: &str,
+        observe: impl FnOnce(&mut CodexCommandExecutor),
+    ) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-{prefix}-{}", uuid::Uuid::new_v4()));
+        let mut executor = CodexCommandExecutor::new(&directory);
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("codex");
+        state.lifecycle = lifecycle.to_owned();
+        if lifecycle != "turn_active" {
+            state.active_provider_turn_id = None;
+        }
+        executor.state = Some(state);
+        executor
+            .begin_startup(ProviderStartupTrigger::Restore, 2)
+            .unwrap();
+        observe(&mut executor);
+        drop(executor);
+        directory
+    }
+
+    fn spawned(pid: u32) -> impl FnOnce(&mut CodexCommandExecutor) {
+        move |executor| {
+            executor
+                .observe_startup(ProviderStartupObservation::Spawned {
+                    process_id: pid,
+                    process_group_id: pid,
+                })
+                .unwrap();
+        }
+    }
+
+    /// Loads the fixture as a new runner process would and applies the real
+    /// process probes.
+    fn reload_and_retire(directory: &std::path::Path) -> CodexCommandExecutor {
+        let mut restarted = CodexCommandExecutor::new(directory);
+        restarted.load_state_without_provider().unwrap();
+        restarted
+            .retire_orphaned_startup_attempt(
+                &|pid| local_process_definitely_gone(pid, false),
+                &|group| local_process_definitely_gone(group, true),
+            )
+            .unwrap();
+        restarted
+    }
+
+    fn exited_process_group() -> u32 {
+        let mut provider = process_group_leader();
+        let pid = provider.id();
+        provider.kill().unwrap();
+        provider.wait().unwrap();
+        pid
+    }
+
+    #[test]
+    fn restart_retires_a_spawned_startup_whose_provider_process_exited() {
+        for lifecycle in ["turn_active", "session_open", "provider_exited"] {
+            let pid = exited_process_group();
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-exited", lifecycle, spawned(pid));
+            let mut restarted = reload_and_retire(&directory);
+            assert!(restarted.assert_startup_admitted().is_ok(), "{lifecycle}");
+            let events = restarted.retained_events().unwrap();
+            assert!(events.iter().any(|event| {
+                event.event_type == "harness.diagnostic"
+                    && event.payload["code"] == "provider_startup_retired"
+                    && event.payload["startup"]["processId"] == pid
+                    && event.payload["startup"]["phase"] == "spawned"
+            }));
+            let saved: CodexProviderState =
+                serde_json::from_slice(&fs::read(restarted.state_path()).unwrap()).unwrap();
+            assert!(saved.startup_attempt.is_none());
+            assert_eq!(saved.lifecycle, lifecycle);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn restart_keeps_the_fence_for_a_startup_that_failed() {
+        for (stage, child) in [
+            (ProviderStartupStage::Spawn, None),
+            (
+                ProviderStartupStage::Admission,
+                Some(exited_process_group()),
+            ),
+        ] {
+            let directory = orphaned_startup_fixture("failed-startup", "turn_active", |executor| {
+                if let Some(pid) = child {
+                    spawned(pid)(executor);
+                }
+                executor
+                    .observe_startup(ProviderStartupObservation::Failed {
+                        stage,
+                        child_exit: None,
+                    })
+                    .unwrap();
+            });
+            let restarted = reload_and_retire(&directory);
+            assert!(restarted.assert_startup_admitted().is_err());
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn restart_keeps_the_fence_for_an_intent_without_a_recorded_process() {
+        // Only intent was saved: a process may exist that no record names.
+        let directory = orphaned_startup_fixture("orphaned-startup-intent", "turn_active", |_| {});
+        let restarted = reload_and_retire(&directory);
+        assert!(restarted.assert_startup_admitted().is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restart_keeps_the_fence_for_a_session_recovery_closed() {
+        let directory = orphaned_startup_fixture(
+            "orphaned-startup-closed",
+            "closed",
+            spawned(exited_process_group()),
+        );
+        let restarted = reload_and_retire(&directory);
+        assert!(restarted.assert_startup_admitted().is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restart_keeps_the_fence_while_the_provider_may_still_run() {
+        let mut provider = process_group_leader();
+        let pid = provider.id();
+        let directory =
+            orphaned_startup_fixture("orphaned-startup-live", "turn_active", spawned(pid));
+        assert!(reload_and_retire(&directory)
+            .assert_startup_admitted()
+            .is_err());
+        // The leader exited but another member of its process group remains.
+        let mut restarted = CodexCommandExecutor::new(&directory);
+        restarted.load_state_without_provider().unwrap();
+        restarted
+            .retire_orphaned_startup_attempt(&|_| true, &|_| false)
+            .unwrap();
+        assert!(restarted.assert_startup_admitted().is_err());
+        provider.kill().unwrap();
+        provider.wait().unwrap();
         fs::remove_dir_all(directory).unwrap();
     }
 
