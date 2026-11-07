@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import type { BoardBootstrap } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { boardAccessQueryOptions } from "./board-access-query";
+import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
 
 const readAccess = vi.hoisted(() => vi.fn());
@@ -40,7 +41,30 @@ describe("account-scoped board bootstrap", () => {
   it("refreshes identity instead of caching a response from a changed account", async () => {
     const changed = vi.fn();
     readAccess.mockResolvedValue({ userId: "two", isInstanceAdmin: true, companyIds: ["foreign"] });
-    await expect(boardAccessQueryOptions("one", undefined, 0, changed).queryFn()).rejects.toMatchObject({ status: 401 });
+    await expect(boardAccessQueryOptions("one", undefined, 0, changed).queryFn({ signal: new AbortController().signal })).rejects.toMatchObject({ status: 401 });
     expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it.each([401, 403, "success", "account-change"] as const)("ignores canceled %s responses before invoking callbacks", async outcome => {
+    const changed = vi.fn(), denied = vi.fn(), verified = vi.fn();
+    const controller = new AbortController();
+    let resolveAccess!: (value: unknown) => void;
+    let rejectAccess!: (error: unknown) => void;
+    readAccess.mockReturnValue(new Promise((resolve, reject) => { resolveAccess = resolve; rejectAccess = reject; }));
+    const options = boardAccessQueryOptions("one", undefined, 0, changed, denied, verified);
+    const pending = options.queryFn({ signal: controller.signal });
+    expect(readAccess).toHaveBeenCalledExactlyOnceWith(controller.signal);
+    controller.abort();
+    if (typeof outcome === "number") {
+      const error = new ApiError("Access refused", outcome, null);
+      rejectAccess(error);
+      await expect(pending).rejects.toBe(error);
+    } else {
+      resolveAccess({ userId: outcome === "account-change" ? "two" : "one", isInstanceAdmin: true, companyIds: ["company"] });
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    }
+    expect(changed).not.toHaveBeenCalled();
+    expect(denied).not.toHaveBeenCalled();
+    expect(verified).not.toHaveBeenCalled();
   });
 });

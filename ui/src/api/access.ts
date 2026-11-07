@@ -414,6 +414,6 @@ export const accessApi = {
   setUserCompanyAccess: (userId: string, companyIds: string[]) =>
     api.put<UserCompanyAccessResponse>(`/admin/users/${userId}/company-access`, { companyIds }),
 
-  getCurrentBoardAccess: () =>
-    api.get<CurrentBoardAccess>("/cli-auth/me"),
+  getCurrentBoardAccess: (signal?: AbortSignal) =>
+    api.get<CurrentBoardAccess>("/cli-auth/me", { signal }),
 };
