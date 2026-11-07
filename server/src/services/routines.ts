@@ -2966,7 +2966,7 @@ export function routineService(
             appDelivery = verifyAppWebhook({
               secret: await resolveTriggerSecret(trigger, routine.companyId),
               publicId, authorization: input.authorizationHeader,
-              signature: input.firefliesSignatureHeader ?? input.hubSignatureHeader,
+              signature: input.hubSignatureHeader ?? input.firefliesSignatureHeader,
               rawBody: input.rawBody, idempotencyKey: input.idempotencyKey,
             });
           } else if (trigger.signingMode === "fireflies_hmac") {

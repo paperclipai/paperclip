@@ -2855,6 +2855,27 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
   });
 
+  it("prefers X-Hub-Signature-256 over X-Hub-Signature with app_webhook signing mode", async () => {
+    const { svc, trigger, secretMaterial } = await firefliesFixture(false, "app_webhook");
+
+    const payload = { event: "deployment.completed", deployment_id: "deploy-3" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, {
+      hubSignatureHeader: `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+        .update(rawBody)
+        .digest("hex")}`,
+      firefliesSignatureHeader: `sha1=${createHmac("sha1", secretMaterial!.webhookSecret)
+        .update(rawBody)
+        .digest("hex")}`,
+      rawBody,
+      payload,
+    });
+
+    expect(run.source).toBe("webhook");
+    expect(run.status).toBe("issue_created");
+  });
+
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
     const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();
     const results = await Promise.all([
