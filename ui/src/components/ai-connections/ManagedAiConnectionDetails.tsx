@@ -13,7 +13,7 @@ import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
 import { retryTransientOnly } from "@/lib/query-client";
-import { useAccountIdentity } from "@/api/companies-query";
+import { useAccountSessionQuery } from "@/api/companies-query";
 import { useAiConnectionDefaults } from "./useAiConnectionDefaults";
 import { AiDefaultError } from "./AiConnectionDefault";
 import { AI_PROVIDERS } from "./model";
@@ -46,7 +46,11 @@ export function ManagedAiConnectionDetails({
     queryFn: () =>
       aiConnectionsApi.activeRuns(connection.companyId, connection.id),
   });
-  const defaults = useAiConnectionDefaults(connection.companyId, useAccountIdentity());
+  const session = useAccountSessionQuery();
+  const defaults = useAiConnectionDefaults(connection.companyId, {
+    userId: session.data?.user.id ?? null,
+    settled: session.isSuccess,
+  });
   const accounts = defaults.accounts;
   const grants = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connection.id),
@@ -54,6 +58,7 @@ export function ManagedAiConnectionDetails({
     retry: retryTransientOnly(1),
   });
   const runsView = useQueryView(runs);
+  const sessionView = useQueryView(session);
   const accountsView = useQueryView(accounts);
   const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
@@ -68,11 +73,12 @@ export function ManagedAiConnectionDetails({
   });
   const visibleGrants = new Set(grants.data?.grants.map(grant => grant.id));
   const candidates = defaults.data?.connections.filter(account => account.id === connection.id && account.companyId === connection.companyId && visibleGrants.has(account.grantId)) ?? [];
+  // Routed personal accounts also need details; default eligibility excludes them.
   const ownPersonal = (account: (typeof candidates)[number]) => account.ownership === "personal" && account.ownerUserId === defaults.data?.currentUserId;
   const account = candidates.find(account => ownPersonal(account) && account.isDefault)
     ?? candidates.find(ownPersonal) ?? candidates[0];
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
-  const loadError = [accountsView, grantsView].find((view) => view.kind === "error")?.error;
+  const loadError = [sessionView, accountsView, grantsView].find((view) => view.kind === "error")?.error;
   const error = stop.error;
   const loadFailure = loadError ? (
     <div role="alert" className="space-y-2">
@@ -80,8 +86,12 @@ export function ManagedAiConnectionDetails({
       <Button
         variant="outline"
         size="sm"
-        disabled={accounts.isFetching || grants.isFetching}
+        disabled={sessionView.isFetching || accounts.isFetching || grants.isFetching}
         onClick={() => {
+          if (sessionView.kind === "error") {
+            sessionView.retry();
+            return;
+          }
           if (accounts.error) void accounts.refetch();
           if (grants.error) void grants.refetch();
         }}
@@ -94,7 +104,7 @@ export function ManagedAiConnectionDetails({
   if (!account || !grant)
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        {accounts.isPending || grants.isPending || accountsView.kind === "reconnecting" || grantsView.kind === "reconnecting"
+        {accounts.isPending || grants.isPending || sessionView.kind === "reconnecting" || accountsView.kind === "reconnecting" || grantsView.kind === "reconnecting"
           ? "Loading AI account…"
           : "This account is not available to you."}
       </p>

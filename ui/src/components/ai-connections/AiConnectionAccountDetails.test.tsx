@@ -9,7 +9,7 @@ import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "user", settled: true }) }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user" } })) } }));
 
 const account: AiManagedConnectionSummary = {
   id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { AI_PROVIDERS, type AiConnectionSummary } from "./model";
 import { describeError } from "@/api/errors";
 import { AiDefaultCrown } from "./AiConnectionDefault";
+import { isOwnAiAccount } from "./useAiConnectionDefaults";
 
 /** AI-only account controls; identity, access and navigation belong to AppDetail. */
 export function AiConnectionAccountControls({
@@ -25,13 +26,13 @@ export function AiConnectionAccountControls({
   const [revoking, setRevoking] = useState(false);
   const [revokePending, setRevokePending] = useState(false);
   const [revokeError, setRevokeError] = useState<string>();
-  const ownPersonal = account.ownership === "personal" && account.ownerUserId === currentUserId;
+  const eligibleForDefault = isOwnAiAccount(account, currentUserId);
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
   const providerName = AI_PROVIDERS[account.provider].name;
   return (
     <section className="space-y-4" aria-label="AI account settings">
-      {ownPersonal && !account.routing && (
+      {eligibleForDefault && (
         <div className={cn(
           "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3",
           activeDefault && "border-(--status-task-done)/30 bg-(--status-task-done)/5",
