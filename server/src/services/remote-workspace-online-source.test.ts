@@ -548,8 +548,6 @@ describe.skipIf(!support.supported)("online ordinary physical source fence", () 
       expect(scope!.settledRecoveryIssueIds).toContain(finalizedIssue.id);
       expect(scans).toHaveLength(1);
 
-      // A later reinspection must discover a new source obligation;
-      // the first inspection's successful result is not a reusable cache.
       await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: recovery.run.agentId,
         nativeIssueId: f.aliases[2].issue.id, status: "running", runtimeMode: "native",
         runnerProfileJson: { nativeWorkspaceSync: { workspaceId: f.aliases[2].workspace.id, state: "prepared" } } });
