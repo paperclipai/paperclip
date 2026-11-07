@@ -77,6 +77,7 @@ interface AgentSkillsSyncOptions extends BaseClientOptions {
 
 interface AgentInstructionsFileOptions extends BaseClientOptions {
   path: string;
+  yes?: boolean;
 }
 
 interface AgentInstructionsFilePutOptions extends BaseClientOptions {
@@ -720,8 +721,10 @@ export function registerAgentCommands(program: Command): void {
       .description("Delete an agent instructions file")
       .argument("<agentId>", "Agent ID")
       .requiredOption("--path <path>", "Bundle-relative file path")
+      .option("--yes", "Confirm deletion")
       .action(async (agentId: string, opts: AgentInstructionsFileOptions) => {
         try {
+          if (!opts.yes) throw new Error("Refusing to delete without --yes");
           const ctx = resolveCommandContext(opts);
           const query = new URLSearchParams({ path: opts.path });
           const result = await ctx.api.delete(`${apiPath`/api/agents/${agentId}/instructions-bundle/file`}?${query.toString()}`);

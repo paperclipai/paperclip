@@ -106,3 +106,9 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
   },
 };
 export { PROVIDER_LABELS, CAPABILITIES };
+
+export function chatConnectionTransport(provider: ChatProvider): "voice" | "rest_api" | "chat_sdk" {
+  if (provider === "speko") return "voice";
+  if (provider === "agentmail") return "rest_api";
+  return "chat_sdk";
+}

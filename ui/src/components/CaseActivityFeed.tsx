@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn, relativeTime } from "@/lib/utils";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const EVENT_LABEL: Record<CaseEventKind, string> = {
   created: "created",
@@ -27,6 +28,11 @@ const EVENT_LABEL: Record<CaseEventKind, string> = {
   attachment_added: "attachment added",
   label_added: "label added",
   label_removed: "label removed",
+  handoff_requested: "handoff requested",
+  handoff_applied: "task handed off",
+  handoff_delivered: "agent wake queued",
+  handoff_completed: "case completed",
+  handoff_cancelled: "handoff cancelled",
 };
 
 /** Human label for the actor, preferring the resolved agent name. */
@@ -70,7 +76,7 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
                 className="inline-flex min-w-0 items-center gap-1 text-foreground/80 hover:underline"
                 title={event.issue.title}
               >
-                <StatusIcon status={event.issue.status} size="sm" />
+                <StatusIcon {...taskStatusIconProps(event.issue)} size="sm" />
                 <span className="shrink-0 font-mono">{event.issue.identifier}</span>
                 <span className="min-w-0 truncate">{event.issue.title}</span>
               </Link>

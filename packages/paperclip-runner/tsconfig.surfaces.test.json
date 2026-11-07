@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.surfaces.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "exclude": []
+}

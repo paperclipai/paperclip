@@ -21,6 +21,7 @@ export function standardImageDigest(bytes) {
 /** Read registry bytes directly; CLI stdout formatting is not artifact content. */
 export async function resolveStandardImageDigest(sha, fetchImpl = fetch, {
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  missing = "error",
 } = {}) {
   assert.match(sha ?? "", /^[a-f0-9]{40}$/);
   const request = async (url, headers, consume, allowNotFound = false) => {
@@ -35,6 +36,7 @@ export async function resolveStandardImageDigest(sha, fetchImpl = fetch, {
       }
       if (!response.ok) {
         await response.body?.cancel();
+        if (allowNotFound && response.status === 404 && missing === "return-null") return null;
         const transient = [408, 425, 429].includes(response.status) || response.status >= 500 || (allowNotFound && response.status === 404);
         assert.ok(transient && attempt < 5, `Registry lookup failed: HTTP ${response.status}`);
         const retryAfter = Number(response.headers.get("retry-after"));
@@ -53,7 +55,7 @@ export async function resolveStandardImageDigest(sha, fetchImpl = fetch, {
   };
   const { token } = await request("https://ghcr.io/token?service=ghcr.io&scope=repository:paperclipai/paperclip:pull", {}, response => response.json());
   assert.ok(typeof token === "string" && token, "Missing public pull token");
-  const { raw, expected } = await request(`https://ghcr.io/v2/paperclipai/paperclip/manifests/sha-${sha}`, {
+  const manifest = await request(`https://ghcr.io/v2/paperclipai/paperclip/manifests/sha-${sha}`, {
     authorization: `Bearer ${token}`, accept: "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json",
   }, async response => {
     assert.ok(response.body, "Standard image index has no body");
@@ -71,6 +73,8 @@ export async function resolveStandardImageDigest(sha, fetchImpl = fetch, {
     } finally { await reader.cancel(); }
     return { raw: Buffer.concat(chunks), expected: response.headers.get("docker-content-digest") };
   }, true);
+  if (manifest === null) return null;
+  const { raw, expected } = manifest;
   const digest = standardImageDigest(raw);
   assert.equal(digest, expected, "Registry digest does not match the index bytes");
   return digest;

@@ -27,9 +27,11 @@ export function useCloudInviteUrl(): string | null {
     queryFn: () => cloudApi.listStacks(),
     enabled: isCloud,
     staleTime: 30_000,
-    retry: false,
   });
-  if (!cloud || cloudStacksQuery.isError) return null;
+  if (!cloud) return null;
+  // Read from data, not `isError`: a cached stack list stays answerable while
+  // a transient refetch fails. A no-data failure leaves the current stack
+  // unknown,which falls through to `null` for every role below.
   const currentStack = cloudStacksQuery.data?.stacks.find((stack) => stack.isCurrent);
   if (currentStack?.role !== "owner" && currentStack?.role !== "admin") return null;
   return cloudStackInviteUrl(cloud.cloudBaseUrl, currentStack.stackSlug);

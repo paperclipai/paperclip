@@ -7,13 +7,47 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { isWorkspacePackage, parseWorkspaceEntries } from '../build-standalone-public-packages.mjs';
-import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
+import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedClaudeProbeSource, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
 import { verifyPiPackagedDaemon } from '../pi-public-install-probe.mjs';
 import { publicInstallClosure } from '../public-install-closure.mjs';
 import { runnerBinaryTarget } from '../../packages/paperclip-runner/src/live/runner-binary.ts';
 
 const paths = { assets: '/private/staging/assets', consumer: '/private/staging/consumer', cache: '/private/staging/cache', uid: 1001, gid: 1001 };
 const values = (args, flag) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
+
+test('installed Claude admission propagates failure without emitting a passing receipt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-admission-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation(model) { if (model !== 'claude-opus-5-5') throw Error('wrong model'); }\n");
+    const accepted = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).packageIntegrityAndNoFollowLease, 'passed');
+    assert.equal(JSON.parse(accepted.stdout).providerCalls, 0);
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('integrity rejected'); }\n");
+    const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.notEqual(rejected.status, 0);
+    assert.equal(rejected.stdout, '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('ordinary Claude consumer admission rejects authority overrides before invoking the verifier', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-authority-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('provider verifier invoked'); }\n");
+    for (const key of ['PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT', 'PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST']) {
+      const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000,
+        env: { PATH: process.env.PATH, [key]: root } });
+      assert.notEqual(rejected.status, 0);
+      assert.equal(rejected.stdout, '');
+      assert.match(rejected.stderr, /AssertionError/);
+      assert.doesNotMatch(rejected.stderr, /provider verifier invoked/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('Mac initial install failures retain bounded npm progress without secret or environment values', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mac-install-diagnostics-test-')));
@@ -211,7 +245,7 @@ test('the image and Grok downloads start before staging and join without weakeni
   assert.doesNotMatch(source, /provision-grok\.mjs'\), prerequisite\]/);
   // Both downloads start before any package is staged and before the first sandbox runs.
   const staging = position('publicInstallClosure(repo)');
-  const firstSandbox = position("isolated(['npm', 'install', '--ignore-scripts', '--omit=dev'");
+  const firstSandbox = position("isolated(['node', '/packages/public-install-registry.mjs', '/packages'], { download: true })");
   assert.ok(imagePull < staging && grokProvision < staging);
   assert.ok(position("await awaited('image', imageReady)") < firstSandbox);
   // The binary moves to the canonical host path only after npm is proven not to
@@ -244,7 +278,7 @@ test('the bundled-dependency installs run together while the other packages are 
   // cleanup as it starts, with the results put back into dependency order
   // before every tarball is checked.
   const bundledSources = position('for (const entry of entries.filter(entry => entry.bundled)) stageSource(entry)');
-  const start = position("startBundledInstalls(entries.filter(entry => entry.bundled), { logDir: prefetched, cwd: repo })");
+  const start = position("startBundledInstalls(entries.filter(entry => entry.bundled), { logDir: prefetched, cwd: repo, env })");
   const registered = position('prefetches.push(...installs.map(({ handle }) => handle))');
   const otherSources = position('for (const entry of entries.filter(entry => !entry.bundled))');
   const join = position("await awaited('bundled', Promise.all(installs.map(({ handle }) => handle.done)))");
@@ -296,7 +330,7 @@ test('the verifier stages only workspace packages, so it skips the standalone bu
   // staged, reusing the UI that `pnpm build` produced, and it is timed. The
   // gated standalone build keeps release.sh's order: after the closure is
   // known and before the UI copy and any staged source.
-  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills']);
+  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills', 'scripts/install-copilot-assets.mjs']);
   assert.ok(source.includes("PAPERCLIP_RELEASE_REUSE_UI_DIST: '1'"));
   const uiDist = position("run('bash', [join(repo, 'scripts/prepare-server-ui-dist.sh')], repo)");
   assert.ok(position('publicInstallClosure(repo)') < gate && gate < uiDist && uiDist < position('timing.stage_ui_dist_ms =') && uiDist < position('const stageSource = '));
@@ -595,4 +629,20 @@ test('Pi admission verifies assembled host daemon identity and preserves the fla
     writeFileSync(manifestPath, 'null');
     await assert.rejects(verifyPiPackagedDaemon(server, flat, target, runnerBinaryTarget), /manifest must be an object/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test('Pi setup overlaps independent probes only after the offline lifecycle and joins before admission', () => {
+  const source = readFileSync(new URL('../verify-grok-npm-install.mjs', import.meta.url), 'utf8');
+  const position = fragment => { const index = source.indexOf(fragment); assert.notEqual(index, -1, fragment); return index; };
+  const lifecycle = position("phase('lifecycle_rebuild')");
+  const start = position("prefetch('pi_setup', 'docker', piSetupArgs)");
+  const codex = position("const codex = JSON.parse(isolated(['node', '/packages/codex-probe.mjs'])");
+  const grok = position("phase('grok_probes')");
+  const join = position("await awaited('pi_setup', piSetupReady)");
+  const receipt = position("assert.equal(receipt.status, 'installed_verified')");
+  const probe = position("console.log(isolated(['node', '/packages/pi-public-install-probe.mjs'");
+  assert.ok(lifecycle < start && start < codex && codex < grok && grok < join && join < receipt && receipt < probe);
+  assert.ok(source.includes("piSetupArgs.splice(1, 0, '--name', piSetupContainer)"));
+  assert.ok(position("await stopPrefetches(prefetches)") < position("['rm', '--force', piSetupContainer]"));
 });

@@ -1,8 +1,253 @@
 # Database
 
+### Durable native provider backups
+
+`native_harness_backups` journals encrypted provider-session archives in object
+storage. One current row per company and session scope selects the published
+backup. Pending uploads remain recorded after failure; a controller must still
+own the native run when it publishes. Superseded controllers cannot replace the
+selected backup. Archive bytes never enter the database.
+
+The dedicated volume migration imports verified surviving backups without
+removing their source files or changing task-session pointers. Replacement
+readiness rejects retained session pointers whose backups remain local. The
+existing bounded startup retention pass retires current backups only after its
+task, run, lease and age checks pass. Old superseded objects have a separate
+retention path that preserves the current backup and exact backups referenced
+by live leases. Abandoned pending uploads also require a settled run without an
+owner. Object deletion is acknowledged before removing the ledger row. This
+adds no idle polling.
+
+Archives stream up to 4 GiB of file data and 100,000 entries, with a separate
+4.75 GiB encoded-object bound. Contained relative symbolic links are preserved
+verbatim; absolute or escaping targets, link chains, writes beneath links, and
+special files are rejected. Offline verification streams file hashes and honors
+cancellation. A changed local manifest cannot be silently skipped just because
+a previous migration published an object. Backups whose source run was deleted
+remain untouched on the original volume and do not block enrollment.
+
+The same offline maintenance process imports surviving legacy controller state
+into `native_runner_checkpoints` and binds its existing session snapshot through
+`nativeControllerRecovery` metadata. Runner validates the original protocol
+state and recorded artifact; Core requires a finished run with no live owner.
+Blocked or pending recovery records remain unchanged while their surviving
+state is preserved; migration does not mark their work completed.
+The normal bounded continuation selector handles inherited, unstarted follow-ups.
+Never-started queued turns keep their task pointers and remain queued. Original
+files stay intact, canonical database checkpoints take precedence, and missing
+source files are reported separately rather than fabricated. This migration
+does not recover provider state that was already lost before enrollment.
+
+For an already-failed run, a valid legacy controller can lack proof of the
+original Runner artifact after its old bootstrap tickets were pruned. The
+migration preserves those exact controller and supervisor bytes as an encrypted
+`paperclip.legacy-controller-archive.v1` object through the same backup ledger.
+Its scope is the hash of its manifest and is separate from the provider session
+scope. Publication requires a terminal-failure coordinator with no live owner.
+The archive does not become an executable Runner checkpoint. Task pointers,
+failed results and recovery blockers stay unchanged. A successful retained
+session without artifact proof still blocks migration. The migration receipt
+reports failed-session archives separately from imported recovery authorities.
+
+An internal maintenance owner can separately record
+`runnerProfileJson.nativeHarnessFilesystemIndependence` when an original-volume
+inspection finds no uncovered provider or Runner payload. This is not a backup
+or a successful recovery. It requires a fresh, independently reviewed provider
+attachment witness and a private nonce anchor on that original volume. The
+anchor survives normal releases; current deployment and mount identities are
+verified afresh. Replacement hosts cannot create the receipt from missing files.
+
+Publication binds the retained session, canonical newest resume source, frozen
+inputs and checkpoints, every associated lease and destroyed-provider receipt,
+released controller/finalizer ownership, and existing immutable skill references.
+Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Source locks and a final comparison fence publication; original files, stamps,
+warnings, failed statuses and session pointers remain unchanged. Startup can
+validate the published receipt using only database bindings, without the old
+volume, a fresh source witness, or storage reads. Changed or missing bindings
+invalidate it. Existing resume and replacement policies remain authoritative,
+including governed-wait failures and warm-session refusals. No provider history
+is reconstructed or declared recovered, and uncertain provider sources remain
+enrollment blockers.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
+
+### Proactive agent chat messages
+
+Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
+on `issue_comments(issue_id, author_agent_id, client_request_id)` alongside the
+existing human request constraint. Proactive delivery stores a source-task-scoped
+retry key and server-authored `metadata.chatMessage` provenance/content fingerprint.
+The comment and audit record commit together; a retry returns the original receipt.
+Conversation creation reuses the unique company/agent/human identity and existing
+advisory-lock order. No message outbox is added.
+
+Chat list/detail unread projections reuse `issue_read_states`, including chats
+with no human participation. Read cutoffs use the exact PostgreSQL comment
+timestamp; upserts take the greatest previous/new cutoff so delayed requests
+cannot move a read receipt backward or clear a later unseen arrival.
+
 Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
 
+### Persistent case handoffs
+
+Standalone `cases` add a nullable unique `work_issue_id`, a descriptive `phase`,
+and an integer `handoff_version`. Historical passive records have no primary task;
+native `create_case` requires kickoff plus explicit workflow text and creates its primary task atomically. This is
+separate from `pipeline_cases`.
+
+First-task `initialDocuments` use ordinary `documents`, `document_revisions`
+and `issue_documents` in the case kickoff transaction. No case document copies,
+pending seeds or new tables are introduced. Case read surfaces join accessible
+linked task documents; historical `case_documents` records remain unchanged.
+Required `workflow_document_text` uses the same tables, under ordinary task key
+`workflow`. It is committed before delivery and contributes to the idempotency
+fingerprint. Existing cases and tasks receive no inferred workflow or backfill.
+Authoring guidance recommends both a Mermaid `stateDiagram-v2` map and prose
+defining each transition. Neither representation is parsed into database states.
+
+`case_handoffs` retains the task/agent identities, principal-scoped idempotency
+key and request fingerprint, observed/applied bigint task status revisions,
+instructions/comment, source run, and stable wakeup receipt. Partial unique
+indexes permit only one pending handoff per task and case. The pending-attempt
+index and expiring lease support bounded delivery across controller restarts.
+The ledger states distinguish release waiting, assignment applied but admission
+pending, queue acceptance, and cancellation. Provider execution remains in the
+ordinary heartbeat tables.
+
+`actor_context` retains a versioned, server-derived authorization context for
+delayed assignment. It contains no credentials and is omitted from public
+handoff responses. Applying a delayed transfer rechecks the original caller's
+current assignment permissions. Historical pending transfers without this
+context fail closed; an operator can cancel them and request a new handoff.
+
+Terminal handoffs have `destination_kind = 'done'`, a null destination agent,
+and states `awaiting_completion` / `completed` with `completed_at`. They share
+pending task/case uniqueness with agent transfers but do not enter the delivery
+lease index or wake queue. Accepted ordinary task completion and terminal case
+closure commit together. No terminal intent is inferred from a case's status.
+
+`case_access_sources` stores retained logical issue/project identities without
+deletion cascades from those sources. A missing source denies access. The case
+is readable only when every source's existing permissions allow it; unlinking a
+task or changing presentation metadata cannot widen that set. The case handoff
+migration backfills historical project and linked-task sources conservatively
+and leaves all existing cases passive. Source identities are not grants.
+
 ### Task query performance
+
+The cancelled workspace-preservation partial index and bounded run/activity
+projections share the restore-failure allowlist. Changing those failure codes
+also changes the index predicate; use the normal migration-generation workflow.
+A required metadata repair is excluded from ordinary cancelled preservation work.
+
+Native session resume selects its newest progress barrier within the existing
+32-run task/session window in one SQL snapshot. Only the chosen checkpoint source
+returns its saved native input, checkpoint, tool fingerprint, wake envelope, and
+canonical task brief. Unused bootstrap candidates do not return full context or
+profiles. Wrong runtime, nonterminal status, process identity, provider events,
+invalid but non-null checkpoints, and future checkpoint barriers retain their
+existing selection rules. Stored run payloads and history reads stay complete.
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
+An optional `PAPERCLIP_SESSION_RESUME_BENCHMARK_DATABASE_URL` must name a dedicated
+test database ending in `_test`; otherwise the harness starts disposable PostgreSQL.
+
+Agent request authentication uses a compact run-identity read. It omits saved
+execution payloads, results, and log excerpts from the query response. The read
+still locks the task before the run and reconciles pending steering from durable
+acknowledgements on every request. Default identity reads retain the full run.
+Stored payloads and separate native tool authorization checks remain unchanged.
+
+Native event acknowledgements read a count and maximum through the existing
+source-sequence index. A stream with gaps uses indexed lookups for its first
+missing successor. The acknowledgement keeps its contiguous-prefix rule without
+returning every historical sequence number. All events stay stored. Counting the
+index entries still grows with the stream length.
+
+Conversation recovery reads only the saved run fields used to settle a turn.
+Settlement locks and reads current conversation state without loading the task
+description or comment bodies. It still checks the durable reply or pending
+interaction, session generation, owning run, and newer user messages. Saved
+execution payloads, task text, and comments remain stored in full.
+
+The attention feed checks for newer runs with company-scoped existence probes.
+The probes match the failed run's agent and issue or task context. They preserve
+the existing millisecond comparison and empty-context rules. Each batch holds
+at most 1,000 failed runs. Retained run history stays in the database; this check
+returns only the identifiers of failures that have a newer matching run.
+For failures without a task key, it reads the latest keyless timestamp once per
+agent. Unique agents are batched separately, so repeated failures do not repeat
+the same history scan. Both paths retain the current millisecond comparison.
+
+The issue-lock adapter's release read omits `result_json.stdout` and
+`result_json.stderr` before transferring a run to the controller. Native context
+also omits saved launch text, execution-continuation bodies, workspace and
+environment payloads, and the launch wake envelope. Task identity, retry and
+continuation controls, interaction and comment references, execution policy, unknown context fields, and every other
+result key stay intact. Legacy reads retain full context. Stop, retry, lease,
+and workspace-recovery checks do not change. Full inputs and output remain stored
+for execution history and detail reads. Terminal telemetry loads only its run
+identity, timestamps, usage, and typed task identifier.
+
+Recovery's latest-run queries return the context fields used by recovery
+decisions. Prompts, execution continuation bodies, and workspace setup payloads
+remain in the stored run and its full detail reads. These queries also return
+the PostgreSQL row version. Native blocked-wait repair compares that version
+against a fresh full source read before applying changes. Any intervening row
+update, including an edit outside the projection, defers repair to a fresh sweep.
+
+The two preliminary reconciliation reads omit named launch renderings and
+preparation payloads. Native profiles omit unused native execution input.
+They retain all other context, full results, legacy profiles, task identity,
+retry accounting, and unknown controls. Native runs still reach their native
+recovery guard. Terminalization locks its current control state and returns
+full rows from its writes. Stored input remains intact.
+
+Execution-blocker reads select process, lifecycle, and task-binding fields rather
+than full execution rows. Context retains typed task and pre-dispatch evidence;
+Runner profiles retain the adapter type, native input schema, binding, provider,
+workspace-access evidence, and complete workspace-sync receipts. Native task and
+runtime prompt payloads are not needed for these checks. Missing fields and
+malformed input values retain their original shape. Full result evidence stays
+available to the existing retry and workspace checks. Stored context, profiles,
+and output are unchanged.
+
+Committed native finalization reads run identity and ownership state before it
+claims the coordinator. It loads complete saved input only when finalization
+still needs to process an accepted result. Review presentation retains the full
+result. Muse settlement reads its exact provider binding. Cleanup reads fresh
+status and ownership metadata; cancelled native workspace retention and legacy
+Stop settlement still load complete run evidence. Workspace settlement reads the
+saved sync descriptor, export retry, and first-heartbeat flag. These projections
+leave stored prompts, logs, results, and recovery state unchanged.
+
+Settled native process release locks run identity, terminal state, process
+identity, and checkpoint presence without loading the checkpoint or execution
+payloads. It retains current coordinator checks, provider evidence, local-host
+identity checks, and every lease's termination receipt. The stop receipt and
+process-field update remain in the same transaction.
+
+Legacy terminalization locks runtime mode, status, full result evidence, and the
+status-delivery token without loading unused input, profile, or log bodies.
+It keeps the existing lock, full returned run, workspace-retention
+receipts, and source-bound recovery holds. Stored payloads remain unchanged.
+
+Conversation ownership checks select process identity and full recovery result
+evidence without execution prompts or profiles. Committed native reply repair
+selects its persisted result and identity bindings plus typed presentation flags.
+It keeps its existing row locks, accepted-result digest checks, publication
+authorization, and selected-answer protections. Full execution history stays in
+storage.
 
 Run-context lookups use expression indexes for both `context_snapshot.issueId`
 and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
@@ -11,6 +256,18 @@ legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two ne
 indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
+
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -43,6 +300,109 @@ launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
 
+Restoring a saved monitor's receipt or completion proof creates a new native
+assessment identity even when its scheduled deadline is unchanged. The saved
+proof is part of the assessment input. Prior decisions and accepted results stay
+intact, and an unchanged replay reuses the same assessment and decision.
+
+Native tool authority lookups select current run identity, status, invocation,
+responsible user, context, and receipt data. Saved profiles and output excerpts
+stay in storage and are omitted from that read. Task and agent binding, current
+status, budget, and task privacy checks retain their existing predicates.
+Mutation transactions still lock and read complete run records. The unlocked
+authority read also omits named launch renderings and preparation data that its
+tools do not consume. Ordinary tool checks also omit the wake payload. Mail
+checks load the current full wake to enforce external-chat restrictions. Other
+context and result receipts remain available. The complete saved context stays
+in storage for execution.
+
+WebSocket delivery uses one fresh authorization batch for an event's task and
+run bindings. When both bindings name the same task, the batch reads its current
+authority once. Different task bindings must both pass. The batch is discarded
+after that delivery; later events still recheck grants, membership, task
+existence, and company boundaries.
+
+Browser progress events update cached live run status directly. A successful
+patch does not refetch task details, activity, or run history. Unknown runs
+retain the existing refresh fallback. Run transitions, activity events, and
+reconnect recovery still refresh their affected data.
+
+Task run queries stop interval polling only after a successful empty response
+and an open shared live connection for the current company and session. Initial
+reads, active work, errors, connection setup, and disconnections retain their
+existing polling cadence. Company or session changes require a new connection.
+Views without an assigned agent retain polling. Matching run lifecycle events
+refresh the displayed task's run queries independently of route and window
+focus. Events that omit task identity conservatively refresh these queries,
+including reviewer runs from another agent. One parent view owns both query
+observers and reuses refreshes already covered by the focused-route handler. A
+matching event that overlaps an older request queues a fresh read after that
+request settles. Connection readiness also reconciles the displayed run
+queries after any older request. Follow-up reads belong to the current mounted
+scope and stop when it changes or unmounts. The first open and reconnect still
+reconcile missed events.
+
+Bundled skill release checks read the current stored version ID and a SHA-256
+fingerprint of its file inventory. A per-database memo keeps at most 64 verified
+snapshots. It reuses a verification only when the current database fingerprint
+and current on-disk inventory hash both match. A changed or missing snapshot
+still follows full validation or seeding. Company access and local source
+reconciliation still run for each request; authorization is not cached.
+
+Connection-assignment checks select profile bindings for the current company or
+agent and read rules that can match the selected connection's catalog rows.
+All five selector kinds, null application matching, exclusions, and profile
+precedence retain their existing evaluator. Rule filtering uses the catalog
+values already read by that check, so a later catalog change cannot drop an
+exclusion from the decision being evaluated. There is no cross-call cache.
+
+Filesystem preparation uses current task/run and selected-configuration checks.
+Historical root-reader authorization has been retired; no retained-reader batch is
+loaded at admission or publication. Workspace-record disclosure still uses task
+privacy checks, independently of filesystem access.
+
+Saved-message execution-wait scans read current run state, process ownership,
+startup and cancellation receipts, task binding, and the recorded adapter kind.
+Saved profiles, output excerpts, and unrelated launch context stay in storage.
+Continuation admission and its locked mutation reads retain their existing gates.
+
+Task creation provenance reads current run identity, scope, and task binding.
+Legacy task references retain their typed values and existing precedence. Saved
+profiles, output, and unrelated context stay in storage. Viewer access to the
+source task and run is still checked before provenance is returned.
+
+The initial agent JWT run lookup reads only the cancellation state and
+conversation flag from saved run JSON. It does not transfer the full context or
+result. Run status, responsible-user identity, company and agent boundaries,
+and the cancellation response remain unchanged. Later identity refreshes keep
+their current authorization and transaction boundaries.
+
+Chat recovery ancestry selects task identifiers and source-run links instead
+of full execution payloads. Instruction authorization selects current identity
+fields and still rechecks accepted identity, key revocation, and membership.
+Identity task locks and activation receipts project typed legacy task keys with
+the native and first-class issue IDs. These projections preserve task binding
+precedence and validation without transferring prompts or output.
+
+Recovery's latest-run and legacy-continuation eligibility reads select structured
+result fields for error families,
+workspace/configuration receipts, cancellation attribution, retry deadlines, and
+conversation finalization. The `adapter_failed`, `provider_quota`, and
+`configuration_incomplete` classifiers retain full results because they inspect
+arbitrary provider error text. Stored results and execution/detail reads remain
+complete; no recovery decision is cached.
+
+To measure authentication query responses on disposable synthetic data:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-agent-authentication.ts --baseline-ref=06689c1b3410000bcd65ff40cb469e600209c4db
+```
+
+This compares the current query with the original query in that revision. It
+checks the complete authentication decision and reports returned JSON bytes,
+local query timings, and execution plans. It does not measure request latency
+or fleet-wide savings.
+
 To compare the real summary and full history queries with an earlier revision:
 
 ```sh
@@ -55,9 +415,8 @@ the same 200 complete rows. This benchmark excludes HTTP and redaction latency.
 Workspace reads also compare retained task IDs as guarded, canonical UUIDs.
 This lets PostgreSQL check each source task by primary key before it evaluates
 task privacy. Casting the indexed task ID to text can instead evaluate privacy
-across company history for each workspace. Repository admission repeats these
-reads while holding its company provenance lock, so that plan can delay other
-agent launches. Missing, malformed, noncanonical, and foreign-company source
+across company history for each workspace. These predicates protect workspace-record disclosure and operation metadata;
+repository admission does not use them to authorize filesystem contents. Missing, malformed, noncanonical, and foreign-company source
 IDs still deny access.
 
 The subsequent source-task enumeration also keeps `issues.id` as a UUID. Its
@@ -75,6 +434,32 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-author
 The benchmark loads the baseline authorization module with current dependencies,
 compares complete workspace rows, and prints five warm samples and query plans.
 It measures SQL execution, not the full repository admission or agent startup.
+
+Native finalization retries preserve a run's terminal completion time when its
+status is unchanged. A retry mints another status delivery only when the current
+run's status, finalization metadata, phase, error fields, or missing completion
+time changes. An unchanged projection retains its existing pending delivery ID,
+including after a publish failure. Status delivery stays at least once; retry
+deadlines, recovery, accepted results, and workspace cleanup still run normally.
+Legacy recovery also retains the pending delivery when status is unchanged and
+no patch was supplied. Explicit patches, new terminal statuses, and newly
+retained workspace evidence still create a delivery. File retention, ownership
+checks, failed write conditions, lock cleanup, and recovery holds still apply.
+The retention-evidence write returns another full run only when that evidence
+changes. An unchanged retry keeps the full run returned by the first write and
+still processes retained leases and recovery holds.
+
+Agent lists read the complete company roster once and use that same snapshot for
+termination filtering and organization-chain normalization. Detail and plugin runtime reads
+load only identity, company, name, status, and manager from other company agents
+for chain checks. The selected agent's full configuration, current monthly spend,
+and existing response redaction remain available. Every call reads current data;
+these lookups do not cache authorization or agent configuration.
+
+Queued-comment display filters wake requests by the current company, assigned
+agent, status, and exact JSON string task identity in SQL. Other tasks' comment
+identifiers stay in the database. The display projection, ordering, current run
+ownership checks, and persisted wake payloads retain their existing contract.
 
 ## 1. Embedded PostgreSQL — zero config
 
@@ -198,20 +583,139 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
+If your transaction-mode pooler does not support protocol-level named prepared statements, set `DATABASE_PREPARED_STATEMENTS=false`. If your pooler supports them, you can opt in with `DATABASE_PREPARED_STATEMENTS=true`. Check your provider's pooler configuration before you enable this setting. Keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
 
 ### Client tuning (optional)
 
 All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
 
 ```sh
-DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
+DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
 DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
+
+An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
+for parameterized ORM queries, transactions, reserved connections, and dedicated
+clients. Postgres.js manages the statement cache. This does not cache query
+results. Bound values and returned data stay fresh. Explicit per-query options
+still apply, including `prepare: false` and simple-protocol execution. With the
+setting unset, ORM queries keep their existing unprepared behavior and tagged
+SQL uses the driver default. With `false`, preparation stays disabled.
+
+### Bounded response diagnostics
+
+`PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW=<start>/<end>` enables one explicit UTC
+window. Both timestamps use ISO format ending in `Z`. The window lasts at most
+60 seconds and starts within 30 minutes. Unset, invalid, and expired windows
+leave database construction unchanged. An expired window stays inactive after a
+restart; remove the setting after the investigation.
+
+The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
+column decoding. It issues no queries. Configuration is read when each database
+client is created; setting the environment on an already-running process does
+not install the capture on existing clients. Prepare the deployment artifact
+before choosing the UTC window, then start the window after rollout and warm-up.
+
+Server entry points use `withDatabaseOperation(owner, action)` to name the work
+that executes queries. Owners are fixed semantic labels, never request paths,
+company or run IDs, user input, or SQL. The execution owner is captured for each
+query and retained through completion, including transactions and dedicated
+pools. A prepared query reused by different operations keeps the owner of each
+execution. The builder caller is separate from that execution owner.
+Owner context is active while a valid future window is armed, up to 30 minutes
+before its start, so work that crosses the start boundary keeps its owner. Query
+accounting starts only at the window start. With no armed window, or after
+expiry, the owner helper calls the action directly without a context scope.
+
+The capture aggregates owner, static schema table, operation, calls, returned
+rows, query errors, and total/maximum completion wall time. `totalWallMs` and
+`maxWallMs` include pool, database, network, and event-loop waits; they are not
+CPU measurements, and concurrent query durations overlap. Timing excludes the
+capture's response sizing. Rank calls and returned rows both per second and per
+completed service operation; a busy owner is not necessarily wasteful.
+
+Response sizing samples successful results 1, 17, 33, and so on per aggregate
+group (`sampleEvery: 16`). It examines at most
+256 cells, 65,536 string code units, and 65,536 value bytes per sampled result;
+an individual string over 16,384 code units is not measured. Parsed objects and
+other complex values are not serialized. Oversized, complex, or unexamined
+values leave an incomplete sample. `sampledValueBytes` is a lower bound over
+sampled primitive values, not a total response-size estimate or network bytes.
+Do not extrapolate it as the total bytes returned by the database. Inspect
+`sampledResults`, `sampledRows`, `measuredValues`, `unmeasuredValues`, and
+`incompleteSamples` alongside it. `sizingWallMs` records the diagnostic's sizing
+work separately. Use a separate capture-disabled CPU profile to measure normal
+processing cost.
+
+The diagnostic emits at most 2,048 aggregate groups and a summary. Measurement
+stops at the deadline. Environment-enabled
+captures emit at most 64 records per second and can take another 33 seconds to
+finish writing the bounded output. Wait for the summary before collecting it.
+It never logs SQL, parameters, result
+values, connection strings, or query errors. In-flight queries continue normally.
+
+Semantic owners work in a bundled server without source maps. Specific owners
+avoid stack capture. The generic `http.request` owner keeps its exact name but,
+like an unowned query, also captures a bounded caller location during the window.
+For wrapped query builders, a map-free hosted bundle retains one static generated
+construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
+`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
+revision and bundle; it is not a TypeScript location or an execution-time CPU
+owner. Capture wrapper frames are excluded before reading the stack, and deeper
+frames in the same bundle are omitted.
+
+Unscoped driver calls, including relational queries, do not accept generated
+anchors: a bundled ORM helper could otherwise be mistaken for an application
+caller. They can still retain existing public source/dist locations; linked
+source maps and Node's `--enable-source-maps` may help resolve those locations.
+Restore prior Node options after capture. Missing callers remain unknown and
+still contribute to totals. Disabled, future and expired windows do not capture
+stacks; wrappers installed for an armed window remain after expiry. Active census
+stack capture, grouping and bounded sizing add measurement overhead. More caller
+groups still share the existing group, page and output-rate caps. This diagnostic
+is not a production performance improvement.
+
+Look for `paperclip.db_response_capture.entry.v2` and
+`paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
+sampled, bounded primitive-value sizing; do not interpret it as the version 1
+all-result byte estimate. A log provider
+can store `event` as a structured field instead of message text. Filter by that
+field or read the bounded window from the exact deployment. Check the summary
+and group totals, including the unattributed overflow group.
+
+Fetch a complete capture as follows:
+
+1. Read the summary events from the exact deployment and window. Keep each
+   distinct `captureId` separately.
+2. Each entry has a unique `groupIndex` within that capture and a `groupPage`.
+   The summary gives `groupPageSize` (128) and `groupPages`. Fetch every page
+   from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
+   and `groupPage`. Request at least `groupPageSize` matching records per page.
+   A structured query can use
+   `@event:paperclip.db_response_capture.entry.v2 AND @captureId:<id> AND @groupPage:0`.
+3. If the provider's record limit is smaller than a page, fetch each
+   `groupIndex` separately with the same capture ID. Each index matches one
+   entry. Do not split by timestamp: entries can share a timestamp.
+4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
+   through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
+   `calls` must equal `completedQueries`, and summed `rows`, `sampledResults`,
+   and `sampledValueBytes` must equal their summary totals. A missing page is an
+   incomplete measurement. Keep overflow and unattributed groups visible.
+
+Tagged raw-driver calls, streams, unawaited raw-driver
+dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
+Queries still in flight at the deadline are reported separately. The census does
+not include every PostgreSQL statement or internal transaction command, so its
+calls are not interchangeable with database-wide commit counters. It does not
+measure SQL compilation, driver parsing CPU, or Drizzle row-mapping CPU. Use the
+ranked owners to choose a narrow follow-up profile or synchronous-stage
+measurement; do not attribute CPU by subtracting process CPU usage across an
+asynchronous query. Remove the capture setting after collecting its final
+summary; the absolute deadline already prevents further measurement.
 
 ### Push the schema
 
@@ -230,6 +734,13 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
+
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
 
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
@@ -256,6 +767,16 @@ PostgreSQL backends and checks rejection, pool recovery, and transaction isolati
 Remove the patch when an upstream release passes these tests. Installs of the
 unmodified `postgres` package outside this workspace do not include the patch.
 
+The patch also preserves transaction connection reservation when pipelining is
+disabled with `PGMAX_PIPELINE=0`. Without this fix, the driver's pipeline capacity
+check skips the transaction reservation callback and `BEGIN` fails with
+`UNSAFE_TRANSACTION`. Disabling pipelining makes a queued query wait for the next
+available pool connection instead of sending it behind unrelated work on a busy
+connection. This can help interactive requests that share a prepared-query pool
+with slow background work. It does not make the SQL itself faster. The default
+pipeline limit remains unchanged. Test transaction behavior before using this
+setting with a driver build that does not include the patch.
+
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
 idempotent actor synchronization operations, not arbitrary transactions. A
@@ -277,6 +798,38 @@ completed lookups and the separate liveness backfill are not replayed. Projectio
 callers that use a transaction retain single-attempt reads. The opt-in is only
 for a pooled database handle outside a transaction.
 
+The heartbeat run read check uses the same bounded retries. Routes call it with
+the pooled database handle. Its issue existence lookup and its `issue:read`
+authorization decision retry separately, so a disconnect in the decision does not
+replay the completed lookup. Both steps only read. Missing issues, denied
+decisions, and other errors keep their usual behavior.
+
+## Tool profile reads
+
+Tool profile list, detail, and new-tool review queries select only the catalog
+identity, selector, and review fields that they use. They do not load tool input
+or output schemas, annotations, or provider metadata. Application and connection
+lookups for these paths read only IDs and display names. Profile entries,
+bindings, counts, review descriptions, and company filters retain their existing
+behavior. The full catalog and tool execution paths still read their schemas.
+Attention counts use the same catalog projection and read only invocation IDs
+and connection IDs to associate pending requests. Summary queries also omit
+review titles and descriptions; the separate review query still returns them.
+
+Internal effective-tool assignment lookups use the same catalog projection.
+Run preparation, native runtime setup, and connection policy checks need tool
+IDs and names, not complete tool definitions. They still resolve current profile
+bindings, selectors, exclusions, and installed connections on every call. The
+public effective-profile response continues to include complete tool schemas
+and annotations.
+
+Connection readiness checks use a scoped assignment reader. It applies the same
+current profile precedence, selectors, and exclusions to the candidate connection
+IDs. The reader selects rule match fields and catalog identities. It does not
+load rule conditions, catalog schemas, profile summaries, or the company-agent
+list. Installed connections and later identity and gateway checks remain fresh.
+Full effective-profile and effective-tool responses keep their complete shape.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
@@ -285,6 +838,125 @@ identity state, not parent keys. The lock still serializes identity writers and
 blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
+
+## Remote workspace row locks
+
+The runtime workspace service takes company `KEY SHARE`, current task `UPDATE`,
+run `UPDATE`, then workspace `UPDATE` locks. It rechecks the run's task binding
+under the run lock. A shared workspace can retain a different original source
+task; new provisioning and snapshot operations belong to the current run's task.
+Existing operation receipts keep their recorded attribution.
+
+| Owning transaction | Locks after company, current task and run |
+| --- | --- |
+| Workspace reservation | Shared-selection advisory lock when needed, workspace |
+| Preparation publication | Workspace, source lease, existing restore receipt |
+| Snapshot reservation and publication | Workspace, operation and snapshot rows |
+| Provisioning reservation | Workspace, existing operation or new receipt |
+
+`workspace_operations` has ordinary company, task, run and workspace foreign
+keys. An insert takes `KEY SHARE` locks on those parents even when the service
+does not explicitly select them. Locking the parents first prevents their
+foreign-key checks, or a later run-reference write, from reversing the order.
+File preservation already takes task, run, workspace and lease locks in that
+order. Confirmed lease destruction locks matching workspaces before the lease;
+its workspace-location update takes no task or run lock afterward.
+
+Provisioning settlement and save-invocation settlement lock the workspace and
+update existing receipt metadata. They neither add a parent foreign-key
+reference nor lock a task or run afterward. Snapshot upload and retention own
+snapshot rows; the snapshot ledger has no parent foreign keys. These paths do
+not need an otherwise unused parent lock.
+
+Administrative import reservation takes company `KEY SHARE`, original source
+task `UPDATE`, then workspace `UPDATE`, and rechecks that source binding. This
+also applies to an already-imported no-op, which can overlap runtime saves.
+Import publication takes the same company and recorded source-task locks before
+its legacy coordinator and run locks, then the workspace and saved allocation
+leases. Native claim, status and cancellation owners do not share one row-lock
+order. Import therefore requests those legacy coordinator, run and lease locks
+with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
+`remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
+archive and local files remain available for a later administrative retry. Other
+database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
+
+The workspace fingerprint pins the recorded source. An arriving reservation can
+reach a legacy workspace before refusing it, so publication must follow this
+order too. The lifecycle advisory lock alone does not fence runtime operations.
+Publication still rechecks current writers and unresolved work. Offline imports
+also require the deployment-stopped maintenance fence. Ordinary save requires an
+existing prepared remote location and refuses the unpublished legacy authority.
+
+The workspace lock still serializes generations and publication. Foreign keys,
+ownership and epoch checks, and transaction-aware work notifications remain in
+place. Remote preparation, command execution, archive capture and object upload
+run outside these transactions. No workspace or parent row lock spans that I/O.
+
+## Execution admission accounting
+
+The execution-admission module (`server/src/modules/execution-admission/`) owns
+three tables. Nothing writes admissions or caps in production yet, and no claim
+path enforces a project maximum.
+
+- `project_task_execution_policies` stores a project's maximum concurrent tasks
+  apart from `projects`, so project readers never return an unenforced cap. No
+  row means never configured. A row with a null maximum means an explicit "no
+  limit", which a later legacy migration must not overwrite. Maximums are
+  positive. The row is deleted with its project.
+- `execution_admissions` stores one admission attempt of a run. A run can be
+  released before dispatch and admitted again, so `(run_id, attempt)` is unique
+  and a partial unique index allows one unsettled attempt per run. The row keeps
+  the context revision, the nullable primary project as provenance (no foreign
+  key) and the settlement identity, which is set together with `settled_at`.
+  `admitted_project_ids` is the complete admitted project set, sorted, kept
+  after settlement and immutable (a trigger rejects any change). It has no
+  project foreign key, so settled history never blocks project deletion and
+  keeps the deleted project's ID. `{}` is a known empty set. Null means
+  unknown and is allowed only on settled rows: migration `0428` filled it from
+  the charges of unsettled rows, but settled `0426` rows had already lost
+  their set. A retained provider session resumes with the previous set ∪ the
+  current references; an unknown previous set requires a fresh context, never
+  an empty or primary-only guess.
+- `execution_admission_project_charges` stores one row per distinct admitted
+  project, including unlimited projects. An admission without projects has no
+  rows. Composite `(company_id, …)` foreign keys keep admissions and projects in
+  one company. Rows are the only active capacity and exist only while the
+  admission is unsettled: settlement deletes the whole set in one transaction,
+  and `(company_id, project_id)` is indexed for active counts, so lookups
+  scale with active work, not history.
+
+Archiving a project changes no charge. Deleting a project with a charge returns
+`409 project_execution_admission_pending`; the foreign key is the backstop.
+Deleting an agent refuses unsettled admissions on its runs and removes settled
+ones, with their sets, together with the runs. Company deletion removes the company's admissions before its runs and
+projects.
+
+The proposed global lock order for the admission transaction is: company row
+(`FOR NO KEY UPDATE`), native finalization recovery owner, the whole project set
+in ascending ID order (`FOR NO KEY UPDATE`, one statement), issues, wake
+requests, the run, the external-admission advisory lock, the admission row and
+its charges, then budget reservations. Policy updates take the same project
+lock. Settlement takes no project lock. Only the project-set step is implemented
+so far; claim paths keep their current locks until they are integrated.
 
 ## Switching between modes
 
@@ -299,6 +971,14 @@ The database mode is controlled by `DATABASE_URL`:
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
 ## Migration authoring checklist
+
+Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
+both `SQL_ASCII` and UTF-8 databases. Migration `0355` constructs its whitespace
+pattern from UTF-8 bytes so legacy databases can compile it, and matches whole
+characters instead of trimming individual bytes. Its shipped hash remains a
+valid migration receipt; otherwise an upgrade could replay its older connector
+triggers over the replacements from `0356`. The encoding migration regression
+checks both selector behavior and preservation of that later trigger definition.
 
 The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
 
@@ -331,6 +1011,60 @@ connection, before enabling the new server and UI.
 - The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
 - `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
+## Managed adapter settings
+
+Cloud-managed instances keep adapter selection preferences in the private
+`instance_settings` singleton `adapter-settings:v1`. Its `general` JSON contains
+`version: 1`, a monotonic `revision`, and `disabledTypes`. It is separate from
+the public `default` settings row and never appears in the instance settings API.
+Each update locks this row in a transaction. The update and company activity
+records commit together. Discovery and new-agent admission read the database
+at their asynchronous operation boundaries; no polling or mutable settings cache
+is used. Disabled adapters remain available to existing agents.
+
+`PAPERCLIP_ADAPTERS` and `PAPERCLIP_ADAPTERS_FILE` declare the effective operator
+adapter list. The declaration is parsed once for a process configuration and
+validated at startup. It does not rewrite stored preferences. A conflicting
+adapter toggle returns 403. Removing the declaration restores saved choices.
+Operator file edits require a restart. Self-hosted instances continue to use
+`adapter-settings.json` for saved preferences.
+
+The server-only adapter settings service exposes `inspectStored()` and
+`seedIfAbsent({ disabledTypes }, transaction?)` for migration tooling. Seeding
+uses the unique singleton key, returns `{ seeded, current }`, and never replaces
+an existing record. The caller can use the same transaction for its import
+receipt. Before admission, `initializeAdapterSettings` checks the durable row.
+When absent, it imports a valid legacy settings file once, retaining unknown
+adapter types, or seeds empty preferences if no file exists. It rejects files
+larger than 64 KiB, malformed input, and read failures. An existing durable row
+wins over every stale file. Ordinary Cloud reads do not read a legacy file.
+
+The focused PostgreSQL suite can use an owned disposable PostgreSQL database via
+`PAPERCLIP_ADAPTER_SETTINGS_TEST_DATABASE_URL` when embedded PostgreSQL is
+unavailable. It applies migrations and inserts test data, so never point this
+variable at an existing application database.
+
+## Cloud configuration migration receipt
+
+The private `instance_settings` singleton `cloud-configuration-migration:v1`
+records atomic import completion, semantic source digests, imported revisions,
+and metadata-only external adapter blockers. It composes the adapter and
+startup-config owners without replacing an existing authoritative row. Receipt
+locking and the import transaction handle concurrent attempts and retries; no
+local completion marker participates in conflict resolution.
+
+Qualification records current configuration revisions and selected image package
+evidence before normal plugin reconciliation. Image inspection does not hold
+admin write locks; configuration and registration snapshots are rechecked in a
+short transaction before the report is saved. A historical successful report
+never grants current eligibility. External metadata blockers survive loss of the
+legacy home and require a deliberate revision-checked recheck of a present valid
+original source file. Package mismatches remain recorded after maintenance
+reconciliation. See the [bounded migration and qualification procedure](cloud-configuration-migration.md)
+for the stopped-writer prerequisite, commands, retry semantics, integrity limits,
+and the explicit exclusion of secret bytes, whole-server zero downtime, and
+volume removal.
+
 ## Cloud runtime identity singleton
 
 The private `instance_settings` row whose singleton key is
@@ -353,13 +1087,18 @@ keep the application fully active. A failed database check fails startup.
 
 An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
 but skips recurring database work: chat/email delivery, plugin jobs, browser
-cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
+cleanup, feedback export, import cleanup, execution reconciliation, Muse maintenance, heartbeat
 schedules, and automatic backups. Startup migrations, plugin installation, and
 other one-time preparation still run. Normal anonymous health probes return
 `warmStandby: true` without SQL or session lookups. This is application liveness,
 not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
 the signed claim succeeds. Page and asset requests serve only the static UI
 router, bypassing session, bearer-key, tenant, and other dynamic handlers.
+
+Muse defers its startup qualification-evidence update and recurring database
+sweeps until standby ends. The first enabled sweep marks interrupted evidence
+before it reconciles qualification deadlines or terminal assignments. Claimed
+workspaces retain ordinary Muse maintenance even when idle task drain is active.
 
 The existing signed claim on `GET /api/health` writes the identity durably before
 normal requests and polling resume. No polling discovers claims and no process
@@ -374,6 +1113,25 @@ restart with stale provider variables on an isolated warm application first.
 Rollback by setting the marker to `0` and restarting. No schema changes are
 required. This mechanism does not sleep claimed workspaces or replace a durable
 scheduler for their background work.
+
+## Native finalization history and idle sleep
+
+Idle sleep retains committed native finalization records as audit history.
+A record permits sleep only after its owned run, accepted result, assessment,
+applied status decision, and effect deliveries agree on completion. Leases,
+retries, recovery requests, unfinished accounting, and incomplete run projections
+keep the instance awake. Historical controller identity alone does not block sleep.
+The exact run also needs its successful workspace-finalization receipt. Pending
+final-reply recovery shares its discovery predicate with the recovery worker, and
+live warm sessions remain local work through close/checkpoint completion.
+
+## Feedback history and idle sleep
+
+Automatic idle checks treat private, unshared feedback as saved data. A sent
+feedback export is history only when its completion timestamp exists and its
+failure reason is clear. Pending, failed, unknown, and inconsistent exports
+still keep the instance awake. These checks do not delete history or change
+feedback sharing and retry behavior.
 
 ## Resource membership tables
 
@@ -444,10 +1202,13 @@ is unique, so retries return the original accepted action. Provider source
 ordering fences duplicate and stale updates, and a cleared projection retains
 its revision/cursor tombstone so an older provider event cannot resurrect it.
 
-Issue `status_version` advances only when `status` changes. The JavaScript backup
-path includes user-defined functions and triggers so a restored database keeps
-that invariant. Removing or disabling a future native rollout flag must not
-delete these records; persisted experimental runs remain available for recovery
+Issue `status_version` advances when `status`, `assignee_agent_id`, or
+`assignee_user_id` changes. A combined status and assignment write advances it
+once. Writing the same assignee alone does not advance it. A new blocking
+decision can also advance the revision. The assignment trigger has its own name so replay of the historical status migration cannot remove it. The
+JavaScript backup path includes user-defined functions and triggers so a restored
+database keeps that invariant. Removing or disabling a future native rollout
+flag must not delete these records; persisted experimental runs remain available for recovery
 and inspection.
 
 `native_run_finalizations` also stores restart ownership and recovery state.
@@ -458,6 +1219,51 @@ successor can take the lease immediately only when coordinated handoff or PID
 and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
+
+## Experimental remote workspace snapshots
+
+Migration [0421_bright_skaar.sql](../packages/db/src/migrations/0421_bright_skaar.sql)
+adds the company-scoped `execution_workspace_snapshots` ledger. It records the
+workspace, source operation/run, parent, generation, writer epoch, encrypted
+object receipt, hashes, manifest digest, and retention state. Integrity and key
+fields remain nullable while an upload is pending. Upload attempts record their
+candidate object keys before I/O so a lost reply can be reconciled and abandoned
+objects can be reclaimed. Object existence alone is not a committed save.
+
+`execution_workspaces.metadata.remoteWorkspace`, schema
+`paperclip.remote-workspace.v1`, holds the source, epoch, committed snapshot ID,
+remote allocation/path, writer run, and dirty flag. Paths in this record belong
+to the remote allocation. Save publication checks the current writer/epoch and
+atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
+`workspace_operations` journals preparation, save, restore, and local import;
+large file bodies stay outside the database. Ledger identities deliberately
+survive source-record deletion so object cleanup can finish.
+
+Snapshots stream through authenticated encryption into S3. Portable archives
+preserve supported files, modes, empty directories, confined symlinks, and Git
+checkout/index/object state, including unpushed history. Linked worktrees and
+object alternates are normalized into standalone Git storage. The versioned
+exclusion policy omits runtime transport material and proven rebuildable
+dependencies; unsupported entries fail the save.
+
+The current snapshot and active run/restore/recovery/unfinished-operation
+references pin saved data. Unreferenced superseded versions receive a seven-day
+grace. Retention uses committed producer notifications and actual deadlines;
+pinned history and an empty queue do not cause recurring scans. Deletion fences
+new adoption, rechecks references, and removes every recorded upload candidate
+and winning object within the company/workspace prefix.
+
+Database backups contain snapshot receipts, not S3 payloads or encryption keys.
+Disaster recovery requires the database, object store, and original master key.
+Unsaved live sandbox edits remain outside that saved-version guarantee. See
+[setup and explicit local import](DEVELOPING.md#experimental-native-remote-workspace-storage).
 
 ## Chat communication snapshots
 
@@ -592,6 +1398,19 @@ pnpm secrets:migrate-inline-env --apply
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
 
+Sandbox runtime configuration resolves a provider's secret-reference fields
+through its schema-only lookup. Each lookup reads the selected plugin ID
+and a SHA-256 hash of its current schema in one database statement. A matching
+retained schema is omitted from the query result. Selection order, schema
+changes, and deletion remain visible on the next lookup, without a time-based
+cache. A database error still fails the lookup.
+
+The retained schemas are private to one `Db` object, with at most 32 entries of
+64 KiB each in serialized form. Larger schemas still work and are read in full.
+Callers receive independent schema objects. This reuse stores neither resolved
+secrets nor authorization decisions. Default driver lookups still read complete
+current plugin records and enforce their existing readiness and worker checks.
+
 ### Persistent agent conversations
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
@@ -708,6 +1527,13 @@ limits and the operator override.
 
 Project `privacy_owner_user_id` records who may manage its audience independently of project read membership. Creation assigns the authenticated user or run responsible user; migration recovers legacy ownership from creation audit evidence. Missing evidence leaves management with administrators.
 ## Internal agent commentary
+
+The Audit viewer uses the existing company/kind/created index.
+List reads select bounded previews; details load a single full body. Both reads
+and list counts apply company and source-task visibility. The viewer requires
+no experimental toggle. A permission-only migration grants `commentary:view` to
+existing active human company members, including viewers, without changing
+existing grants or the commentary schema.
 
 `agent_commentary` stores company-scoped, attributed complaints and suggestions
 as free-form text in the instance database. Legacy agents use the default
@@ -830,6 +1656,30 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+### Installed skill packages
+
+`company_skill_repository_snapshots` retains its identity and company/content-hash
+uniqueness. Despite its historical name, it can also hold editable skill packages.
+Migration 0414 (`0414_sleepy_payback.sql`) adds `storage` (archive/manifest receipts) and `upload` (a bounded
+pending attempt). `file_inventory` remains the legacy payload, defaulting to `[]`.
+`company_skill_versions.package_snapshot_id` and `package_file_map` preserve the
+public version file inventory without storing its contents again. Existing repository
+snapshot/entrypoint references and version IDs remain unchanged. Reference indexes
+support bounded orphan checks; restrictive FKs protect retained version packages.
+Version mappings preserve kinds and encodings when identical bytes share a package.
+Authored saves mark the storage receipt `durable`; retirement atomically respects that
+marker even when the save joins a concurrent Git upload.
+
+`skill_package_deletions` is a durable object-deletion outbox populated by snapshot
+update/delete triggers. Its company ID deliberately has no cascading company FK:
+cleanup must retain exact object keys after company deletion. Upload promotion skips
+retirement; replacing a pending token retires only the old attempt's unique keys.
+The same migration adds exact-commit restore recipes and indexed conversion/maintenance
+deadlines. A bounded coordinator worker automatically converts and clears verified
+legacy payloads; no migration command is required. Warm reads exclude recipe manifests.
+See [package storage](skill-package-storage.md) for acquisition, retention, compatibility
+overrides, independent restore verification and coordinated backup policy.
+
 ### Project repository skill synchronization
 
 `project_skill_sources` stores durable workspace import jobs and originating project
@@ -878,41 +1728,41 @@ Migration [0336_big_crystal.sql](../packages/db/src/migrations/0336_big_crystal.
 
 `execution_workspace_repositories` is company-scoped inventory beneath an execution workspace. It records repository identity, contained relative path, requested ref, pinned commit, preparation state and idempotency receipts. Credentials are resolved at use and are never stored in this inventory. Connection/destination `execution_defaults` JSON contains optional typed project/workspace choices, never arbitrary host paths or commands.
 
-Migration [0337_exotic_proemial_gods.sql](../packages/db/src/migrations/0337_exotic_proemial_gods.sql) adds internal `execution_workspace_repository_roots` records. A company and hash of its canonical physical path uniquely identify a sticky `anonymous_only` or `managed` acquisition reservation. Short transactions serialize reservations with repository requests and credential promotion, preventing private publication after low-trust admission checks. Records have no workspace foreign key: mutable workspace metadata, relocation, archival or deletion cannot release a physical folder still accessible to an admitted run. There is no automatic mode change or reservation deletion.
+The physical-root tables introduced by migrations
+[0337_exotic_proemial_gods.sql](../packages/db/src/migrations/0337_exotic_proemial_gods.sql)
+and [0338_absurd_vengeance.sql](../packages/db/src/migrations/0338_absurd_vengeance.sql)
+are legacy: `execution_workspace_repository_roots` and
+`execution_workspace_repository_access` remain in the schema with their existing
+data, but runtime services neither read nor write them. There is no backfill,
+cleanup job, startup DDL, or schema migration for this retirement. Historical
+`anonymous_only` / `managed` classifications and source/reader identities have no
+effect on new operations.
 
-Migration [0338_absurd_vengeance.sql](../packages/db/src/migrations/0338_absurd_vengeance.sql) adds internal `execution_workspace_repository_access` provenance. Company/canonical-root source entries retain execution-workspace and source-project identities; reader entries retain the exact admitted run, task, agent and responsible user. New repository receipts also record their root at creation; legacy receipts receive no inferred origin. Shared project-source entries retain which physical owners require workspace write authority. Current admission, selection, requests and publication check the current task’s writer against those owners; retained past readers and file APIs still require only read authority. Genuine isolated copies retain source read access without requiring shared-folder write access. An existing linked worktree can recover a missing isolated-copy proof only after Git registration and its captured source owner are verified. Configured local sibling copies retain deny-only task/project source ownership on the bound task root before materialization; ordinary repository clones create no isolation proof. The shared root fence checks every reader against every source before admission and future publication, including tasks without repository requests. File APIs apply the same source privacy without writing provenance. These entries grant no authority and have no workspace or run deletion cascade; unavailable retained identity fails closed. Automatic provenance release is deferred, so a newly incompatible permission scope requires a separate physical root.
+`execution_workspace_repositories` remains active and records actual repository
+requests, pins, preparation state, and idempotency. Shared publication recovery
+uses the current receipt and the exact receipt named by the checkout's bounded
+ownership marker, with company, origin, ref, path, and pin integrity checks.
 
-Git-source capture checks the actual common Git storage directory and verified
-checkout owners. Separately stored metadata does not make its parent a checkout.
-When a linked worktree cannot identify its primary checkout, the service verifies
-company-known configured, execution, and retained roots against that metadata
-identity. A primary checkout identifies itself when its Git directory equals its
-common directory, including separate metadata layouts. Verified primary sources
-and linked worktrees with a verified registered primary avoid the fallback scan.
+The disposable preparation benchmark compares a pinned pre-removal commit with
+the checked-out implementation using 8,500 workspaces, 4,800 shared-root records,
+5,300 retained sources, and 50 readers. It reports two warmups and five measured
+samples, phase medians/ranges, SQL fingerprints, and canonicalization counts.
+Both retired-table query counts must remain zero, and increasing peer history
+must not increase preparation authorization or path checks. Record the exact
+treatment commit and measured improvement in the change's verification report.
+These service measurements exclude network acquisition, copying, environment
+acquisition, and provider startup. Reproduce with:
 
-Writable selection, source-copy preparation, admission, and publication check the trust policy of
-current and retained physical source projects. A projectless alias cannot bypass
-a source's sandbox requirement. An incompatible preset or boundary is rejected;
-the check never silently changes the selected execution environment. Admitted
-and retained readers use their persisted effective run policy; absence of a
-retained low-trust policy counts as standard. Live policy edits cannot relabel
-a standard local run as sandboxed. Read-only file access
-keeps its existing authorization rules.
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-preparation-history.ts --baseline-ref=df80616d98119cbf5abd40549794d9980a5fabf6
+```
 
-Source-copy checks retain deny-only ownership on failure but create a new
-isolated-copy proof only after physical identity, access, and trust checks pass.
-For low-trust sandbox runs, the harness also disables host worktree provisioning
-on fresh realization, reuse, and rebuild. This covers configured commands and
-the repository's built-in provision script; an empty configured command alone
-would still allow that fallback. The capability comes from the server's selected
-trust policy and environment, never repository configuration.
-
-After source authorization and retained-reader checks pass, the existing
-`source` and `project_source` kinds retain ownership on shared Git storage.
-Removing the original checkout cannot release private committed files in surviving
-worktrees. These records grant no authority and create no isolation proof. Denied
-source captures leave no new records. Worktree realization uses a verified checkout
-as its Git command directory, including when metadata sits inside another repository.
+Workspace-record and workspace-operation `_issuePrivacySources` /
+`_runPrivacySources` metadata and their migration 0313 triggers remain app-data
+privacy controls. They do not authorize filesystem access. Current run identity,
+selected project policy, acquisition/credential authority, concrete copy identity,
+path containment, and lifecycle serialization remain enforced. Low-trust execution
+still suppresses controller provisioning according to the selected environment.
 
 No migration scans or copies existing agent home directories. Keep admitted native descriptors and recovery references until compatible controllers finish their persistence obligations. See [the architecture rollout contract](plans/2026-10-09-task-workspaces.md).
 
@@ -946,3 +1796,159 @@ This disposable fixture compares the real ownership, recovery-action and status
 delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
+
+### Agent runtime synchronization journal
+
+Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
+record content-free configuration invalidations and managed file audit events in
+`resource_lifecycle_events`. They share the mutation transaction and fail the
+mutation if journal insertion fails. An INSERT trigger sends an empty PostgreSQL
+notification on `paperclip_plugin_lifecycle` after commit. The host subscribes
+only when a ready runtime subscriber is installed. This feature requires a
+session-compatible database connection; do not enable it through a transaction
+pooler. Reconnection scans the durable journal. Existing process-local work
+signals continue to serve other delivery queues. See
+[the plugin contract](plugins/AGENT_RUNTIME_SYNC.md).
+
+Migration 0354 extends this stream to standing connection assignments. Statement
+triggers compare the fields returned by the assignment snapshot and coalesce
+company invalidation within the mutation transaction. Agent runtime journaling
+uses ordered `FOR NO KEY UPDATE` locks, which remain compatible with foreign-key
+references while excluding runtime readers' `FOR SHARE` locks. Connector feature
+switches use the same journal; process-start overlays receive a delivery baseline.
+
+Migration 0355 extends connector invalidation to tool definitions and
+configuration. Statement triggers cover applications, connections, catalogs,
+profiles and entries, bindings, policies, and MCP gateways. They ignore health
+bookkeeping and trust-rule usage counters. Profile creation alone does not change
+an agent's runtime; its assignment does. Entry changes resolve standing profile
+bindings; policies resolve old and new agent selectors. Both retain scoped
+recipients. Credential-only fields remain outside this migration's coverage.
+
+Migration 0356 adds access, referenced credentials and vaults, and chat/email
+endpoint configuration to connector runtime invalidation. Grant and membership
+changes retain company scope. Agent secret bindings and new personal delegations
+use agent scope. Credential values remain outside the journal. Endpoint activity,
+vault health, and other bookkeeping fields remain excluded.
+
+## Retired Pipelines storage
+
+The Pipelines experiment has been removed from the application, API, CLI, and
+experimental settings. Its `pipelines` and `pipeline_*` tables, schema definitions,
+and migration history remain so existing records, documents, and links are preserved
+and future schema generation does not drop them. No removal migration or data
+cleanup runs. These tables remain part of normal database backups; the separate
+Cases feature is unaffected.
+
+### Prompt injection classification
+
+`company_prompt_injection_prevention` stores optional shared connection/model
+preferences without backfilling existing companies. `prompt_injection_invocations`
+stores content-free classification verdicts, provider receipts and archival
+identity references. Budget reservations have a distinct classifier invocation
+source, and cost events accept `prompt_injection`. Unknown charges retain their
+holds through agent deletion attempts and settle through billing correction.
+See [service behavior](prompt-injection-prevention.md).
+
+### Deferred conversation requests
+
+`issue_thread_interactions.dismissed_at` and `dismissed_by_user_id` record a
+human's decision to leave a pending request in history. They are independent of
+`status`, `result`, and `resolved_at`: dismissal is neither an answer nor approval.
+The board-only dismissal path locks the task then interaction, checks audience,
+and never enqueues a continuation. Ordinary deferred requests are excluded from
+completion arbitration; protected authorization gates remain active.
+
+### GitHub inherited review-wait reads
+
+Passive GitHub review waits select only the assessment's `reviewedCommit` JSON
+value. The read preserves its JSON type for strict comparison with the review
+head. It still checks current requester provenance, company and agent bindings,
+connection state, repository identity, latest review, and processed publication.
+The complete assessment remains stored for review and publication.
+
+The synthetic PostgreSQL benchmark captures the service-generated baseline and
+treatment queries, compares complete outputs, and measures raw DataRow bytes:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-github-review-wait.ts --baseline-ref=663fe667d66d3863d0919a8724f1d99500feef0b
+```
+
+It uses disposable embedded PostgreSQL by default. A disposable local database
+named `review_wait_benchmark...` can be supplied through
+`PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
+DataRow bytes exclude response metadata and transport overhead.
+
+
+### Sandbox creation ownership
+
+Migration 0418 adds `sandbox_creation_operations`. Admission commits company,
+original environment, run, request key and provider identity before external
+creation. Configuration contains nonsecret values and existing secret references.
+The original identity survives environment, run, task and company deletion; only
+the optional live environment FK uses SET NULL. Company/run deletion must not
+erase an outstanding remote-resource obligation.
+
+The unique company/environment/run/request index fences duplicate creation and
+ambiguous successful lease commits. Normal lease attachment and operation transfer
+share a transaction. Recovery transfers one claimed cleanup lease after provider
+ownership lookup. The pending deadline index drives the existing cleanup worker.
+`needs_reconciliation` is a durable manual outcome, not an automatic retry or an
+idle blocker. See [cleanup ownership](idle-environment-cleanup.md).
+
+## Object-backed run evidence
+
+Optional segmented run logs and raw provider traces store their payloads and
+range indexes directly in S3-compatible storage. Existing `heartbeat_runs` and
+`provider_trace_records` contain backend/reference and lifecycle metadata;
+there is no new payload table or per-segment SQL publication. Object manifests
+use conditional writes to fence publication. Existing structured events retain
+their database append contract. See [run evidence storage](run-evidence-storage.md).
+
+## Cloud runtime configuration singleton
+
+The private `instance_settings` key `cloud-runtime-config:v1` holds a strictly
+validated, versioned nonsecret configuration and revision. It is separate from
+the ordinary instance settings API. Seed inserts preserve an existing winner;
+replacements lock the row and reject stale revisions. Database/transaction
+handles permit atomic migration receipts. Connection URLs, API keys and unknown
+fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+## Independent accounting and budget evaluation
+
+`budget_evaluation_work` holds independent pending inputs for committed exposure
+changes, with company and captured agent/project attribution. Producers append
+in their financial transaction after registering transaction-aware notification.
+The worker evaluates a consistent snapshot, fences policy publication through
+`budget_policies.evaluation_version`, and deletes only its selected committed
+input IDs in the publication transaction. A later commit with an older allocated
+ID remains pending. Policy creation/edits also append inputs, so a previously
+consumed no-policy batch cannot hide a newly applicable threshold.
+
+No financial commit increments a company/agent spend counter or company dirty
+version. Monthly API totals aggregate `cost_events`; runtime totals use existing
+`accounting_runtime_baselines` plus acknowledged v2 run ledger. Retained counter
+columns are non-authoritative. Invoice and verified late-receipt corrections
+retain append-only `cost_adjustments` evidence and immutable reported amounts.
+`cost_events.reported_usage_json` retains original placeholder usage before a
+verified late receipt updates effective token/request fields; each adjustment
+retains its previous usage in `previous_usage_json`.
+Unknown late run receipts remain durable per-receipt debt; resolving one receipt
+cannot clear another unresolved receipt.
+
+Upgrade all controllers/workers to this accounting contract and drain incompatible
+pre-upgrade database transactions before enabling independent writers. Do not run
+pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
+Rollback must use a compatible version that reads the ledger and retains the
+durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

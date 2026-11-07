@@ -94,11 +94,11 @@ jobs:
     # falls back to GitHub-hosted runners, including raced merge dispatches.
     name: Check preview artifacts
     if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && !inputs.dry_run
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt == 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     permissions:
       contents: read
     # Preserve the previous hosted default; only AWS needs the Fleet limit.
-    timeout-minutes: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 10 || 360 }}
+    timeout-minutes: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt == 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 10 || 360 }}
     outputs:
       image: ${{ steps.plan.outputs.image }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -122,7 +122,7 @@ jobs:
     name: Build preview migrator
     needs: plan_preview
     if: needs.plan_preview.outputs.packages == 'true'
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt == 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -320,12 +320,12 @@ jobs:
 
   verify_canary:
     name: Reuse exact-source verification
-    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 70
     permissions:
       contents: read
-      actions: read
+      actions: write # restart only an exact-source push deferred before admission
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -430,6 +430,16 @@ jobs:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind provider-pack inputs for release assembly
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        run: echo "PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR=$RUNNER_TEMP/release-provider-pack-inputs" >> "$GITHUB_ENV"
       - name: Bind daemon inputs for release assembly
         if: needs.release_runner_source.outputs.required == 'true'
         run: echo "PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR=$RUNNER_TEMP/release-runner-inputs" >> "$GITHUB_ENV"
@@ -727,6 +737,16 @@ jobs:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind provider-pack inputs for release assembly
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        run: echo "PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR=$RUNNER_TEMP/release-provider-pack-inputs" >> "$GITHUB_ENV"
       - name: Bind daemon inputs for release assembly
         if: needs.release_runner_source.outputs.required == 'true'
         run: echo "PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR=$RUNNER_TEMP/release-runner-inputs" >> "$GITHUB_ENV"
@@ -1006,6 +1026,16 @@ jobs:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind provider-pack inputs for release assembly
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        run: echo "PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR=$RUNNER_TEMP/release-provider-pack-inputs" >> "$GITHUB_ENV"
       - name: Bind daemon inputs for release assembly
         if: needs.release_runner_source.outputs.required == 'true'
         run: echo "PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR=$RUNNER_TEMP/release-runner-inputs" >> "$GITHUB_ENV"
@@ -1387,6 +1417,16 @@ jobs:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind provider-pack inputs for release assembly
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        run: echo "PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR=$RUNNER_TEMP/release-provider-pack-inputs" >> "$GITHUB_ENV"
       - name: Bind daemon inputs for release assembly
         if: needs.release_runner_source.outputs.required == 'true'
         run: echo "PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR=$RUNNER_TEMP/release-runner-inputs" >> "$GITHUB_ENV"
@@ -1445,6 +1485,16 @@ jobs:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
+      - name: Download target-owned Linux provider-pack identities
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
+          path: ${{ runner.temp }}/release-provider-pack-inputs
+          merge-multiple: true
+      - name: Bind provider-pack inputs for release assembly
+        if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
+        run: echo "PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR=$RUNNER_TEMP/release-provider-pack-inputs" >> "$GITHUB_ENV"
       - name: Bind daemon inputs for release assembly
         if: needs.release_runner_source.outputs.required == 'true'
         run: echo "PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR=$RUNNER_TEMP/release-runner-inputs" >> "$GITHUB_ENV"
