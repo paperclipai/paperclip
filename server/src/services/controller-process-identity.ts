@@ -142,3 +142,18 @@ export async function controllerProcessExited(controller: ControllerProcess): Pr
   const observed = await observedProcessStartedAt(controller.pid);
   return observed !== null && processStartsDefinitelyDiffer(controller.processStartedAt, new Date(observed));
 }
+
+/** This process's PID-space hash. An unreadable space is stored as
+ * "unknown", which `sameProcessSpace` never accepts. */
+export function currentProcessSpaceHash(): string {
+  return hostHash;
+}
+
+/**
+ * Whether a PID recorded under `recorded` can be judged in this process.
+ * True only for the same readable PID space. A different or unreadable space
+ * is never proof: a dead PID here says nothing about a process elsewhere.
+ */
+export function sameProcessSpace(recorded: string | null | undefined): boolean {
+  return typeof recorded === "string" && hostHash !== UNKNOWN_PROCESS_SPACE && recorded === hostHash;
+}

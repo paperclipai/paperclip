@@ -1,3 +1,4 @@
+import { currentProcessSpaceHash } from "../controller-process-identity.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -267,6 +268,25 @@ describe("native controller takeover fencing", () => {
       allowed: true,
       reason: "controller_process_dead",
     });
+  });
+
+  it.each([
+    ["another host", "another-host-pid-space"],
+    ["an unreadable PID space", "unknown"],
+  ])("never treats a dead or recycled local PID as proof for a controller on %s", async (_name, controllerHostHash) => {
+    for (const probe of [{ isProcessAlive: () => false }, { isProcessAlive: () => true,
+      readProcessStartedAt: async () => new Date("2026-09-04T11:30:00.000Z") }]) {
+      await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash }, now, ...probe }))
+        .resolves.toEqual({ allowed: false, reason: "controller_host_unprovable" });
+    }
+  });
+
+  it("proves a controller gone only in its own recorded PID space", async () => {
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: currentProcessSpaceHash() },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
+    // A row saved before the PID space was recorded keeps the previous local proof for one release.
+    await expect(evaluateNativeControllerTakeover({ owner: { ...owner(), controllerHostHash: null },
+      now, isProcessAlive: () => false })).resolves.toEqual({ allowed: true, reason: "controller_process_dead" });
   });
 
   it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
