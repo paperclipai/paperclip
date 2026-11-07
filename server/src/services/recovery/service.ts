@@ -219,6 +219,14 @@ const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const TRANSITIONAL_AGENT_LIFECYCLE_STATES = new Set([
+  "preparing",
+  "verifying",
+  "pausing",
+  "resuming",
+  "terminating",
+  "cleaning_up",
+]);
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -278,6 +286,7 @@ type LatestIssueRun =
       | "errorCode"
       | "contextSnapshot"
       | "livenessState"
+      | "executionStage"
       | "startedAt"
       | "createdAt"
     > & {
@@ -698,6 +707,17 @@ export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (
+    errorCode === "agent_not_invokable" &&
+    latestRun?.executionStage === "settled"
+  ) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
   if (errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
     return {
       kind: "deliberate_wait_without_target",
@@ -861,12 +881,14 @@ function isOperatorCancelledRun(
   );
 }
 
-function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
-  return Boolean(
-    latestRun &&
+function isUnsuccessfulTerminalIssueRun(
+  latestRun: LatestIssueRun,
+): latestRun is NonNullable<LatestIssueRun> {
+  return (
+    latestRun !== null &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-    ),
+    )
   );
 }
 
@@ -961,6 +983,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -992,6 +1015,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -1893,6 +1917,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -4684,6 +4709,18 @@ export function recoveryService(
         agent && agent.companyId === issue.companyId
           ? await isAgentInvokable(agent)
           : false;
+      const lifecycleTransitionInProgress = Boolean(
+        agent &&
+          TRANSITIONAL_AGENT_LIFECYCLE_STATES.has(agent.lifecycleState),
+      );
+      if (
+        issue.status !== "in_review" &&
+        !agentInvokable &&
+        lifecycleTransitionInProgress
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       if (
         agent?.status === "paused" &&
         agent.companyId === issue.companyId &&
