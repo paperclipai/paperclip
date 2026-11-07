@@ -142,7 +142,7 @@ import {
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS, localRunnerProcessReconnectGraceMs } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type {
@@ -16156,7 +16156,8 @@ async function createRunnerdBackendWithinSessionClaim(
         // A controller's bounded reconnect attempt is not the remote owner's
         // lifetime. Retain it through restarts until its authenticated lease
         // expires or explicit Stop/suspension proves that execution ended.
-        runnerProcessReconnectGraceMs: remoteTarget ? null : undefined,
+        // A warm local runner outlives its turn; bound it if its controller dies.
+        runnerProcessReconnectGraceMs: remoteTarget ? null : localRunnerProcessReconnectGraceMs(input.execution.session.lifecyclePolicy),
         environment: effectiveRunnerEnvironment,
         observability: input.observability,
         onDiagnostic: message => diagnostics.record(
