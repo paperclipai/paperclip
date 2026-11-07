@@ -34,7 +34,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { alias } from "drizzle-orm/pg-core";
-import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession } from "./native-local-process-stop.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -143,6 +143,7 @@ export async function validateExecutionReconciliation(input: {
   if (checkLocalProcesses && leases.every(lease => lease.provider === "local") &&
       !run.processPid && !run.processGroupId && !unusedAdmission &&
       !await isCancelledNativeStartup(db, run, coordinator) &&
+      !await isFailedNativePreparation(db, run, coordinator) &&
       !await hasNativeLocalProcessStop(db, companyId, run.id) &&
       !await hasHistoricalSuspendedNativeSession(db, run)) {
     throw conflict("The previous provider has no verified process identity or stop record.");

@@ -10044,8 +10044,9 @@ export function issueRoutes(
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: issue.companyId } });
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    const actor = getActorInfo(req);
     const receipt = await reconstructNativeWorkspace({ db, companyId: issue.companyId, issueId: issue.id,
-      actorId: getActorInfo(req).actorId, request: req.body });
+      actorId: actor.actorId, recordedByUserId: actor.actorType === "user" ? actor.actorId : null, request: req.body });
     res.status(202).json(receipt);
   });
 
@@ -10168,7 +10169,8 @@ export function issueRoutes(
             return { issue: lockedIssue, recoveryAction: workspaceRepairAction, replayed: true, workspaceRepairOnly: true };
           }
           await markExecutionReconciliation(tx as unknown as Db, workspaceRepairAction,
-            executionReconciliation!, actor.actorId, undefined, { workspaceRepairOnly: true });
+            executionReconciliation!, actor.actorId, undefined,
+            { workspaceRepairOnly: true, recordedByUserId: actor.actorType === "user" ? actor.actorId : null });
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
           const [recoveryAction] = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored",
             resolutionNote: resolutionNote ?? null, resolvedAt: new Date(), updatedAt: new Date(),

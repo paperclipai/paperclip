@@ -324,6 +324,19 @@ describe("issue execution reconciliation with real routes and Postgres", () => {
     expect((await request(f.app).get(`/api/issues/${f.issue.id}`).expect(200)).body.executionBlocker).toMatchObject({ runId: f.run.id });
   });
 
+  it("accepts a local preparation failure that proves no provider started", async () => {
+    const f = await settledProcessHold();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed", executionStage: "preparing",
+      runtimeMode: "legacy", runtimeModeResolvedAt: null, processPid: null, processGroupId: null, processStartedAt: null,
+      sessionIdAfter: null, nativeIssueId: null, nativeSessionId: null, controllerLeaseExpiresAt: null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { ...source!.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    await request(f.app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`).send(resolutionBody(f.run.id)).expect(200);
+  });
+
   it.each(["live_provider", "wrong_source", "missing_evidence"])("preserves a settled hold on %s", async kind => {
     const f = await settledProcessHold(kind !== "live_provider");
     const body = resolutionBody(kind === "wrong_source" ? randomUUID() : f.run.id);
