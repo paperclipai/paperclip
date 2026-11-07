@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -1355,14 +1355,13 @@ describe("native external-chat response wait", () => {
       if (change === "provider_started") await db.update(heartbeatRuns).set({ resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } }).where(eq(heartbeatRuns.id, fixture.runId));
       if (change === "parent_session") await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, fixture.runId));
       if (change === "unrelated_retry") await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure" }).where(eq(heartbeatRuns.id, child.id));
-      if (change === "foreign_task") {
-        const [other] = await db.insert(issues).values({ companyId: fixture.companyId, title: "Another task" }).returning();
-        await db.update(heartbeatRuns).set({ issueId: other!.id }).where(inArray(heartbeatRuns.id, [fixture.runId, child.id]));
-      }
-      if (change === "foreign_parent") {
-        const [company] = await db.insert(companies).values({ name: "Foreign retry", issuePrefix: `F${randomUUID().replaceAll("-", "")}` }).returning();
-        const [actor] = await db.insert(agents).values({ companyId: company!.id, name: "Foreign agent", adapterType: "process" }).returning();
-        const [foreign] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: actor!.id,
+      if (change === "foreign_parent" || change === "foreign_task") {
+        const [company] = change === "foreign_parent" ? await db.insert(companies).values({ name: "Foreign retry", issuePrefix: `F${randomUUID().replaceAll("-", "")}` }).returning() : [];
+        const [actor] = company ? await db.insert(agents).values({ companyId: company.id, name: "Foreign agent", adapterType: "process" }).returning() : [];
+        const companyId = company?.id ?? fixture.companyId;
+        const [other] = await db.insert(issues).values({ companyId, title: "Another task" }).returning();
+        const [foreign] = await db.insert(heartbeatRuns).values({ companyId, agentId: actor?.id ?? fixture.agentId,
+          scopeKind: "issue", issueId: other!.id, finishedAt: new Date(),
           status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready", contextSnapshot: fixture.context,
           resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).returning();
         context.retryOfRunId = foreign!.id;
