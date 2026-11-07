@@ -362,33 +362,60 @@ const POST_COMMIT_HOOKS = Symbol("paperclip.db.postCommitHooks");
 
 export type PostCommitHook = () => void | Promise<void>;
 
-type PostCommitHookCarrier = { [POST_COMMIT_HOOKS]?: PostCommitHook[] };
+/**
+ * One transaction level. Every level of a top-level transaction shares one
+ * registration list, so hooks run in the order they were registered across
+ * savepoints. A level that rolls back is marked, and its hooks and the hooks of
+ * the levels inside it are skipped.
+ */
+type PostCommitScope = {
+  parent: PostCommitScope | null;
+  rolledBack: boolean;
+  registrations: Array<{ hook: PostCommitHook; scope: PostCommitScope }>;
+};
+
+type PostCommitHookCarrier = { [POST_COMMIT_HOOKS]?: PostCommitScope };
 
 type TransactionRunner = PostCommitHookCarrier & {
   transaction: (callback: (tx: TransactionRunner) => Promise<unknown>, ...config: unknown[]) => Promise<unknown>;
 };
 
 export function registerPostCommitHook(tx: object, hook: PostCommitHook): boolean {
-  const hooks = (tx as PostCommitHookCarrier)[POST_COMMIT_HOOKS];
-  if (!hooks) return false;
-  hooks.push(hook);
+  const scope = (tx as PostCommitHookCarrier)[POST_COMMIT_HOOKS];
+  if (!scope) return false;
+  scope.registrations.push({ hook, scope });
   return true;
 }
 
-function trackPostCommitHooks(runner: TransactionRunner, parentHooks: PostCommitHook[] | null) {
+function committed(scope: PostCommitScope): boolean {
+  for (let level: PostCommitScope | null = scope; level; level = level.parent) {
+    if (level.rolledBack) return false;
+  }
+  return true;
+}
+
+function trackPostCommitHooks(runner: TransactionRunner, parentScope: PostCommitScope | null) {
   const transaction = runner.transaction.bind(runner);
   runner.transaction = async (callback, ...config) => {
-    const hooks: PostCommitHook[] = [];
-    const result = await transaction(async (tx) => {
-      tx[POST_COMMIT_HOOKS] = hooks;
-      trackPostCommitHooks(tx, hooks);
-      return callback(tx);
-    }, ...config);
-    if (parentHooks) {
-      parentHooks.push(...hooks);
-      return result;
+    const scope: PostCommitScope = {
+      parent: parentScope,
+      rolledBack: false,
+      registrations: parentScope ? parentScope.registrations : [],
+    };
+    let result: unknown;
+    try {
+      result = await transaction(async (tx) => {
+        tx[POST_COMMIT_HOOKS] = scope;
+        trackPostCommitHooks(tx, scope);
+        return callback(tx);
+      }, ...config);
+    } catch (error) {
+      scope.rolledBack = true;
+      throw error;
     }
-    for (const hook of hooks) {
+    if (parentScope) return result;
+    for (const { hook, scope: registeredIn } of scope.registrations) {
+      if (!committed(registeredIn)) continue;
       try {
         await hook();
       } catch (error) {

@@ -3,13 +3,15 @@ import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-r
 import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, QUALIFIED_ACPX_PROFILES } from "@paperclipai/paperclip-runner";
+import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "@paperclipai/paperclip-runner/live";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -63,6 +65,7 @@ import {
   restoreRemoteBootstrapCheckpointForRecovery,
   runnerdStateProvesIncompleteBootstrap,
   runnerdStateProvesNoRemoteProviderTurn,
+  verifyRemoteRunnerOrSettledExit,
 } from "./native-session-executor.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -120,6 +123,189 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   let agentId: typeof environment.current.agentId;
   let successor: typeof environment.current.successor;
   beforeAll(() => { ({ temporary, runtimeRoot, companyId, agentId, successor } = environment.current); });
+
+  realProcessIt.each([2, 3])("relaunches scheduled attempt %i after a fresh ACPX Runner rejects turn.start and closes cleanly", async providerAttempt => {
+    const root = await mkdtemp(join(tmpdir(), "fresh-runner-settled-retry-"));
+    const fault = join(root, "reject-turn"), journal = join(root, "sidecar-calls"), shim = join(root, "sidecar.cjs");
+    const binary = defaultCapabilityRunnerdBinary();
+    const fake = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
+    const digest = (bytes: string | Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const script = `const { spawn } = require("node:child_process");
+const { createInterface } = require("node:readline");
+const { existsSync, appendFileSync } = require("node:fs");
+const child = spawn(${JSON.stringify(fake)}, ["--mode", "source-reconcile", "--profile-digest", ${JSON.stringify(QUALIFIED_ACPX_PROFILES.claude.commandDigest)}, "--journal", ${JSON.stringify(journal)}, "--source-fault", ${JSON.stringify(fault)}]);
+child.stderr.pipe(process.stderr);
+createInterface({ input: child.stdout }).on("line", line => {
+  const response = JSON.parse(line);
+  if (response.result?.sidecarPid) response.result.sidecarPid = process.pid;
+  process.stdout.write(JSON.stringify(response) + "\\n");
+});
+createInterface({ input: process.stdin }).on("line", line => {
+  const request = JSON.parse(line);
+  if (request.command === "turn.start" && existsSync(${JSON.stringify(fault)})) {
+    appendFileSync(${JSON.stringify(journal)}, JSON.stringify(request) + "\\n");
+    process.stdout.write(JSON.stringify({ protocolVersion: request.protocolVersion, id: request.id, ok: false,
+      error: { code: "SESSION_RESUME_REQUIRED", message: "Resume the provider session again.", retryable: true } }) + "\\n");
+  } else child.stdin.write(line + "\\n");
+}).on("close", () => child.stdin.end());
+child.on("exit", code => process.exit(code ?? 1));
+process.on("SIGTERM", () => child.kill("SIGTERM"));
+`;
+    await writeFile(shim, script);
+    // Runnerd refuses a group- or world-writable qualified ACPX launch. A
+    // hosted CI image can ship such a Node, or run under umask 0002.
+    await chmod(shim, 0o600);
+    let sidecarNode = process.execPath;
+    if ((await stat(sidecarNode)).mode & 0o022) {
+      // Same approach as the runner's copyOwnedNodeRuntime test helper.
+      const owned = join(root, "sidecar-node");
+      await mkdir(owned);
+      sidecarNode = join(owned, "runtime");
+      await copyFile(process.execPath, sidecarNode);
+      await chmod(sidecarNode, 0o700);
+      // Homebrew Node resolves its libnode dylib next to the relocated executable.
+      const libraries = join(dirname(process.execPath), "..", "lib");
+      for (const name of (await readdir(libraries).catch(() => [] as string[])).filter(name => /^libnode\..*\.dylib$/.test(name))) {
+        await copyFile(join(libraries, name), join(owned, name));
+      }
+    }
+    const nodeDigest = digest(await readFile(sidecarNode));
+    const identity = { runId: "fresh-resume-run", normalizedSessionId: "checkpointed-session", runnerInstanceId: "fresh-runner",
+      environmentLeaseId: "same-lease", turnId: "same-turn", itemId: "same-item" };
+    const stateDirectory = join(root, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(identity.normalizedSessionId).digest("hex"));
+    const bundles: ReturnType<typeof createCapabilityRunnerdCodexTransport>[] = [];
+    const children: ReturnType<typeof spawn>[] = [];
+    const launches = vi.fn();
+    const create = (directory: string, resume?: CapabilityRunnerdCodexTransportOptions["resumeProviderSession"],
+      adoptExistingRunner?: CapabilityRunnerdCodexTransportOptions["adoptExistingRunner"]) => {
+      const bundle = createCapabilityRunnerdCodexTransport({
+        runnerBinary: binary, runnerArtifact: readRunnerdArtifactBinding(binary), stateDirectory: directory,
+        provider: "acpx", acpxAgent: "claude", prpIdentity: identity, resumeProviderSession: resume, adoptExistingRunner,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null }, closeGraceMs: 3_000,
+        controlPlaneRegistration: async authority => {
+          await authority.start();
+          return { connectUrl: authority.connectUrl, release: () => authority.stop() };
+        },
+        prepareLaunch: async input => ({ configurationId: "qualified-fixture", requirementsDigest: runnerLaunchRequirementsDigest(input),
+          provider: createRunnerProviderLaunch(input, { options: {}, root: directory, cwd: root, codexHome: root,
+            codexCommand: "", providerNodeCommand: sidecarNode, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
+        runnerProcessLauncher: spec => {
+          launches(adoptExistingRunner);
+          const child = spawn(binary, [...spec.args, "--acpx-launch-authority-digest", digest("fixture authority"),
+            "--acpx-sidecar-command", sidecarNode, "--acpx-sidecar-command-sha256", nodeDigest,
+            "--acpx-sidecar-script", shim, "--acpx-sidecar-script-sha256", digest(script)],
+          { env: { PATH: process.env.PATH, ...spec.environment }, stdio: ["ignore", "ignore", "pipe"], detached: true });
+          children.push(child);
+          let stderr = "";
+          child.stderr?.on("data", bytes => { stderr = (stderr + bytes).slice(-16_384); });
+          return { child, completion: new Promise((resolveExit, reject) => {
+            child.once("error", reject);
+            child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr }));
+          }) };
+        },
+      });
+      bundles.push(bundle);
+      return bundle;
+    };
+    const expectCompleted = async (bundle: ReturnType<typeof create>, expectedTurnId: string) => {
+      expect(expectedTurnId).toEqual(expect.any(String));
+      expect(expectedTurnId).not.toBe("");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          (async () => {
+            for await (const event of bundle.transport.notifications()) {
+              if (event.method !== "turn/completed") continue;
+              const turn = event.params?.turn as { id?: string; status?: string; error?: unknown } | undefined;
+              if (turn?.id !== expectedTurnId) continue;
+              expect(turn).toMatchObject({ id: expectedTurnId, status: "completed" });
+              expect(turn?.error ?? null).toBeNull();
+              return;
+            }
+            throw new Error("Fixture turn ended without completion");
+          })(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Fixture turn completion timed out")), 5_000); }),
+        ]);
+      } finally { clearTimeout(timer); }
+    };
+    try {
+      const seedDirectory = stateDirectory;
+      const seed = create(seedDirectory);
+      const opened = await seed.transport.request("thread/start", { cwd: root, model: "fixture-model", dynamicTools: [] });
+      const thread = opened.thread as { id: string; sessionId: string };
+      const seedStarted = await seed.transport.request("turn/start", { input: [{ type: "text", text: "Save the provider checkpoint." }] });
+      await expectCompleted(seed, (seedStarted.turn as { id: string }).id);
+      await seed.transport.close();
+      const provider = JSON.parse(await readFile(join(seedDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      const resume = { driverSessionId: thread.id, providerSessionId: thread.sessionId, providerIdentity: provider.identity };
+      await writeFile(fault, "reject-turn-start");
+      const fresh = create(stateDirectory, resume);
+      await fresh.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
+      await fresh.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      expect(launches.mock.calls).toEqual([[undefined], [undefined]]);
+      const child = children.at(-1)!;
+      const pid = child.pid!;
+      expect(pid).not.toBe(children[0]!.pid);
+      let fingerprint = "linux:abcd-1234:100";
+      if (process.platform === "linux") {
+        const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+        fingerprint = `linux:${(await readFile("/proc/sys/kernel/random/boot_id", "utf8")).trim()}:${stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[19]}`;
+      }
+      await writeFile(join(stateDirectory, "runner", "runner-process.identity"),
+        `fixture_nonce\n${pid}\n${new Date().toISOString()}\n${identity.runnerInstanceId}\n${fingerprint}\n`);
+      await expect(fresh.transport.request("turn/start", { input: [{ type: "text", text: "Resume saved work." }] }))
+        .rejects.toThrow("classification=session_resume_required");
+      const rejectedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(rejectedCheckpoint).toMatchObject({ lifecycle: "prepared", providerExitUnconfirmed: false, identity: provider.identity });
+      await fresh.transport.close();
+      await vi.waitFor(() => expect(child.exitCode).not.toBeNull(), { timeout: 5_000 });
+      const resumedControl = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(resumedControl.committedEvents).toEqual(expect.arrayContaining([expect.objectContaining({ eventType: "session.resumed" })]));
+      const saved = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+      expect(saved).toMatchObject({ ...identity, lifecycle: "suspended", outbox: [] });
+      expect(saved.pendingTerminalDelivery ?? null).toBeNull();
+      expect(saved.pendingProviderCleanup ?? null).toBeNull();
+      expect(saved.warmTransition ?? null).toBeNull();
+      const suspendedCheckpoint = JSON.parse(await readFile(join(stateDirectory, "runner", "acpx-provider-state.json"), "utf8"));
+      expect(suspendedCheckpoint).toMatchObject({ lifecycle: "suspended", providerExitUnconfirmed: false,
+        activeTurnId: null, pendingEvents: [], pendingRuntimeRequests: {}, identity: provider.identity });
+      const runner = { execute: async (request: { command: string; args: string[]; timeoutMs?: number }) =>
+        new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolveResult => {
+          execFile(request.command, request.args, { timeout: request.timeoutMs }, (error, stdout, stderr) => resolveResult({
+            stdout, stderr, exitCode: error ? Number(error.code) : 0, timedOut: error?.killed ?? false,
+          }));
+        }) };
+      const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: root, runner,
+        sandboxLeaseAcquisition: { providerLeaseId: "same-sandbox", outcome: "resumed" as const } };
+      const adopted = await verifyRemoteRunnerOrSettledExit({
+        claim: { runId: identity.runId, remote: { providerLeaseId: "same-sandbox", remoteCwd: root } },
+        target: target as never, identity, runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, providerAttempt,
+      });
+      expect(adopted).toBeUndefined();
+      await rm(fault);
+      const retried = create(stateDirectory, resume, adopted);
+      await retried.transport.request("thread/read", { threadId: thread.id, includeTurns: false });
+      await retried.transport.request("thread/resume", { threadId: thread.id, cwd: root, model: "fixture-model", dynamicTools: [] });
+      const retryStarted = await retried.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the bounded retry." }] });
+      const retryTurnId = (retryStarted.turn as { id: string }).id;
+      await expectCompleted(retried, retryTurnId);
+      const calls = (await readFile(journal, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      const turnStarts = calls.filter(call => call.command === "turn.start");
+      expect(turnStarts).toHaveLength(3);
+      expect(new Set(turnStarts.map(call => call.params.turnId)).size).toBe(3);
+      expect(turnStarts.at(-1).params.turnId).toBe(retryTurnId);
+      expect(calls.filter(call => call.command === "session.open").map(call => call.params.expectedIdentity))
+        .toEqual([null, provider.identity, provider.identity]);
+      expect(launches.mock.calls).toEqual([[undefined], [undefined], [undefined]]);
+      expect(retried.evidence().runnerPid).toBeGreaterThan(0);
+      expect(retried.evidence().runnerPid).not.toBe(pid);
+    } finally {
+      await Promise.allSettled(bundles.map(bundle => bundle.transport.close()));
+      for (const child of children) if (child.pid && child.exitCode === null && child.signalCode === null) await stopOwnedProcessGroup(child.pid, root);
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
 
   it.each(["issue", "run", "coordinator"] as const)("defers a busy %s row without blocking replacement startup", async kind => {
     const fixture = await seedRun(`OVERLAP-BUSY-${kind}`);
@@ -2663,6 +2849,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
 
   // What a resumed turn records on restore before it does any new work.
   const restoreNoise = (round: number) => [
+    { eventType: "native.process_start_requested" },
     { eventType: "item.completed", kind: "thread_lineage" },
     { eventType: "turn.failed", turnId: "interrupted-turn" },
     { eventType: "tool.execution.completed", turnId: "interrupted-turn" },
@@ -2695,12 +2882,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   it("does not credit a resume's work to a later provider attempt started by a normal retry", async () => {
     const fixture = await seedInterruptedCheckpoint("PROGRESS-THEN-RETRY");
     await resumeThenCrash(fixture);
-    await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: "resumed" },
-      { eventType: "tool.execution.completed", turnId: "resumed" }]);
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: "resumed" }, { eventType: "tool.execution.completed", turnId: "resumed" }]);
     // The resume (attempt 2) did work. A transport failure then started a
     // normal local retry at attempt 3, which crashed before doing any work.
     await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" }]);
     const { disposition } = await resumeThenCrash(fixture);
     expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
   });
@@ -2721,6 +2909,82 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ]);
   });
 
+  // RC-22c: in a K6 crash loop the controller died again before the resumed
+  // execution requested a runner, and the next claim charged that resume.
+  it.each([
+    { label: "after the executor took its lease", leaseTaken: true },
+    { label: "before the executor took its lease", leaseTaken: false },
+  ])("does not charge for a resume killed before it started the provider ($label)", async ({ leaseTaken }) => {
+    const fixture = await seedInterruptedCheckpoint(`UNSTARTED-RESUME-${leaseTaken ? "LEASE" : "NO-LEASE"}`);
+    // The first restart resume runs and makes progress.
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await appendRunEvents(fixture, [...restoreNoise(1), { eventType: "tool.execution.completed", turnId: "continuation-1" }]);
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    // Four crash restarts in a row, each before the resumed execution started.
+    for (let round = 0; round < 4; round += 1) {
+      if (leaseTaken) {
+        const { disposition, attempt } = await resumeThenCrash(fixture);
+        outcomes.push({ kind: disposition?.kind, attempt });
+        continue;
+      }
+      const [disposition] = await claimNativeRestartRecoveries({
+        db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId],
+      });
+      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      outcomes.push({ kind: disposition?.kind, attempt: coordinator.attempt });
+    }
+    expect(outcomes).toEqual(Array(4).fill({ kind: "resume_dead_runner", attempt: 2 }));
+    // A resume that starts and then fails before any work is charged again.
+    await appendRunEvents(fixture, [...restoreNoise(2), { eventType: "turn.failed", turnId: "continuation-2" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ disposition: { kind: "resume_dead_runner" }, attempt: 3 });
+  });
+
+  it("does not treat a reattachment with no later events as an unstarted resume", async () => {
+    const fixture = await seedInterruptedCheckpoint("REATTACH-NO-EVENTS");
+    await resumeThenCrash(fixture);
+    await appendRunEvents(fixture, [...restoreNoise(1), { eventType: "turn.failed", turnId: "continuation-1" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 3 });
+    // That claim was a reattachment to a runner whose provider had already
+    // started. The controller then died before recording anything else, and the
+    // adopted runner died too.
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text, 'disposition'],
+        '"reattach_existing_runner"'::jsonb)`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const { disposition } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
+  it("charges the owed attempt once when an unstarted first resume is replaced", async () => {
+    const fixture = await seedInterruptedCheckpoint("UNSTARTED-FIRST-RESUME");
+    // The first restart charges, but the controller dies before the executor
+    // takes its lease, so the charge was never applied.
+    await claimNativeRestartRecoveries({ db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId] });
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    // The replacement carries that charge, once.
+    const { disposition, attempt } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "resume_dead_runner", chargesProviderAttempt: true });
+    expect(attempt).toBe(2);
+  });
+
+  it("bounds a crash loop that never starts the provider", async () => {
+    const fixture = await seedInterruptedCheckpoint("UNSTARTED-CRASH-LOOP");
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    for (let round = 1; round <= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT + 3; round += 1) {
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      outcomes.push({ kind: disposition?.kind, attempt });
+      if (disposition?.kind !== "resume_dead_runner") break;
+    }
+    expect(outcomes.at(-1)).toEqual({ kind: "blocked", attempt: undefined });
+    expect(outcomes.slice(0, -1).map(outcome => outcome.attempt))
+      .toEqual([2, ...Array(NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT - 2).fill(2), 3]);
+  });
+
   it("bounds a crash loop that makes progress before every crash", async () => {
     const fixture = await seedInterruptedCheckpoint("PROGRESS-CRASH-LOOP");
     const outcomes: Array<{ kind?: string; attempt?: number }> = [];
@@ -2728,7 +2992,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const { disposition, attempt } = await resumeThenCrash(fixture);
       outcomes.push({ kind: disposition?.kind, attempt });
       if (disposition?.kind !== "resume_dead_runner") break;
-      await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: `loop-${round}` },
+      await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+        { eventType: "turn.accepted", turnId: `loop-${round}` },
         { eventType: "item.completed", turnId: `loop-${round}`, kind: "assistant_message" }]);
     }
     // Generations 2..12 are claimed; credit stops at the generation limit and

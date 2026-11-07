@@ -50,38 +50,89 @@ function bracketEnd(text: string, open: number): number {
   return text.length;
 }
 
-function members(text: string, open: number): string[] {
+function skipTrivia(text: string, at: number, end = text.length): number {
+  while (at < end) {
+    if (/\s/.test(text[at]!)) at++;
+    else if (text.startsWith("//", at)) at = text.indexOf("\n", at) === -1 ? end : text.indexOf("\n", at) + 1;
+    else if (text.startsWith("/*", at)) at = text.indexOf("*/", at) + 2;
+    else break;
+  }
+  return at;
+}
+
+/** The start offsets of the top-level members of the object literal that opens at `open`. */
+function members(text: string, open: number): number[] {
   const end = bracketEnd(text, open) - 1;
-  const parts: string[] = [];
+  const starts: number[] = [];
   let start = open + 1;
+  const push = (from: number) => {
+    const at = skipTrivia(text, from, end);
+    if (at < end && text[at] !== ",") starts.push(at);
+  };
   for (let i = open + 1; i < end; i++) {
     const ch = text[i]!;
     if (ch === "'" || ch === "\"" || ch === "`") i = stringEnd(text, i) - 1;
+    else if (text.startsWith("//", i)) i = text.indexOf("\n", i);
+    else if (text.startsWith("/*", i)) i = text.indexOf("*/", i) + 1;
     else if ("([{".includes(ch)) i = bracketEnd(text, i) - 1;
     else if (ch === ",") {
-      parts.push(text.slice(start, i));
+      push(start);
       start = i + 1;
     }
   }
-  parts.push(text.slice(start, end));
-  return parts.map((part) => part.replace(/^(\s*\/\/[^\n]*\n)*\s*/, "").trim()).filter(Boolean);
+  push(start);
+  return starts;
+}
+
+/** The offsets of the top-level `?` and its `:` inside [from, to), or null when there is no conditional. */
+function conditionalParts(text: string, from: number, to: number): { question: number; colon: number } | null {
+  let question = -1;
+  let pending = 0;
+  for (let i = from; i < to; i++) {
+    const ch = text[i]!;
+    if (ch === "'" || ch === "\"" || ch === "`") i = stringEnd(text, i) - 1;
+    else if (text.startsWith("//", i)) i = text.indexOf("\n", i);
+    else if (text.startsWith("/*", i)) i = text.indexOf("*/", i) + 1;
+    else if ("([{".includes(ch)) i = bracketEnd(text, i) - 1;
+    else if (ch === "?" && (text[i + 1] === "." || text[i + 1] === "?")) i++;
+    else if (ch === "?") {
+      if (question === -1) question = i;
+      pending++;
+    } else if (ch === ":" && question !== -1 && --pending === 0) return { question, colon: i };
+  }
+  return null;
+}
+
+/** Why spreading the expression in [at, to) can write status, or null when it cannot. */
+function spreadStatusWrite(text: string, at: number, to: number): string | null {
+  at = skipTrivia(text, at, to);
+  while (to > at && /[\s,]/.test(text[to - 1]!)) to--;
+  if (text[at] === "(" && bracketEnd(text, at) === to) return spreadStatusWrite(text, at + 1, to - 1);
+  const conditional = conditionalParts(text, at, to);
+  if (conditional) {
+    return spreadStatusWrite(text, conditional.question + 1, conditional.colon)
+      ?? spreadStatusWrite(text, conditional.colon + 1, to);
+  }
+  if (text[at] === "{" && bracketEnd(text, at) === to) return statusWrite(text, at);
+  const expression = text.slice(at, to);
+  if (/^[A-Za-z_$][\w$]*$/.test(expression)) return declaredStatusWrite(text, expression, at);
+  return `spreads ${expression.replace(/\s+/g, " ").slice(0, 60)}, which cannot be checked`;
 }
 
 function statusWrite(text: string, argumentAt: number): string | null {
-  const argument = text.slice(argumentAt, argumentAt + 200);
-  if (argument.startsWith("{")) {
-    for (const member of members(text, argumentAt)) {
-      if (/^status\s*(:|$)/.test(member)) return "sets status";
-      if (!member.startsWith("...")) continue;
-      const spread = member.slice(3).trim();
-      const reason = /^[A-Za-z_$][\w$]*$/.test(spread)
-        ? declaredStatusWrite(text, spread, argumentAt)
-        : /[{,]\s*status\s*:/.test(spread.replace(/\/\/[^\n]*/g, "")) ? "sets status inside a spread" : null;
+  if (text[argumentAt] === "{") {
+    const end = bracketEnd(text, argumentAt) - 1;
+    const starts = members(text, argumentAt);
+    for (const [index, memberAt] of starts.entries()) {
+      const memberEnd = index + 1 < starts.length ? starts[index + 1]! : end;
+      if (/^status\s*(:|,|$)/.test(text.slice(memberAt, memberEnd).trim())) return "sets status";
+      if (!text.startsWith("...", memberAt)) continue;
+      const reason = spreadStatusWrite(text, memberAt + 3, memberEnd);
       if (reason) return reason;
     }
     return null;
   }
-  const identifier = /^[A-Za-z_$][\w$]*/.exec(argument)?.[0];
+  const identifier = /^[A-Za-z_$][\w$]*/.exec(text.slice(argumentAt, argumentAt + 200))?.[0];
   return identifier ? declaredStatusWrite(text, identifier, argumentAt) : "passes a value that cannot be checked";
 }
 
@@ -106,22 +157,27 @@ function declaredStatusWrite(text: string, name: string, usedAt: number): string
   return `spreads ${name}, whose declaration does not exclude status`;
 }
 
+function statusWritesIn(text: string): string[] {
+  const violations: string[] = [];
+  const line = (index: number) => text.slice(0, index).split("\n").length;
+  for (let at = text.indexOf(".update(heartbeatRuns)"); at !== -1; at = text.indexOf(".update(heartbeatRuns)", at + 1)) {
+    let argumentAt = text.indexOf(".set(", at) + ".set(".length;
+    while (/\s/.test(text[argumentAt]!)) argumentAt++;
+    const reason = statusWrite(text, argumentAt);
+    if (reason) violations.push(`${line(at)} ${reason}`);
+  }
+  for (const match of text.matchAll(/update\s+(?:heartbeat_runs|\$\{heartbeatRuns\})\s+set\b[^;`]*\bstatus\s*=/gi)) {
+    violations.push(`${line(match.index)} sets status in SQL`);
+  }
+  return violations;
+}
+
 async function statusWritesOutsideAuthority() {
   const violations: string[] = [];
   for (const file of await sourceFiles(serverSrc)) {
     const relative = path.relative(serverSrc, file);
     if (relative === AUTHORITY_FILE) continue;
-    const text = await readFile(file, "utf8");
-    const line = (index: number) => text.slice(0, index).split("\n").length;
-    for (let at = text.indexOf(".update(heartbeatRuns)"); at !== -1; at = text.indexOf(".update(heartbeatRuns)", at + 1)) {
-      let argumentAt = text.indexOf(".set(", at) + ".set(".length;
-      while (/\s/.test(text[argumentAt]!)) argumentAt++;
-      const reason = statusWrite(text, argumentAt);
-      if (reason) violations.push(`${relative}:${line(at)} ${reason}`);
-    }
-    for (const match of text.matchAll(/update\s+(?:heartbeat_runs|\$\{heartbeatRuns\})\s+set\b[^;`]*\bstatus\s*=/gi)) {
-      violations.push(`${relative}:${line(match.index)} sets status in SQL`);
-    }
+    for (const violation of statusWritesIn(await readFile(file, "utf8"))) violations.push(`${relative}:${violation}`);
   }
   return violations;
 }
@@ -129,6 +185,33 @@ async function statusWritesOutsideAuthority() {
 describe("heartbeat run status writes", () => {
   it("go only through transitionHeartbeatRunStatus", async () => {
     expect(await statusWritesOutsideAuthority()).toEqual([]);
+  });
+});
+
+describe("the status write check", () => {
+  const write = (set: string, before = "") => statusWritesIn(`${before}\nawait db.update(heartbeatRuns).set(${set}).where(x);`);
+
+  it("rejects a spread call result and a spread property, which it cannot check", () => {
+    expect(write("{ ...makePatch(), updatedAt: now }")).toEqual([expect.stringMatching(/spreads makePatch\(\), which cannot be checked/)]);
+    expect(write("{ ...input.patch }")).toEqual([expect.stringMatching(/spreads input\.patch, which cannot be checked/)]);
+  });
+
+  it("checks both branches of a conditional spread", () => {
+    expect(write("{ ...(failed ? { status: \"failed\" } : {}) }")).toEqual([expect.stringMatching(/sets status/)]);
+    expect(write("{ ...(failed ? makePatch() : {}) }")).toEqual([expect.stringMatching(/cannot be checked/)]);
+    expect(write("{ ...(failed ? { error: \"x\" } : {}), updatedAt: now }")).toEqual([]);
+  });
+
+  it("follows a spread identifier to its declaration", () => {
+    expect(write("{ ...patch }", "const patch = { status: \"running\" };")).toEqual([expect.stringMatching(/sets status/)]);
+    expect(write("{ ...patch }", "const patch: HeartbeatRunStatusPatch = makePatch();")).toEqual([]);
+    expect(write("{ ...patch }", "const patch = makePatch();")).toEqual([expect.stringMatching(/does not exclude status/)]);
+  });
+
+  it("rejects a direct or shorthand status member", () => {
+    expect(write("{ status: \"running\" }")).toEqual([expect.stringMatching(/sets status/)]);
+    expect(write("{ status, updatedAt: now }")).toEqual([expect.stringMatching(/sets status/)]);
+    expect(write("{ updatedAt: now, error: null }")).toEqual([]);
   });
 });
 

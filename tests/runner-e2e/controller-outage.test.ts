@@ -88,10 +88,14 @@ describe("controller outage qualification", () => {
     expect(f.input.start).not.toHaveBeenCalled();
   });
 
-  it.each([-1, 300001, 0.5, NaN, Infinity, "300000", null])("rejects invalid duration %s before signaling", holdMs => {
+  it.each([-1, 600001, 0.5, NaN, Infinity, "300000", null])("rejects invalid duration %s before signaling", holdMs => {
     expect(() => parseControllerOutage({ signal: "SIGKILL", holdMs })).toThrow();
   });
-  it.each(["", "-1", "1e3", "NaN", " 1000", "300001"])("rejects invalid environment duration %s", value => {
+  it("accepts chaos holds up to ten minutes", () => {
+    expect(parseControllerOutage({ signal: "SIGKILL", holdMs: 360_000 })).toEqual({ signal: "SIGKILL", holdMs: 360_000 });
+    expect(parseControllerOutage({ signal: "SIGTERM", holdMs: 600_000 })).toEqual({ signal: "SIGTERM", holdMs: 600_000 });
+  });
+  it.each(["", "-1", "1e3", "NaN", " 1000", "600001"])("rejects invalid environment duration %s", value => {
     expect(() => configuredControllerOutage({ PAPERCLIP_RUNNER_E2E_CONTROLLER_OUTAGE_MS: value })).toThrow();
   });
   it("accepts the five-minute contract without extending the runner grace", () => {

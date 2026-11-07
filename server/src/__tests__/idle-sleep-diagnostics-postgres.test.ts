@@ -64,7 +64,11 @@ if (!support.supported) console.warn(`Skipping idle sleep diagnostics Postgres t
     expect(report.diagnostics?.checks).toContainEqual({ reason: "budget_evaluation_work", state: "none" });
     expect(report.diagnostics?.checks.filter(check => !check.reason.includes(".") ||
       ["agents.execution_or_timer", "agents.lifecycle", "agents.company_hold", "heartbeat_runs.budget_cancellation"].includes(check.reason)))
-      .toHaveLength(73);
+      .toHaveLength(75);
+    expect(report.diagnostics?.checks).toEqual(expect.arrayContaining([
+      { reason: "mcp_file_tickets", state: "none" },
+      { reason: "mcp_authorization_handoffs", state: "none" },
+    ]));
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId))).toHaveLength(1);
     await db.transaction(tx => queueBudgetEvaluation(tx as unknown as Db, { companyId: f.companyId, agentId: f.agentId }));
     const pending = await read();
