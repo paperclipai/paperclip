@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import { readFileSync, readlinkSync } from "node:fs";
+import { hostname, uptime } from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
 
 /**
@@ -10,7 +11,33 @@ import { readProcessStartedAt } from "./hot-restart.js";
 export type ControllerProcess = { bootId: string; pid: number; hostHash: string; processStartedAt: string | null };
 
 const bootId = randomUUID();
-const hostHash = createHash("sha256").update(hostname()).digest("hex").slice(0, 32);
+const UNKNOWN_PROCESS_SPACE = "unknown";
+
+/**
+ * Names the space in which PIDs are comparable: one kernel boot and, on Linux,
+ * one PID namespace. Containers that share a hostname but not a PID namespace
+ * get different values. When the space cannot be read, no record is judged.
+ * A redeploy onto another host or namespace also never matches; such records
+ * keep their original deadlines.
+ */
+function processSpaceHash(): string {
+  try {
+    const parts = [hostname()];
+    if (process.platform === "linux") {
+      parts.push(readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), readlinkSync("/proc/self/ns/pid"));
+    } else {
+      // No PID namespaces here. The boot time keeps a rebooted host distinct;
+      // rounding can only make a record unmatched, which fails closed.
+      parts.push(String(Math.round((Date.now() - uptime() * 1000) / 600_000)));
+    }
+    if (parts.some(part => !part)) return UNKNOWN_PROCESS_SPACE;
+    return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
+  } catch {
+    return UNKNOWN_PROCESS_SPACE;
+  }
+}
+
+const hostHash = processSpaceHash();
 let processStartedAt: Promise<string | null> | undefined;
 
 async function observedProcessStartedAt(pid: number): Promise<number | null> {
@@ -50,10 +77,11 @@ function processExists(pid: number): boolean {
   }
 }
 
-/** True only with same-host proof that the recorded server process has exited.
- * Another host, this process, or an ambiguous live PID returns false. */
+/** True only with proof, in this process's own PID space, that the recorded
+ * server process has exited. Another space, an unreadable space, this server,
+ * or an ambiguous live PID returns false. */
 export async function controllerProcessExited(controller: ControllerProcess): Promise<boolean> {
-  if (controller.bootId === bootId || controller.hostHash !== hostHash) return false;
+  if (controller.bootId === bootId || hostHash === UNKNOWN_PROCESS_SPACE || controller.hostHash !== hostHash) return false;
   if (!processExists(controller.pid)) return true;
   // The PID now belongs to a live process, possibly this restarted server.
   // Only a definitely different start time proves the recorded process is gone.

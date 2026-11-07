@@ -367,6 +367,18 @@ describe("durable sandbox creation through the runtime entry point", () => {
       await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
       expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
     });
+    it("pages past more unprovable creations than one page to find an abandoned one", async () => {
+      const pid = await exitedPid();
+      const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
+      const { id: _id, runId: _runId, ...row } = operation;
+      // Sorted ahead of the abandoned intent: creators on another host cannot be judged.
+      await db.insert(sandboxCreationOperations).values(Array.from({ length: 105 }, (_, index) => ({ ...row,
+        id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, runId: randomUUID(),
+        metadata: { ...row.metadata, creationController: { ...(row.metadata.creationController as object), bootId: randomUUID(), pid, hostHash: "f".repeat(32) } } })));
+      await runtime().flushDeferredOrphanCleanups();
+      expect(await db.select().from(environmentLeases)).toEqual([expect.objectContaining({ status: "pending_cleanup",
+        providerLeaseId: resources.get(operation.id) })]);
+    });
     it("treats a restarted server that reused the creator PID as a different process", async () => {
       await interruptedCreation(async current => ({ ...current, bootId: randomUUID(),
         processStartedAt: new Date(Date.parse(String(current.processStartedAt)) - 60_000).toISOString() }));

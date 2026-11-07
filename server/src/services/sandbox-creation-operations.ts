@@ -1,6 +1,6 @@
 import { collectSecretRefPaths, isUuidSecretRef, parseSecretRefBindingObject, readConfigValueAtPath } from "./json-schema-secret-refs.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, gt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
 import { controllerProcessExited, currentControllerBootId, currentControllerProcess, readControllerProcess } from "./controller-process-identity.js";
 import { companies, environments, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { readEnvironmentCreationCleanupError, type PluginEnvironmentLease, type PluginEnvironmentLeaseObservation } from "@paperclipai/plugin-sdk";
@@ -14,24 +14,35 @@ export type SandboxCreationOperation = typeof sandboxCreationOperations.$inferSe
 // A live creator may still be waiting for the provider, and a provider may still
 // materialize an aborted request. Absence is conclusive only after this delay.
 const CREATION_SETTLE_FLOOR_MS = 30 * 60_000;
+const CREATION_PROMOTION_PAGE_SIZE = 100;
 
 /** After a restart, creation intents from an exited server cannot still be in
  * flight there. Reconcile them now instead of at the settle deadline. Absence
  * stays inconclusive until that deadline; see recoverSandboxCreations. */
 async function promoteAbandonedSandboxCreations(db: Db): Promise<void> {
   const now = new Date();
-  const waiting = await db.select().from(sandboxCreationOperations).where(and(
-    eq(sandboxCreationOperations.state, "pending"), gt(sandboxCreationOperations.nextAttemptAt, now),
-    sql`${sandboxCreationOperations.metadata}->'creationController'->>'bootId' is distinct from ${currentControllerBootId()}`,
-    sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`,
-  )).limit(100);
-  for (const operation of waiting) {
-    const controller = readControllerProcess(operation.metadata.creationController);
-    if (!controller || !await controllerProcessExited(controller)) continue;
-    await db.update(sandboxCreationOperations).set({ nextAttemptAt: now, updatedAt: now,
-      metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationControllerLost":true}'::jsonb` })
-      .where(and(eq(sandboxCreationOperations.id, operation.id), eq(sandboxCreationOperations.state, "pending"),
-        gt(sandboxCreationOperations.nextAttemptAt, now)));
+  // Page past live, foreign, and unidentified creators so they cannot hide an
+  // abandoned intent behind them.
+  let after: string | null = null;
+  for (;;) {
+    const waiting: Array<Pick<SandboxCreationOperation, "id" | "metadata">> = await db
+      .select({ id: sandboxCreationOperations.id, metadata: sandboxCreationOperations.metadata })
+      .from(sandboxCreationOperations).where(and(
+        eq(sandboxCreationOperations.state, "pending"), gt(sandboxCreationOperations.nextAttemptAt, now),
+        sql`${sandboxCreationOperations.metadata}->'creationController'->>'bootId' is distinct from ${currentControllerBootId()}`,
+        sql`coalesce(${sandboxCreationOperations.metadata}->>'creationControllerLost', '') <> 'true'`,
+        after === null ? undefined : gt(sandboxCreationOperations.id, after),
+      )).orderBy(asc(sandboxCreationOperations.id)).limit(CREATION_PROMOTION_PAGE_SIZE);
+    for (const operation of waiting) {
+      const controller = readControllerProcess(operation.metadata.creationController);
+      if (!controller || !await controllerProcessExited(controller)) continue;
+      await db.update(sandboxCreationOperations).set({ nextAttemptAt: now, updatedAt: now,
+        metadata: sql`coalesce(${sandboxCreationOperations.metadata}, '{}'::jsonb) || '{"creationControllerLost":true}'::jsonb` })
+        .where(and(eq(sandboxCreationOperations.id, operation.id), eq(sandboxCreationOperations.state, "pending"),
+          gt(sandboxCreationOperations.nextAttemptAt, now)));
+    }
+    if (waiting.length < CREATION_PROMOTION_PAGE_SIZE) return;
+    after = waiting[waiting.length - 1]!.id;
   }
 }
 

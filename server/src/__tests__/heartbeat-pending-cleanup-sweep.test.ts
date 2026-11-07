@@ -149,8 +149,9 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     environmentId: string | null;
     updatedAt: Date;
     metadata?: Record<string, unknown>;
+    id?: string;
   }): Promise<string> {
-    const id = randomUUID();
+    const id = input.id ?? randomUUID();
     await db.insert(environmentLeases).values({
       id,
       companyId: input.companyId,
@@ -353,12 +354,16 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       await new Promise(resolve => child.once("exit", resolve));
       return child.pid!;
     }
-    async function sweepClaimedBy(controller: Record<string, unknown>) {
-      const { companyId, environmentId } = await seedCompanyAndEnvironment();
-      const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(Date.now() - 60_000), metadata: {
-        pendingCleanupAttemptId: "lost-claim", pendingCleanupInFlight: true, [ATTEMPTS_KEY]: 1,
-        pendingCleanupLeaseExpiresAtMs: Date.now() + 14 * 60_000, pendingCleanupController: controller,
-      } });
+    function claimMetadata(controller: Record<string, unknown>, attemptId = "lost-claim") {
+      return { pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true, [ATTEMPTS_KEY]: 1,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 14 * 60_000, pendingCleanupController: controller };
+    }
+    async function sweepClaimedBy(controller: Record<string, unknown>, attemptId = "lost-claim",
+      before?: (scope: { companyId: string; environmentId: string }) => Promise<void>) {
+      const scope = await seedCompanyAndEnvironment();
+      await before?.(scope);
+      const leaseId = await insertOrphanEphemeralLease({ ...scope, updatedAt: new Date(Date.now() - 60_000),
+        metadata: claimMetadata(controller, attemptId) });
       const teardown = vi.fn(async () => {});
       const service = heartbeatService(db, { environmentRuntime: {
         retryPendingSandboxTeardown: teardown,
@@ -366,27 +371,44 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       const result = await service.sweepPendingCleanupLeases();
       return { leaseId, teardown, result };
     }
+    async function exitedClaimer(attemptId = "lost-claim") {
+      return { ...await currentControllerProcess(), bootId: randomUUID(), pid: await exitedPid(), attemptId };
+    }
 
     it("retries now instead of waiting for the claim to expire", async () => {
-      const current = await currentControllerProcess();
-      const { teardown, result } = await sweepClaimedBy({ ...current, bootId: randomUUID(), pid: await exitedPid() });
+      const { teardown, result } = await sweepClaimedBy(await exitedClaimer());
       expect(teardown).toHaveBeenCalledTimes(1);
       expect(result.destroyed).toBe(1);
     });
     it("keeps the fence of a claim held by this live server", async () => {
-      const { leaseId, teardown } = await sweepClaimedBy(await currentControllerProcess());
+      const { leaseId, teardown } = await sweepClaimedBy({ ...await currentControllerProcess(), attemptId: "lost-claim" });
       expect(teardown).not.toHaveBeenCalled();
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
       expect(lease!.metadata).toMatchObject({ pendingCleanupInFlight: true, pendingCleanupAttemptId: "lost-claim" });
     });
+    it("keeps the fence of a newer claim that kept an earlier attempt's server record", async () => {
+      // Another claim path replaced the attempt but left the exited server's record.
+      const { teardown } = await sweepClaimedBy(await exitedClaimer("earlier-attempt"), "newer-live-claim");
+      expect(teardown).not.toHaveBeenCalled();
+    });
     it("keeps the fence of a claim from another host", async () => {
-      const current = await currentControllerProcess();
-      const { teardown } = await sweepClaimedBy({ ...current, bootId: randomUUID(), pid: await exitedPid(), hostHash: "f".repeat(32) });
+      const { teardown } = await sweepClaimedBy({ ...await exitedClaimer(), hostHash: "f".repeat(32) });
       expect(teardown).not.toHaveBeenCalled();
     });
     it("keeps the fence of a claim without a recorded server identity", async () => {
       const { teardown } = await sweepClaimedBy({});
       expect(teardown).not.toHaveBeenCalled();
+    });
+    it("pages past more fenced claims than one sweep page to find a lost one", async () => {
+      const foreign = { ...await exitedClaimer(), hostHash: "f".repeat(32) };
+      const { teardown, result } = await sweepClaimedBy(await exitedClaimer(), "lost-claim", async scope => {
+        for (let index = 0; index < SWEEP_PAGE_SIZE + 5; index++) {
+          await insertOrphanEphemeralLease({ ...scope, updatedAt: new Date(Date.now() - 60_000),
+            id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, metadata: claimMetadata(foreign) });
+        }
+      });
+      expect(teardown).toHaveBeenCalledTimes(1);
+      expect(result.destroyed).toBe(1);
     });
   });
 
