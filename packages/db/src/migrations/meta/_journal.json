@@ -3067,6 +3067,13 @@
       "when": 1794024254666,
       "tag": "0439_cultured_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 440,
+      "version": "7",
+      "when": 1794035686391,
+      "tag": "0440_flippant_the_leader",
+      "breakpoints": true
     }
   ]
 }
