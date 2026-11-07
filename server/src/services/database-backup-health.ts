@@ -45,6 +45,21 @@ function roundHours(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/**
+ * Stale-backup threshold for `/api/health`, derived from the configured backup
+ * interval: one missed backup plus a 10% grace period (at least an hour of
+ * grace, and at least 2h in total so very short intervals do not flap).
+ *
+ * The threshold has to scale with the interval — a fixed floor tuned for daily
+ * backups is 25x too lenient for the hourly default, which lets backups stop
+ * for a full day while health still reports no warning.
+ */
+export function defaultDatabaseBackupMaxAgeHours(intervalMinutes: number): number {
+  const intervalHours = Math.max(0, intervalMinutes) / 60;
+  const graceHours = Math.max(1, Math.ceil(intervalHours * 0.1));
+  return Math.max(2, Math.ceil(intervalHours) + graceHours);
+}
+
 function alertFileCandidates(opts: InspectDatabaseBackupHealthOptions) {
   return [...new Set([
     opts.alertFile,
