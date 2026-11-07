@@ -3783,10 +3783,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #eventSourceSeq = 0;
   #eventIdentity: DurableRecoveryIdentity | null = null;
   #sourceRecoveryIdentity: DurableRecoveryIdentity | null = null;
-  // Set when this transport's core starts while a later run already owns the
-  // session (ordinary source recovery). The owner also moves ahead during a
-  // live warm run attachment; that alone never makes the prior run a source.
-  #startedRetainingSource = false;
+  // The event identity this transport's core started under while a later run
+  // already owned the session (ordinary source recovery). The owner also moves
+  // ahead during a live warm run attachment; that alone never makes the prior
+  // run a source. Any later move of #eventIdentity ends source accounting.
+  #retainedSourceIdentity: DurableRecoveryIdentity | null = null;
   #sourceAttachmentDeadline: number | null = null;
   #pendingWarmRecoveryCompletion: {
     transitionId: string;
@@ -4034,8 +4035,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#sourceRecoveryIdentity) return this.#sourceRecoveryIdentity;
     // A live warm attachment keeps this transport's prior run on ordinary
     // accounting. The executor drains that run's usage under the new owner.
-    if (!this.#startedRetainingSource || !this.#retainsSourceInputs()) return undefined;
-    return this.#eventIdentity ?? this.options.prpIdentity;
+    const retained = this.#retainedSourceIdentity;
+    const identity = this.#eventIdentity ?? this.options.prpIdentity;
+    if (!retained || !identity || !recoveryIdentityMatches(identity, retained) || !this.#retainsSourceInputs()) return undefined;
+    return identity;
+  }
+
+  #captureRetainedSourceIdentity(): void {
+    const identity = this.#eventIdentity ?? this.options.prpIdentity;
+    this.#retainedSourceIdentity = identity && this.#retainsSourceInputs() ? structuredClone(identity) as DurableRecoveryIdentity : null;
   }
 
   evidence(): CapabilityRunnerdProcessEvidence {
@@ -4609,7 +4617,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#assertStartupOpen();
       if (retainingSource) await core.flushCheckpoint();
       this.#eventIdentity = structuredClone(desired);
-      this.#startedRetainingSource = false;
+      this.#retainedSourceIdentity = null;
       this.#eventSourceSeq = 0;
       this.#deferredTurnStartEvents = [];
       this.#durableTurnId = desired.turnId;
@@ -5581,7 +5589,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? params.dynamicTools.map(record)
       : [];
     const authorityRunId = this.#authorityRunId;
-    this.#startedRetainingSource = this.#retainsSourceInputs();
+    this.#captureRetainedSourceIdentity();
     const core = new DurablePrpControlPlane({
       stateDirectory: resolve(this.#root, "control-plane"),
       identity,
@@ -6093,7 +6101,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           )
         : undefined;
     const authorityRunId = this.#authorityRunId;
-    this.#startedRetainingSource = this.#retainsSourceInputs();
+    this.#captureRetainedSourceIdentity();
     const core = new DurablePrpControlPlane({
       stateDirectory: controlPlaneDirectory,
       identity,

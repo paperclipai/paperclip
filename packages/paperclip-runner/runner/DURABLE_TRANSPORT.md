@@ -116,7 +116,9 @@ resume request returns saved state without asking Codex to resume twice. Retaine
 belong to A. The authenticated `authorityRunId` identifies the current owner
 (A for same-run recovery). Losing that owner blocks new commands and dispatch.
 Only a transport that starts under a later owner sends A's events to recovery
-accounting. A live warm `run.attach` also moves `authorityRunId` to B before
+accounting, and only while its event identity is still A. After recovery moves
+the transport to B, a later warm attachment treats B like any live owner. A
+live warm `run.attach` also moves `authorityRunId` to B before
 the Runner flushes A's outbox. Those events use ordinary accounting, which
 drains A's usage under B.
 
