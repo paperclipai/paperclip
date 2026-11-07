@@ -1430,11 +1430,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         .from(environmentLeases)
         .where(and(
           eq(environmentLeases.status, "pending_cleanup"),
-          sql`${environmentLeases.metadata}->>pendingCleanupInFlight = true`,
-          sql`jsonb_typeof(${environmentLeases.metadata}->pendingCleanupLeaseExpiresAtMs) = number`,
-          sql`(${environmentLeases.metadata}->>pendingCleanupLeaseExpiresAtMs)::numeric > ${nowMs}`,
-          sql`${environmentLeases.metadata}->pendingCleanupController->>attemptId = ${environmentLeases.metadata}->>pendingCleanupAttemptId`,
-          sql`${environmentLeases.metadata}->pendingCleanupController->>bootId is distinct from ${currentControllerBootId()}`,
+          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+          sql`jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupLeaseExpiresAtMs') = 'number'`,
+          sql`(${environmentLeases.metadata}->>'pendingCleanupLeaseExpiresAtMs')::numeric > ${nowMs}`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${environmentLeases.metadata}->>'pendingCleanupAttemptId'`,
+          sql`${environmentLeases.metadata}->'pendingCleanupController'->>'bootId' is distinct from ${currentControllerBootId()}`,
           after === null ? undefined : gt(environmentLeases.id, after),
         ))
         .orderBy(asc(environmentLeases.id))
@@ -1446,12 +1446,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         const attemptId = saved?.attemptId;
         if (!controller || typeof attemptId !== "string" || !await controllerProcessExited(controller)) continue;
         await db.update(environmentLeases)
-          .set({ metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, {pendingCleanupLeaseExpiresAtMs}, to_jsonb(${nowMs}::bigint))` })
+          .set({ metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupLeaseExpiresAtMs}', to_jsonb(${nowMs}::bigint))` })
           .where(and(
             eq(environmentLeases.id, row.id),
             eq(environmentLeases.status, "pending_cleanup"),
-            sql`${environmentLeases.metadata}->>pendingCleanupAttemptId = ${attemptId}`,
-            sql`${environmentLeases.metadata}->pendingCleanupController->>attemptId = ${attemptId}`,
+            sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+            sql`${environmentLeases.metadata}->'pendingCleanupController'->>'attemptId' = ${attemptId}`,
           ));
       }
       if (claimed.length < PENDING_CLEANUP_SWEEP_PAGE_SIZE) return;
