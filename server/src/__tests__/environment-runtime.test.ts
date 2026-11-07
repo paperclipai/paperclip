@@ -416,6 +416,29 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(acquired.lease.metadata).not.toHaveProperty("warmRunnerIdleTimeoutMs");
   });
 
+  it("forwards the run's remote runner reconnect grace to the provider worker without changing lease identity", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const config = { provider: "daytona", image: "node:20", timeoutMs: 1234, autoStopInterval: 5 };
+    await insertSandboxProviderPlugin(pluginId, { environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider", displayName: "Daytona", configSchema: { type: "object" } }] });
+    await environmentService(db).update(baseEnvironment.id, { driver: "sandbox", config });
+    const environment: Environment = { ...baseEnvironment, driver: "sandbox", config };
+    const worker = createFreshPluginLeaseWorker(pluginId);
+    vi.mocked(worker.call).mockImplementation(async (_id, method) => {
+      if (method !== "environmentAcquireLease") throw new Error(`Unexpected ${method}`);
+      return { providerLeaseId: "runner-lease", metadata: { provider: "daytona", image: "node:20", remoteCwd: "/workspace" } };
+    });
+    const service = environmentRuntimeService(db, { pluginWorkerManager: worker });
+    const acquired = await service.acquireRunLease({ companyId, environment, configuredEnvironment: environment,
+      issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+      adapterType: "paperclip_runner", runnerReconnectGraceMs: 420_000 });
+    expect(worker.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
+      config: expect.objectContaining({ autoStopInterval: 5, runnerReconnectGraceMs: 420_000 }),
+    }), expect.any(Number));
+    expect(acquired.lease.metadata).not.toHaveProperty("runnerReconnectGraceMs");
+    expect((await environmentService(db).getById(environment.id))?.config).not.toHaveProperty("runnerReconnectGraceMs");
+  });
+
   it.each([["paperclip_runner", false, false], ["paperclip_runner", true, false], ["paperclip_runner", true, undefined], ["claude_local", false, false], [null, false, false]] as const)("pins qualified snapshots only for native execution (%s, warm=%s, savedReuse=%s)", async (adapterType, warm, savedReuse) => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

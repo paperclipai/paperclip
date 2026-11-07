@@ -1,4 +1,8 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { startMcpClientMirrorSync } from "./services/public-mcp/client-mirror-sync.js";
+import { registerIdleMcpOwners } from "./services/public-mcp/idle-sleep-proof.js";
+import { startMcpRevocationIndexSync } from "./services/public-mcp/revocation-index-sync.js";
+import { startMcpIngressHandoffExpiry } from "./services/public-mcp/ingress-handoff-expiry.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
@@ -1231,6 +1235,10 @@ export async function createApp(
     nextRunAt: () => agentLifecycle.nextRunAt(),
   });
   agentLifecycle.setWake(agentLifecycleDelivery.wake);
+  const clientMirror = startMcpClientMirrorSync(db, deliveryWork, mcpConfig?.origin,{authorizationOrigin:mcpConfig?.authorizationOrigin});
+  const unregisterMcpOwners = registerIdleMcpOwners(db, { config: mcpConfig, personal: publicMcpEvents, dot: dotMcpEvents, clientMirrorInstanceId:clientMirror.instanceId });
+  startMcpRevocationIndexSync(db, deliveryWork);
+  startMcpIngressHandoffExpiry(db, deliveryWork);
   publicMcpEvents?.start(deliveryWork);
   dotMcpEvents?.start(deliveryWork);
   if (publicMcpOAuth) grokDispatcher.start(deliveryWork);
@@ -1366,6 +1374,7 @@ export async function createApp(
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
       await agentLifecycle.stop();
+      unregisterMcpOwners();
       await publicMcpEvents?.stop();
       await dotMcpEvents?.stop();
       jobCoordinator.stop();
