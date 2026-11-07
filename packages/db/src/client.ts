@@ -358,6 +358,74 @@ export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promis
   await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
+const POST_COMMIT_HOOKS = Symbol("paperclip.db.postCommitHooks");
+
+export type PostCommitHook = () => void | Promise<void>;
+
+/**
+ * One transaction level. Every level of a top-level transaction shares one
+ * registration list, so hooks run in the order they were registered across
+ * savepoints. A level that rolls back is marked, and its hooks and the hooks of
+ * the levels inside it are skipped.
+ */
+type PostCommitScope = {
+  parent: PostCommitScope | null;
+  rolledBack: boolean;
+  registrations: Array<{ hook: PostCommitHook; scope: PostCommitScope }>;
+};
+
+type PostCommitHookCarrier = { [POST_COMMIT_HOOKS]?: PostCommitScope };
+
+type TransactionRunner = PostCommitHookCarrier & {
+  transaction: (callback: (tx: TransactionRunner) => Promise<unknown>, ...config: unknown[]) => Promise<unknown>;
+};
+
+export function registerPostCommitHook(tx: object, hook: PostCommitHook): boolean {
+  const scope = (tx as PostCommitHookCarrier)[POST_COMMIT_HOOKS];
+  if (!scope) return false;
+  scope.registrations.push({ hook, scope });
+  return true;
+}
+
+function committed(scope: PostCommitScope): boolean {
+  for (let level: PostCommitScope | null = scope; level; level = level.parent) {
+    if (level.rolledBack) return false;
+  }
+  return true;
+}
+
+function trackPostCommitHooks(runner: TransactionRunner, parentScope: PostCommitScope | null) {
+  const transaction = runner.transaction.bind(runner);
+  runner.transaction = async (callback, ...config) => {
+    const scope: PostCommitScope = {
+      parent: parentScope,
+      rolledBack: false,
+      registrations: parentScope ? parentScope.registrations : [],
+    };
+    let result: unknown;
+    try {
+      result = await transaction(async (tx) => {
+        tx[POST_COMMIT_HOOKS] = scope;
+        trackPostCommitHooks(tx, scope);
+        return callback(tx);
+      }, ...config);
+    } catch (error) {
+      scope.rolledBack = true;
+      throw error;
+    }
+    if (parentScope) return result;
+    for (const { hook, scope: registeredIn } of scope.registrations) {
+      if (!committed(registeredIn)) continue;
+      try {
+        await hook();
+      } catch (error) {
+        console.error("A post-commit hook failed after its transaction committed:", error);
+      }
+    }
+    return result;
+  };
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -374,6 +442,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
   installDatabaseResponseCapture(db, schema);
+  trackPostCommitHooks(db as unknown as TransactionRunner, null);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }, db));
