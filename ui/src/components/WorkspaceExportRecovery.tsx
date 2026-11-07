@@ -7,7 +7,7 @@ import { useQueryView } from "./QueryView";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
-import { canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
+import { canBoardConfirmOwnerStop, canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
 import { queryKeys } from "../lib/queryKeys";
 import { classifySendFailure, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
 import { asObject, cn } from "../lib/utils";
@@ -67,7 +67,7 @@ function PreviousServerStopConfirmation({ action, issueId, companyId, className 
   const access = useQuery({ queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess() });
   const accessView = useQueryView(access);
-  const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardResolveRecoveryAction(companyId, access.data);
+  const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardConfirmOwnerStop(companyId, access.data);
   const confirm = useMutation({ retry: false, // query-error-ok: an explicit board confirmation; the error is shown below.
     mutationFn: () => issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken,
       controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
@@ -83,7 +83,7 @@ function PreviousServerStopConfirmation({ action, issueId, companyId, className 
       : "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved."}</p>
     {confirm.isSuccess ? null : !canConfirm
       ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
-        ? "Checking access…" : "A board member who manages this company’s runtime can confirm that the previous server stopped."}</p>
+        ? "Checking access…" : "A company owner or administrator can confirm that the previous server stopped."}</p>
       : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
         Confirm the previous server stopped</Button>
       : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>

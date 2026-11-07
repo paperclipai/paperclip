@@ -295,6 +295,8 @@ describe("governed retained-file recovery", () => {
 
     it("offers one board action that resumes the saved result with the board's stop evidence", async () => {
       api.resume.mockResolvedValue({ runId: "run-1", resultId: "result-1", status: "queued" });
+      client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }] });
       await mount(ownerAction);
       expect(container.textContent).toContain("can’t verify that it stopped");
       expect(container.textContent).not.toContain("secret-host");
@@ -314,14 +316,15 @@ describe("governed retained-file recovery", () => {
       expect(container.textContent).toContain("Restoring saved work…");
     });
 
-    it("shows status only, without the action, once automatic recovery is resuming or for viewers", async () => {
+    it("shows status only, without the action, once automatic recovery is resuming or for non-administrators", async () => {
+      // The default fixture is an operator: it may resolve other recovery but not attest a controller stop.
       await mount({ ...ownerAction, evidence: { ...ownerAction.evidence, workspaceOwnerRecovery: { state: "resuming" } } } as IssueRecoveryAction);
       expect(button("Confirm the previous server stopped")).toBeUndefined();
       client.setQueryData(queryKeys.access.currentBoardAccess, { userId: "board-1", source: "session", isInstanceAdmin: false,
-        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active" }] });
+        companyIds: ["company-1"], memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }] });
       await mount(ownerAction);
       expect(button("Confirm the previous server stopped")).toBeUndefined();
-      expect(container.textContent).toContain("can confirm that the previous server stopped");
+      expect(container.textContent).toContain("owner or administrator can confirm");
       expect(api.resume).not.toHaveBeenCalled();
     });
   });
