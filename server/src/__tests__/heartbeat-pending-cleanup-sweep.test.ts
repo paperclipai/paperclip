@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -38,6 +39,7 @@ vi.mock("../middleware/logger.js", () => ({
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
 import { hasPendingRunCleanup } from "../services/execution-blocker.js";
+import { currentControllerProcess } from "../services/controller-process-identity.js";
 import { environmentStopErrorData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentStopError } from "@paperclipai/plugin-sdk";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -343,6 +345,49 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     } as unknown as HeartbeatEnvironmentRuntime });
     expect((await service.sweepPendingCleanupLeases()).destroyed).toBe(expired ? 1 : 0);
     expect(teardown).toHaveBeenCalledTimes(expired ? 1 : 0);
+  });
+
+  describe("a teardown claim whose server stopped mid-attempt", () => {
+    async function exitedPid(): Promise<number> {
+      const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+      await new Promise(resolve => child.once("exit", resolve));
+      return child.pid!;
+    }
+    async function sweepClaimedBy(controller: Record<string, unknown>) {
+      const { companyId, environmentId } = await seedCompanyAndEnvironment();
+      const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(Date.now() - 60_000), metadata: {
+        pendingCleanupAttemptId: "lost-claim", pendingCleanupInFlight: true, [ATTEMPTS_KEY]: 1,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 14 * 60_000, pendingCleanupController: controller,
+      } });
+      const teardown = vi.fn(async () => {});
+      const service = heartbeatService(db, { environmentRuntime: {
+        retryPendingSandboxTeardown: teardown,
+      } as unknown as HeartbeatEnvironmentRuntime });
+      const result = await service.sweepPendingCleanupLeases();
+      return { leaseId, teardown, result };
+    }
+
+    it("retries now instead of waiting for the claim to expire", async () => {
+      const current = await currentControllerProcess();
+      const { teardown, result } = await sweepClaimedBy({ ...current, bootId: randomUUID(), pid: await exitedPid() });
+      expect(teardown).toHaveBeenCalledTimes(1);
+      expect(result.destroyed).toBe(1);
+    });
+    it("keeps the fence of a claim held by this live server", async () => {
+      const { leaseId, teardown } = await sweepClaimedBy(await currentControllerProcess());
+      expect(teardown).not.toHaveBeenCalled();
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(lease!.metadata).toMatchObject({ pendingCleanupInFlight: true, pendingCleanupAttemptId: "lost-claim" });
+    });
+    it("keeps the fence of a claim from another host", async () => {
+      const current = await currentControllerProcess();
+      const { teardown } = await sweepClaimedBy({ ...current, bootId: randomUUID(), pid: await exitedPid(), hostHash: "f".repeat(32) });
+      expect(teardown).not.toHaveBeenCalled();
+    });
+    it("keeps the fence of a claim without a recorded server identity", async () => {
+      const { teardown } = await sweepClaimedBy({});
+      expect(teardown).not.toHaveBeenCalled();
+    });
   });
 
   it("starts escalation and the long cooldown on the fifth failed attempt", async () => {
