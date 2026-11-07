@@ -19,6 +19,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
+  issueComments,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -555,6 +556,17 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: 1, scheduledRetryReason: "transient_failure", contextSnapshot });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
       .toMatchObject({ status: "in_review", executionRunId: children[0]!.id });
+    const [laterComment] = await db.insert(issueComments).values({ companyId, issueId,
+      authorType: "user", authorUserId: "responsible-user", body: "A later board follow-up" }).returning();
+    await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId, commentId: laterComment!.id }, requestedByActorType: "user", requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, taskId: issueId, source: "issue.comment", wakeCommentId: laterComment!.id, wakeCommentIds: [laterComment!.id] } });
+    const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, children[0]!.id));
+    expect(preserved).toEqual(children[0]);
+    const laterWakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")));
+    expect(laterWakes).toHaveLength(1);
+    expect(laterWakes[0]).toMatchObject({ runId: null, payload: { issueId, commentId: laterComment!.id } });
   });
 
   it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {

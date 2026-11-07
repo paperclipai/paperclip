@@ -311,6 +311,12 @@ its own bounded continuation retry. A denied authorization, Stop, pause or block
 dependency cannot use this wait as permission to execute. No retry budget resets,
 new background poller or provider replay are introduced.
 
+An answered retry proves at most two saved pre-dispatch failure ancestors before
+reading the original user-owned answer receipt. It rechecks that receipt, its
+original delivery target and current chat permissions. The original receipt and
+delivery remain unchanged. New comments and control wakes queue separately from
+a retained chat retry, including while the retry waits for its scheduled time.
+
 For a truncated external-chat wake, native completion feedback requires the
 run-bound complete comment-read receipt before accepting a finish report. An
 unread, partial, stale or foreign receipt returns a corrective
