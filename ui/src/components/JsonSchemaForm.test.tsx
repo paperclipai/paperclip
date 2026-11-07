@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   JsonSchemaForm,
   type JsonSchemaNode,
+  getArrayItemLabel,
   getDefaultValues,
+  summarizeArrayItem,
   validateJsonSchemaForm,
 } from "./JsonSchemaForm";
 
@@ -700,5 +702,223 @@ describe("JsonSchemaForm optional nested objects", () => {
       "/queryOptions/Prompt": "This field is required",
       "/screenshotOptions/viewport/Height": "This field is required",
     });
+  });
+});
+
+describe("JsonSchemaForm arrays of objects", () => {
+  const SECRET = { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" };
+  const schema: JsonSchemaNode = {
+    type: "object",
+    properties: {
+      backends: {
+        type: "array",
+        title: "Backends",
+        "x-paperclip-itemLabel": "name",
+        "x-paperclip-itemSummary": ["type", "baseUrl", "key"],
+        items: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            type: { type: "string", enum: ["litellm", "ollama", "llama-server"] },
+            baseUrl: { type: "string" },
+            key: { format: "secret-ref" },
+            slots: { type: "integer" },
+          },
+        },
+      },
+    },
+  };
+  const backends = [
+    { id: "proxy", name: "LiteLLM proxy", type: "litellm", baseUrl: "https://ai.example.com/v1", key: SECRET, slots: 8 },
+    { id: "vm", name: "VM", type: "llama-server", baseUrl: "http://10.0.0.5:8080", slots: 1 },
+    { id: "mbp", name: "MacBook", type: "ollama", baseUrl: "http://mbp.local:11434", slots: 4 },
+    { id: "spare", type: "ollama" },
+  ];
+
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  const entryButtons = () =>
+    Array.from(container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]:not([role=\"combobox\"])"));
+
+  it("labels entries from the named property and falls back to Item N", () => {
+    const arraySchema = schema.properties!.backends;
+    expect(getArrayItemLabel(arraySchema, backends[0], 0)).toBe("LiteLLM proxy");
+    expect(getArrayItemLabel(arraySchema, backends[3], 3)).toBe("Item 4");
+    expect(getArrayItemLabel(arraySchema, { name: "  " }, 1)).toBe("Item 2");
+    expect(getArrayItemLabel({ type: "array", items: { type: "object" } }, backends[0], 0)).toBe("Item 1");
+  });
+
+  it("summarizes the listed properties, with URL hosts and a set-secret mark", () => {
+    const arraySchema = schema.properties!.backends;
+    expect(summarizeArrayItem(arraySchema, backends[0])).toBe("litellm · ai.example.com · key ✓");
+    expect(summarizeArrayItem(arraySchema, backends[1])).toBe("llama-server · 10.0.0.5:8080");
+    // Without x-paperclip-itemSummary: the first three scalar values, skipping the label property.
+    const { "x-paperclip-itemSummary": _omit, ...defaults } = arraySchema;
+    expect(summarizeArrayItem(defaults, backends[0])).toBe("proxy · litellm · ai.example.com");
+  });
+
+  it("renders entries collapsed to a labeled summary line", async () => {
+    await act(async () => {
+      root.render(<JsonSchemaForm schema={schema} values={{ backends }} onChange={() => {}} />);
+    });
+
+    const buttons = entryButtons();
+    expect(buttons.map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "false", "false", "false"]);
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      "LiteLLM proxy· litellm · ai.example.com · key ✓",
+      "VM· llama-server · 10.0.0.5:8080",
+      "MacBook· ollama · mbp.local:11434",
+      "Item 4· ollama",
+    ]);
+    expect(container.querySelector("input")).toBeNull();
+    expect(container.textContent).not.toContain("Item 1");
+  });
+
+  it("expands an entry on click into a two-column grid", async () => {
+    await act(async () => {
+      root.render(<JsonSchemaForm schema={schema} values={{ backends }} onChange={() => {}} />);
+    });
+
+    await act(async () => entryButtons()[1].click());
+
+    expect(entryButtons().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "true", "false", "false"]);
+    const grid = container.querySelector(".sm\\:grid-cols-2");
+    expect(grid).not.toBeNull();
+    expect(grid!.querySelectorAll("input").length).toBeGreaterThanOrEqual(3);
+    expect((grid!.querySelector('input[type="text"]') as HTMLInputElement).value).toBe("vm");
+
+    await act(async () => entryButtons()[1].click());
+    expect(container.querySelector("input")).toBeNull();
+  });
+
+  it("opens a newly added entry and keeps open state with the entries that shift up on remove", async () => {
+    let values: Record<string, unknown> = { backends: backends.slice(0, 2) };
+    const render = () =>
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={values}
+          onChange={(next) => {
+            values = next;
+            render();
+          }}
+        />,
+      );
+    await act(async () => render());
+
+    const addButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add item")!;
+    await act(async () => addButton.click());
+    expect(entryButtons().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "false", "true"]);
+
+    const removeFirst = container.querySelector<HTMLButtonElement>("button:has(> .sr-only)")!;
+    expect(removeFirst.textContent).toBe("Remove LiteLLM proxy");
+    await act(async () => removeFirst.click());
+    expect((values.backends as unknown[]).length).toBe(2);
+    expect(entryButtons().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "true"]);
+  });
+
+  it("starts an entry with nothing to summarize open", async () => {
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm schema={schema} values={{ backends: [backends[0], { id: "" }] }} onChange={() => {}} />,
+      );
+    });
+
+    expect(entryButtons().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "true"]);
+  });
+
+  it("opens an entry that has a validation error", async () => {
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ backends }}
+          errors={{ "/backends/2/id": "This field is required" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    expect(entryButtons().map((b) => b.getAttribute("aria-expanded"))).toEqual(["false", "false", "true", "false"]);
+    expect(container.textContent).toContain("This field is required");
+  });
+
+  it("keeps an error mark on an entry the user collapses", async () => {
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={schema}
+          values={{ backends }}
+          errors={{ "/backends/2/id": "This field is required" }}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    await act(async () => entryButtons()[2].click());
+
+    expect(entryButtons()[2].getAttribute("aria-expanded")).toBe("false");
+    expect(entryButtons()[2].textContent).toContain("1 error");
+    expect(entryButtons()[0].textContent).not.toContain("error");
+  });
+
+  it("disables the fields of read-only entries", async () => {
+    const readOnly: JsonSchemaNode = {
+      ...schema,
+      properties: { backends: { ...schema.properties!.backends, items: { ...schema.properties!.backends.items!, readOnly: true } } },
+    };
+    await act(async () => {
+      root.render(<JsonSchemaForm schema={readOnly} values={{ backends: [{ id: "" }] }} onChange={() => {}} />);
+    });
+
+    const inputs = Array.from(container.querySelectorAll("input"));
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(inputs.every((input) => input.disabled)).toBe(true);
+  });
+
+  it("edits entries of an open-ended item schema as JSON", async () => {
+    let values: Record<string, unknown> = { extras: [{ a: 1 }] };
+    const openEnded: JsonSchemaNode = {
+      type: "object",
+      properties: { extras: { type: "array", items: { type: "object", additionalProperties: true } } },
+    };
+    const render = () =>
+      root.render(
+        <JsonSchemaForm
+          schema={openEnded}
+          values={values}
+          onChange={(next) => {
+            values = next;
+            render();
+          }}
+        />,
+      );
+    await act(async () => render());
+
+    // No declared properties means no summary, so the entry starts open.
+    expect(entryButtons()[0].getAttribute("aria-expanded")).toBe("true");
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Item 1 JSON"]');
+    expect(textarea).not.toBeNull();
+    expect(container.textContent).not.toContain("No configuration options available");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, '{"b":2}');
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(values).toEqual({ extras: [{ b: 2 }] });
   });
 });

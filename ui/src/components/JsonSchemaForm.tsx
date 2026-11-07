@@ -89,6 +89,17 @@ export interface JsonSchemaNode {
    * `x-paperclip-advanced` is not true.
    */
   "x-paperclip-group"?: string;
+  /**
+   * On an array of objects: the item property whose value labels each entry
+   * (e.g. "name"). Entries without a value fall back to "Item N".
+   */
+  "x-paperclip-itemLabel"?: string;
+  /**
+   * On an array of objects: the item properties shown, in order, on the
+   * one-line summary of a collapsed entry. Defaults to the first three
+   * scalar properties that have a value.
+   */
+  "x-paperclip-itemSummary"?: string[];
 
   // Allow extra keys
   [key: string]: unknown;
@@ -109,6 +120,11 @@ export interface JsonSchemaFormProps {
   className?: string;
   /** Label for the disclosure that hides advanced fields. Defaults to "Advanced options". */
   advancedLabel?: string;
+  /**
+   * "grid" lays scalar fields out two per row on wider screens, with tighter
+   * spacing. Used for array entries. Defaults to "stack".
+   */
+  layout?: "stack" | "grid";
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +151,84 @@ export function labelFromKey(key: string, schema: JsonSchemaNode): string {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Number of properties a collapsed array entry summarizes by default. */
+const DEFAULT_SUMMARY_FIELDS = 3;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Label for one entry of an array of objects: the value of the property named
+ * by `x-paperclip-itemLabel`, or "Item N" when unset or empty.
+ */
+export function getArrayItemLabel(
+  arraySchema: JsonSchemaNode,
+  item: unknown,
+  index: number,
+): string {
+  const labelKey = arraySchema["x-paperclip-itemLabel"];
+  if (typeof labelKey === "string") {
+    const raw = asRecord(item)[labelKey];
+    if ((typeof raw === "string" && raw.trim()) || typeof raw === "number") {
+      return String(raw).trim();
+    }
+  }
+  return `Item ${index + 1}`;
+}
+
+/** One summary part for a property value, or null when there is nothing to show. */
+function summarizeValue(key: string, schema: JsonSchemaNode, value: unknown): string | null {
+  switch (resolveType(schema)) {
+    case "secret-ref":
+      return isSecretRefBinding(value) || (typeof value === "string" && value.trim())
+        ? `${labelFromKey(key, schema).toLowerCase()} ✓`
+        : null;
+    case "boolean":
+      return value === true ? labelFromKey(key, schema).toLowerCase() : null;
+    case "object":
+    case "array":
+      return null;
+    default: {
+      if (value === undefined || value === null) return null;
+      const text = String(value).trim();
+      if (!text) return null;
+      // Base URLs are long; the host is what tells entries apart.
+      if (/^https?:\/\//i.test(text)) {
+        try {
+          return new URL(text).host;
+        } catch { /* Not a parseable URL; show it as typed. */ }
+      }
+      return text;
+    }
+  }
+}
+
+/**
+ * One-line summary of a collapsed array entry, e.g. "litellm · ai.example.com · key ✓".
+ * Uses the properties listed in `x-paperclip-itemSummary`, or else the first
+ * few scalar properties (other than the label property) that have a value.
+ */
+export function summarizeArrayItem(arraySchema: JsonSchemaNode, item: unknown): string {
+  const itemProps = (arraySchema.items as JsonSchemaNode | undefined)?.properties ?? {};
+  const values = asRecord(item);
+  const listed = arraySchema["x-paperclip-itemSummary"];
+  const keys = Array.isArray(listed)
+    ? listed.filter((key): key is string => typeof key === "string" && key in itemProps)
+    : Object.keys(itemProps).filter((key) => key !== arraySchema["x-paperclip-itemLabel"]);
+  const limit = Array.isArray(listed) ? keys.length : DEFAULT_SUMMARY_FIELDS;
+
+  const parts: string[] = [];
+  for (const key of keys) {
+    if (parts.length >= limit) break;
+    const part = summarizeValue(key, itemProps[key], values[key]);
+    if (part) parts.push(part);
+  }
+  return parts.join(" · ");
 }
 
 /**
@@ -948,6 +1042,142 @@ const ArrayField = React.memo(({
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
   const isComplex = resolveType(itemSchema) === "object";
+  // Object entries start collapsed to a summary line. An entry with nothing to
+  // summarize starts open, since its collapsed line would say nothing.
+  // Indexes of open entries.
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set(
+    isComplex
+      ? items.flatMap((item, index) => (summarizeArrayItem(propSchema, item) ? [] : [index]))
+      : [],
+  ));
+
+  // Validation errors per entry index. Open any entry that gets an error so the
+  // user can see and fix it; a collapsed entry with errors stays marked.
+  const errorCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const errPath of Object.keys(errors)) {
+      if (!errPath.startsWith(`${path}/`)) continue;
+      const index = Number(errPath.slice(path.length + 1).split("/")[0]);
+      if (Number.isInteger(index)) counts.set(index, (counts.get(index) ?? 0) + 1);
+    }
+    return counts;
+  }, [errors, path]);
+  const erroredIndexes = [...errorCounts.keys()].sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    if (!erroredIndexes) return;
+    setExpanded((open) => new Set([...open, ...erroredIndexes.split(",").map(Number)]));
+  }, [erroredIndexes]);
+
+  const toggleItem = (index: number) => {
+    setExpanded((open) => {
+      const next = new Set(open);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
+  };
+
+  const removeItem = (index: number) => {
+    const newItems = [...items];
+    newItems.splice(index, 1);
+    onChange(newItems);
+    // Keep the open state with the entries that shift up.
+    setExpanded((open) => new Set(
+      [...open].filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)),
+    ));
+  };
+
+  const isRemoveDisabled =
+    disabled ||
+    (propSchema.minItems !== undefined &&
+      items.length <= (propSchema.minItems as number));
+
+  // An item schema with no declared properties takes any object: edit it as JSON,
+  // as ObjectField does.
+  const hasOpenEndedItems =
+    Object.keys(itemSchema.properties ?? {}).length === 0 &&
+    itemSchema.additionalProperties !== false;
+
+  // FormField disables a readOnly schema; entries skip FormField, so apply it here.
+  const isItemReadOnly = disabled || itemSchema.readOnly === true;
+
+  const renderObjectItem = (item: unknown, index: number) => {
+    const isOpen = expanded.has(index);
+    const itemLabel = getArrayItemLabel(propSchema, item, index);
+    const summary = summarizeArrayItem(propSchema, item);
+    const itemPath = `${path}/${index}`;
+    const errorCount = errorCounts.get(index) ?? 0;
+    const handleItemChange = (newVal: unknown) => {
+      const newItems = [...items];
+      newItems[index] = newVal;
+      onChange(newItems);
+    };
+
+    return (
+      <div key={index} className={cn("rounded-md border", errorCount > 0 && "border-destructive")}>
+        <div className="flex items-center gap-1 pr-1">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left"
+            onClick={() => toggleItem(index)}
+            aria-expanded={isOpen}
+          >
+            {isOpen ? (
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            )}
+            <span className="shrink-0 text-sm font-medium">{itemLabel}</span>
+            {summary && (
+              <span className="truncate text-xs text-muted-foreground">
+                · {summary}
+              </span>
+            )}
+            {!isOpen && errorCount > 0 && (
+              <span className="ml-auto shrink-0 text-xs font-medium text-destructive">
+                {errorCount === 1 ? "1 error" : `${errorCount} errors`}
+              </span>
+            )}
+          </button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+            disabled={isRemoveDisabled}
+            onClick={() => removeItem(index)}
+          >
+            <Trash2 className="h-4 w-4" />
+            <span className="sr-only">Remove {itemLabel}</span>
+          </Button>
+        </div>
+        {isOpen && (
+          <div className="border-t px-3 py-3">
+            {hasOpenEndedItems ? (
+              <JsonObjectField
+                value={item}
+                onChange={handleItemChange}
+                disabled={isItemReadOnly}
+                label={itemLabel}
+                error={errors[itemPath]}
+              />
+            ) : <JsonSchemaForm
+              schema={itemSchema}
+              values={asRecord(item)}
+              onChange={handleItemChange}
+              disabled={isItemReadOnly}
+              layout="grid"
+              errors={Object.fromEntries(
+                Object.entries(errors)
+                  .filter(([errPath]) => errPath.startsWith(`${itemPath}/`))
+                  .map(([errPath, err]) => [errPath.slice(itemPath.length), err]),
+              )}
+            />}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -972,6 +1202,8 @@ const ArrayField = React.memo(({
           onClick={() => {
             const newItem = getDefaultForSchema(itemSchema);
             onChange([...items, newItem]);
+            // A new entry has nothing to summarize yet; open it for editing.
+            if (isComplex) setExpanded((open) => new Set(open).add(items.length));
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
@@ -979,8 +1211,9 @@ const ArrayField = React.memo(({
         </Button>
       </div>
 
-      <div className="space-y-3">
-        {items.map((item, index) => (
+      <div className={isComplex ? "space-y-2" : "space-y-3"}>
+        {isComplex && items.map(renderObjectItem)}
+        {!isComplex && items.map((item, index) => (
           <div
             key={index}
             className="group relative flex items-start space-x-2 rounded-lg border p-3"
@@ -1008,16 +1241,8 @@ const ArrayField = React.memo(({
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground hover:text-destructive"
-              disabled={
-                disabled ||
-                (propSchema.minItems !== undefined &&
-                  items.length <= (propSchema.minItems as number))
-              }
-              onClick={() => {
-                const newItems = [...items];
-                newItems.splice(index, 1);
-                onChange(newItems);
-              }}
+              disabled={isRemoveDisabled}
+              onClick={() => removeItem(index)}
             >
               <Trash2 className="h-4 w-4" />
               <span className="sr-only">Remove item</span>
@@ -1284,8 +1509,13 @@ export function JsonSchemaForm({
   disabled,
   className,
   advancedLabel = "Advanced options",
+  layout = "stack",
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
+  const isGrid = layout === "grid";
+  const fieldsClass = isGrid
+    ? "grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2"
+    : "space-y-6";
 
   const handleRootScalarChange = useCallback((newVal: unknown) => {
     // If root is a scalar, values IS the value
@@ -1401,7 +1631,7 @@ export function JsonSchemaForm({
     const label = labelFromKey(key, propSchema);
     const path = `/${key}`;
 
-    return (
+    const field = (
       <FormField
         key={key}
         propSchema={propSchema}
@@ -1415,11 +1645,26 @@ export function JsonSchemaForm({
         path={path}
       />
     );
+    if (!isGrid) return field;
+
+    // Nested objects, arrays and multi-line text need the full row.
+    const fieldType = resolveType(propSchema);
+    const isWide =
+      fieldType === "object" ||
+      fieldType === "array" ||
+      (typeof propSchema.maxLength === "number" && propSchema.maxLength > TEXTAREA_THRESHOLD);
+    return (
+      <div key={key} className={cn("min-w-0", isWide && "sm:col-span-2")}>
+        {field}
+      </div>
+    );
   };
 
   return (
-    <div className={cn("space-y-6", className)}>
-      {essentials.map(renderField)}
+    <div className={cn(isGrid ? "space-y-3" : "space-y-6", className)}>
+      {essentials.length > 0 && (
+        <div className={fieldsClass}>{essentials.map(renderField)}</div>
+      )}
 
       {hasAdvanced && (
         <div className="space-y-3 rounded-lg border border-dashed">
@@ -1444,7 +1689,7 @@ export function JsonSchemaForm({
                   <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     {group}
                   </div>
-                  <div className="space-y-6">
+                  <div className={fieldsClass}>
                     {fields.map(renderField)}
                   </div>
                 </div>
