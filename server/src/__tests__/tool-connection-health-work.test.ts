@@ -82,6 +82,38 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   async function checked(count = 1) {
     await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(probe).toHaveBeenCalledTimes(count); }, { timeout: 5000 });
   }
+  // Like checked(), but advances the fake clock by one step only after the database has
+  // gone quiet. checked() steps the clock on every 50ms real-time poll, so slow DB work lets the
+  // clock cross a 30s retry window mid-test; this keeps elapsed fake time proportional to the
+  // number of batches (one 1s gap each) instead of to wall-clock speed.
+  async function checkedPaced(count: number, stepMs = 1000) {
+    for (let step = 0; step < 20 && probe.mock.calls.length < count; step++) {
+      await drained(); await vi.advanceTimersByTimeAsync(stepMs);
+    }
+    await drained();
+    expect(probe).toHaveBeenCalledTimes(count);
+  }
+  // A probe is "called" before its follow-up reads/writes finish; wait until no new DB call
+  // starts AND no other backend is still running a statement or open transaction, so slow
+  // queries cannot land inside a later SQL-quiet window. (idleWorkSnapshot().active is not
+  // usable here: the coordinator holds it while a failed scope waits for its retry.)
+  async function drained() {
+    // The spies only count calls started by the worker. The pg_stat_activity probe goes
+    // through the raw client, so it is neither counted nor faked by the timers.
+    const spies = [vi.spyOn(db, "select"), vi.spyOn(db, "transaction"), vi.spyOn(db, "execute")];
+    let last = -1, stable = 0;
+    try {
+      await vi.waitFor(async () => {
+        const calls = spies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+        const [{ busy }] = await db.$client<{ busy: number }[]>`
+          select count(*)::int as busy from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid()
+            and backend_type = 'client backend' and state <> 'idle'`;
+        stable = calls === last && busy === 0 ? stable + 1 : 0; last = calls;
+        expect(stable).toBeGreaterThanOrEqual(3);
+      }, { timeout: 5000 });
+    } finally { for (const spy of spies) spy.mockRestore(); }
+  }
   it("stays SQL-quiet after empty startup", async () => { await start(); await quiet(); });
   it("waits without SQL until a configured check is due", async () => {
     const checkedAt = new Date(); await connection({ healthCheckedAt: checkedAt });
@@ -292,7 +324,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     for (let i = 0; i < 30; i++) await connection();
     const probedAt: number[] = [], performProbe = probe.getMockImplementation()!;
     probe.mockImplementation(async (id: string) => { probedAt.push(Date.now()); return performProbe(id); });
-    await start(); await checked(30);
+    await start(); await checkedPaced(30);
     expect(probedAt[25] - probedAt[24]).toBeLessThan(5_000);
     expect(new Set(probe.mock.calls.map(([id]) => id)).size).toBe(30);
   });
@@ -375,14 +407,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
           transport: "mcp_remote" as const, status: "active" as const, enabled: true })),
       ));
       draining = false;
-      await checked(60);
+      await checkedPaced(60);
       expect(failedAt).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() => expect(failedAt.length).toBeGreaterThan(1));
       expect(failedAt.every((at, index) => index === 0 || at - failedAt[index - 1] >= 30_000)).toBe(true);
       service.load = load;
-      await vi.advanceTimersByTimeAsync(30_000); await checked(61);
+      await vi.advanceTimersByTimeAsync(30_000); await checkedPaced(61, 5_000);
       await vi.advanceTimersByTimeAsync(31_000);
+      await drained();
       const reads = vi.spyOn(db, "select");
       await vi.advanceTimersByTimeAsync(180_000);
       expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
