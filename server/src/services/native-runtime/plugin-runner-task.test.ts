@@ -54,12 +54,92 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  it("requires an explicit physical task binding", () => {
+    const { task } = provider();
+    expect(() => createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex" } as never)).toThrow("physical task unavailable");
+  });
+
+  it("publishes current trusted recovery authority through warm owner rebind", () => {
+    const { task } = provider();
+    const input = { taskId: "task", task, projectIds: [], harness: "codex", authorityRunId: "first-owner", codexSourceRecoveryVersion: 1 as const, adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    expect(owner.driver.authorityRunId).toBe("first-owner");
+    expect(owner.driver.codexSourceRecoveryVersion).toBe(1);
+    owner.rebind({ ...input, authorityRunId: "next-owner", codexSourceRecoveryVersion: undefined });
+    expect(owner.driver.authorityRunId).toBe("next-owner");
+    expect(owner.driver.codexSourceRecoveryVersion).toBeUndefined();
+  });
+  it.each(["capability", "source", "identity", "account", "provider", "adoption"])("refuses an unqualified predecessor preparation: %s", async mode => {
+    const { task } = provider();
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: mode === "provider" ? "claude" : "codex",
+      authorityRunId: "next", codexSourceRecoveryVersion: mode === "capability" ? undefined : 1,
+      resumeFrom: mode === "source" ? undefined : "source-task", priorIdentity: mode === "identity" ? undefined : requirements.identity,
+      accountIdentity: mode === "account" ? undefined : "selected-account", ...(mode === "adoption" ? { adoptIdentity: requirements.identity } : {}),
+    });
+    await expect(prepare(owner)).rejects.toThrow("source reconciliation unavailable");
+    expect(task).not.toHaveBeenCalled();
+  });
+  it("reuses exact adopted A preparation under current B without a source launch", async () => {
+    const { task } = provider();
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "next" } } as never, 1_000);
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1,
+      executionContext: context, adoptIdentity: requirements.identity });
+    const recovery = { configurationId: "retained-configuration", requirementsDigest: `sha256:${"a".repeat(64)}` as const, provider: { kind: "codex" } };
+    try {
+      await expect(owner.driver.prepareLaunch!(requirements, recovery)).resolves.toEqual(recovery);
+      expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["check_project_auth"]);
+    } finally { context.finish(); }
+  });
+  it.each(["same-run", "suspended-predecessor"])("keeps ordinary %s preparation independent of predecessor capability", async mode => {
+    const { task } = provider();
+    const identity = mode === "same-run" ? requirements.identity : { ...requirements.identity, runId: "next" };
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1,
+      authorityRunId: identity.runId, priorIdentity: requirements.identity, resumeFrom: "source-task" });
+    await prepare(owner, { ...requirements, identity });
+    expect(task.mock.calls[0][0]).toMatchObject({ kind: "prepare", resumeFrom: "source-task", requirements: { identity } });
+    expect(task.mock.calls[0][0]).not.toHaveProperty("recoveryPurpose");
+  });
+  it("keeps the resume parent on ordinary repeated preparation after launch", async () => {
+    const { task } = provider();
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, pollMs: 1,
+      authorityRunId: "run", resumeFrom: "source-task", priorIdentity: requirements.identity });
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    try {
+      owner.launcher(launchSpec());
+      await vi.waitFor(() => expect(task.mock.calls.some(([op]) => op.kind === "submit")).toBe(true));
+      await prepare(owner);
+      expect(task.mock.calls.map(([op]) => op).filter(op => op.kind === "prepare").at(-1)).toMatchObject({ resumeFrom: "source-task" });
+    } finally { await registration.release("detach"); }
+  });
+  it("prepares and submits exact A, then prepares B without copying or reconciling A again", async () => {
+    const { task } = provider();
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, pollMs: 1,
+      authorityRunId: "next", codexSourceRecoveryVersion: 1, resumeFrom: "source-task", priorIdentity: requirements.identity,
+      accountIdentity: "selected-account" });
+    await expect(prepare(owner, { ...requirements, identity: { ...requirements.identity, runId: "foreign" } })).rejects.toThrow("source reconciliation unavailable");
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    try {
+      owner.launcher(launchSpec());
+      await vi.waitFor(() => expect(task.mock.calls.some(([op]) => op.kind === "submit")).toBe(true));
+      const initial = task.mock.calls.map(([op]) => op).filter(op => ["prepare", "submit"].includes(op.kind));
+      expect(initial).toEqual([expect.objectContaining({ kind: "prepare", resumeFrom: "source-task", requirements: expect.objectContaining({ identity: requirements.identity }) }),
+        expect.objectContaining({ kind: "submit", resumeFrom: "source-task", runner: expect.objectContaining({ runId: "run", turnId: "turn", itemId: "item" }) })]);
+      await prepare(owner);
+      expect(task.mock.calls.map(([op]) => op).filter(op => op.kind === "prepare").at(-1)).toMatchObject({ resumeFrom: "source-task" });
+      await prepare(owner, { ...requirements, identity: { ...requirements.identity, runId: "next", turnId: "next-turn", itemId: "next-item" } });
+      const attached = task.mock.calls.map(([op]) => op).filter(op => op.kind === "prepare").at(-1);
+      expect(attached).toMatchObject({ priorIdentity: requirements.identity, requirements: { identity: { runId: "next" } } });
+      expect(attached).not.toHaveProperty("recoveryPurpose"); expect(attached).not.toHaveProperty("resumeFrom");
+    } finally { await registration.release("detach"); }
+  });
   it.each(["finish", "rebind"])("does not send startup Stop after the context %s", mode => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
     const next = new NativeExecutionContext(context.execution, 1_000);
     const remove = vi.spyOn(context.signal, "removeEventListener");
     const { task } = provider();
-    const input = { task, projectIds: [], harness: "codex", executionContext: context, adoptIdentity: requirements.identity };
+    const input = { taskId: "task", task, projectIds: [], harness: "codex", executionContext: context, adoptIdentity: requirements.identity };
     const owner = createPluginRunnerTaskOwner(input);
     try {
       if (mode === "finish") context.finish();
@@ -74,7 +154,7 @@ describe("plugin native Runner ownership", () => {
     let allowed = true;
     task.mockImplementation(async op => op.kind === "check_project_auth"
       ? { ...await perform(op) as object, allowed } : perform(op));
-    const input = { task, projectIds: ["project-retained"], harness: "codex", projectAuthCheckVersion: 1 as const,
+    const input = { taskId: "task", task, projectIds: ["project-retained"], harness: "codex", projectAuthCheckVersion: 1 as const,
       adoptIdentity: requirements.identity };
     const owner = createPluginRunnerTaskOwner(input);
     await owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity);
@@ -90,7 +170,7 @@ describe("plugin native Runner ownership", () => {
     let finish!: () => void;
     const gate = new Promise<void>(resolve => { finish = resolve; });
     task.mockImplementation(async op => { if (mode === "late-release" && op.kind === "check_project_auth") await gate; return perform(op); });
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: ["project-current"], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: ["project-current"], harness: "codex",
       projectAuthCheckVersion: mode === "unsupported" ? undefined : 1, adoptIdentity: requirements.identity });
     const registration = await owner.registration({} as never, "run");
     if (mode === "released") await registration.release("detach");
@@ -107,7 +187,7 @@ describe("plugin native Runner ownership", () => {
     const { task } = provider();
     const close = vi.fn(async () => {});
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       adoptIdentity: requirements.identity });
     const registration = await owner.registration({} as never, "run");
     registration.activate(); await registration.ready();
@@ -131,7 +211,7 @@ describe("plugin native Runner ownership", () => {
       return result;
     });
     ingress.connect.mockClear();
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       adoptIdentity: requirements.identity });
     const registration = await owner.registration({} as never, "run", abort.signal);
     registration.activate();
@@ -144,7 +224,7 @@ describe("plugin native Runner ownership", () => {
     const { task } = provider();
     const retained = vi.fn(async () => {});
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       adoptIdentity: requirements.identity, onSessionRetained: retained });
     const registration = await owner.registration({} as never, "run");
     registration.activate(); await registration.ready();
@@ -155,7 +235,7 @@ describe("plugin native Runner ownership", () => {
   it.each(["settled", "unsettled"] as const)("proves retirement independently of %s checkpoint reuse", async settlement => {
     const { task } = provider();
     const retained = vi.fn(async () => {});
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       adoptIdentity: requirements.identity, onSessionRetained: retained });
     const registration = await owner.registration({} as never, "run");
     expect(owner.isRetired()).toBe(false);
@@ -176,7 +256,7 @@ describe("plugin native Runner ownership", () => {
       if (operation.kind === "credentials") return { kind: "credentials", taskId: "task", credential: null };
       return perform(operation);
     });
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", accountIdentity: "account",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", accountIdentity: "account",
       adoptIdentity: requirements.identity, onCredentials: async () => {}, onSessionRetained: async () => {} });
     const registration = await owner.registration({} as never, "run");
     await registration.release();
@@ -187,7 +267,7 @@ describe("plugin native Runner ownership", () => {
 
   it("submits only a prepared identity and configuration ID", async () => {
     const { task } = provider();
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });
     expect(() => owner.launcher(launchSpec())).toThrow("requires preparation");
     await prepare(owner);
     expect(task.mock.calls[0][0]).toEqual({ kind: "prepare", requirements, projectIds: [] });
@@ -206,7 +286,7 @@ describe("plugin native Runner ownership", () => {
     const perform = task.getMockImplementation()!;
     task.mockImplementation(async op => op.kind === "prepare"
       ? { ...await perform(op) as object, projectAuthCheckAtSubmit: true } : perform(op));
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1,
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1,
       task, projectIds: [], harness: "codex", pollMs: 1 });
     await prepare(owner);
     expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["prepare"]);
@@ -216,7 +296,7 @@ describe("plugin native Runner ownership", () => {
     registration.activate(); await registration.ready();
     await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
     expect(task.mock.calls.filter(([op]) => op.kind === "submit")).toHaveLength(1);
-    const unsupported = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex" });
+    const unsupported = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex" });
     await expect(prepare(unsupported)).rejects.toThrow("validation unavailable");
   });
 
@@ -225,7 +305,7 @@ describe("plugin native Runner ownership", () => {
     const gate = new Promise<void>(resolve => { finish = resolve; });
     const { task } = provider(); const perform = task.getMockImplementation()!;
     task.mockImplementation(async op => { if (op.kind === "prepare") await gate; return perform(op); });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex" });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex" });
     const prepared = prepare(owner);
     const registration = await owner.registration({} as never, "run");
     await registration.release(); finish();
@@ -238,11 +318,11 @@ describe("plugin native Runner ownership", () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     task.mockImplementation(async operation => { if (operation.kind === "prepare") await gate; return perform(operation); });
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, executionContext: context });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, executionContext: context });
     const preparing = prepare(owner);
-    await vi.waitFor(() => expect(task).toHaveBeenCalledWith(expect.objectContaining({ kind: "prepare" })));
+    await vi.waitFor(() => expect(task).toHaveBeenCalledWith(expect.objectContaining({ kind: "prepare" }), { expectedTaskId: "task" }));
     context.abort(new Error("operator Stop"));
-    expect(task).toHaveBeenCalledWith({ kind: "stop" });
+    expect(task).toHaveBeenCalledWith({ kind: "stop" }, { expectedTaskId: "task" });
     release();
     await expect(preparing).rejects.toThrow("preparation cancelled");
     expect(task.mock.calls.some(([operation]) => ["check_project_auth", "connection", "submit"].includes(operation.kind))).toBe(false);
@@ -254,7 +334,7 @@ describe("plugin native Runner ownership", () => {
       ? { kind: "project_auth", taskId: "task", allowed: mode !== "denied",
           configurationId: mode === "wrong-configuration" ? "other" : op.configurationId,
           provider: mode === "wrong-provider" ? "anthropic" : op.provider } : perform(op));
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex",
       projectAuthCheckVersion: mode === "unsupported" ? undefined : 1,
       credentialIdentity: "revision", accountIdentity: "account", credential: { type: "codex-auth-json", authJson: '{"OPENAI_API_KEY":"never-transfer"}' } });
     await expect(prepare(owner)).rejects.toThrow(mode === "unsupported" ? "validation unavailable" : "conflicts");
@@ -264,7 +344,7 @@ describe("plugin native Runner ownership", () => {
   });
   it("rejects an installed account when the plugin lacks project validation", async () => {
     const { task } = provider();
-    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex" });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness: "codex" });
     await expect(prepare(owner)).rejects.toThrow("validation unavailable");
     expect(task.mock.calls.some(([op]) => op.kind === "submit")).toBe(false);
   });
@@ -282,7 +362,7 @@ describe("plugin native Runner ownership", () => {
       return perform(operation);
     });
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", credential,
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", credential,
       credentialIdentity: "revision", accountIdentity: "stable-account", pollMs: 1,
       onCredentials: async value => { expect(value).toEqual(credential); copied = true; } });
     await prepare(owner);
@@ -297,7 +377,7 @@ describe("plugin native Runner ownership", () => {
     const perform = task.getMockImplementation()!;
     task.mockImplementation(async op => op.kind === "credentials" ? { kind: "credentials", taskId: "task", credential: { type: "codex-auth-json", authJson: "{}" } } : perform(op));
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", accountIdentity: "account", pollMs: 1,
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", accountIdentity: "account", pollMs: 1,
       onCredentials: async () => { throw new Error("credential handoff failed"); } });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
@@ -324,7 +404,7 @@ describe("plugin native Runner ownership", () => {
     });
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
     const checkpoint = vi.fn(async () => {});
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", onSessionRetained: checkpoint, pollMs: 1,
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", onSessionRetained: checkpoint, pollMs: 1,
       });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
@@ -349,7 +429,7 @@ describe("plugin native Runner ownership", () => {
     let fail!: (error: Error) => void;
     const failure = new Promise<never>((_resolve, reject) => { fail = reject; });
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), failure, close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",  pollMs: 1 });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",  pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
     const observed = registration.failure.catch(error => error);
@@ -370,7 +450,7 @@ describe("plugin native Runner ownership", () => {
       return perform(op);
     });
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
        pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
@@ -388,7 +468,7 @@ describe("plugin native Runner ownership", () => {
   it("retains task grants when retention recording fails after route release", async () => {
     const { task } = provider();
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", onSessionRetained: async () => { throw new Error("retention write failed"); }, pollMs: 1 });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", onSessionRetained: async () => { throw new Error("retention write failed"); }, pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
     const process = owner.launcher(launchSpec());
@@ -403,7 +483,7 @@ describe("plugin native Runner ownership", () => {
     const { task } = provider();
     const close = vi.fn(async () => {});
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
        pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
@@ -417,7 +497,7 @@ describe("plugin native Runner ownership", () => {
     let finish!: () => void;
     const prepared = new Promise<void>(resolve => { finish = resolve; });
     const { task } = provider();
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
       onDispatched: () => prepared, pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run");
@@ -433,7 +513,7 @@ describe("plugin native Runner ownership", () => {
     const { task } = provider();
     ingress.connect.mockClear();
     const controller = new AbortController(); controller.abort();
-    const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex",
        pollMs: 1 });
     await prepare(owner);
     const registration = await owner.registration({} as never, "run", controller.signal);
@@ -449,6 +529,157 @@ describe("plugin native Runner ownership", () => {
 });
 
 
+describe("plugin Runner release/resume facade", () => {
+  const input = (harness: string) => ({ taskId: "task", projectIds: ["project"], harness,
+    warmTaskVersion: 1 as const, releaseResumeVersion: 1 as const,
+    accountIdentity: "selected-account", credentialIdentity: "selected-credential",
+    adoptIdentity: requirements.identity, authorityRunId: "run" });
+  const lifecycleTask = () => vi.fn(async (operation: any): Promise<unknown> => operation.kind === "release"
+    ? { kind: "released", taskId: "task" }
+    : { kind: "resume", taskId: "task", outcome: "resumed" });
+
+  it.each(["codex", "claude"])("quiesces %s before release and closes only after its ACK", async harness => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    const order: string[] = [];
+    let acknowledge!: (value: unknown) => void;
+    task.mockImplementation(op => {
+      if (op.kind !== "release") return perform(op);
+      order.push("release");
+      return new Promise(resolve => { acknowledge = resolve; });
+    });
+    const quiesce = vi.fn(() => { order.push("quiesce"); });
+    const close = vi.fn(async () => { order.push("close"); });
+    ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), quiesce, close });
+    const owner = createPluginRunnerTaskOwner({ ...input(harness), task });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    try {
+      const releasing = owner.driver.releaseResume!.release(requirements.identity);
+      expect(order).toEqual(["quiesce", "release"]);
+      expect(close).not.toHaveBeenCalled();
+      acknowledge({ kind: "released", taskId: "task" });
+      await releasing;
+      expect(order).toEqual(["quiesce", "release", "close"]);
+      expect(task.mock.calls.at(-1)![0]).toEqual({ kind: "release", identity: requirements.identity });
+      expect(ingress.connect).toHaveBeenCalledOnce();
+    } finally { await registration.release("detach"); }
+  });
+
+  it.each(["codex", "claude"])("keeps an uncertain %s release quiet for an exact retry", async harness => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    const lost = new Error("fixture release reply lost");
+    let attempts = 0;
+    task.mockImplementation(async op => {
+      if (op.kind !== "release") return perform(op);
+      if (attempts++ === 0) throw lost;
+      return { kind: "released", taskId: "task" };
+    });
+    const quiesce = vi.fn(), close = vi.fn(async () => {});
+    ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), quiesce, close });
+    const owner = createPluginRunnerTaskOwner({ ...input(harness), task });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    try {
+      await expect(owner.driver.releaseResume!.release(requirements.identity)).rejects.toBe(lost);
+      expect(quiesce).toHaveBeenCalledOnce();
+      expect(close).not.toHaveBeenCalled();
+      await owner.driver.releaseResume!.release(requirements.identity);
+      expect(quiesce).toHaveBeenCalledTimes(2);
+      expect(close).toHaveBeenCalledOnce();
+      expect(task.mock.calls.filter(([op]) => op.kind === "release").map(([op]) => op))
+        .toEqual([{ kind: "release", identity: requirements.identity }, { kind: "release", identity: requirements.identity }]);
+      expect(ingress.connect).toHaveBeenCalledOnce();
+    } finally { await registration.release("detach"); }
+  });
+
+  it.each(["codex", "claude"])("forwards both %s operations through the current checked owner", async harness => {
+    const firstTask = lifecycleTask();
+    const currentTask = lifecycleTask();
+    const original = { ...input(harness), task: firstTask };
+    const owner = createPluginRunnerTaskOwner(original);
+    await expect(owner.release(requirements.identity)).resolves.toBeUndefined();
+    expect(firstTask).toHaveBeenCalledExactlyOnceWith({ kind: "release", identity: requirements.identity }, { expectedTaskId: "task" });
+    expect(() => owner.rebind({ ...original, task: currentTask, authorityRunId: "next", accountIdentity: "changed" })).toThrow("cannot be rebound");
+    expect(currentTask).not.toHaveBeenCalled();
+    owner.rebind({ ...original, task: currentTask, authorityRunId: "next" });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(currentTask).toHaveBeenCalledExactlyOnceWith({ kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket" }, { expectedTaskId: "task" });
+    currentTask.mockResolvedValueOnce({ kind: "resume", taskId: "task", outcome: "unavailable" });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+    expect(firstTask).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["codex", "claude"])("requires capability, warm support and account for %s", async harness => {
+    for (const missing of ["releaseResumeVersion", "warmTaskVersion", "accountIdentity"] as const) {
+      const task = lifecycleTask();
+      const owner = createPluginRunnerTaskOwner({ ...input(harness), task, [missing]: undefined });
+      await expect(owner.release(requirements.identity)).rejects.toThrow("release/resume unavailable");
+      await expect(owner.resume(requirements.identity, "transient-ticket")).rejects.toThrow("release/resume unavailable");
+      expect(task).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(["released", "detached", "cancelled"] as const)("does not dispatch after the owner is %s", async state => {
+    const task = provider().task;
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, executionContext: context });
+    try {
+      if (state === "cancelled") context.abort(new Error("fixture cancellation"));
+      else await (await owner.registration({} as never, "run")).release(state === "detached" ? "detach" : undefined);
+      task.mockClear();
+      await expect(owner.release(requirements.identity)).rejects.toThrow("operation cancelled");
+      await expect(owner.resume(requirements.identity, "transient-ticket")).rejects.toThrow("operation cancelled");
+      expect(task).not.toHaveBeenCalled();
+    } finally { context.finish(); }
+  });
+
+  it.each(["release", "resume"] as const)("does not accept a late %s receipt after detachment", async operation => {
+    let reply!: (value: unknown) => void;
+    const task = vi.fn(() => new Promise<unknown>(resolve => { reply = resolve; }));
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const pending = operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket");
+    await (await owner.registration({} as never, "run")).release("detach");
+    reply(operation === "release" ? { kind: "released", taskId: "task" } : { kind: "resume", taskId: "task", outcome: "resumed" });
+    await expect(pending).rejects.toThrow("operation cancelled");
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+
+  it("can receive unavailable after an observed natural exit", async () => {
+    const task = vi.fn(async (operation: any): Promise<unknown> => operation.kind === "status"
+      ? { kind: "status", taskId: "task", phase: "completed", executionStopped: true, exitCode: 0 }
+      : { kind: "resume", taskId: "task", outcome: "unavailable" });
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume"]);
+  });
+
+  it.each(["release", "resume"] as const)("validates exact task and closed %s result", async operation => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const invoke = () => operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket");
+    for (const result of [
+      { kind: operation === "release" ? "released" : "resume", taskId: "other-task", ...(operation === "resume" ? { outcome: "resumed" } : {}) },
+      { kind: "accepted", taskId: "task" },
+      { kind: "resume", taskId: "task", outcome: "unknown" },
+    ]) {
+      task.mockResolvedValueOnce(result);
+      await expect(invoke()).rejects.toThrow();
+    }
+  });
+
+  it.each(["release", "resume"] as const)("preserves ambiguous %s errors without another operation", async operation => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+    const error = new Error("fixture transport lost its reply");
+    task.mockRejectedValueOnce(error);
+    await expect(operation === "release" ? owner.release(requirements.identity) : owner.resume(requirements.identity, "transient-ticket")).rejects.toBe(error);
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("plugin task workspace file transfer", () => {
   it("reads only a submitted task, validates bytes, and rejects late responses after release", async () => {
     const {task}=provider(); const perform=task.getMockImplementation()!;
@@ -456,7 +687,7 @@ describe("plugin task workspace file transfer", () => {
     let file={kind:"file",taskId:"task",base64:bytes.toString("base64"),byteSize:bytes.length,sha256:createHash("sha256").update(bytes).digest("hex")};
     let afterRead=async()=>{};
     task.mockImplementation(async op=>{if(op.kind==="read_file"){await afterRead();return file;}return perform(op);});
-    const owner=createPluginRunnerTaskOwner({projectAuthCheckVersion:1,task,projectIds:[],harness:"codex",pollMs:1});
+    const owner=createPluginRunnerTaskOwner({ taskId: "task",projectAuthCheckVersion:1,task,projectIds:[],harness:"codex",pollMs:1});
     await expect(owner.readWorkspaceFile("proof.txt",1024)).rejects.toThrow("unavailable");
     await prepare(owner);
     ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
@@ -480,7 +711,7 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   const {task} = provider();
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
   const retained = vi.fn(async()=>{});
-  const input = {task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
+  const input = {taskId:"task",task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
     accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained, githubBroker:{url:"https://core.example.test",token:"first-run-capability"}};
   const owner = createPluginRunnerTaskOwner(input);
   await prepare(owner, launchRequirements(harness));
@@ -512,7 +743,7 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
 it.each(["codex", "claude"])("adopts a verified retained %s task without submitting a replacement", async harness => {
   const {task}=provider();
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
-  const owner=createPluginRunnerTaskOwner({task,projectIds:[],harness,projectAuthCheckVersion:1,
+  const owner=createPluginRunnerTaskOwner({ taskId: "task",task,projectIds:[],harness,projectAuthCheckVersion:1,
     warmTaskVersion:1,accountIdentity:"account",adoptIdentity:requirements.identity,pollMs:1});
   const recovered = {configurationId:"saved",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}};
   await expect(owner.driver.prepareLaunch!(launchRequirements(harness),recovered)).resolves.toEqual(recovered);
@@ -531,7 +762,7 @@ it.each(["codex", "claude"])("denies retained %s process adoption when current p
   task.mockImplementation(async op=>op.kind === "check_project_auth"
     ? {kind:"project_auth",taskId:"task",configurationId:op.configurationId,provider:op.provider,allowed:false} as never
     : {kind:"accepted",taskId:"task"} as never);
-  const owner=createPluginRunnerTaskOwner({task,projectIds:["project"],harness,projectAuthCheckVersion:1,
+  const owner=createPluginRunnerTaskOwner({ taskId: "task",task,projectIds:["project"],harness,projectAuthCheckVersion:1,
     warmTaskVersion:1,accountIdentity:"account",adoptIdentity:requirements.identity});
   await expect(owner.driver.prepareLaunch!(launchRequirements(harness),{configurationId:"saved",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}}))
     .rejects.toThrow("project authentication conflicts");
@@ -540,12 +771,13 @@ it.each(["codex", "claude"])("denies retained %s process adoption when current p
 
 it.each(["codex", "claude"])("refuses warm %s account, harness, project, or credential generation changes", async harness=>{
   const {task}=provider();
-  const input={task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
+  const input={taskId:"task",task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
     accountIdentity:"account",credentialIdentity:"revision",pollMs:1};
   const owner=createPluginRunnerTaskOwner(input);
   await prepare(owner, launchRequirements(harness));
   const spec=launchSpec();spec.nativeRunner!.lifecyclePolicy={mode:"warm",idleTimeoutMs:300000};
   const process=owner.launcher(spec);
+  expect(()=>owner.rebind({...input,taskId:"replacement"})).toThrow("cannot be rebound");
   expect(()=>owner.rebind({...input,accountIdentity:"other"})).toThrow("cannot be rebound");
   expect(()=>owner.rebind({...input,credentialIdentity:"rotated"})).toThrow("cannot be rebound");
   expect(()=>owner.rebind({...input,harness:harness === "codex" ? "claude" : "codex"})).toThrow("cannot be rebound");
@@ -560,8 +792,49 @@ it.each(["codex", "claude"])("refuses warm %s account, harness, project, or cred
   task.mockImplementation(async operation => operation.kind === "describe"
     ? {kind:"description",taskId:"task",runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}}
     : implementation(operation));
-  const owner = createPluginRunnerTaskOwner({task,projectIds:[],harness:"codex",
+  const owner = createPluginRunnerTaskOwner({ taskId: "task",task,projectIds:[],harness:"codex",
     githubBroker:{url:"https://core.example.test",token:"runtime-capability"}});
   await expect(prepare(owner)).rejects.toThrow("credential broker v1");
   expect(task.mock.calls.map(([op])=>op.kind)).toEqual(["describe"]);
+});
+
+it.each((["codex", "claude"] as const).flatMap(harness => ["prepared", "unprepared", "foreign target"].map(mode => [harness, mode] as const)))(
+  "authenticates adopted %s source before activating only its exact %s successor", async (harness, mode) => {
+    const { task } = provider(), perform = task.getMockImplementation()!;
+    const source = launchRequirements(harness), target = { ...source, identity: { ...source.identity, runId: "successor", turnId: "next-turn", itemId: "next-item" } };
+    let nativeIdentity = source.identity;
+    task.mockImplementation(async operation => operation.kind === "read_state"
+      ? { kind: "state", taskId: "task", state: { schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...nativeIdentity } }
+      : perform(operation));
+    const connect = vi.fn(() => ({ ready: Promise.resolve(), close: async () => {} }));
+    ingress.connect.mockImplementation(connect);
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness, authorityRunId: target.identity.runId,
+      projectAuthCheckVersion: 1, accountIdentity: "account", adoptIdentity: source.identity });
+    const initial = await owner.driver.controlPlaneRegistration!({} as never, source.identity);
+    await initial.activate!(); await initial.ready!();
+    expect(task.mock.calls.some(([operation]) => operation.kind === "read_state" && operation.identity.runId === source.identity.runId)).toBe(true);
+    const requested = mode === "foreign target" ? { ...target.identity, itemId: "unprepared-item" } : target.identity;
+    const next = await owner.driver.controlPlaneRegistration!({} as never, requested);
+    if (mode !== "unprepared") await prepare(owner, target);
+    nativeIdentity = target.identity;
+    try {
+      await next.activate!();
+      if (mode === "prepared") { await expect(next.ready!()).resolves.toBeUndefined(); expect(connect).toHaveBeenCalledTimes(2); }
+      else { await expect(next.ready!()).rejects.toThrow("adoption identity mismatch"); expect(connect).toHaveBeenCalledTimes(1); }
+    } finally { await next.release!("detach"); await initial.release!(); }
+  },
+);
+
+it.each(["codex", "claude"] as const)("rejects a foreign %s source tuple before opening adopted ingress", async harness => {
+  const { task } = provider();
+  const connect = vi.fn(() => ({ ready: Promise.resolve(), close: async () => {} }));
+  ingress.connect.mockImplementation(connect);
+  const source = launchRequirements(harness).identity;
+  const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectIds: [], harness, adoptIdentity: source });
+  const registration = await owner.driver.controlPlaneRegistration!({} as never, { ...source, itemId: "foreign-item" });
+  try {
+    await registration.activate!();
+    await expect(registration.ready!()).rejects.toThrow("adoption identity mismatch");
+    expect(task).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
+  } finally { await registration.release!("detach"); }
 });

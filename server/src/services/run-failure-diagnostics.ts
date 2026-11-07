@@ -3,11 +3,18 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellation } from "./run-cancellation.js";
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
+import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
-import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { collectDiagnosticEnvironmentSecrets, redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
-import { ACP_TOOL_KINDS } from "@paperclipai/adapter-utils/acpx-engine/constants";
+import {
+  ACP_PROCESS_TERMINAL_SIGNALS,
+  ACP_PROCESS_TERMINAL_SOURCES,
+  ACP_TOOL_KINDS,
+} from "@paperclipai/adapter-utils/acpx-engine/constants";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { storageFailureDiagnosticsFor } from "../storage/failure-diagnostics.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic, readNativeTurnFailureDiagnostic } from "./native-runtime/native-provider-failure.js";
 import { readRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError } from "./native-runtime/remote-runner-recovery-diagnostics.js";
@@ -60,6 +67,22 @@ function readAcpPendingToolKinds(value: unknown): string | null {
 /** One closed ACP tool-kind label, or nothing. */
 function readAcpToolKind(value: unknown): string | null {
   return typeof value === "string" && ACP_PENDING_TOOL_KIND_LABELS.has(value) ? value : null;
+}
+
+/** How the sandbox agent process session ended, as closed labels and a bounded exit code. */
+function readAcpProcessTerminal(result: unknown): Context {
+  const source = ACP_PROCESS_TERMINAL_SOURCES.find((label) => label === read(result, "acpProcessTerminalSource"));
+  if (!source) return {};
+  const fields: Context = { acpProcessTerminalSource: source };
+  const outcome = read(result, "acpProcessTerminalOutcome");
+  if (outcome === "exit" || outcome === "error") fields.acpProcessTerminalOutcome = outcome;
+  const exitCode = read(result, "acpProcessTerminalExitCode");
+  if (typeof exitCode === "number" && Number.isInteger(exitCode) && exitCode >= 0 && exitCode <= 255) {
+    fields.acpProcessTerminalExitCode = exitCode;
+  }
+  const signal = ACP_PROCESS_TERMINAL_SIGNALS.find((label) => label === read(result, "acpProcessTerminalSignal"));
+  if (signal) fields.acpProcessTerminalSignal = signal;
+  return fields;
 }
 
 function read(value: unknown, key: string): unknown {
@@ -142,64 +165,8 @@ function scalars(value: unknown, fields: readonly string[]): Context {
   return result;
 }
 
-// Unknown inherited values may contain credentials under arbitrary names.
-// Explicitly configured values remain private, including overrides of these keys.
-const PUBLIC_ENV_KEYS = new Set([
-  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
-  "HOMEDRIVE", "HOMEPATH", "USER", "USERNAME", "LOGNAME", "SHELL", "LANG",
-  "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "NODE_ENV",
-  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-  "PWD", "OLDPWD", "INIT_CWD", "SHLVL", "_", "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM",
-  "NPM_LIFECYCLE_EVENT", "NPM_COMMAND", "NPM_EXEC_PATH", "NPM_EXECPATH", "NPM_NODE_EXECPATH",
-  "NPM_PACKAGE_NAME", "NPM_PACKAGE_VERSION", "NPM_PACKAGE_JSON", "NPM_CONFIG_USER_AGENT",
-  "XPC_SERVICE_NAME", "VITEST_POOL_ID", "VITEST_WORKER_ID",
-  "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_RUN_ID", "PAPERCLIP_TASK_ID",
-]);
-const PUBLIC_BOOLEAN_ENV_KEYS = new Set([
-  "OPENCODE_ALLOW_ALL_MODELS", "CLAUDE_CODE_USE_BEDROCK", "GOOGLE_GENAI_USE_GCA",
-  "CI", "NO_COLOR", "FORCE_COLOR",
-  "VITEST", "MALLOCNANOZONE", "CODEX_CI", "CODEX_SHELL", "CODEX_SAGE_BACKFILL_TRACKER_TAB_REUSE",
-  "DEV", "PROD", "SSR", "PAPERCLIP_REQUIRE_SENTRY_TEST_SDK",
-  "PAPERCLIP_DB_BACKUP_ENABLED", "PAPERCLIP_WORKSPACE_COMPACTION_ENABLED", "PAPERCLIP_AUTH_DISABLE_SIGN_UP", "PAPERCLIP_ENABLE_COMPANY_DELETION",
-  "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", "PAPERCLIP_SECRETS_STRICT_MODE",
-  "SERVE_UI", "PAPERCLIP_UI_DEV_MIDDLEWARE", "HEARTBEAT_SCHEDULER_ENABLED", "PAPERCLIP_ANNOUNCEMENTS_ENABLED",
-  "GITHUB_ACTIONS", "GITHUB_REF_PROTECTED", "RUNNER_DEBUG", "ACTIONS_RUNNER_DEBUG", "ACTIONS_STEP_DEBUG",
-]);
-const PUBLIC_NUMBER_ENV_KEYS = new Set([
-  "PORT", "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES", "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
-  "PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS", "PAPERCLIP_WORKSPACE_COMPACTION_DELAY_HOURS",
-  "HEARTBEAT_SCHEDULER_INTERVAL_MS",
-  "GITHUB_RUN_ATTEMPT", "GITHUB_RUN_NUMBER", "GITHUB_RUN_ID", "GITHUB_RETENTION_DAYS",
-]);
-
-/** Include declared bindings and unknown values, not just credential-like keys. */
-export function collectRunFailureSecretValues(
-  env: unknown, secretKeys: Iterable<string> = [], inherited = false,
-): string[] {
-  if (!env || typeof env !== "object") return [];
-  const strings = Object.fromEntries(Object.entries(env).filter(
-    (entry): entry is [string, string] => typeof entry[1] === "string",
-  ));
-  const declared = new Set(secretKeys);
-  const values: string[] = [];
-  for (const [key, value] of Object.entries(strings)) {
-    if (!value) continue;
-    const publicSetting = (inherited && (
-      PUBLIC_ENV_KEYS.has(key.toUpperCase()) ||
-      (PUBLIC_NUMBER_ENV_KEYS.has(key.toUpperCase()) && /^\d+$/.test(value)) ||
-      (key === "BASE_URL" && value === "/") ||
-      (key === "MODE" && /^(?:test|development|production)$/.test(value)) ||
-      (key === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value))
-    )) ||
-      (PUBLIC_BOOLEAN_ENV_KEYS.has(key.toUpperCase()) && /^(?:0|1|true|false)$/i.test(value));
-    if (declared.has(key) || !publicSetting) values.push(value);
-    try {
-      const password = new URL(value).password;
-      if (password) values.push(value, password, decodeURIComponent(password));
-    } catch { /* ordinary environment values are not URLs */ }
-  }
-  return [...new Set(values)].sort((a, b) => b.length - a.length);
-}
+/** Select credential fields, credential-shaped values, and declared bindings. */
+export const collectRunFailureSecretValues = collectDiagnosticEnvironmentSecrets;
 
 /** Redact literal, JSON-escaped and URI-encoded forms without rewriting markers. */
 export function redactRunFailureSecretValues<T>(input: T, values: readonly string[]): T {
@@ -307,6 +274,9 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (leaseLoss.deadlineLateMs !== undefined) execution.controllerLeaseDeadlineLateMs = leaseLoss.deadlineLateMs;
     if (leaseLoss.renewalCount !== undefined) execution.controllerLeaseRenewalCount = leaseLoss.renewalCount;
   }
+  const reviewedChatDenial = run.errorCode === "setup_failed"
+    ? readReviewedChatBindingDenialReason(read(result, "reviewedChatBinding")) : null;
+  if (reviewedChatDenial) execution.reviewedChatBindingDenialReason = reviewedChatDenial;
   Object.assign(execution, scalars(result, [
     "mode", "stopReason", "timeoutFired", "timeoutSource", "timeoutConfigured",
     "effectiveTimeoutSec", "errorFamily",
@@ -322,6 +292,7 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   }
   const closeSettlement = readNativeCloseSettlement(options.nativeCloseFailure);
   if (closeSettlement) Object.assign(execution, closeSettlement);
+  Object.assign(execution, readAcpProcessTerminal(result));
   const pendingToolKinds = readAcpPendingToolKinds(read(result, "acpPendingToolKinds"));
   if (pendingToolKinds) execution.acpPendingToolKinds = pendingToolKinds;
   const stalledToolKind = readAcpToolKind(read(result, "acpStalledToolKind"));
@@ -389,26 +360,20 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       execution.environmentAcquisitionBudgetMs = acquisition.budgetMs;
       if (acquisition.providerState) execution.environmentAcquisitionProviderState = acquisition.providerState;
     }
-    if (execution.restoreLockOwnerState === undefined && read(error, "code") === "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT") {
-      const lock = read(error, "workspaceRestoreLock");
-      const operation = read(lock, "operation");
-      if (["agent_directory_prepare", "agent_directory_release", "agent_directory_collect", "agent_directory_checkpoint", "agent_directory_handoff"].some(value => value === operation)) {
-        execution.restoreLockOperation = operation as string;
-      }
-      const ownerState = read(lock, "ownerState");
-      if (["alive", "dead", "unknown", "missing", "invalid"].some(value => value === ownerState)) {
-        execution.restoreLockOwnerState = ownerState as string;
-      }
-      for (const field of ["knownLocalHolder", "ownerSameProcess", "ownerPredatesProcess"]) {
-        const value = read(lock, field);
-        if (typeof value === "boolean") execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
-      }
-      for (const field of ["ownerAgeMs", "waitMs"]) {
-        const value = read(lock, field);
-        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 7 * 24 * 60 * 60 * 1000) {
-          execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
-        }
-      }
+    const lock = execution.restoreLockOwnerState === undefined ? directoryMergeLockTimeoutDiagnosticsFor(error) : null;
+    for (const [field, value] of Object.entries(lock ?? {})) {
+      execution[`restoreLock${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+    }
+    // A bare socket error ("aborted", ECONNRESET) cannot say which storage
+    // read it interrupted; the provider's fixed-shape record can.
+    const storage = storageFailureDiagnosticsFor(error);
+    if (storage && execution.storageOperation === undefined) {
+      execution.storageProvider = storage.provider;
+      execution.storageOperation = storage.operation;
+      execution.storageErrorCode = storage.errorCode;
+      if (storage.httpStatus !== null) execution.storageHttpStatus = storage.httpStatus;
+      if (storage.requestId !== null) execution.storageRequestId = storage.requestId;
+      if (storage.attempts !== null) execution.storageAttempts = storage.attempts;
     }
     const entry: RunFailureException = {};
     for (const field of ["name", "message", "stack", "code"] as const) {

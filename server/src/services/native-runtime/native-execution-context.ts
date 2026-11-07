@@ -15,6 +15,7 @@ export class NativeExecutionContext {
   #transport?: Promise<PluginEnvironmentTaskExecutionContext["transport"]>;
   #target?: string;
   #finished = false;
+  #nativeLease?: { bootId: string; leaseOwner: string; generation: number };
   pluginSupported = false;
 
   constructor(execution: NativeExecutionInput, timeoutMs: number) {
@@ -40,6 +41,19 @@ export class NativeExecutionContext {
       throw new Error("native_execution_context_scope_mismatch");
     }
     this.assertOpen();
+  }
+
+  /** Bind only the coordinator lease actually acquired by this execution. */
+  bindNativeLease(owner: { bootId: string; leaseOwner: string; generation: number }): void {
+    this.assertOpen();
+    if (this.#nativeLease) { this.assertNativeLease(owner); return; }
+    this.#nativeLease = { ...owner };
+  }
+
+  assertNativeLease(owner: { bootId: string; leaseOwner: string; generation: number }): void {
+    this.assertOpen();
+    if (!this.#nativeLease || this.#nativeLease.bootId !== owner.bootId || this.#nativeLease.leaseOwner !== owner.leaseOwner ||
+        this.#nativeLease.generation !== owner.generation) throw new Error("native_execution_context_owner_changed");
   }
 
   async wait<T>(operation: () => Promise<T>): Promise<T> {

@@ -24,14 +24,13 @@ Agent access: [companion](../agent-access-map/inbox-search.md).
 
 ### `inbox`
 
-Use Inbox links or the corresponding task views when the combined list is enabled.
+In Coordinator, open Tasks → Mine, Unread, Blocked, Recent, or Everything. Old `/inbox/*` links redirect to the matching task view. Classic uses Inbox links or the task views when its combined list is enabled.
 
 ### `decisions`
 
 Open `/decisions`, then a queue at `/decisions/queues/:key` and its source item.
 
-With **Settings → Experimental → Coordinator workspace** enabled, `/decisions`
-is **Needs You**. Pending cards use the existing attention feed and canonical
+In Coordinator, `/decisions` is **Inbox**. Pending cards use the existing attention feed and canonical
 resolvers. **Tasks → Needs attention** projects the same feed as distinct tasks.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
 both open decisions and the visible Recent Decisions receipts. Successful
@@ -43,7 +42,7 @@ reduced motion settles immediately, and revisiting history does not replay it. T
 24-hour display window is an experimental assumption, not data deletion.
 Resolving an artifact decision does not itself complete its task. If the task
 remains in review without a maintained reviewer or continuation, its separate
-canonical stalled-review item stays in Needs You and Tasks → Needs attention.
+canonical stalled-review item stays in Inbox and Tasks → Needs attention.
 Coordinator presents the existing recovery actions with **Mark task done** as
 the task-level verdict, distinct from the saved artifact receipt.
 
@@ -65,7 +64,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 ### `inbox`
 
-Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
+Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. [Coordinator Tasks browser checks](../../tests/e2e/coordinator-inbox-views.spec.ts) exercise personal views, read state, archive, keyboard undo, mobile swipes, and saved columns.
 
 Automated: [Issue service regressions](../../server/src/__tests__/issues-service.test.ts)
 cover exclusion of historical automatic read cleanup from user participation,
@@ -109,13 +108,13 @@ company/private-task isolation, and private v1 targets.
 cover pending question forms and confirmations in persistent agent chats, removal
 after an answer with retained history, and company/task-visibility/addressee checks.
 Idle chats without structured requests remain absent. The
-[Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
+[Inbox component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
 checks that a chat-sourced canonical question reaches its original resolver and context.
 It also checks simultaneous resize/light and delayed movement to Recent Decisions.
 [Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
 cover reduced-motion settlement and returning to a resolved card without replay.
 The [decision-motion stories](../../ui/storybook/stories/design-proposals/coordinator-decision-motion.stories.tsx)
-exercise real Needs You/resolver components with isolated approval, question, and failed-save responses.
+exercise real Inbox/resolver components with isolated approval, question, and failed-save responses.
 [Projection helpers](../../ui/src/lib/coordinator-attention.test.ts) cover distinct
 pending task membership and presentation-only recency decay. Browser verification
 must additionally approve copy, approve a visual, and answer a question; confirm

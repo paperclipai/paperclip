@@ -1,4 +1,5 @@
 import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -95,11 +96,17 @@ export function isNativeRestartInterruption(error: unknown): boolean {
   return failure.code === NATIVE_RESTART_INTERRUPTION_CODE && failure.recoverable === true;
 }
 
+const RESTART_CONTINUATION_DRIVER_KINDS: ReadonlySet<string> = new Set(["codex_app_server", "acpx_runtime", "opencode_server"]);
+
 /** The terminal fingerprint survives a crash between interruption and continuation. */
 export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSession,
   "driverKind" | "activeTurnId" | "semanticResult" | "terminalTurns" | "dispositionOnlyRecoveryConsumed" | "pendingRuntimeRequests" | "goal"
 >): string | null {
-  if (snapshot.driverKind !== "codex_app_server" || snapshot.activeTurnId != null ||
+  // Runnerd records this cause for Codex app-server and ACPX sessions after
+  // proving the old provider lifetime ended and restoring the conversation.
+  // A lost continuation re-arms the driver's marker before it is checkpointed,
+  // so a consumed marker here still means the allowance is used.
+  if (!RESTART_CONTINUATION_DRIVER_KINDS.has(snapshot.driverKind ?? "") || snapshot.activeTurnId != null ||
       snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
       snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
   const terminal = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
@@ -195,6 +202,8 @@ export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
   attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
@@ -205,6 +214,13 @@ export interface NativeSession {
     requestedCollaborationMode?: "default" | "plan";
     /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
     reasoningMode?: "default" | "disabled";
+    /**
+     * Run the provider's own context compaction as this turn instead of
+     * submitting `message`. Only for a resumed session with prior context.
+     */
+    compact?: true;
+    /** Last context occupancy Paperclip recorded before a compaction turn. */
+    contextTokensBefore?: number;
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
@@ -288,6 +304,17 @@ export class NativeProviderStateIncompatibleError extends Error {
   constructor(reason: string) {
     super(`native_session_recovery_failed: ${reason}`);
     this.name = "NativeProviderStateIncompatibleError";
+  }
+}
+
+/** The saved provider session still owns a side-effecting call without a
+ * recorded result. A replacement session could repeat or lose that action, so
+ * the run stops for an operator and the saved state stays intact. */
+export class NativeProviderSideEffectPendingError extends Error {
+  readonly code = "native_provider_side_effect_pending";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderSideEffectPendingError";
   }
 }
 

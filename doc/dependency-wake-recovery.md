@@ -13,6 +13,13 @@ unattributed operation in the same shared workspace does not remove its wait.
 Normal readiness, duplicate-wake, interaction, pause, and execution gates still
 apply. A board transition into blocked keeps the existing recovery behavior.
 
+A dependency completion can arrive while the assignee answers a question about
+the blocked task. Its saved wake waits behind that turn. Deferred-receipt recovery
+reconstructs these dependency wakes after the turn and its cleanup finish, even
+when they contain no comment or interaction response. It uses the existing
+release and dispatch checks; task cancellation, agent pause, and pending cleanup
+still prevent execution.
+
 Cancelling a run or pausing its agent suppresses immediate stranded-work recovery.
 A queued user message remains a separate continuation request. The release path
 still preserves independently authorized deferred input; stopping the old run

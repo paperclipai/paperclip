@@ -34,6 +34,10 @@ async function pinned(db: ReadDb, row: Snapshot) {
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, row.companyId), eq(workspaceOperations.executionWorkspaceId, row.executionWorkspaceId),
     or(inArray(workspaceOperations.status, ["running", "pending"]),
+      // A failed save keeps its snapshot pinned for its retry, as while it ran,
+      // until the final save retires it.
+      sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
+        and ${workspaceOperations.metadata}->'retiredSave' is null)`,
       sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
         and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
           or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'

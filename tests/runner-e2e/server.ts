@@ -1,5 +1,7 @@
 import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { superviseRollingDeployment } from "./rolling-deployment-supervisor.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
+import { superviseLegacyWorkspaceMigration } from "./legacy-workspace-migration-supervisor.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
 import { startCursorCloudCallbackProxy } from "./cursor-cloud-callback-proxy.js";
 import { prepareControllerDatabase } from "./controller-database.js";
@@ -449,10 +451,17 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+  const legacyMigration = executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isLegacyWorkspaceMigration(execution); });
+  if (upgradeArtifacts || legacyMigration || executionIds.some(id => id.endsWith(".recover-controller"))) {
     // The wrapper owns this sibling process. Killing the serving child must
     // leave Postgres available to the stopped-controller observer and successor.
     controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  if (legacyMigration) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Migration source qualification cannot claim installed-artifact evidence");
+    await superviseLegacyWorkspaceMigration({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
   }
   if (executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); })) {
     if (upgradeArtifacts || installedRelease) throw new Error("Rolling source qualification cannot claim installed-artifact evidence");

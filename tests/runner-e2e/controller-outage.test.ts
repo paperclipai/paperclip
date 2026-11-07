@@ -20,9 +20,10 @@ function fixture() {
 }
 
 describe("controller outage qualification", () => {
-  it("keeps original-execution fault evidence enabled for both dedicated continuity cells", async () => {
+  it("keeps original-execution fault evidence enabled for every dedicated continuity cell", async () => {
     const executions = selectRunnerExecutions(parseRunnerSelectors(["--suite", "daytona-restart-continuity"]));
-    expect(executions).toHaveLength(2);
+    // Only providers with production managed warm sessions belong in this lane (#18994).
+    expect(executions.map(execution => execution.profile.id)).toEqual(["runner-codex"]);
     for (const execution of executions) {
       const outage = controllerOutageForExecution(execution, {});
       expect(outage).toEqual({ signal: "SIGKILL", holdMs: 300_000 });

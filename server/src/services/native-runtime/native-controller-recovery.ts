@@ -1,12 +1,13 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type { DurablePrpCheckpoint, PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput, type DurablePrpCheckpoint, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { readRunCancellation } from "../run-cancellation.js";
 import { nativeSha256 } from "./canonical.js";
 import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBootstrap, nativeSessionProviderEvidence } from "./native-session-resume.js";
-import { loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
 export const NATIVE_CONTROLLER_RECOVERY_MAX_BYTES = 4 * 1024;
@@ -223,38 +224,74 @@ export async function resolveNativeControllerRecovery(db: Db, input: {
 export async function importNativeControllerRecovery(db: Db, input: {
   companyId: string; agentId: string; issueId: string; runId: string; normalizedSessionId: string;
   expectedConfigDigest: string;
-  supervisor: unknown;
+  supervisor?: unknown;
+  offline?: { writersStopped: true; legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
+  legacyCheckpoint?: { legacyControllerState?: string; legacyRunnerArtifact?: { version: string; digest: string } };
 }): Promise<{ kind: "imported" | "unchanged" } | Exclude<NativeControllerRecoveryOutcome, { kind: "recoverable" } | { kind: "no_prior_execution" }>> {
+  if (input.offline && input.legacyCheckpoint) throw new Error("Conflicting native controller migration authority");
+  const legacy = input.offline ?? input.legacyCheckpoint;
   const supervisor = record(input.supervisor);
-  if (supervisor.schema !== "paperclip.native-session-supervisor.v1" || supervisor.configDigest !== input.expectedConfigDigest) {
+  if (input.supervisor !== undefined && (supervisor.schema !== "paperclip.native-session-supervisor.v1" || supervisor.configDigest !== input.expectedConfigDigest)) {
     return { kind: "unsupported", reason: "supervisor_compatibility" };
   }
   return db.transaction(async tx => {
-    const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+    const [task] = await tx.select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("share");
     const [owner] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
       eq(nativeRunFinalizations.runId, input.runId))).for("update");
     if (!task || !owner) return { kind: "missing_evidence" as const, reason: "owner_binding" };
-    if (owner.leaseOwner || task.executionRunId) {
-      return owner.leaseExpiresAt && owner.leaseExpiresAt > new Date()
+    if (input.offline) {
+      const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
+      if (!input.offline.writersStopped || active) return { kind: "missing_evidence" as const, reason: "offline_writers_required" };
+    }
+    const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+    const liveOwner = owner.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt > new Date(clock.now));
+    if (input.offline ? liveOwner : owner.leaseOwner || task.executionRunId) {
+      return owner.leaseExpiresAt && owner.leaseExpiresAt > new Date(clock.now)
         ? { kind: "waiting_for_owner" as const, deadline: owner.leaseExpiresAt }
         : { kind: "missing_evidence" as const, reason: "normal_ownership_recovery_required" };
     }
-    if (owner.phase !== "committed" || !owner.resultId || owner.recoveryState) {
+    if (!input.offline && (!(owner.phase === "committed" && owner.resultId) || owner.recoveryState)) {
       return { kind: "missing_evidence" as const, reason: "pending_finalization" };
+    }
+    if (input.legacyCheckpoint) {
+      const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
+        or(eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.issueId, input.issueId),
+          eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId)))).limit(1);
+      if (task.checkoutRunId || active) return { kind: "missing_evidence" as const, reason: "legacy_source_active" };
     }
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId),
       eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
       eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.nativeSessionId, input.normalizedSessionId))).for("update");
     const profile = record(run?.runnerProfileJson), snapshot = record(profile.sessionCheckpoint), identity = record(snapshot.identity);
-    if (run?.runtimeMode !== "native" || run.status !== "succeeded" || !run.finishedAt
+    if (run?.runtimeMode !== "native" || !(run.status === "succeeded" || input.legacyCheckpoint && run.status === "failed"
+      || input.offline && ["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) || !run.finishedAt
       || identity.runId !== input.runId || identity.companyId !== input.companyId || identity.issueId !== input.issueId
       || identity.agentId !== input.agentId || identity.sessionId !== input.normalizedSessionId
-      || nativeSha256(snapshot) !== nativeSha256(redactRunnerApiPayloads(supervisor.snapshot))) {
+      || input.supervisor !== undefined && nativeSha256(snapshot) !== nativeSha256(redactRunnerApiPayloads(supervisor.snapshot))) {
       return { kind: "missing_evidence" as const, reason: "stale_supervisor_snapshot" };
     }
-    const checkpoint = await loadNativeRunnerCheckpoint(tx, input);
+    let checkpoint = await loadNativeRunnerCheckpoint(tx, input);
+    if (input.supervisor === undefined) {
+      try {
+        const admitted = parseNativeExecutionInput(profile.nativeExecutionInput);
+        if (!legacy || (!checkpoint && admitted.session.lifecyclePolicy.mode !== "per_turn")
+          || admitted.session.normalizedSessionId !== input.normalizedSessionId
+          || admitted.binding.runId !== input.runId || admitted.binding.companyId !== input.companyId
+          || admitted.binding.agentId !== input.agentId || admitted.binding.issueId !== input.issueId) {
+          return { kind: "missing_evidence" as const, reason: "admitted_per_turn_binding" };
+        }
+      } catch { return { kind: "unsupported" as const, reason: "admitted_input_format" }; }
+    }
+    const importing = !checkpoint && legacy?.legacyControllerState !== undefined;
+    if (importing) {
+      if (!run.runnerInstanceId) return { kind: "missing_evidence" as const, reason: "checkpoint_binding" };
+      checkpoint = captureLegacyDurablePrpCheckpoint(legacy!.legacyControllerState!, {
+        runId: input.runId, runnerInstanceId: run.runnerInstanceId, normalizedSessionId: input.normalizedSessionId,
+      }, legacy!.legacyRunnerArtifact);
+    }
     if (!checkpoint || checkpoint.recoveryEvidence.normalizedSessionId !== input.normalizedSessionId
       || checkpoint.recoveryEvidence.runnerInstanceId !== run.runnerInstanceId) {
       return { kind: "missing_evidence" as const, reason: "checkpoint_binding" };
@@ -265,10 +302,13 @@ export async function importNativeControllerRecovery(db: Db, input: {
     }, { runId: input.runId, runnerInstanceId: checkpoint.recoveryEvidence.runnerInstanceId, normalizedSessionId: input.normalizedSessionId });
     if (!readNativeControllerRecovery(metadata, snapshot)) return { kind: "unsupported" as const, reason: "metadata_format" };
     if (profile.nativeControllerRecovery) {
-      return nativeSha256(profile.nativeControllerRecovery) === nativeSha256(metadata)
-        ? { kind: "unchanged" as const }
-        : { kind: "missing_evidence" as const, reason: "existing_metadata_conflict" };
+      if (nativeSha256(profile.nativeControllerRecovery) !== nativeSha256(metadata)) {
+        return { kind: "missing_evidence" as const, reason: "existing_metadata_conflict" };
+      }
+      if (importing) await insertMigratedNativeRunnerCheckpoint(tx, input, checkpoint);
+      return { kind: importing ? "imported" as const : "unchanged" as const };
     }
+    if (importing) await insertMigratedNativeRunnerCheckpoint(tx, input, checkpoint);
     await tx.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativeControllerRecovery: metadata }, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, input.runId));
     return { kind: "imported" as const };

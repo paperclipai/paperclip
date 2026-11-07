@@ -11,7 +11,7 @@ export type PaperclipRunnerPermissionMode =
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
-  codex: "gpt-5.6-sol",
+  codex: "gpt-6.1-sol",
   acpx: "claude-opus-5-5",
   opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
