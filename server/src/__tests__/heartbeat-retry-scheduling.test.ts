@@ -8,6 +8,7 @@ import {
   issueApprovals,
   issueThreadInteractions,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   activityLog,
   budgetPolicies,
@@ -30,6 +31,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -72,6 +74,12 @@ const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const STABLE_WORKSPACE_LOCK_TIMEOUT_ADAPTER = "stable_workspace_lock_timeout_test";
+// Mirrors opencode-local's stable-task-workspace lock-timeout result shape
+// (packages/adapters/opencode-local/src/server/execute.ts): fail fast with a
+// retryNotBefore hint and no session work started.
+const STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE = "2030-04-22T21:00:00.000Z";
+const stableWorkspaceLockAdapterControl = vi.hoisted(() => ({ failWithLockTimeout: false }));
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -126,6 +134,41 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: STABLE_WORKSPACE_LOCK_TIMEOUT_ADAPTER,
+      execute: async () => stableWorkspaceLockAdapterControl.failWithLockTimeout
+        ? {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: "Timed out waiting for the stable task workspace cycle lock",
+            errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+            retryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE,
+            resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+              retryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE,
+              transientRetryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE },
+            clearSession: false,
+          }
+        : {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            sessionId: "ses_stable_timeout_1",
+            sessionParams: { sessionId: "ses_stable_timeout_1" },
+            sessionDisplayId: "ses_stable_timeout_1",
+            summary: "Stable task workspace session established.",
+            provider: "test",
+            model: "test-model",
+            usage: { inputTokens: 10, outputTokens: 5 },
+          },
+      testEnvironment: async () => ({
+        adapterType: STABLE_WORKSPACE_LOCK_TIMEOUT_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -136,12 +179,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     // when teardown starts. The cleanup deletes issues before heartbeat_runs, so
     // a late write races the deletes and can deadlock or break a foreign key.
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    stableWorkspaceLockAdapterControl.failWithLockTimeout = false;
     await cleanupRetryFixture();
     vi.clearAllMocks();
   });
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(STABLE_WORKSPACE_LOCK_TIMEOUT_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -174,6 +219,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(approvals);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
+    await db.delete(agentTaskSessions);
     await cleanupHeartbeatRunDependents();
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -399,6 +445,164 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("schedules a bounded retry wake for the stable-workspace lock timeout from the adapter result through persistence", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const taskId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Stable Lock Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: STABLE_WORKSPACE_LOCK_TIMEOUT_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    // First wake establishes the task session through the real persistence
+    // path, exactly like the run before a later wake hits lock contention.
+    const established = await heartbeat.invoke(agentId, "on_demand", { taskId }, "manual");
+    expect(established).not.toBeNull();
+    const establishedRun = await waitForRunToFinish(heartbeat, established!.id, 20_000);
+    expect(establishedRun?.status).toBe("succeeded");
+    // The task session persists just after the terminal status write.
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ sessionDisplayId: agentTaskSessions.sessionDisplayId })
+            .from(agentTaskSessions)
+            .where(and(
+              eq(agentTaskSessions.companyId, companyId),
+              eq(agentTaskSessions.agentId, agentId),
+              eq(agentTaskSessions.taskKey, taskId),
+            ))
+            .then((rows) => rows[0]?.sessionDisplayId ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("ses_stable_timeout_1");
+
+    // Second wake fails with the adapter's lock-timeout result shape.
+    stableWorkspaceLockAdapterControl.failWithLockTimeout = true;
+    const contended = await heartbeat.invoke(agentId, "on_demand", { taskId }, "manual");
+    expect(contended).not.toBeNull();
+    const failedRun = await waitForRunToFinish(heartbeat, contended!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe(WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE);
+    expect((failedRun?.resultJson as Record<string, unknown> | null)?.retryNotBefore)
+      .toBe(STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE);
+
+    // The failed wake completion schedules the bounded retry wake.
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, contended!.id))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, contended!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
+    expect(retryRun?.scheduledRetryAttempt).toBe(1);
+    // retryNotBefore is far in the future, so it must win over the base delay.
+    expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE);
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.transientRetryNotBefore)
+      .toBe(STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE);
+
+    // A new wake is actually programmed for the successor run.
+    const [wakeup] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun!.wakeupRequestId!));
+    expect(wakeup).toMatchObject({ runId: retryRun!.id, status: "queued", reason: "transient_failure_retry" });
+    expect(wakeup?.payload).toMatchObject({
+      retryOfRunId: contended!.id,
+      retryReason: "transient_failure",
+      errorFamily: "transient_upstream",
+      transientRetryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE,
+    });
+
+    // The previous session stays recoverable: the task session row survives the
+    // failed wake and the successor inherits its session id.
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ sessionDisplayId: agentTaskSessions.sessionDisplayId, lastRunId: agentTaskSessions.lastRunId })
+            .from(agentTaskSessions)
+            .where(and(
+              eq(agentTaskSessions.companyId, companyId),
+              eq(agentTaskSessions.agentId, agentId),
+              eq(agentTaskSessions.taskKey, taskId),
+            ))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toEqual({ sessionDisplayId: "ses_stable_timeout_1", lastRunId: failedRun?.id });
+    expect(retryRun?.sessionIdBefore).toBe("ses_stable_timeout_1");
+
+    // The retry is bounded: a second lock-timeout failure gets one more
+    // scheduled attempt, the third is exhausted and programs no new wake.
+    const lockTimeoutFailurePatch = {
+      status: "failed",
+      finishedAt: new Date(),
+      errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        retryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE,
+        transientRetryNotBefore: STABLE_LOCK_TIMEOUT_RETRY_NOT_BEFORE },
+    } as const;
+    let predecessor = retryRun!;
+    for (const attempt of [2]) {
+      const [failedRetry] = await db.update(heartbeatRuns).set(lockTimeoutFailurePatch)
+        .where(eq(heartbeatRuns.id, predecessor.id)).returning();
+      const scheduled = await heartbeat.scheduleBoundedRetry(failedRetry!.id, {
+        now: new Date("2026-04-20T12:00:00.000Z"),
+        random: () => 0,
+      });
+      expect(scheduled).toMatchObject({ outcome: "scheduled", attempt, maxAttempts: 2 });
+      predecessor = (await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, failedRetry!.id))
+        .then((rows) => rows[0] ?? null))!;
+      expect(predecessor).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: attempt });
+    }
+    const [finalFailure] = await db.update(heartbeatRuns).set(lockTimeoutFailurePatch)
+      .where(eq(heartbeatRuns.id, predecessor.id)).returning();
+    expect(await heartbeat.scheduleBoundedRetry(finalFailure!.id, {
+      now: new Date("2026-04-20T12:00:00.000Z"),
+      random: () => 0,
+    })).toMatchObject({ outcome: "retry_exhausted", attempt: 3, maxAttempts: 2 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor.id))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
   });
 
   async function seedMaxTurnFixture(input?: {

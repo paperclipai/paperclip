@@ -468,7 +468,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // A concurrent run of the same task holds the stable-workspace cycle
         // lock. Fail fast, but advertise a bounded transient retry so the
         // heartbeat scheduler re-runs the wake instead of recording a
-        // terminal setup failure.
+        // terminal setup failure. The timeout is raised during remote runtime
+        // preparation, strictly before any provider work, so the bootstrap
+        // recovery evidence keeps the retry free of legacy-execution
+        // reconciliation holds.
         if ((error as NodeJS.ErrnoException | null)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
           const retryNotBefore = new Date(Date.now() + STABLE_TASK_WORKSPACE_LOCK_RETRY_DELAY_MS).toISOString();
           const message = error instanceof Error ? error.message : String(error);
@@ -478,8 +481,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             timedOut: false,
             errorMessage: message,
             errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+            executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
             retryNotBefore,
-            resultJson: { retryNotBefore, transientRetryNotBefore: retryNotBefore },
+            resultJson: {
+              executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+              retryNotBefore,
+              transientRetryNotBefore: retryNotBefore,
+            },
             clearSession: false,
           } satisfies AdapterExecutionResult;
         }

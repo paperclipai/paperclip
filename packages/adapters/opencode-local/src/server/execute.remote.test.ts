@@ -721,6 +721,12 @@ describe("opencode remote execution — stable task workspace", () => {
     expect(result.errorMessage).toContain("cycle lock");
     expect(result.retryNotBefore).toBeTruthy();
     expect((result.resultJson as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(result.retryNotBefore);
+    // Bootstrap evidence proves no provider work started, so the server's
+    // failed-wake completion schedules the bounded transient retry instead of
+    // recording a legacy-execution reconciliation hold.
+    expect(result.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+    expect((result.resultJson as Record<string, unknown> | null)?.executionRecovery)
+      .toEqual({ kind: "bootstrap", providerWorkStarted: false });
     expect(result.exitCode).toBe(1);
     expect(runChildProcess.mock.calls.some((entry) => Array.isArray(entry[2]) && entry[2].includes("run"))).toBe(false);
   }, 30_000);

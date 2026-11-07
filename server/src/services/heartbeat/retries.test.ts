@@ -4,6 +4,7 @@ import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TES
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -406,6 +407,59 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await boundRetries().retries.scheduleBoundedRetry(run.id, { now })).toMatchObject({ outcome: "scheduled", run: { id: successor.id }, reusedExisting: true });
     expect(first.deps.appendRunEvent).toHaveBeenCalledTimes(1);
     expect(second.deps.appendRunEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies the stable-workspace lock timeout as transient and bounds its retry at the advertised deadline", async () => {
+    const { run, agent, issue } = await fixture();
+    await db.update(agents).set({ adapterType: "opencode_local" }).where(eq(agents.id, agent.id));
+    const retryAt = new Date(now.getTime() + 45 * 60_000);
+    const lockTimeoutResultJson = {
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      retryNotBefore: retryAt.toISOString(),
+      transientRetryNotBefore: retryAt.toISOString(),
+    };
+    const [failed] = await db.update(heartbeatRuns).set({
+      errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE,
+      resultJson: lockTimeoutResultJson,
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    expect(extracted.readTransientRecoveryContractFromRun(failed!)).toEqual({
+      errorFamily: "transient_upstream",
+      retryNotBefore: retryAt,
+    });
+
+    let predecessor = failed!;
+    for (const attempt of [1, 2]) {
+      const { retries } = boundRetries();
+      expect(await retries.scheduleBoundedRetryForRun(predecessor, { ...agent, adapterType: "opencode_local" }, { now, random: () => 0 }))
+        .toMatchObject({ outcome: "scheduled", attempt, maxAttempts: 2 });
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor.id));
+      expect(successor).toMatchObject({
+        status: "scheduled_retry", scheduledRetryAttempt: attempt, scheduledRetryReason: "transient_failure",
+      });
+      expect(successor!.scheduledRetryAt!.getTime()).toBe(retryAt.getTime());
+      expect(successor!.contextSnapshot).toMatchObject({
+        errorFamily: "transient_upstream",
+        transientRetryNotBefore: retryAt.toISOString(),
+      });
+      expect(successor!.contextSnapshot?.codexTransientFallbackMode).toBeUndefined();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
+      expect(wake).toMatchObject({ status: "queued", reason: "transient_failure_retry" });
+      expect(wake!.payload).toMatchObject({
+        retryReason: "transient_failure",
+        errorFamily: "transient_upstream",
+        transientRetryNotBefore: retryAt.toISOString(),
+      });
+      const [locked] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(locked!.executionRunId).toBe(successor!.id);
+      const [next] = await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now,
+        errorCode: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE, resultJson: lockTimeoutResultJson,
+      }).where(eq(heartbeatRuns.id, successor.id)).returning();
+      predecessor = next!;
+    }
+    const { retries } = boundRetries();
+    expect(await retries.scheduleBoundedRetryForRun(predecessor, { ...agent, adapterType: "opencode_local" }, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "retry_exhausted", attempt: 3, maxAttempts: 2 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor.id))).toHaveLength(0);
   });
 
   it("promotes only due retries and publishes after commit", async () => {

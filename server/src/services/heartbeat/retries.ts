@@ -24,6 +24,7 @@ import {
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
@@ -283,6 +284,17 @@ export function readHeartbeatRunErrorFamily(
     run.errorCode === "claude_transient_upstream" ||
     run.errorCode === "codex_harness_crash"
   ) {
+    return "transient_upstream";
+  }
+  // The stable task workspace's cycle lock is held by a concurrent run of the
+  // same task; the contention is transient and the opencode-local adapter
+  // already persists retryNotBefore on the failed result. Without a family,
+  // readTransientRecoveryContractFromRun stays null and the ordinary failed
+  // wake completion path never schedules the promised bounded retry. Only the
+  // opencode-local stable-workspace path persists this code as a run
+  // errorCode (server-side users of the same lock retry internally), so no
+  // other adapter's retry classification changes.
+  if (run.errorCode === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
     return "transient_upstream";
   }
   return null;
