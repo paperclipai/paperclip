@@ -70,6 +70,51 @@ export function parseClaudeStreamJson(stdout: string) {
   return createClaudeStreamParser()(stdout);
 }
 
+export function createClaudeTerminalCleanupObserver(): (
+  chunk: { stdout: string; stderr: string },
+) => Array<"terminal_result" | "turn_active"> {
+  let pending = "";
+  let activeTurn = false;
+  let terminalPending = false;
+  let newTurnInitialized = false;
+  const maxPendingChars = 1024 * 1024;
+  return ({ stdout }) => {
+    const events: Array<"terminal_result" | "turn_active"> = [];
+    if (!stdout) return events;
+    pending += stdout;
+    let end: number;
+    while ((end = pending.indexOf("\n")) !== -1) {
+      const line = pending.slice(0, end).trim();
+      pending = pending.slice(end + 1);
+      if (!line || line.length > maxPendingChars) continue;
+      const raw = parseJson(line);
+      if (!raw) continue;
+      const kind = asString(raw.type, "");
+      if (kind === "assistant") {
+        activeTurn = true;
+        if (terminalPending && newTurnInitialized) {
+          events.push("turn_active");
+          terminalPending = false;
+          newTurnInitialized = false;
+        }
+      } else if (kind === "result") {
+        const notification =
+          asString(parseObject(raw.origin).kind, "") === "task-notification";
+        if (notification && !activeTurn) continue;
+        events.push("terminal_result");
+        activeTurn = false;
+        terminalPending = true;
+        newTurnInitialized = false;
+      } else if (kind === "system" && raw.subtype === "init") {
+        activeTurn = false;
+        newTurnInitialized = terminalPending;
+      }
+    }
+    if (pending.length > maxPendingChars) pending = "";
+    return events;
+  };
+}
+
 /** Consume complete JSONL records once, retaining protocol accounting state. */
 export function createClaudeStreamParser() {
   let sessionId: string | null = null;
