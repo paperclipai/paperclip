@@ -46,3 +46,14 @@ item maps once per list, keep their inputs stable, and share pin state across
 agent rows. Large-list regressions count input reads and pin parsing for five
 hundred agents and pins. Reordering retains hidden-company slots. Task history
 also uses indexed summary lookups now that it is no longer capped at five rows.
+
+## Browser journey alignment
+
+CI found two session tests that still used the removed header switcher,
+Configure link and Add chat picker. Their journeys now use contact links and
+the full-width Search chats field. They retain checks for per-agent drafts,
+reload persistence, background history, terminated agents and unique
+conversations. Opening or reopening a contact stays read-only; the first sent
+message creates the conversation. Both corrected journeys passed against a
+fresh disposable PostgreSQL database after the host's embedded-cluster startup
+limit prevented the initial local launch.
