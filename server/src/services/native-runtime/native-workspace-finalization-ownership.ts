@@ -1,6 +1,8 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyNativeWorkspaceFinalization, releaseNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -15,6 +17,7 @@ import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js
 import {
   currentNativeControllerIdentity,
   evaluateNativeControllerTakeover,
+  type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
 
 import { currentWorkspaceWorker, requestWorkspaceWorkerStopProof, type WorkspaceWorker, type WorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
@@ -71,6 +74,18 @@ function readOwner(value: unknown): Owner | null {
     && Number.isInteger(owner.pid) && Number(owner.pid) > 0
     && typeof owner.processStartedAt === "string" && Number.isFinite(Date.parse(owner.processStartedAt))
     ? owner as Owner : null;
+}
+
+export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<string, unknown> | null,
+  identity: NativeControllerIdentity, worker: WorkspaceWorker | undefined): boolean {
+  const raw = profile?.[OWNER_KEY];
+  if (raw == null) return true;
+  const owner = readOwner(raw);
+  return Boolean(owner && owner.token.length > 0 && owner.token.length <= 200 && worker && owner.worker
+    && Object.keys(owner.worker).length === Object.keys(worker).length && owner.controllerBootId === identity.bootId
+    && owner.hostname === os.hostname() && owner.pid === identity.pid
+    && Date.parse(owner.processStartedAt) === identity.processStartedAt.getTime()
+    && Object.keys(worker).every(key => owner.worker![key as keyof WorkspaceWorker] === worker[key as keyof WorkspaceWorker]));
 }
 
 /**
@@ -302,6 +317,9 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           await notifyNativeResultCommit(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, runId: input.runId });
           await notifyNativeStatusReassessment(tx, { companyId: input.companyId, runId: input.runId });
+          await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
+          // Saved messages also wait on this owner after the run finished.
+          await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
           await tx.update(heartbeatRuns).set({
             runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) - ${OWNER_KEY}`,
           }).where(owned);

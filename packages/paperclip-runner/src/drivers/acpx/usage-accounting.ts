@@ -43,6 +43,10 @@ export function persistedAcpxTurnUsage(
 ): Record<string, unknown> | null {
   const current = record(after);
   if (current.lastRequestId !== requestId) return null;
+  const terminal = record(current.terminalPromptUsage);
+  const priorTerminal = record(record(before).terminalPromptUsage);
+  if (terminal.requestId === requestId && terminal.promptId !== priorTerminal.promptId
+    && priorTerminal.requestId !== requestId) return record(terminal.event);
   const previousReceipts = record(record(before).requestTokenUsage);
   const receipts = record(current.requestTokenUsage);
   const added = Object.keys(receipts).filter(

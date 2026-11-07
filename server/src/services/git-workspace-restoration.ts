@@ -68,6 +68,12 @@ export async function verifiedGitCacheSource(workspace: Workspace, sourcePath: s
     if (sourcePath !== privateSource) throw new GitCacheRestorationFailure();
     return (await verifiedRecordedIsolatedRemoteSource(workspace))!;
   }
+  return verifiedManagedGitObjectSource(workspace, sourcePath);
+}
+
+/** Read immutable commit objects from the company/project cache. This does not
+ * certify the files or restore-point contents of an isolated task checkout. */
+export async function verifiedManagedGitObjectSource(workspace: Workspace, sourcePath: string) {
   if (!managedSourcePaths(workspace).includes(sourcePath)) throw new GitCacheRestorationFailure();
   const root = resolvePaperclipInstanceRoot();
   const actual = await fs.realpath(sourcePath);

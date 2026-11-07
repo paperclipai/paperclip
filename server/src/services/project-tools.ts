@@ -48,8 +48,14 @@ export async function callProjectTool(input: {
       } : {}),
       assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
       assigneeUserId: args.assigneeUserId,
-      parentId: input.conversation ? null : input.issueId,
-      status: status === "backlog" ? "backlog"
+      // An explicit parent goes through the route's depth placement and
+      // authorization; a conversation itself is never a parent.
+      parentId: typeof args.parentTaskId === "string" && args.parentTaskId
+        ? args.parentTaskId
+        : (input.conversation ? null : input.issueId),
+      // Same rule as the native tool: backlog is honored and never wakes an
+      // agent; otherwise unresolved blockers make the task blocked.
+      status: args.status === "backlog" ? "backlog"
         : Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,

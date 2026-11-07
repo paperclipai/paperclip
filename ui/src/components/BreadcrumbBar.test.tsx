@@ -131,6 +131,25 @@ describe("BreadcrumbBar", () => {
     vi.unstubAllGlobals();
   });
 
+  it("uses the standard section heading for Chat while retaining the properties toggle", async () => {
+    const toggle = vi.fn();
+    function ChatHeader() {
+      const { setBreadcrumbs, setBreadcrumbPanelControl } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{ label: "Chat" }]);
+        setBreadcrumbPanelControl({ open: false, onToggle: toggle });
+      }, [setBreadcrumbs, setBreadcrumbPanelControl]);
+      return <BreadcrumbBar showPropertiesToggle />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><ChatHeader /></BreadcrumbProvider>));
+    expect(container.querySelector("h1")?.textContent).toBe("Chat");
+    expect(container.querySelector("h1")?.className).toContain("uppercase");
+    expect(container.querySelector('[aria-label^="Switch agent"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Pin "]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show properties"]')!.click());
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { mobile: false, taskDetailLayout: true },
     { mobile: true, taskDetailLayout: true },
