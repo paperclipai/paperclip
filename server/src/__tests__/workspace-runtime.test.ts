@@ -1037,6 +1037,85 @@ describeEmbeddedPostgres("repository-scoped task worktree preparation", () => {
     await runGit(repoRoot, ["branch", "-D", branch]);
   });
 
+  it("keeps a branch that another process creates after the branch check when worktree add then fails", async () => {
+    const { repoRoot } = await fixture();
+    const input = request(repoRoot, "TASK-1");
+    const branch = "tasks/TASK-1-concurrent-preparation";
+    const recorder = await operationRecorder();
+    const racing: WorkspaceOperationRecorder = {
+      ...recorder,
+      recordOperation: async operation => {
+        if (operation.command?.includes("worktree add")) {
+          await runGit(repoRoot, ["branch", "--no-track", branch, "origin/master"]);
+        }
+        return recorder.recordOperation(operation);
+      },
+    };
+
+    await expect(realizeExecutionWorkspace({ ...input, recorder: racing })).rejects.toThrow(/already exists/);
+    expect(await readGit(repoRoot, ["rev-parse", branch])).toBe(await readGit(repoRoot, ["rev-parse", "origin/master"]));
+    expect(existsSync(path.join(repoRoot, ".paperclip", "worktrees", branch))).toBe(false);
+  });
+
+  it("rolls back a new worktree whose parent directory is reached through a symlink", async () => {
+    const { repoRoot } = await fixture();
+    const physicalParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-parent-"));
+    roots.push(physicalParent);
+    const linkedParent = path.join(path.dirname(repoRoot), "worktree-parent-link");
+    await fs.symlink(physicalParent, linkedParent, "dir");
+    const base = request(repoRoot, "TASK-1");
+    const input = { ...base, config: { workspaceStrategy: { ...base.config.workspaceStrategy, worktreeParentDir: linkedParent } } };
+    const branch = "tasks/TASK-1-concurrent-preparation";
+    const configLock = path.join(repoRoot, ".git", "config.lock");
+    const recorder = await operationRecorder();
+    const failing: WorkspaceOperationRecorder = {
+      ...recorder,
+      recordOperation: async operation => {
+        if (!operation.command?.includes("--set-upstream-to=")) return recorder.recordOperation(operation);
+        await fs.writeFile(configLock, "test-owned config lock\n", { flag: "wx" });
+        try { return await recorder.recordOperation(operation); }
+        finally { await fs.rm(configLock); }
+      },
+    };
+
+    const error = await realizeExecutionWorkspace({ ...input, recorder: failing }).catch(error => error);
+    expect(error).not.toBeInstanceOf(AggregateError);
+    expect(error.message).toMatch(/config.*lock|could not lock config/);
+    expect(await readGit(repoRoot, ["branch", "--list", branch])).toBe("");
+    expect(await readGit(repoRoot, ["worktree", "list", "--porcelain"])).not.toContain(branch);
+    expect(existsSync(path.join(physicalParent, branch))).toBe(false);
+  });
+
+  it("serializes task starts from a primary checkout and a linked checkout that share separate Git metadata", async () => {
+    const { repoRoot } = await fixture();
+    const separateGitDir = path.join(path.dirname(repoRoot), "separate-metadata.git");
+    await runGit(repoRoot, ["init", `--separate-git-dir=${separateGitDir}`]);
+    roots.push(separateGitDir);
+    const linkedCheckout = path.join(path.dirname(repoRoot), "linked-checkout");
+    await runGit(repoRoot, ["worktree", "add", "--detach", linkedCheckout, "origin/master"]);
+    const recorder = await operationRecorder();
+    let active = 0;
+    let maximum = 0;
+    const observed: WorkspaceOperationRecorder = {
+      ...recorder,
+      recordOperation: async operation => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        try { return await recorder.recordOperation(operation); }
+        finally { active -= 1; }
+      },
+    };
+
+    const starts = [
+      realizeExecutionWorkspace({ ...request(repoRoot, "TASK-1"), recorder: observed }),
+      realizeExecutionWorkspace({ ...request(linkedCheckout, "TASK-2"), recorder: observed }),
+    ];
+    const workspaces = await Promise.all(starts).finally(() => Promise.allSettled(starts));
+
+    expect(maximum).toBe(1);
+    for (const workspace of workspaces) await expectUpstream(repoRoot, workspace.branchName!);
+  });
+
   it("preserves a complete existing upstream and the existing branch tip", async () => {
     const { repoRoot } = await fixture();
     const input = request(repoRoot, "TASK-1");

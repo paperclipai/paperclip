@@ -3343,8 +3343,16 @@ async function resolveGitRepoRootForWorkspaceCleanup(
 
 const repositoryMutationTails = new Map<string, Promise<void>>();
 
+// The queue key is the Git common directory. Checkouts that share Git metadata,
+// such as a primary checkout and a linked checkout with separate metadata,
+// write the same Git config, so they share one queue.
+async function resolveRepositoryMutationKey(repoRoot: string): Promise<string> {
+  const commonDir = await runGit(["rev-parse", "--git-common-dir"], repoRoot).catch(() => null);
+  return resolvePathForWorktreeComparison(commonDir ? path.resolve(repoRoot, commonDir) : repoRoot);
+}
+
 async function withRepositoryMutation<T>(repoRoot: string, run: () => Promise<T>): Promise<T> {
-  const key = await resolvePathForWorktreeComparison(repoRoot);
+  const key = await resolveRepositoryMutationKey(repoRoot);
   const previous = repositoryMutationTails.get(key) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>(resolve => { release = resolve; });
@@ -3390,18 +3398,23 @@ async function createTrackedGitWorktree(input: {
   recorder?: WorkspaceOperationRecorder | null;
 }) {
   const { repoRoot, worktreePath, branchName, baseRef, baseRefSha, recorder } = input;
+  // A failed `worktree add` created nothing, and the branch or path may belong
+  // to another process. Only the branch and worktree that this attempt created
+  // are rolled back.
+  await recordGitOperation(recorder, {
+    phase: "worktree_prepare",
+    args: ["worktree", "add", "--no-track", "-b", branchName, worktreePath, baseRef],
+    cwd: repoRoot,
+    metadata: { repoRoot, worktreePath, branchName, baseRef, baseRefSha, created: true },
+    successMessage: `Created git worktree at ${worktreePath}\n`,
+  });
   try {
-    await recordGitOperation(recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", "--no-track", "-b", branchName, worktreePath, baseRef],
-      cwd: repoRoot,
-      metadata: { repoRoot, worktreePath, branchName, baseRef, baseRefSha, created: true },
-      successMessage: `Created git worktree at ${worktreePath}\n`,
-    });
     await ensureGitBranchUpstream(repoRoot, branchName, baseRef, recorder, true);
   } catch (error) {
     try {
-      if (await findRegisteredGitWorktreeByBranch(repoRoot, branchName) === worktreePath) {
+      const registeredPath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+      if (registeredPath && await resolvePathForWorktreeComparison(registeredPath)
+        === await resolvePathForWorktreeComparison(worktreePath)) {
         await recordGitOperation(recorder, {
           phase: "worktree_cleanup",
           args: ["worktree", "remove", "--force", worktreePath],
