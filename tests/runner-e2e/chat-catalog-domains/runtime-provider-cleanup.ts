@@ -31,7 +31,9 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
     const [uid, parent, executable, command, startedAt] = await Promise.all([ps("uid"), ps("ppid"), ps("comm"), ps("args"), readProcessStartedAt(pid)]);
     const canonical = await realpath(ownedNativeExecutablePath(pid, executable));
     const args = command.split(/\s+/);
-    const proxy = args.length === 2 && path.isAbsolute(args[1]!) && path.basename(args[1]!) === "opencode-app-server-proxy.cjs" ? await realpath(args[1]!) : undefined;
+    // node may carry runtime flags before the script; the absolute proxy script is the last argument.
+    const script = args.at(-1)!, flags = args.slice(1, -1);
+    const proxy = args.length >= 2 && path.isAbsolute(script) && path.basename(script) === "opencode-app-server-proxy.cjs" && flags.every(arg => /^--[a-z][a-z0-9-]*(?:=[^\s]*)?$/.test(arg)) ? await realpath(script) : undefined;
     const proxyDigest = proxy ? createHash("sha256").update(await readFile(proxy)).digest("hex") : undefined;
     if (!startedAt) throw new Error("missing start identity");
     return { pid, parentPid: Number(parent), uid: Number(uid), startedAt, executable: canonical,
@@ -45,14 +47,16 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
 async function soleProviderDescendant(ctx: ChatCatalogContext, runnerPid: number, kind: "codex" | "opencode"): Promise<{ pid: number; parentPid: number } | undefined> {
   const rows = (await promisify(execFile)("/bin/ps", ["-A", "-o", "pid=,ppid="], { timeout: 5_000, maxBuffer: 1_048_576 })).stdout
     .split("\n").map(line => line.trim().split(/\s+/).map(Number)).filter(([pid, parent]) => Number.isSafeInteger(pid) && Number.isSafeInteger(parent));
-  const seen: Array<{ depth: number; executable: string | null; proxy: boolean; appServer: boolean; openCodeServe: boolean }> = [];
+  const seen: Array<{ depth: number; command: string | null; argCount: number | null; scripts: string[]; executable: string | null; proxy: boolean; appServer: boolean; openCodeServe: boolean }> = [];
   const providers: Array<{ pid: number; parentPid: number }> = [];
   let frontier = [runnerPid];
   for (let depth = 1; depth <= 4 && frontier.length; depth += 1) {
     const next = rows.filter(([, parent]) => frontier.includes(parent!)).map(([pid, parent]) => ({ pid: pid!, parent: parent! }));
     for (const { pid, parent } of next) {
       const identity = await providerIdentity(pid).catch(() => undefined);
-      seen.push({ depth, executable: identity ? path.basename(identity.executable) : null, proxy: !!identity?.proxyScript, appServer: !!identity?.appServer, openCodeServe: !!identity?.openCodeServe });
+      const args = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "args="], { timeout: 5_000, maxBuffer: 65_536 }).then(out => out.stdout.trim().split(/\s+/), () => null);
+      const command = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "comm="], { timeout: 5_000, maxBuffer: 65_536 }).then(out => path.basename(out.stdout.trim()) || null, () => null);
+      seen.push({ depth, command, argCount: args?.length ?? null, scripts: (args ?? []).filter(arg => /\.(?:c|m)?js$/.test(arg)).map(arg => path.basename(arg)), executable: identity ? path.basename(identity.executable) : null, proxy: !!identity?.proxyScript, appServer: !!identity?.appServer, openCodeServe: !!identity?.openCodeServe });
       if (identity && (kind === "opencode" ? !!identity.proxyScript || identity.openCodeServe : identity.appServer)) providers.push({ pid, parentPid: parent });
     }
     frontier = next.map(row => row.pid);
