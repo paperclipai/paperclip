@@ -15,7 +15,8 @@ import { getExecutionBlocker } from "./execution-blocker.js";
 import { deliverReconciledExecutions } from "./execution-recovery-resolution.js";
 import { prepareRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace } from "./remote-workspaces.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { recoverRetainedWorkspace } from "./workspace-recovery.js";
+import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates } from "./workspace-recovery.js";
+import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
 import { RETAINED_SOURCE_FALLBACK_OUTCOME, RETAINED_SOURCE_QUARANTINE_PHASE } from "./workspace-recovery-fallback.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { acceptedRemoteExport, action, connectionString, db, run, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
@@ -93,6 +94,17 @@ describe("retained source fallback", () => {
   it.each(["old_release", "fresh"] as const)("continues a cross-task retained hold (%s) from the last save, quarantined and without reusing its root", async saved => {
     const f = await unverifiableRetainedSource(saved);
     expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.workspaceRepairRequired).toBe(true);
+    if (saved === "fresh") {
+      // A current release records which Blocked status version this hold owns.
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const source = await run(f.runId);
+      await db.update(issueRecoveryActions).set({ evidence: { ...(await action(f.actionId)).evidence, workspaceFinalizationBlock: {
+        schema: "paperclip.native-workspace-finalization-block.v1", companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        agentId: source.agentId, resultId: f.resultId, resultSha256: "result", contractId: source.completionContractId,
+        contractSha256: "contract", identityContextId: null, responsibleUserId: null,
+        statusVersion: Number(task.statusVersion), priorDecisionId: task.lastStatusDecisionId } } })
+        .where(eq(issueRecoveryActions.id, f.actionId));
+    }
 
     await recoverRetainedWorkspace(f.input);
 
@@ -134,7 +146,8 @@ describe("retained source fallback", () => {
 
     // Every gate is settled: the task hold, the repair flag and the saved-work wait.
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
-    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("todo");
+    // Only a Blocked status this hold owns is restored; an unproven block is kept.
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe(saved === "fresh" ? "todo" : "blocked");
     expect(await continuationBlock(f)).not.toEqual(expect.arrayContaining(["saved_work_recovery_failed"]));
     expect(await continuationBlock(f)).not.toEqual(expect.arrayContaining(["workspace_repair_required"]));
 
@@ -221,13 +234,21 @@ describe("retained source fallback", () => {
     expect(settled.evidence.continuationDelivery).toBe("not_requested");
   }, 60_000);
 
-  it.each(["live_writer", "pending_side_effect", "uncertain_external_action"] as const)(
+  it.each(["live_writer", "pending_side_effect", "uncertain_external_action", "sandbox_in_use"] as const)(
     "keeps the hold and starts no executor with a %s", async fault => {
       const f = await unverifiableRetainedSource();
       const source = await run(f.runId);
       if (fault === "live_writer") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
         issueId: f.issueId, runtimeMode: "native", status: "running", startedAt: new Date(), contextSnapshot: { issueId: f.issueId } });
-      if (fault !== "live_writer") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson, apiToolReceipts: {
+      if (fault === "sandbox_in_use") {
+        // The source allocation has no stop receipt, and another task holds the sandbox.
+        const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        const metadata = { ...lease.metadata }; delete metadata.remoteExecutionTermination;
+        await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ status: "active", releasedAt: null }).where(and(
+          eq(environmentLeases.issueId, f.parentIssueId), eq(environmentLeases.providerLeaseId, f.providerLeaseId)));
+      }
+      if (fault === "pending_side_effect" || fault === "uncertain_external_action") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson, apiToolReceipts: {
         effect: fault === "pending_side_effect" ? { state: "pending", operationId: "POST /api/x" }
           : { state: "completed", operationId: "POST /api/x", result: { ok: false, status: 502 } } } } }).where(eq(heartbeatRuns.id, f.runId));
       const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata);
@@ -241,7 +262,61 @@ describe("retained source fallback", () => {
       const wake = vi.fn(async () => ({ id: randomUUID() }));
       await deliverReconciledExecutions(db, wake as never);
       expect(wake.mock.calls.filter(call => (call as unknown[])[0] === source.agentId)).toHaveLength(0);
+      if (fault === "sandbox_in_use") expect(f.runtime.retryPendingSandboxTeardown).not.toHaveBeenCalled();
+      // The deferral is recorded: transient waits are checked again later, a
+      // permanent refusal waits for new input or a new generation.
+      const check = held.evidence.retainedSourceFallbackCheck as { reason: string; nextCheckAt: number | null };
+      expect(check.reason).toBe({ live_writer: "writer_active", pending_side_effect: "external_action_uncertain",
+        uncertain_external_action: "external_action_uncertain", sandbox_in_use: "allocation_in_use" }[fault]);
+      expect(check.nextCheckAt === null).toBe(check.reason === "external_action_uncertain");
     }, 60_000);
+
+  it("obtains a stop receipt for an allocation that was never stopped before continuing", async () => {
+    const f = await unverifiableRetainedSource();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const metadata = { ...lease.metadata }; delete metadata.remoteExecutionTermination;
+    await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, f.lease.id));
+    await recoverRetainedWorkspace(f.input);
+    expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledOnce();
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+    const [stopped] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(stopped.metadata?.remoteExecutionTermination).toMatchObject({ state: "stopped", leaseId: f.lease.id });
+  }, 60_000);
+
+  it("is discovered and settled by the recovery worker without any user action", async () => {
+    const f = await unverifiableRetainedSource();
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    const onRecovered = vi.fn(async () => undefined);
+    const work = await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true);
+    await Promise.all(work ?? []);
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+    expect(onRecovered).toHaveBeenCalledOnce();
+    const due = await nextWorkspaceRecoveryAt(db);
+    expect(due === null || due > Date.now() - 1).toBe(true);
+    expect(await retainedWorkspaceCandidates(db, undefined, false, true)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: expect.objectContaining({ id: f.actionId }) })]));
+  }, 60_000);
+
+  it("waits until a deferred transient check is due before the worker visits the hold again", async () => {
+    const f = await unverifiableRetainedSource();
+    const source = await run(f.runId);
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, issueId: f.issueId,
+      runtimeMode: "native", status: "running", startedAt: new Date(), contextSnapshot: { issueId: f.issueId } }).returning();
+    const work = await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true);
+    await Promise.all(work ?? []);
+    const deferred = await action(f.actionId);
+    expect(deferred.status).toBe("active");
+    const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
+    expect(await ids()).not.toContain(f.actionId);
+    expect(await nextWorkspaceRecoveryAt(db)).toBeGreaterThan(Date.now());
+    // Once the writer ended and the check is due, the worker settles the hold.
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, writer.id));
+    await db.update(issueRecoveryActions).set({ evidence: { ...deferred.evidence, retainedSourceFallbackCheck: {
+      ...(deferred.evidence.retainedSourceFallbackCheck as object), nextCheckAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await ids()).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+  }, 60_000);
 
   it("settles a stale exhausted hold as recovered when a sibling action saved the run's files", async () => {
     const f = await acceptedRemoteExport();

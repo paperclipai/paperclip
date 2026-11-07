@@ -8,7 +8,7 @@ import {
   agentWakeupRequests, assets, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns,
   issueAttachments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, toolInvocations, workspaceOperations, type Db,
 } from "@paperclipai/db";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLease, type ExecutionReconciliation } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease, type ExecutionReconciliation } from "@paperclipai/shared";
 import { createTarballFromDirectory } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { logger } from "../middleware/logger.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -20,10 +20,14 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
+import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
+import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
+import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspaces.js";
 import { readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import { readWorkspaceRecovery, verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 
@@ -41,18 +45,22 @@ export const RETAINED_SOURCE_QUARANTINE_PHASE = "workspace_recovery_quarantine";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
-// Refusals of the recorded source identity. Retrying repeats them.
-const unverifiableSourceCodes = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"];
-const permanentRetryClasses = ["service_required", "use_alternative_strategy"];
+// A check deferred for a transient reason runs again after this delay, a bounded number of times.
+const FALLBACK_RECHECK_MS = 5 * 60_000;
+const FALLBACK_MAX_CHECKS = 12;
+const outOfScopeReasons = ["not_unverifiable_source_hold", "not_remote_workspace_source"];
+const transientReasons = ["writer_active", "workspace_operation_running", "execution_not_stopped", "side_effect_pending",
+  "allocation_in_use", "ownership_busy", "fallback_failed", "source_changed"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 type Ownership = { token: string; assertHeld(): Promise<void> };
 type Quarantine = NonNullable<ExecutionReconciliation["retainedSourceFallback"]>["quarantine"];
-export type RetainedSourceFallbackResult = "continued" | "settled" | "ineligible";
+export type RetainedSourceFallbackResult = { kind: "continued" | "settled" } | { kind: "ineligible"; reason: string };
 
 export function isUnverifiableSourceFailure(failure: SystemRecoveryState["failure"] | null | undefined) {
-  return Boolean(failure && unverifiableSourceCodes.includes(failure.code) && permanentRetryClasses.includes(failure.retryClass));
+  return Boolean(failure && (UNVERIFIABLE_SOURCE_CODES as readonly string[]).includes(failure.code)
+    && (PERMANENT_SOURCE_RETRY_CLASSES as readonly string[]).includes(failure.retryClass));
 }
 
 /** Text the agent receives with its continuation. It names no person who must act. */
@@ -91,7 +99,7 @@ async function uncertainExternalAction(db: Db, run: typeof heartbeatRuns.$inferS
 
 /** Every fact the fallback depends on, read in the existing lock order:
  * task, coordinator, run, recovery action, then workspace. */
-async function inspectFallback(db: Db, input: Source, lock: boolean) {
+async function inspectFallback(db: Db, input: Source, lock: boolean, requireStopped = lock) {
   const one = async <T>(query: PromiseLike<T[]> & { for(mode: "update"): PromiseLike<T[]> }): Promise<T | null> =>
     (await (lock ? query.for("update") : query))[0] ?? null;
   const refuse = (reason: string) => ({ kind: "ineligible" as const, reason });
@@ -141,6 +149,13 @@ async function inspectFallback(db: Db, input: Source, lock: boolean) {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
       sql`${heartbeatRuns.contextSnapshot}->>'executionWorkspaceId' = ${workspace.id}`))).limit(1);
   if (writer) return refuse("writer_active");
+  // No second executor: every allocation of the source run has a provider stop receipt.
+  if (requireStopped) {
+    const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+      eq(environmentLeases.heartbeatRunId, run.id)));
+    if (!leases.some(lease => lease.id === reference.leaseId)
+      || leases.some(lease => !hasRemoteTerminationReceipt(lease) && !hasRecoveredCleanupStopReceipt(lease))) return refuse("execution_not_stopped");
+  }
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.status, "running"))).limit(1);
@@ -159,7 +174,9 @@ function unreadable(reason: string): Quarantine {
 }
 
 /** Reads the retained root without writing to the sandbox and attaches it to
- * the task as an unverified archive. Never applied, never a recovery receipt. */
+ * the task as an unverified archive. Never applied, never a recovery receipt.
+ * A root that cannot be read is recorded as such. Storage and database
+ * failures after a successful read throw, so the fallback retries later. */
 async function quarantineRetainedRoot(db: Db, input: Source & { environmentRuntime: EnvironmentRuntimeService; ownership: Ownership },
   source: Extract<Awaited<ReturnType<typeof inspectFallback>>, { kind: "eligible" }>): Promise<Quarantine> {
   const [existing] = await db.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
@@ -178,16 +195,24 @@ async function quarantineRetainedRoot(db: Db, input: Source & { environmentRunti
   if (!environment) return unreadable("environment_missing");
   const scratch = await mkdtemp(path.join(os.tmpdir(), "paperclip-quarantine-"));
   try {
-    const target = await resolveEnvironmentExecutionTarget({ db, companyId: input.companyId, adapterType: "paperclip_runner",
-      environment, leaseId: lease.id, leaseMetadata: lease.metadata, lease: lease as EnvironmentLease, environmentRuntime: input.environmentRuntime });
-    if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return unreadable("target_unavailable");
-    await input.ownership.assertHeld();
-    const captured = await captureReadOnlyWorkspaceArchive({ target, remoteCwd: reference.remoteCwd, operationId: randomUUID() });
-    const files = path.join(scratch, "files"), tarball = path.join(scratch, "unverified.tar");
+    const tarball = path.join(scratch, "unverified.tar");
     try {
-      await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir: files, expectedManifestDigest: captured.manifestDigest });
-    } finally { await captured.cleanup(); }
-    await createTarballFromDirectory({ localDir: files, archivePath: tarball });
+      const target = await resolveEnvironmentExecutionTarget({ db, companyId: input.companyId, adapterType: "paperclip_runner",
+        environment, leaseId: lease.id, leaseMetadata: lease.metadata, lease: lease as EnvironmentLease, environmentRuntime: input.environmentRuntime });
+      if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) return unreadable("target_unavailable");
+      await input.ownership.assertHeld();
+      const captured = await captureReadOnlyWorkspaceArchive({ target, remoteCwd: reference.remoteCwd, operationId: randomUUID() });
+      const files = path.join(scratch, "files");
+      try {
+        await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir: files, expectedManifestDigest: captured.manifestDigest });
+      } finally { await captured.cleanup(); }
+      await createTarballFromDirectory({ localDir: files, archivePath: tarball });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const reason = /^remote_workspace_readonly_capture_failed: .*reason=([a-z_]+)/.exec(message)?.[1];
+      logger.warn({ err: error, runId: input.runId }, "Unverified retained files could not be read; continuing from the last save");
+      return unreadable(reason ?? sandboxProviderFailureLabel(error).label);
+    }
     const hash = createHash("sha256");
     let byteSize = 0;
     for await (const chunk of createReadStream(tarball)) { hash.update(chunk as Buffer); byteSize += (chunk as Buffer).length; }
@@ -210,12 +235,50 @@ async function quarantineRetainedRoot(db: Db, input: Source & { environmentRunti
           leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: reference.remoteCwd, epoch: reference.epoch, quarantine } });
       return quarantine;
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    const reason = /^remote_workspace_readonly_capture_failed: .*reason=([a-z_]+)/.exec(message)?.[1];
-    logger.warn({ err: error, runId: input.runId }, "Unverified retained files could not be read; continuing from the last save");
-    return unreadable(reason ?? sandboxProviderFailureLabel(error).label);
   } finally { await rm(scratch, { recursive: true, force: true }).catch(() => undefined); }
+}
+
+async function sandboxHeldByAnotherLease(db: Db, lease: Pick<typeof environmentLeases.$inferSelect, "id" | "provider" | "providerLeaseId">) {
+  if (!lease.provider || !lease.providerLeaseId) return false;
+  const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider), eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
+    inArray(environmentLeases.status, ["active", "pending_cleanup"]))).limit(1);
+  return Boolean(other);
+}
+
+/** Obtains the provider stop receipt for the source allocation through the
+ * same stop-only cleanup as normal recovery. A sandbox that another lease holds
+ * is never stopped from here. */
+async function confirmSourceAllocationStopped(db: Db, input: Source & { environmentRuntime: EnvironmentRuntimeService; ownership: Ownership },
+  leaseId: string): Promise<"stopped" | "in_use" | "unconfirmed"> {
+  const [lease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+    eq(environmentLeases.id, leaseId), eq(environmentLeases.heartbeatRunId, input.runId)));
+  if (!lease?.environmentId || !lease.provider || !lease.providerLeaseId) return "unconfirmed";
+  if (hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease)) return "stopped";
+  if (await sandboxHeldByAnotherLease(db, lease)) return "in_use";
+  const [environment] = await db.select().from(environments).where(eq(environments.id, lease.environmentId));
+  if (!environment) return "unconfirmed";
+  await input.ownership.assertHeld();
+  const pending = await db.transaction(async tx => {
+    const [fresh] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+      eq(environmentLeases.id, lease.id))).for("update");
+    if (!fresh || fresh.metadata?.pendingCleanupInFlight === true) return null;
+    const prepared = hasStopOnlyCleanup(fresh) ? fresh : fresh.status === "released"
+      ? await prepareHistoricalSandboxStopVerification(tx as unknown as Db, fresh)
+      : await prepareSandboxStopAndRetain(tx as unknown as Db, fresh);
+    if (!prepared) return null;
+    const [claimed] = await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} ||
+      ${JSON.stringify({ pendingCleanupAttemptId: input.ownership.token, pendingCleanupInFlight: true,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000 })}::jsonb` }).where(eq(environmentLeases.id, lease.id)).returning();
+    return claimed ?? null;
+  });
+  if (!pending) return "unconfirmed";
+  const attemptId = input.ownership.token;
+  const settled = await input.environmentRuntime.retryPendingSandboxTeardown({ environment: environment as unknown as Environment,
+    lease: pending as EnvironmentLease })
+    .then(receipt => settleStopOnlyCleanup(db, pending, { attemptId, receipt }),
+      async () => await restoreSandboxStopAfterFailedRestart(db, pending, { attemptId }) ?? await settleStopOnlyCleanup(db, pending, { attemptId }));
+  return settled && hasRemoteTerminationReceipt(settled) ? "stopped" : "unconfirmed";
 }
 
 /**
@@ -231,17 +294,22 @@ export async function continueFromLastSavedWorkspace(input: Source & {
 }): Promise<RetainedSourceFallbackResult> {
   const { db } = input;
   const initial = await inspectFallback(db, input, false);
-  if (initial.kind !== "eligible") {
-    if (initial.kind === "ineligible") logger.info({ runId: input.runId, reason: initial.reason }, "Retained source fallback not applicable");
-    return initial.kind;
-  }
+  if (initial.kind !== "eligible") return initial;
+  // An unstopped source in a sandbox another lease holds waits; nothing is read or stopped.
+  const [sourceLease] = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+    eq(environmentLeases.id, initial.reference.leaseId), eq(environmentLeases.heartbeatRunId, input.runId)));
+  if (sourceLease && !hasRemoteTerminationReceipt(sourceLease) && !hasRecoveredCleanupStopReceipt(sourceLease)
+    && await sandboxHeldByAnotherLease(db, sourceLease)) return { kind: "ineligible", reason: "allocation_in_use" };
+  // Read before stopping: a stopped sandbox cannot be read without resuming it.
   const quarantine = await quarantineRetainedRoot(db, input, initial);
+  const stop = await confirmSourceAllocationStopped(db, input, initial.reference.leaseId);
+  if (stop !== "stopped") return { kind: "ineligible", reason: stop === "in_use" ? "allocation_in_use" : "execution_not_stopped" };
   await input.ownership.assertHeld();
   const outcome = await db.transaction(async tx => {
     const current = await inspectFallback(tx as unknown as Db, input, true);
-    if (current.kind !== "eligible") return { kind: current.kind, publication: null };
+    if (current.kind !== "eligible") return { result: current, publication: null };
     if (current.system.generationId !== initial.system.generationId || current.system.revision !== initial.system.revision)
-      return { kind: "ineligible" as const, publication: null };
+      return { result: { kind: "ineligible" as const, reason: "source_changed" }, publication: null };
     const { issue, run, action, reference } = current;
     const abandoned = await abandonUnverifiedRemoteWorkspaceEpoch(tx, { companyId: input.companyId, workspaceId: reference.workspaceId,
       runId: run.id, epoch: reference.epoch, snapshotId: reference.snapshotId, location: current.authority.location! });
@@ -258,7 +326,7 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     const userText = quarantine.state === "captured"
       ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."
       : "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files could not be read.";
-    const evidence = { ...action.evidence, automaticRecovery: undefined,
+    const evidence = { ...action.evidence, automaticRecovery: undefined, [RETAINED_SOURCE_FALLBACK_CHECK_KEY]: undefined,
       retainedSourceFallback: { ...fallback, failureCode: current.system.failure?.code ?? null, recordedAt: now.toISOString() },
       workspaceRecovery: { ...(readWorkspaceRecovery(action.evidence) ?? {}), message: userText, retryable: false },
       executionReconciliation: { ...decision, actorId: "workspace-recovery", recordedAt: now.toISOString() },
@@ -272,8 +340,14 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     await tx.update(nativeRunFinalizations).set({ failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
       || ${JSON.stringify({ replacementDenied: RETAINED_SOURCE_FALLBACK_OUTCOME })}::jsonb` }).where(and(
       eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id)));
-    if (issue.status === "blocked") await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
-      blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
+    // Restore the status only while this hold's own Blocked receipt still owns
+    // it. A later status decision, or a block without a receipt, is preserved.
+    const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
+    if (issue.status === "blocked" && block.success && block.data.issueId === issue.id && block.data.runId === run.id
+      && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId) {
+      await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
+    }
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -283,12 +357,60 @@ export async function continueFromLastSavedWorkspace(input: Source & {
       actorId: "workspace-recovery", action: "issue.workspace_recovery_continued_from_last_saved", entityType: "issue",
       entityId: issue.id, runId: run.id, details: { recoveryActionId: action.id, failureCode: current.system.failure?.code ?? null,
         ...fallback } });
-    return { kind: "continued" as const, publication };
+    return { result: { kind: "continued" as const }, publication };
   });
   if (outcome.publication) {
     try { publishActivity(outcome.publication.publication); } catch { logger.warn({ runId: input.runId }, "Recovery activity delivery deferred"); }
   }
-  return outcome.kind;
+  return outcome.result;
+}
+
+/** Records why the fallback could not settle this generation yet. A transient
+ * reason is checked again after a delay, a bounded number of times; a
+ * permanent one waits for new input, Retry or a new recovery generation. */
+export async function recordRetainedSourceFallbackDeferral(db: Db, input: Source, reason: string) {
+  const [row] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    eq(issueRecoveryActions.id, input.actionId)));
+  const system = readSystemRecovery(row?.evidence);
+  // A hold outside the fallback's scope keeps its evidence unchanged.
+  if (!row || !system || row.evidence.retainedSourceFallback || outOfScopeReasons.includes(reason)) return;
+  const prior = object(row.evidence[RETAINED_SOURCE_FALLBACK_CHECK_KEY]);
+  const checks = prior.generationId === system.generationId && typeof prior.checks === "number" ? prior.checks + 1 : 1;
+  const transient = transientReasons.includes(reason) && checks < FALLBACK_MAX_CHECKS;
+  const marker = { generationId: system.generationId, reason, checks, checkedAt: Date.now(),
+    nextCheckAt: transient ? Date.now() + FALLBACK_RECHECK_MS : null };
+  await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} ||
+    jsonb_build_object(${RETAINED_SOURCE_FALLBACK_CHECK_KEY}::text, ${JSON.stringify(marker)}::jsonb)` }).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId),
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${system.generationId}`,
+    sql`${issueRecoveryActions.evidence}->'retainedSourceFallback' is null`));
+}
+
+/**
+ * The recovery worker's entry for an exhausted hold: settle it when a sibling
+ * saved its files, or continue from the last save when its source is refused
+ * permanently. Runs under the workspace ownership lock, like any physical
+ * recovery attempt. Returns whether the hold is settled.
+ */
+export async function settleExhaustedRetainedHold(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService },
+  state: SystemRecoveryState) {
+  const { db } = input;
+  if (await settleSiblingRecoveredHold(db, input)) return true;
+  if (!isUnverifiableSourceFailure(state.failure)) return false;
+  let reason: string;
+  try {
+    const owned = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
+      retainedRepairActionId: input.actionId }, ownership => continueFromLastSavedWorkspace({ ...input, ownership }));
+    if (owned.acquired && owned.value.kind !== "ineligible") return true;
+    reason = !owned.acquired ? "ownership_busy" : owned.value.kind === "ineligible" ? owned.value.reason : "fallback_failed";
+  } catch (error) {
+    logger.warn({ err: error, runId: input.runId }, "Continuing from the last save was deferred; the hold remains");
+    reason = "fallback_failed";
+  }
+  logger.info({ runId: input.runId, reason }, "Retained source fallback deferred");
+  await recordRetainedSourceFallbackDeferral(db, input, reason);
+  return false;
 }
 
 /**

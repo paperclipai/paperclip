@@ -35,7 +35,8 @@ import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 import { canAdoptNativeSourceRetention, retainNativeRecoverySource, settleRecoveredNativeSourceRetention } from "./native-runtime/native-source-retention.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
-import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, settleSiblingRecoveredHold } from "./workspace-recovery-fallback.js";
+import { continueFromLastSavedWorkspace, isUnverifiableSourceFailure, recordRetainedSourceFallbackDeferral, settleExhaustedRetainedHold } from "./workspace-recovery-fallback.js";
+import { retainedSourceFallbackDueCondition } from "./workspace-recovery-fallback-discovery.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -161,17 +162,10 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
   const { db } = input;
   await adoptSystemRecovery(db, input);
   const initial = await loadSystemRecovery(db, input);
-  if (initial?.state === "exhausted") {
-    // A sibling recovery already saved this run's files: nothing is left to do.
-    if (await settleSiblingRecoveredHold(db, input)) return;
-    // Holds exhausted by an unverifiable source, including those saved by
-    // older releases, continue from the last save instead of waiting on a person.
-    if (isUnverifiableSourceFailure(initial.failure) && !canAdoptNativeSourceRetention(initial)) {
-      const fallback = await withNativeWorkspaceFinalizationOwnership({ db, companyId: input.companyId, runId: input.runId,
-        retainedRepairActionId: input.actionId }, ownership => continueFromLastSavedWorkspace({ ...input, ownership }));
-      if (fallback.acquired && fallback.value !== "ineligible") return;
-    }
-  }
+  // A hold whose files a sibling saved, or whose source is refused permanently
+  // (including holds saved by older releases), settles without a person.
+  if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)
+    && await settleExhaustedRetainedHold(input, initial)) return;
   if (initial?.state === "exhausted" && !canAdoptNativeSourceRetention(initial)) {
     // A budget spent before this hold existed still names its receipt, so the
     // board confirmation in its handoff can release it (RC-50 wave databases).
@@ -450,8 +444,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       // A permanent refusal of the recorded source repeats on every retry.
       // Continue from the last save in this same pass, under this ownership.
       if (recorded && failed.state === "exhausted" && isUnverifiableSourceFailure(failed.failure)) {
-        await continueFromLastSavedWorkspace({ ...input, ownership }).catch(fallbackError =>
-          logger.warn({ err: fallbackError, runId: input.runId }, "Continuing from the last save was deferred; the hold remains"));
+        const fallback = await continueFromLastSavedWorkspace({ ...input, ownership }).catch(fallbackError => {
+          logger.warn({ err: fallbackError, runId: input.runId }, "Continuing from the last save was deferred; the hold remains");
+          return { kind: "ineligible" as const, reason: "fallback_failed" };
+        });
+        if (fallback.kind === "ineligible") await recordRetainedSourceFallbackDeferral(db, input, fallback.reason);
       }
       if (failure.retryClass === "recheck_evidence" && ["agent_stop_unconfirmed", "copyback_stop_unconfirmed"].includes(failure.code))
         await recheckStoppedWorkspaceRecovery(db, input, false);
@@ -575,7 +572,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
-        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
+        or ${retainedSourceFallbackDueCondition(Date.now())})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,

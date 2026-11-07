@@ -2280,14 +2280,21 @@ transaction the worker then abandons the unverified remote workspace epoch:
 the writer and dirty flag are cleared, the last save is kept, the location and
 published root are dropped and the epoch advances. The next writer therefore
 restores the last save into a new directory and never reuses the old root. The
-same transaction resolves the hold and denies native replacement. If no user
-input is waiting, one continuation is then delivered through the reconciled
-execution path. Its recovery outcome tells the agent which changes were not
-applied and where the attached copy is. The fallback does not run while a writer
-is live, a status effect is pending, or an external action has an uncertain
-outcome; those keep their existing reconciliation. Holds saved by earlier
-releases take the same path on the next worker pass. An exhausted hold whose
-run's files a sibling recovery action already saved settles as recovered.
+same transaction resolves the hold and denies native replacement. It restores a
+Blocked task to `todo` only while the hold's own Blocked receipt still owns the
+status. If no user input is waiting, one continuation is then delivered through
+the reconciled execution path. Its recovery outcome tells the agent which
+changes were not applied and where the attached copy is. Every allocation of
+the source run must carry a provider stop receipt; the worker obtains a missing
+one through the same stop-only cleanup as normal recovery, but never stops a
+sandbox that another lease holds. The fallback does not run while a writer is
+live, a status effect is pending, or an external action has an uncertain
+outcome; those keep their existing reconciliation. A deferred check records its
+reason. Transient reasons are checked again after five minutes, at most twelve
+times; new input, Retry or a new recovery generation reconsiders the hold. The
+recovery worker discovers these holds itself, so holds saved by earlier releases
+take the same path after deploy. An exhausted hold whose run's files a sibling
+recovery action already saved settles as recovered.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
