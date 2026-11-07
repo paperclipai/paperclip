@@ -90,7 +90,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * suspended Runner receipt or failover backup ever reached the controller.
    * Only the database controller checkpoint and recovery pointer survive. */
   async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled",
-    options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" } = {}) {
+    options: { controller?: { bootId: string; pid: number; processStartedAt: Date }; provider?: "codex" | "acpx" | "opencode" } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
     const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -99,7 +99,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issueId));
     const executionFor = (currentRunId: string) => buildNativeExecutionInput({
       companyId, agentId, runId: currentRunId, provider: options.provider ?? "acpx", acpxAgent: "claude",
-      model: options.provider === "codex" ? "gpt-6.1-sol" : "claude-opus-5-5",
+      model: options.provider === "codex" ? "gpt-6.1-sol"
+        : options.provider === "opencode" ? "openrouter/deepseek/deepseek-v4.1-flash-1017" : "claude-opus-5-5",
       issue: { id: issueId, identifier: "ROF-1", title: "Continue after recovery", description: null, workMode: "standard" },
       taskPrompt: "Continue the conversation.",
       workspace: { id: workspaceId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
@@ -194,7 +195,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const startLocal = () => createRunnerdBackend({
       db, execution, runnerInstanceId: next.runnerInstanceId, onLog: async (_stream, chunk) => { logs.push(chunk); },
     }).then(() => "constructed", (error: Error) => error.message);
-    return { runId, logs, start, startLocal, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
+    return { runId, logs, start, startLocal, native: next, environmentId, leaseId, providerLeaseId, remoteExecute, selectedRunId: selected?.id ?? null };
   }
 
   async function quarantined() {
@@ -344,6 +345,51 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     expect(await readFile(path, "utf8")).toBe(marker);
     expect(followUp.remoteExecute).not.toHaveBeenCalled();
     await fixture.assertBackup();
+    expect(await archivedOwners(root)).toEqual([]);
+  }, 60_000);
+
+  it.each(["codex", "opencode"] as const)("rehydrates the current %s run marker from its own checkpoint instead of an earlier turn", async provider => {
+    const prior = await seedRecoveredPriorRun("settled", { provider }), followUp = await admitFollowUp(prior);
+    const identity = { runId: followUp.runId, runnerInstanceId: followUp.native.runnerInstanceId,
+      environmentLeaseId: followUp.native.environmentLeaseId, normalizedSessionId: followUp.native.normalizedSessionId,
+      turnId: followUp.native.turnId, itemId: followUp.native.itemId };
+    const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId));
+    const owner = { companyId, issueId: prior.issueId, runId: followUp.runId, authorityRunId: followUp.runId,
+      bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await db.update(nativeRunFinalizations).set({ controllerBootId: owner.bootId, controllerGeneration: 1,
+      leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, followUp.runId));
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity,
+      expectedRunnerVersion: "current-marker-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    try {
+      const commands = [controller.queueCommand("run.prepare"), controller.queueCommand("session.open")];
+      controller.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+      await controller.flushCheckpoint();
+      const path = join(root, "control-plane", "control-plane-state.json");
+      expect(JSON.parse(await readFile(path, "utf8")).schema).toBe("paperclip.runner.external-control-plane-state.v1");
+      await mkdir(join(root, "runner"), { recursive: true });
+      await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
+        schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "suspended" }));
+      expect(await followUp.start()).toBe(ADMITTED);
+      const restored = JSON.parse(await readFile(path, "utf8"));
+      expect(restored.identity).toEqual(identity);
+      expect(restored.commands.map((command: { commandId: string }) => command.commandId)).toEqual(commands.map(command => command.commandId));
+      expect(await archivedOwners(root)).toEqual([]);
+      expect(await quarantined()).toEqual([]);
+    } finally { await controller.stop(); }
+  }, 60_000);
+
+  it("never substitutes an older checkpoint when the current run marker has no checkpoint", async () => {
+    const prior = await seedRecoveredPriorRun(), followUp = await admitFollowUp(prior);
+    const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId)), path = join(root, "control-plane", "control-plane-state.json");
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    const marker = JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: {
+      runId: followUp.runId, runnerInstanceId: followUp.native.runnerInstanceId, environmentLeaseId: followUp.native.environmentLeaseId,
+      normalizedSessionId: followUp.native.normalizedSessionId, turnId: followUp.native.turnId, itemId: followUp.native.itemId,
+    } });
+    await writeFile(path, marker);
+    expect(await followUp.start()).toBe("native_runner_checkpoint_missing");
+    expect(await readFile(path, "utf8")).toBe(marker);
     expect(await archivedOwners(root)).toEqual([]);
   }, 60_000);
 

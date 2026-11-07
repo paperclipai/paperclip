@@ -6569,9 +6569,26 @@ async function restorePerTurnRunnerdController(input: {
     if (!await restoreNativeControllerProjections(input.db, input.execution, root)) return;
   } else {
     if (!durableIdentityMatchesSession(reference, input.execution)) return;
-    if (reference.runId === input.execution.binding.runId) return;
+    if (identity?.runId === input.execution.binding.runId) return;
     const referenceBytes = readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8");
+    if (reference.runId === input.execution.binding.runId) {
+      const checkpoint = await loadNativeRunnerCheckpoint(input.db, input.execution.binding);
+      if (!checkpoint) throw new Error("native_runner_checkpoint_missing");
+      const scratch = mkdtempSync(join(tmpdir(), "paperclip-current-controller-"));
+      try {
+        checkpoint.restoreSessionDirectory(scratch);
+        const saved = readRunnerdDurableIdentity(scratch);
+        if (["runId", "runnerInstanceId", "environmentLeaseId", "normalizedSessionId", "turnId", "itemId"]
+          .some(key => saved?.[key] !== reference[key])) throw new Error("native_runner_checkpoint_binding_mismatch");
+        if (readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+          NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "native_runner_checkpoint_invalid").toString("utf8") !== referenceBytes) {
+          throw new Error("native_runner_checkpoint_projection_held:journal_changed");
+        }
+        checkpoint.restoreSessionDirectory(root);
+      } finally { rmSync(scratch, { recursive: true, force: true }); }
+      return;
+    }
     const recovered = await resolveNativeControllerRecovery(input.db, {
       ...input.execution.binding, currentRunId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
     });

@@ -3824,7 +3824,9 @@ backup verification and provider resume checks still run; this refresh does
 not start a new provider session or declare a continuity break. A marker that
 already names the exact selected identity only rehydrates its own controller
 state. The existing retained-sandbox binding and suspended Runner read still
-govern that same-source resume.
+govern that same-source resume. A current-run marker rehydrates only that run's
+own checkpoint before the existing bootstrap retry checks. A missing current
+checkpoint never selects an older turn instead.
 
 For the native runner, warm mode requests a reusable sandbox lease **before**
 lease acquisition. The environment's explicit runner lifecycle overrides the
