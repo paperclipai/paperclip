@@ -8,7 +8,7 @@ import {
   defaultAgentPermissions,
   normalizeAgentPermissions,
   permissionsImplyLowTrust,
-} from "../services/agent-permissions.js";
+} from "../lib/agent-permissions.js";
 
 describe("agent permissions service", () => {
   it("grants agent-creation authority to new agents by default", () => {

@@ -9,7 +9,7 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:6116",
     browserName: "chromium",
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
   },
   webServer: {
     command: "node ../../scripts/serve-storybook-static.mjs --port 6116",

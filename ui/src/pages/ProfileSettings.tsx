@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { assetsApi } from "@/api/assets";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -13,8 +15,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { useUserPreferences } from "../hooks/useUserPreferences";
+import { describeError } from "@/api/errors";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -26,7 +27,6 @@ export function ProfileSettings() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
-  const preferencesQuery = useUserPreferences();
   const avatarInputId = useId();
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [name, setName] = useState("");
@@ -35,15 +35,8 @@ export function ProfileSettings() {
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
-  const updatePreferencesMutation = useMutation({
-    mutationFn: authApi.updatePreferences,
-    onMutate: () => sessionQuery.data?.user.id ?? null,
-    onSuccess: (preferences, _input, userId) => {
-      queryClient.setQueryData(queryKeys.auth.preferences(userId), preferences);
-    },
-  });
+  const sessionView = useQueryView(sessionQuery);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -72,8 +65,13 @@ export function ProfileSettings() {
     });
   }
 
-  async function persistProfile(input: UpdateCurrentUserProfile) {
+  // A restored session can show one account while the cookie belongs to
+  // another, and the server saves for the cookie's user. Account-bound
+  // mutations wait for a verified session and abort if the user changed.
+  async function persistProfile(input: UpdateCurrentUserProfile, assertCurrentAccount: () => void) {
+    assertCurrentAccount();
     const profile = await authApi.updateProfile(input);
+    assertCurrentAccount();
     syncSessionProfile(profile);
     return profile;
   }
@@ -82,20 +80,20 @@ export function ProfileSettings() {
     return name.trim() || sessionQuery.data?.user.name || "Board";
   }
 
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateCurrentUserProfile) => persistProfile(input),
+  const updateMutation = useAccountBoundMutation({
+    mutationFn: (input: UpdateCurrentUserProfile, { assertCurrentAccount }) => persistProfile(input, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
+      setActionError(describeError(error).body);
     },
   });
 
-  const uploadAvatarMutation = useMutation({
-    mutationFn: async (file: File) => {
+  const uploadAvatarMutation = useAccountBoundMutation({
+    mutationFn: async (file: File, { assertCurrentAccount }) => {
       if (!selectedCompanyId) {
         throw new Error("Select an organization before uploading a profile avatar.");
       }
@@ -105,7 +103,7 @@ export function ProfileSettings() {
         file,
         `profiles/${sessionQuery.data?.user.id ?? "board-user"}`,
       );
-      return persistProfile({ name: resolveProfileName(), image: asset.contentPath });
+      return persistProfile({ name: resolveProfileName(), image: asset.contentPath }, assertCurrentAccount);
     },
     onSuccess: (profile) => {
       setActionError(null);
@@ -113,32 +111,40 @@ export function ProfileSettings() {
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
-  const removeAvatarMutation = useMutation({
-    mutationFn: () => persistProfile({ name: resolveProfileName(), image: null }),
+  const removeAvatarMutation = useAccountBoundMutation({
+    mutationFn: (_input, { assertCurrentAccount }) => persistProfile({ name: resolveProfileName(), image: null }, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
       setImage(profile.image ?? "");
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
+      setActionError(describeError(error).body);
     },
   });
 
-  if (sessionQuery.isLoading) {
+  if (sessionQuery.isLoading || sessionView.kind === "reconnecting") {
     return <div className="text-sm text-muted-foreground">Loading profile...</div>;
   }
 
-  if (sessionQuery.error || !sessionQuery.data) {
+  if (sessionView.kind === "error") {
     return (
-      <div className="text-sm text-destructive">
-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
-      </div>
+      <QueryErrorState
+        size="page"
+        error={sessionQuery.error}
+        action="load your profile"
+        onRetry={sessionView.retry}
+        retrying={sessionView.isFetching}
+      />
     );
+  }
+
+  if (!sessionQuery.data) {
+    return <div className="text-sm text-destructive">Failed to load profile.</div>;
   }
 
   const currentName = name.trim() || sessionQuery.data.user.name || "Board";
@@ -279,31 +285,6 @@ export function ProfileSettings() {
             </Button>
           </div>
         </form>
-
-        <section>
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
-              <p className="max-w-2xl text-sm text-muted-foreground">
-                Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
-                toggling panels. This applies only to your account, across all organizations and devices. Off by default.
-              </p>
-            </div>
-            <ToggleSwitch
-              checked={preferencesQuery.data?.keyboardShortcuts === true}
-              onCheckedChange={(keyboardShortcuts) => {
-                if (selectedCompanyId && sessionQuery.data?.user.id) updatePreferencesMutation.mutate({ companyId: selectedCompanyId, keyboardShortcuts, expectedUserId: sessionQuery.data.user.id });
-              }}
-              disabled={!selectedCompanyId || !preferencesQuery.data || preferencesQuery.isError || updatePreferencesMutation.isPending}
-              aria-label="Toggle keyboard shortcuts"
-            />
-          </div>
-          {preferencesQuery.error || updatePreferencesMutation.error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {(updatePreferencesMutation.error ?? preferencesQuery.error)?.message}
-            </p>
-          ) : null}
-        </section>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>

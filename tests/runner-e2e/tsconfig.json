@@ -9,5 +9,5 @@
       "../../server/node_modules/@types"
     ]
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "../../server/src/types/express.d.ts"]
 }

@@ -28,6 +28,7 @@ import {
   tokenStatus,
   type TokenStatus,
 } from "../gateway-helpers";
+import { describeError } from "@/api/errors";
 
 const DEFAULT_ACTIONS: ToolMcpGatewayTokenAction[] = ["tools/list", "tools/call"];
 const TOKEN_PAGE_SIZE = 10;
@@ -135,7 +136,7 @@ export function TokensPanel({
     onError: (error) =>
       pushToast({
         title: "Token was not issued",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -151,7 +152,7 @@ export function TokensPanel({
     onError: (error) =>
       pushToast({
         title: "Token was not revoked",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       }),
   });
@@ -163,7 +164,7 @@ export function TokensPanel({
     } catch (error) {
       pushToast({
         title: "Copy failed",
-        body: error instanceof Error ? error.message : "Clipboard access is unavailable.",
+        body: describeError(error).body,
         tone: "error",
       });
     }

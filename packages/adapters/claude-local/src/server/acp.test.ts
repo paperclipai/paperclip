@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
@@ -197,6 +198,22 @@ class FakeRuntime {
   }
 }
 
+class MissingResumeRuntime extends FakeRuntime {
+  override async ensureSession(input: {
+    sessionKey: string;
+    agent: string;
+    mode: "persistent" | "oneshot";
+    cwd?: string;
+    resumeSessionId?: string;
+  }): Promise<FakeRuntimeHandle> {
+    if (input.resumeSessionId) {
+      this.ensureInputs.push(input);
+      throw new Error("resume session not found");
+    }
+    return super.ensureSession(input);
+  }
+}
+
 async function makeTempRoot(prefix: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   tempRoots.push(root);
@@ -261,7 +278,7 @@ describe("claude_local ACP lane", () => {
       onMeta: async (payload) => { meta.push(payload); },
     }));
     expect(result.exitCode).toBe(0);
-    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5");
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5-5");
   });
 
   it("keeps ACP model precedence consistent with CLI and provider overrides", () => {
@@ -897,6 +914,219 @@ describe("claude_local ACP lane", () => {
     );
     // C4 — no XDG_* variable is introduced for in-sandbox credential discovery.
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
+    const toolShellPrefix = String(meta[0]?.env?.CLAUDE_CODE_SHELL_PREFIX ?? "");
+    expect(toolShellPrefix).toBe(path.posix.join(path.posix.dirname(remappedConfigDir), "tool-shell-prefix.sh"));
+    expect((await fs.stat(toolShellPrefix)).mode & 0o777).toBe(0o700);
+  });
+
+  it.each([
+    { permissionMode: undefined, hostSettings: true, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "approve-all", hostSettings: false, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "default", hostSettings: true, defaultMode: "bypassPermissions", isSandbox: "1" },
+    { permissionMode: "approve-reads", hostSettings: true, defaultMode: "default", isSandbox: undefined },
+    { permissionMode: "deny-all", hostSettings: true, defaultMode: "default", isSandbox: undefined },
+  ])(
+    "starts sandbox Claude in $defaultMode mode when the ACPX permission mode is $permissionMode",
+    async ({ permissionMode, hostSettings, defaultMode, isSandbox }) => {
+      const root = await makeTempRoot("paperclip-claude-acp-permission-mode-");
+      const localCwd = path.join(root, "worktree");
+      const remoteCwd = path.join(root, "remote-workspace");
+      const sharedClaudeConfig = path.join(root, "shared-claude-config");
+      await fs.mkdir(localCwd, { recursive: true });
+      await fs.mkdir(remoteCwd, { recursive: true });
+      await fs.mkdir(sharedClaudeConfig, { recursive: true });
+      if (hostSettings) {
+        await fs.writeFile(
+          path.join(sharedClaudeConfig, "settings.json"),
+          JSON.stringify({ theme: "dark", permissions: { defaultMode: "acceptEdits", allow: ["Bash(*)"] } }),
+          "utf8",
+        );
+      }
+      process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+      process.env.PAPERCLIP_INSTANCE_ID = "test";
+      process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+      const meta: AdapterInvocationMeta[] = [];
+      let effectiveDefaultMode: unknown;
+      const runtime = new FakeRuntime({});
+      const startTurn = runtime.startTurn.bind(runtime);
+      runtime.startTurn = (turnInput) => {
+        const turn = startTurn(turnInput);
+        return {
+          ...turn,
+          result: (async () => {
+            const readSettings = async (file: string) =>
+              JSON.parse(await fs.readFile(file, "utf8").catch(() => "{}"));
+            const local = await readSettings(path.join(turnInput.handle.cwd ?? remoteCwd, ".claude", "settings.local.json"));
+            const user = await readSettings(path.join(String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? ""), "settings.json"));
+            effectiveDefaultMode = local.permissions?.defaultMode ?? user.permissions?.defaultMode;
+            return await turn.result;
+          })(),
+        };
+      };
+      const execute = createClaudeAcpExecutor({
+        createRuntime: (options: FakeRuntimeOptions) => {
+          Object.assign(runtime.options, options);
+          return runtime as never;
+        },
+      });
+      const result = await execute(
+        buildContext(localCwd, {
+          config: {
+            engine: "acp",
+            cwd: localCwd,
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            promptTemplate: "Do the assigned work.",
+            ...(permissionMode ? { permissionMode } : {}),
+          },
+          context: {
+            issueId: "issue-1",
+            paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+          },
+          executionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            providerKey: "fake-plugin",
+            remoteCwd,
+            runner: createLocalSandboxRunner(),
+          } as never,
+          authToken: "real-run-jwt",
+          onMeta: async (payload: AdapterInvocationMeta) => {
+            meta.push(payload);
+          },
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const remoteConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+      const remoteSettings = JSON.parse(await fs.readFile(path.join(remoteConfigDir, "settings.json"), "utf8"));
+      expect(remoteSettings.permissions).toEqual({ defaultMode });
+      expect(remoteSettings.theme).toBe(hostSettings ? "dark" : undefined);
+      expect(meta[0]?.env?.IS_SANDBOX).toBe(isSandbox);
+      expect(effectiveDefaultMode).toBe(defaultMode);
+      const hostLocalSettings = JSON.parse(await fs.readFile(path.join(localCwd, ".claude", "settings.local.json"), "utf8"));
+      expect(hostLocalSettings.permissions.defaultMode).toBe("default");
+    },
+  );
+
+  it.each([
+    { name: "a host edit during the run", editHost: true },
+    { name: "an agent edit in the sandbox", editHost: false },
+  ])("keeps $name to the workspace Claude settings and never copies bypassPermissions home", async ({ editHost }) => {
+    const root = await makeTempRoot("paperclip-claude-acp-local-settings-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = path.join(root, "shared-claude-config");
+
+    const hostSettingsPath = path.join(localCwd, ".claude", "settings.local.json");
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (turnInput) => {
+      const turn = startTurn(turnInput);
+      return {
+        ...turn,
+        result: (async () => {
+          const target = editHost
+            ? hostSettingsPath
+            : path.join(turnInput.handle.cwd ?? remoteCwd, ".claude", "settings.local.json");
+          const current = JSON.parse(await fs.readFile(target, "utf8"));
+          await fs.writeFile(target, JSON.stringify({ ...current, theme: "edited" }), "utf8");
+          return await turn.result;
+        })(),
+      };
+    };
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const hostSettings = JSON.parse(await fs.readFile(hostSettingsPath, "utf8"));
+    expect(hostSettings.theme).toBe("edited");
+    expect(hostSettings.permissions.defaultMode).toBe("default");
+  });
+
+  it("keeps an operator CLAUDE_CODE_SHELL_PREFIX and installs no tool shell prefix", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-operator-prefix-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sharedClaudeConfig = path.join(root, "shared-claude-config");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sharedClaudeConfig, { recursive: true });
+    await fs.writeFile(path.join(sharedClaudeConfig, "CLAUDE.md"), "# shared guidance\n", "utf8");
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          env: { CLAUDE_CODE_SHELL_PREFIX: "/opt/operator/audit-shell.sh" },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+        onMeta: async (payload: AdapterInvocationMeta) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.CLAUDE_CODE_SHELL_PREFIX).toBe("/opt/operator/audit-shell.sh");
+    const remoteConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+    await expect(
+      fs.stat(path.join(path.dirname(remoteConfigDir), "tool-shell-prefix.sh")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("test_claude_acp_seam_registers_workspace_sync_back", async () => {
@@ -1048,10 +1278,13 @@ describe("claude_local ACP lane", () => {
       // Only a fixed diagnostic may contain the errno, never the raw error.
       expect(result.exitCode).toBe(0);
       expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
+      expect(result.resultJson?.workspaceRestoreDiagnostic).toEqual({
+        phase: "workspace", step: "directory_merge", errorCode: "EACCES",
+      });
       const allLogs = loggedLines.join("");
       expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
       expect(allLogs).not.toContain(localCwd);
-      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"EACCES"}\n';
+      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"directory_merge","errorCode":"EACCES"}\n';
       expect(loggedLines.filter((line) => line.includes("Workspace restore diagnostic:"))).toEqual([diagnostic]);
       expect(loggedLines.filter((line) => line !== diagnostic).join("")).not.toContain("EACCES");
       expect(allLogs).toContain("permission denied");
@@ -1218,6 +1451,175 @@ describe("claude_local ACP lane", () => {
       explicit: false,
       unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
+  });
+
+  it("sends assignment-owned markdown and ordered distinct wake comments at the ACP boundary", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-context-owner-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const issue = {
+      id: "issue-1",
+      identifier: "PAP-902",
+      title: "Repeat phrase Repeat phrase",
+      description: "Repeat phrase Repeat phrase",
+    };
+    const comments = [
+      { id: "comment-a", body: "Same event body." },
+      { id: "comment-b", body: "Same event body." },
+    ];
+    // The adapter receives server-rendered fields. Keep the server builder's
+    // own tests in the server package; adapter packages compile independently.
+    const assignmentMarkdown = [
+      "Paperclip task context:",
+      `- Issue: ${JSON.stringify(issue.identifier)}`,
+      `- Title: ${JSON.stringify(issue.title)}`,
+      "", "Issue description:", "```text", issue.description, "```",
+    ].join("\n");
+    const historicalMarkdown = [
+      assignmentMarkdown,
+      ...comments.map((comment) => `${comment.id}: ${comment.body}`),
+    ].join("\n");
+    const result = await execute(buildContext(root, {
+      context: {
+        issueId: issue.id,
+        paperclipTaskMarkdown: historicalMarkdown,
+        paperclipTaskMarkdownAssignment: assignmentMarkdown,
+        paperclipWake: {
+          reason: "issue_commented",
+          issue: { ...issue, status: "in_progress" },
+          comments: comments.map((comment, index) => ({
+            ...comment,
+            issueId: issue.id,
+            createdAt: `2026-09-21T00:0${index}:00.000Z`,
+          })),
+          commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+          fallbackFetchNeeded: false,
+        },
+        paperclipTurnContext: {
+          version: 1,
+          assignment: { owner: "task_markdown" },
+          events: {
+            owner: "wake_prompt",
+            comments: [
+              { id: "comment-a", revision: "a" },
+              { id: "comment-b", revision: "b" },
+            ],
+          },
+        },
+        paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+    }));
+    expect(result.exitCode).toBe(0);
+    const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    expect(prompt.split("Same event body.")).toHaveLength(3);
+    expect(prompt.indexOf("comment comment-a")).toBeLessThan(prompt.indexOf("comment comment-b"));
+    expect(prompt).toContain("Repeat phrase Repeat phrase");
+  });
+
+  it("delivers owned assignment and current events through fresh and healthy resumed ACP turns", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-owned-context-");
+    const runtimes: FakeRuntime[] = [];
+    const fixture = createPromptContextFixture();
+    const context = {
+      ...fixture,
+      issueId: "issue-1",
+      paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" },
+    };
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const fresh = await execute(buildContext(root, { context }));
+    const freshPrompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    expect(fresh.exitCode).toBe(0);
+    expect(freshPrompt).toContain(context.paperclipTaskMarkdownAssignment);
+    expect(freshPrompt.split(context.paperclipTaskMarkdownAssignment).length).toBe(2);
+    expect(freshPrompt).toContain(context.paperclipTaskCommunicationGuidance);
+    expect(freshPrompt).not.toContain(context.paperclipTaskMarkdownAssignmentCompact);
+    expect(freshPrompt).toContain("\"id\":\"comment-first\"");
+    expect(freshPrompt).toContain("\"id\":\"comment-second\"");
+    expect(freshPrompt).toContain("\"id\":\"comment-scope\"");
+    expect(freshPrompt.indexOf("\"id\":\"comment-first\"")).toBeLessThan(freshPrompt.indexOf("\"id\":\"comment-second\""));
+    expect(freshPrompt.indexOf("\"id\":\"comment-second\"")).toBeLessThan(freshPrompt.indexOf("\"id\":\"comment-scope\""));
+    expect(freshPrompt.split("Append the same ledger entry.")).toHaveLength(3);
+    expect(freshPrompt.split(fixture.paperclipWake.issue.description)).toHaveLength(2);
+    expect(freshPrompt).not.toContain('"objective":"');
+    expect(freshPrompt).toContain("Untrusted continuation evidence");
+    expect(freshPrompt).toContain("receipt-1");
+
+    const resumed = await execute(buildContext(root, {
+      runtime: {
+        sessionId: fresh.sessionId ?? null,
+        sessionParams: fresh.sessionParams ?? null,
+        sessionDisplayId: fresh.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+      context,
+    }));
+    const resumedPrompt = String(runtimes[1]?.startInputs[0]?.text ?? "");
+    expect(resumed.exitCode).toBe(0);
+    expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+    expect(resumedPrompt).toContain(context.paperclipTaskMarkdownAssignmentCompact);
+    expect(resumedPrompt).not.toContain(context.paperclipTaskCommunicationGuidance);
+    expect(resumedPrompt).not.toContain("\"id\":\"comment-first\"");
+    expect(resumedPrompt).toContain("\"id\":\"comment-second\"");
+    expect(resumedPrompt).toContain("\"id\":\"comment-scope\"");
+    expect(resumedPrompt.indexOf("\"id\":\"comment-second\"")).toBeLessThan(resumedPrompt.indexOf("\"id\":\"comment-scope\""));
+  });
+
+  it("restores the full assignment and current event history when a resume session is missing", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-missing-resume-context-");
+    const runtimes: MissingResumeRuntime[] = [];
+    const assignment = "## Owned assignment\n\nRebuild the launch card. Rebuild the launch card.";
+    const compact = "## Compact assignment";
+    const context = {
+      issueId: "issue-1",
+      paperclipTaskMarkdownAssignment: assignment,
+      paperclipTaskMarkdownAssignmentCompact: compact,
+      paperclipTaskCommunicationGuidance: "Explain the next step before starting work.",
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", identifier: "PAP-1", title: "Launch card", description: "Rebuild the launch card.", status: "in_progress" },
+        comments: [{ id: "comment-retry", body: "Preserve this retry request." }],
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        fallbackFetchNeeded: false,
+      },
+      paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" },
+    };
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new MissingResumeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+
+    const first = await execute(buildContext(root, { context }));
+    const retry = await execute(buildContext(root, {
+      runtime: {
+        sessionId: first.sessionId ?? null,
+        sessionParams: first.sessionParams ?? null,
+        sessionDisplayId: first.sessionDisplayId ?? null,
+        taskKey: "PAP-1",
+      },
+      context,
+    }));
+    const retryPrompt = String(runtimes[1]?.startInputs[0]?.text ?? "");
+    expect(retry.exitCode).toBe(0);
+    expect(runtimes[1]?.ensureInputs.map(({ resumeSessionId }) => resumeSessionId)).toEqual(["acp-1", undefined]);
+    expect(retryPrompt).toContain(assignment);
+    expect(retryPrompt).not.toContain(compact);
+    expect(retryPrompt).toContain("Preserve this retry request.");
   });
 
   it("delivers the issue description exactly once per prompt and compacts non-assignment resume deltas", async () => {

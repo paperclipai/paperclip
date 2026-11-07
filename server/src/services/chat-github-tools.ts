@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { githubReviewAssessmentSchema } from "@paperclipai/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   chatDeliveries,
   chatMessageLinks,
@@ -21,6 +21,8 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "./tool-gateway.js";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 
 const objectSchema = (
   properties: Record<string, unknown>,
@@ -66,7 +68,7 @@ export const GITHUB_BOT_TOOLS = [
     name: "comment",
     title: "Reply in GitHub",
     description:
-      "Post a governed comment in this task's bound GitHub conversation. Uses the bot App; does not change the review rating. Supply a stable idempotency key for retries.",
+      "Publish the final answer by replacing this request's working comment in its bound GitHub conversation. Uses the bot App; does not change the review rating. Supply a stable idempotency key for retries. Use update_comment for progress before the answer is ready.",
     risk: "write",
     schema: objectSchema(
       {
@@ -75,6 +77,14 @@ export const GITHUB_BOT_TOOLS = [
       },
       ["body", "idempotencyKey"],
     ),
+  },
+  {
+    name: "update_comment",
+    title: "Update GitHub progress",
+    description:
+      "Edit this request's existing working comment with useful progress while you work. The server selects the App-owned comment; no comment ID or other destination is accepted. Periodically update it for meaningful milestones or longer work, then use comment for the final answer or submit_review for a review. Supply a new stable idempotency key for each distinct update; retries reuse that key. Does not complete a review or change its rating.",
+    risk: "write",
+    schema: objectSchema({ body: { ...text, maxLength: 24000 }, idempotencyKey: { ...text, maxLength: 160 } }, ["body", "idempotencyKey"]),
   },
   {
     name: "begin_review",
@@ -91,7 +101,7 @@ export const GITHUB_BOT_TOOLS = [
     name: "submit_review",
     title: "Submit a review assessment",
     description:
-      "Submit a structured assessment for this task's exact PR head. Use begin_review before starting an explicitly requested review. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR.",
+      "Submit a structured assessment for this task's exact PR head. Use begin_review before starting an explicitly requested review. Paperclip validates coverage and score, publishes allowed summary/findings, and computes the Paperclip Review check. Coverage reviewedPaths and omittedPaths name only allowed changed files from read_pull_request(files); describe additional context in the rationale. Follow the schema length limits. Incomplete analysis cannot pass. This never formally approves a PR. Transient publication failures retry automatically. A received result or failed result with receipt.retryable=true remains queued; do not claim publication yet. After a timeout, repeat the exact call to recover its durable receipt. Do not begin another review or revise the assessment just to retry publication.",
     risk: "write",
     // Share the input contract with server validation so discovery includes every
     // length/array bound; hidden limits caused real agents to abandon publication.
@@ -232,7 +242,9 @@ export async function githubBotToolsForSession(
 ): Promise<ToolGatewayDescriptor[]> {
   if (!session.agentId || !session.issueId || !session.runId) return [];
   const rows = await db
-    .select({
+    // A PR task can also own inline finding threads. They share one endpoint
+    // and catalog, so discovery must not emit a tool once per conversation.
+    .selectDistinct({
       endpoint: chatEndpoints,
       connection: toolConnections,
       entry: toolCatalogEntries,
@@ -267,6 +279,25 @@ export async function githubBotToolsForSession(
         isNull(toolCatalogEntries.quarantinedAt),
       ),
     );
+  // Add the scoped editing companion only to an already enabled bot with an
+  // active, reviewed reply capability. Existing profiles, grants, disabled
+  // tools and quarantine decisions are never reset during discovery.
+  const progress = GITHUB_BOT_TOOLS.find(tool => tool.name === "update_comment")!;
+  for (const row of rows) {
+    if (row.entry.name !== "github_bot:comment" || !row.configuration.toolsEnabled ||
+        !["active", "verifying"].includes(row.endpoint.status) ||
+        rows.some(other => other.connection.id === row.connection.id && other.entry.name === "github_bot:update_comment")) continue;
+    const versionHash = createHash("sha256").update(JSON.stringify(progress)).digest("hex");
+    const [entry] = await db.insert(toolCatalogEntries).values({
+      companyId: row.endpoint.companyId, applicationId: row.connection.applicationId,
+      connectionId: row.connection.id, entryKind: "tool", name: "github_bot:update_comment",
+      toolName: progress.name, title: progress.title, description: progress.description,
+      inputSchema: progress.schema, riskLevel: "write", isReadOnly: false, isWrite: true,
+      versionHash, schemaHash: versionHash, status: "active",
+      reviewedByUserId: row.entry.reviewedByUserId, reviewedAt: row.entry.reviewedAt,
+    }).onConflictDoNothing().returning();
+    if (entry) rows.push({ ...row, entry });
+  }
   return rows
     .filter(
       (row) =>
@@ -303,8 +334,7 @@ export async function githubBotConnectionIdsForRun(
 ): Promise<Set<string>> {
   const [run] = await db
     .select({
-      issueId: heartbeatRuns.nativeIssueId,
-      context: heartbeatRuns.contextSnapshot,
+      issueId: boundRunIssueIdSql(),
     })
     .from(heartbeatRuns)
     .where(
@@ -314,7 +344,7 @@ export async function githubBotConnectionIdsForRun(
         eq(heartbeatRuns.id, runId),
       ),
     );
-  const issueId = run?.issueId ?? run?.context?.issueId;
+  const issueId = run?.issueId;
   if (typeof issueId !== "string") return new Set();
   const rows = await db
     .select({
@@ -355,23 +385,8 @@ export async function githubGuestBotConnectionForSession(
   >,
 ): Promise<string | null> {
   if (!session.runId || !session.agentId || !session.issueId) return null;
-  const [run] = await db
-    .select()
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.companyId, session.companyId),
-        eq(heartbeatRuns.agentId, session.agentId),
-        eq(heartbeatRuns.id, session.runId),
-      ),
-    );
-  const commentId = run?.contextSnapshot?.wakeCommentId;
-  if (typeof commentId !== "string") return null;
-  const [source] = await db
-    .select({
-      event: chatDeliveries.normalizedEvent,
-      connectionId: chatEndpoints.connectionId,
-    })
+  const guestSource = (commentId?: string) => db
+    .select({ connectionId: chatEndpoints.connectionId })
     .from(chatMessageLinks)
     .innerJoin(
       chatDeliveries,
@@ -388,14 +403,36 @@ export async function githubGuestBotConnectionForSession(
     .where(
       and(
         eq(chatMessageLinks.companyId, session.companyId),
-        eq(chatMessageLinks.commentId, commentId),
-        eq(chatConversations.issueId, session.issueId),
-        eq(chatEndpoints.assignedAgentId, session.agentId),
+        ...(commentId ? [eq(chatMessageLinks.commentId, commentId)] : []),
+        eq(chatConversations.issueId, session.issueId!),
+        eq(chatEndpoints.assignedAgentId, session.agentId!),
         eq(chatEndpoints.provider, "github"),
+        sql`${chatDeliveries.normalizedEvent} -> 'githubAuthority' ->> 'guest' = 'true'`,
+      ),
+    )
+    .limit(1);
+  if (!(await guestSource()).length) return null;
+  const [run] = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: boundRunIssueIdSql(),
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId')`,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, session.companyId),
+        eq(heartbeatRuns.agentId, session.agentId),
+        eq(heartbeatRuns.id, session.runId),
       ),
     );
-  return (source?.event.githubAuthority as { guest?: boolean } | undefined)
-    ?.guest === true
-    ? source!.connectionId
-    : null;
+  const commentId = run ? await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" }) : null;
+  if (typeof commentId !== "string") return null;
+  const [source] = await guestSource(commentId);
+  return source?.connectionId ?? null;
 }

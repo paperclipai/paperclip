@@ -181,6 +181,15 @@ You can, but you usually should not. The control-plane host is shared and may be
 
 Paperclip watches the on-disk plugin package after a local install. The watcher targets the runtime entrypoints declared in the package's `paperclipPlugin` field (`dist/manifest.js`, `dist/worker.js`, `dist/ui/`).
 
+When the lifecycle registers a different local package path for the same plugin,
+the watcher switches to that directory. Pending changes and late events from the
+previous directory do not restart the worker. If the new directory is unavailable
+or the plugin no longer has a local path, the old watcher stops.
+Only the latest pending path lookup can register a watcher. Manual registration,
+unwatching, and shutdown cancel earlier pending lookups.
+A watcher error stops the failed watcher while allowing a pending replacement
+path lookup to finish.
+
 What that means in practice:
 
 - **Worker code:** save a `.ts` file → esbuild rewrites `dist/worker.js` → Paperclip debounces ~500ms and restarts the plugin worker. The next worker call uses the new code. There is no in-process hot module replacement for worker code; it is a worker restart.

@@ -31,6 +31,11 @@ describe("heartbeatsApi.list", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?limit=200&summary=true");
   });
 
+  it("bounds an omitted limit for agent history consumers", async () => {
+    await heartbeatsApi.list("company-1", "agent-1");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200");
+  });
+
   it("keeps full row requests as the default for run-history screens", async () => {
     await heartbeatsApi.list("company-1", "agent-1", 25);
 
@@ -54,6 +59,12 @@ describe("heartbeatsApi.liveRunsForCompany", () => {
     await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 50, limit: 50 });
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50");
+  });
+
+  it("requests distinct task cards before the server applies the dashboard limit", async () => {
+    await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 4, limit: 4, distinctTasks: true });
+
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=4&limit=4&distinctTasks=true");
   });
 });
 

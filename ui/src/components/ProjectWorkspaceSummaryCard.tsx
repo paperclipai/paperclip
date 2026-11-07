@@ -21,7 +21,7 @@ function truncatePath(path: string) {
 }
 
 interface ProjectWorkspaceSummaryCardProps {
-  projectRef: string;
+  projectRef: string | null;
   summary: ProjectWorkspaceSummary;
   runtimeActionKey: string | null;
   runtimeActionPending: boolean;
@@ -50,7 +50,7 @@ export function ProjectWorkspaceSummaryCard({
   const visibleIssues = summary.issues.slice(0, 4);
   const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
   const workspaceHref =
-    summary.kind === "project_workspace"
+    summary.kind === "project_workspace" && projectRef
       ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
       : `/execution-workspaces/${summary.workspaceId}`;
   const hasRunningServices = summary.runningServiceCount > 0;

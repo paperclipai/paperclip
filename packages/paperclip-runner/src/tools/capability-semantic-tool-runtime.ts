@@ -1543,6 +1543,9 @@ function commandForOperation(
       return { kind: "create_skill", name: requireString(input.name),
         slug: typeof input.slug === "string" ? input.slug : undefined,
         description: requireString(input.description), markdown: requireString(input.markdown) };
+    case "update_skill":
+      return { kind: "update_skill", skillId: requireString(input.skillId),
+        expectedVersionId: requireString(input.expectedVersionId), markdown: requireString(input.markdown) };
     case "write_document":
       return {
         kind: "write_document",

@@ -49,7 +49,7 @@ enum CommandLifecycle {
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
 
-fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
+fn reconnect_delay(base: Duration, max_delay: Duration, attempt: &mut u32) -> Duration {
     let multiplier = 1_u128 << (*attempt).min(5);
     let uncapped = base.as_millis().saturating_mul(multiplier);
     let capped = uncapped.clamp(1, 5_000) as u64;
@@ -58,23 +58,14 @@ fn sleep_for_reconnect(base: Duration, max_delay: Duration, attempt: &mut u32) {
         .map_or(0, |duration| u64::from(duration.subsec_nanos()));
     let jitter_percent = 75 + nanos % 51;
     *attempt = attempt.saturating_add(1);
-    let delay = Duration::from_millis(capped.saturating_mul(jitter_percent) / 100).min(max_delay);
-    if !delay.is_zero() {
-        thread::sleep(delay);
-    }
-}
-
-fn sleep_before_deadline(delay: Duration, deadline: Instant) {
-    let bounded_delay = delay.min(deadline.saturating_duration_since(Instant::now()));
-    if !bounded_delay.is_zero() {
-        thread::sleep(bounded_delay);
-    }
+    Duration::from_millis(capped.saturating_mul(jitter_percent) / 100).min(max_delay)
 }
 
 fn connection_attempt_deadline(
     config: &DurableRunnerConfig,
     started: Instant,
     disconnected_since: Option<Instant>,
+    lease_expires_at_unix_ms: Option<u64>,
 ) -> Instant {
     let now = Instant::now();
     // Bound each connection/auth attempt independently of a productive
@@ -91,6 +82,11 @@ fn connection_attempt_deadline(
         remaining =
             remaining.min(grace.saturating_sub(now.saturating_duration_since(disconnected_at)));
     }
+    if let (Some(expires_at), Ok(now_unix_ms)) = (lease_expires_at_unix_ms, current_unix_ms()) {
+        remaining = remaining.min(Duration::from_millis(
+            expires_at.saturating_sub(now_unix_ms),
+        ));
+    }
     now + remaining
 }
 
@@ -100,6 +96,17 @@ impl CommandLifecycle {
             "runner.suspend" => Self::Suspend,
             "runner.shutdown" => Self::Shutdown,
             _ => Self::Continue,
+        }
+    }
+
+    /// A rejected suspension changed no provider state: the provider still
+    /// owns its session. Keep the runner serving its controller so it can
+    /// retry, instead of recording `suspended` over a live provider and
+    /// exiting. A failed shutdown still stops the runner.
+    fn after_failure(command: &Command) -> Self {
+        match command.command_type.as_str() {
+            "runner.suspend" => Self::Continue,
+            _ => Self::for_terminal(command),
         }
     }
 
@@ -152,7 +159,9 @@ pub(crate) fn next_authority_config(
         .ok_or_else(|| {
             DurableRunnerError::invalid("run.attach authority connection is required")
         })?;
+    let external = connection.get("mode").and_then(Value::as_str) == Some("external");
     let connect_url = match connection.get("mode").and_then(Value::as_str) {
+        Some("external") => current.connect_url.clone(),
         Some("connect") => connection
             .get("connectUrl")
             .and_then(Value::as_str)
@@ -184,18 +193,19 @@ pub(crate) fn next_authority_config(
     };
     let mut next = current.clone();
     next.connect_url = connect_url;
-    next.ca_bundle_path = connection
-        .get("caBundlePath")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(Into::into);
+    if !external {
+        next.ca_bundle_path = connection
+            .get("caBundlePath")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(Into::into);
+    }
     next.runner_instance_id = read_identity("runnerInstanceId")?;
     next.environment_lease_id = read_identity("environmentLeaseId")?;
     next.run_id = read_identity("runId")?;
     next.normalized_session_id = read_identity("normalizedSessionId")?;
     next.turn_id = read_identity("turnId")?;
     next.item_id = read_identity("itemId")?;
-    next.validate()?;
     if next.runner_instance_id != current.runner_instance_id
         || next.environment_lease_id != current.environment_lease_id
         || next.normalized_session_id != current.normalized_session_id
@@ -205,6 +215,47 @@ pub(crate) fn next_authority_config(
             "run.attach authority changed an immutable session binding",
         ));
     }
+    if let Some(admission) = current
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        if admission.agent == "kimi" {
+            let proposed: crate::acpx_candidate_admission::AcpxCandidateAdmission =
+                serde_json::from_value(boundary.get("candidateAdmission").cloned().ok_or_else(
+                    || {
+                        DurableRunnerError::invalid(
+                            "Kimi authority rotation requires exact trusted candidate admission",
+                        )
+                    },
+                )?)
+                .map_err(|_| {
+                    DurableRunnerError::invalid("Kimi authority rotation admission is invalid")
+                })?;
+            admission
+                .validate_next_run(
+                    &proposed,
+                    "kimi",
+                    &admission.model,
+                    &next.run_id,
+                    &next.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            next.acpx_launch_profile
+                .as_mut()
+                .unwrap()
+                .candidate_admission = Some(proposed);
+        } else if boundary.get("candidateAdmission").is_some() {
+            return Err(DurableRunnerError::invalid(
+                "candidate authority rotation is not admitted",
+            ));
+        }
+    } else if boundary.get("candidateAdmission").is_some() {
+        return Err(DurableRunnerError::invalid(
+            "authority rotation cannot create candidate admission",
+        ));
+    }
+    next.validate()?;
     Ok(Some(next))
 }
 
@@ -225,6 +276,14 @@ fn apply_authority_rotation(
             "warm authority rotation requires native v2 session state acknowledgement",
         ));
     }
+    let preserve_endpoint = state.warm_transition.as_ref().is_some_and(|transition| {
+        transition
+            .receipt
+            .connection
+            .get("mode")
+            .and_then(Value::as_str)
+            == Some("external")
+    });
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = state.diagnostics.clone();
     let mut rotated = DurableState::new(&next);
@@ -239,7 +298,12 @@ fn apply_authority_rotation(
     store.save(&rotated)?;
     *state = rotated;
     *config = next;
-    endpoint.rotate(&config.connect_url, &config.run_id)
+    if preserve_endpoint {
+        // The process owner keeps its original ingress while PRP rotates run authority.
+        Ok(())
+    } else {
+        endpoint.rotate(&config.connect_url, &config.run_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,7 +313,23 @@ pub enum TerminalDeliveryReconciliation {
 }
 
 pub trait CommandExecutor {
+    /// Prove the existing provider is idle without restoring or starting it.
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
+
+    fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
+    /// Opt in only when semantic result delivery validates an exact durable
+    /// call receipt and cannot dispatch the underlying business operation.
+    /// Ordinary commands and providers without this proof remain indeterminate.
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
 
     /// Advances provider-side event correlation after a durable `run.attach`
     /// has moved runnerd to the next run-bound authority. The runner validates
@@ -257,6 +337,22 @@ pub trait CommandExecutor {
     fn rotate_authority(&mut self, _config: &DurableRunnerConfig) {}
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        Ok(Vec::new())
+    }
+
+    /// Drain live local output between controller reconnect attempts. Providers
+    /// whose ordinary poll can start recovery or wait for RPCs must defer that work.
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        Ok(Vec::new())
+    }
+
+    /// Advance already-owned local cleanup without provider RPCs or ordinary intake.
+    /// A pending deadline bounds both controller backoff and authentication.
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        Ok(None)
+    }
+
+    fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         Ok(Vec::new())
     }
 
@@ -362,11 +458,63 @@ impl CumulativeAckPersistence {
 }
 
 pub fn run_durable_runner<E: CommandExecutor>(
+    config: DurableRunnerConfig,
+    bootstrap_ticket: BootstrapTicket,
+    executor: E,
+) -> Result<(), DurableRunnerError> {
+    run_durable_runner_with_host_control(config, bootstrap_ticket, executor, None)
+}
+
+#[cfg(not(unix))]
+pub struct HostControl;
+#[cfg(unix)]
+use crate::host_control::{HostControl, HostIdentity, HostRequest};
+
+#[cfg(unix)]
+struct HostedRunnerControl {
+    channel: HostControl,
+    park_id: Option<String>,
+    claiming: Option<(String, String)>,
+}
+
+#[cfg(unix)]
+impl HostedRunnerControl {
+    fn new(channel: HostControl) -> Self {
+        Self {
+            channel,
+            park_id: None,
+            claiming: None,
+        }
+    }
+}
+
+pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
     mut config: DurableRunnerConfig,
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
+    #[allow(unused_variables)] host_control: Option<HostControl>,
 ) -> Result<(), DurableRunnerError> {
+    #[cfg(unix)]
+    let mut host_control = host_control.map(HostedRunnerControl::new);
+    let started = Instant::now();
     config.validate()?;
+    if let Some(admission) = config
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        let remaining =
+            Duration::from_millis(admission.expires_at.saturating_sub(current_unix_ms()?));
+        // Candidate authority is absolute. Include startup/state work in this
+        // process deadline, and never let a caller's unlimited runtime widen it.
+        config.max_runtime = if config.max_runtime.is_zero() {
+            remaining.max(Duration::from_nanos(1))
+        } else {
+            config
+                .max_runtime
+                .min(remaining.max(Duration::from_nanos(1)))
+        };
+    }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
     if state.lifecycle == "revoked"
@@ -375,6 +523,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
             && state.pending_provider_cleanup.is_none())
     {
         return Ok(());
+    }
+    if recovered {
+        executor.observe_recovery_state(&state)?;
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -387,18 +538,65 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
+    #[cfg(unix)]
+    let mut notifications =
+        crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
+    let mut task_memory = crate::task_memory::TaskMemoryMonitor::new();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
     let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
-    let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
     let mut authenticated_once = false;
     let mut disconnected_since: Option<Instant> = None;
     let mut reconnect_attempt = 0_u32;
+    let mut next_connection_attempt = Instant::now();
 
-    loop {
+    'session: loop {
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            if control.park_id.is_some() {
+                let remaining = (!config.max_runtime.is_zero())
+                    .then(|| config.max_runtime.saturating_sub(started.elapsed()));
+                if remaining.is_some_and(|duration| duration.is_zero()) {
+                    persist_lifecycle_before_shutdown(
+                        &mut state,
+                        &store,
+                        &mut executor,
+                        "suspended",
+                    )?;
+                    return Ok(());
+                }
+                match process_host_control(
+                    control,
+                    &mut state,
+                    &store,
+                    &mut executor,
+                    true,
+                    remaining,
+                ) {
+                    Ok(HostAction::Claim(ticket)) => {
+                        bootstrap_ticket = Some(ticket);
+                        lease = None;
+                        authenticated_once = false;
+                        disconnected_since = None;
+                        reconnect_attempt = 0;
+                    }
+                    Ok(HostAction::Retire) => return Ok(()),
+                    Ok(_) => continue,
+                    Err(error) => {
+                        let _ = persist_lifecycle_before_shutdown(
+                            &mut state,
+                            &store,
+                            &mut executor,
+                            "suspended",
+                        );
+                        return Err(error);
+                    }
+                }
+            }
+        }
         if authenticated_once {
             let disconnected_at = disconnected_since.get_or_insert_with(Instant::now);
             if config
@@ -445,8 +643,61 @@ pub fn run_durable_runner<E: CommandExecutor>(
             ));
         }
 
+        let provider_deadline = if authenticated_once
+            && state.warm_transition.is_none()
+            && state.pending_terminal_delivery.is_none()
+            && state.pending_provider_cleanup.is_none()
+        {
+            executor.maintain_disconnected_provider()?
+        } else {
+            None
+        };
+        if Instant::now() < next_connection_attempt {
+            if authenticated_once {
+                poll_disconnected_executor_events(&mut state, &store, &config, &mut executor)?;
+            }
+            let wake_at = next_connection_attempt.min(connection_attempt_deadline(
+                &config,
+                started,
+                disconnected_since,
+                lease
+                    .as_ref()
+                    .map(|credential| credential.expires_at_unix_ms),
+            ));
+            let wake_at = provider_deadline.map_or(wake_at, |due| due.min(wake_at));
+            let remaining = wake_at.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
+            continue;
+        }
         let using_bootstrap = lease.is_none();
-        let connect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            match process_host_control(control, &mut state, &store, &mut executor, false, None) {
+                Ok(HostAction::Park) => {
+                    lease = None;
+                    bootstrap_ticket = None;
+                    continue 'session;
+                }
+                Ok(HostAction::Retire) => return Ok(()),
+                Err(error) => {
+                    let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                    return Err(error);
+                }
+                _ => {}
+            }
+        }
+        let connect_deadline = connection_attempt_deadline(
+            &config,
+            started,
+            disconnected_since,
+            lease
+                .as_ref()
+                .map(|credential| credential.expires_at_unix_ms),
+        );
+        let connect_deadline =
+            provider_deadline.map_or(connect_deadline, |due| due.min(connect_deadline));
         let connection = AuthenticatedTransport::connect(
             &endpoint,
             &config,
@@ -458,7 +709,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                sleep_before_deadline(config.reconnect_delay, connect_deadline);
+                next_connection_attempt = Instant::now() + config.reconnect_delay;
                 continue;
             }
             Err(error) => {
@@ -475,11 +726,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         "bootstrap connection failed closed; provide a fresh one-use ticket",
                     ));
                 }
-                sleep_for_reconnect(
-                    config.reconnect_delay,
-                    connect_deadline.saturating_duration_since(Instant::now()),
-                    &mut reconnect_attempt,
-                );
+                next_connection_attempt = Instant::now()
+                    + reconnect_delay(
+                        config.reconnect_delay,
+                        connect_deadline.saturating_duration_since(Instant::now()),
+                        &mut reconnect_attempt,
+                    );
                 continue;
             }
         };
@@ -595,6 +847,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                     }
                     Err(error) => {
                         state.record_diagnostic(format!(
@@ -621,6 +877,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
         store.save(&state)?;
+        #[cfg(unix)]
+        if let Some(notifications) = notifications.as_mut() {
+            notifications.poll(&config, &mut state, &store);
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 
@@ -634,6 +894,8 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 welcome.warm_transition_version,
                 connection.protocol_version,
             )?;
+            #[cfg(unix)]
+            admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -709,6 +971,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
         if let Some(next) = authority_rotation {
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
+            #[cfg(unix)]
+            if let Some(control) = host_control.as_mut() {
+                control.claiming = None;
+            }
             disconnected_since = Some(Instant::now());
             continue;
         }
@@ -738,15 +1004,38 @@ pub fn run_durable_runner<E: CommandExecutor>(
             .filter(|_| !disconnected)
         {
             debug_assert_eq!(state.lifecycle, durable_lifecycle);
-            return finish_terminal_transition_after_ack(&mut state, &store, &mut executor);
+            return finish_terminal_transition_after_ack(
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                |state| {
+                    wait_for_old_authority_outbox_ack(
+                        &mut transport,
+                        state,
+                        &store,
+                        &connection,
+                        &mut sent_source_seq,
+                    )
+                },
+            );
         }
         if disconnected {
             disconnected_since.get_or_insert_with(Instant::now);
             state.reconnect_count = state.reconnect_count.saturating_add(1);
             store.save(&state)?;
-            let reconnect_deadline =
-                connection_attempt_deadline(&config, started, disconnected_since);
-            sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
+            let reconnect_deadline = connection_attempt_deadline(
+                &config,
+                started,
+                disconnected_since,
+                lease
+                    .as_ref()
+                    .map(|credential| credential.expires_at_unix_ms),
+            );
+            next_connection_attempt = Instant::now()
+                + config
+                    .reconnect_delay
+                    .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
         loop {
@@ -776,6 +1065,13 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 return Err(DurableRunnerError::invalid(
                     "active connection lease expired; durable state is preserved",
                 ));
+            }
+            #[cfg(unix)]
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.poll(&config, &mut state, &store);
+            }
+            if let Some(task_memory) = task_memory.as_mut() {
+                task_memory.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
@@ -812,6 +1108,34 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Read control before starting another fsynced provider batch.
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
+            #[cfg(unix)]
+            {
+                if let Some(control) = host_control.as_mut() {
+                    match process_host_control(
+                        control,
+                        &mut state,
+                        &store,
+                        &mut executor,
+                        false,
+                        None,
+                    ) {
+                        Ok(HostAction::Park) => {
+                            // The private owner now holds the exact idle cut. No
+                            // old PRP frame, lease renewal, or provider poll may follow.
+                            lease = None;
+                            bootstrap_ticket = None;
+                            drop(transport);
+                            continue 'session;
+                        }
+                        Ok(HostAction::Retire) => return Ok(()),
+                        Err(error) => {
+                            let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                            return Err(error);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let control_message = transport.receive_json();
             poll_executor_events_when_control_idle(
                 &mut state,
@@ -876,6 +1200,8 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         welcome.warm_transition_version,
                         connection.protocol_version,
                     )?;
+                    #[cfg(unix)]
+                    admit_host_claim(host_control.as_ref(), &command, next_authority.as_ref())?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -953,6 +1279,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                         disconnected_since = Some(Instant::now());
                         break;
                     }
@@ -982,7 +1312,17 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         return finish_terminal_transition_after_ack(
                             &mut state,
                             &store,
+                            &config,
                             &mut executor,
+                            |state| {
+                                wait_for_old_authority_outbox_ack(
+                                    &mut transport,
+                                    state,
+                                    &store,
+                                    &connection,
+                                    &mut sent_source_seq,
+                                )
+                            },
                         );
                     }
                 }
@@ -1031,9 +1371,161 @@ pub fn run_durable_runner<E: CommandExecutor>(
             }
         }
         disconnected_since.get_or_insert_with(Instant::now);
-        let reconnect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
-        sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
+        let reconnect_deadline = connection_attempt_deadline(
+            &config,
+            started,
+            disconnected_since,
+            lease
+                .as_ref()
+                .map(|credential| credential.expires_at_unix_ms),
+        );
+        next_connection_attempt = Instant::now()
+            + config
+                .reconnect_delay
+                .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
+}
+
+#[cfg(unix)]
+enum HostAction {
+    None,
+    Park,
+    Claim(BootstrapTicket),
+    Retire,
+}
+
+#[cfg(unix)]
+fn admit_host_claim(
+    control: Option<&HostedRunnerControl>,
+    command: &Command,
+    next_authority: Option<&DurableRunnerConfig>,
+) -> Result<(), DurableRunnerError> {
+    if control.is_some_and(|control| control.claiming.is_some())
+        && !(matches!(
+            command.command_type.as_str(),
+            "session.snapshot"
+                | "runner.drain"
+                | "runner.suspend"
+                | "runner.shutdown"
+                | "turn.stop"
+        ) || (command.command_type == "run.attach" && next_authority.is_some()))
+    {
+        return Err(DurableRunnerError::invalid(
+            "claimed Runner requires authority attachment before execution",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_host_control<E: CommandExecutor>(
+    control: &mut HostedRunnerControl,
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    executor: &mut E,
+    parked: bool,
+    remaining: Option<Duration>,
+) -> Result<HostAction, DurableRunnerError> {
+    let Some(request) = control.channel.receive(parked, remaining)? else {
+        return Ok(HostAction::None);
+    };
+    if control.channel.replay(&request)? {
+        return Ok(HostAction::None);
+    }
+    match &request {
+        HostRequest::Park {
+            id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        } if !parked
+            && control.park_id.is_none()
+            && control.claiming.is_none()
+            && host_park_cut_matches(
+                state,
+                identity,
+                *last_controller_command_seq,
+                *acked_source_seq,
+            )
+            && executor.host_park_ready()? =>
+        {
+            control.park_id = Some(id.clone());
+            control.channel.reply(&request, "parked")?;
+            Ok(HostAction::Park)
+        }
+        HostRequest::Claim {
+            id,
+            park_id,
+            bootstrap_ticket,
+            ..
+        } if parked && control.park_id.as_ref() == Some(park_id) => {
+            let ticket = BootstrapTicket::new(bootstrap_ticket.clone())?;
+            control.claiming = Some((park_id.clone(), id.clone()));
+            control.park_id = None;
+            control.channel.reply(&request, "claimed")?;
+            Ok(HostAction::Claim(ticket))
+        }
+        HostRequest::Retire {
+            park_id,
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+            ..
+        } if match (
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        ) {
+            (None, None, None, None) => parked && control.park_id.as_ref() == Some(park_id),
+            (Some(claim_id), Some(identity), Some(command_seq), Some(acked_seq)) => {
+                !parked
+                    && control
+                        .claiming
+                        .as_ref()
+                        .is_some_and(|(park, claim)| park == park_id && claim == claim_id)
+                    && host_park_cut_matches(state, identity, *command_seq, *acked_seq)
+                    && executor.host_park_ready()?
+            }
+            _ => false,
+        } =>
+        {
+            persist_lifecycle_before_shutdown(state, store, executor, "suspended")?;
+            control.channel.reply(&request, "retired")?;
+            Ok(HostAction::Retire)
+        }
+        _ => {
+            control.channel.reply(&request, "conflict")?;
+            Ok(HostAction::None)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn host_park_cut_matches(
+    state: &DurableState,
+    identity: &HostIdentity,
+    command_seq: u64,
+    acked_seq: u64,
+) -> bool {
+    identity.runner_instance_id == state.runner_instance_id
+        && identity.environment_lease_id == state.environment_lease_id
+        && identity.run_id == state.run_id
+        && identity.normalized_session_id == state.normalized_session_id
+        && identity.turn_id == state.turn_id
+        && identity.item_id == state.item_id
+        && command_seq == state.last_controller_command_seq
+        && acked_seq == state.acked_source_seq
+        && state.outbox.is_empty()
+        && state.acked_source_seq == state.highest_source_seq()
+        && state.warm_transition.is_none()
+        && state.pending_terminal_delivery.is_none()
+        && state.pending_provider_cleanup.is_none()
+        && state
+            .processed_commands
+            .values()
+            .all(|command| !matches!(command.status.as_str(), "pending" | "indeterminate"))
 }
 
 fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
@@ -1128,22 +1620,26 @@ fn complete_terminal_delivery_after_cleanup(
 fn finish_terminal_transition_after_ack<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
+    config: &DurableRunnerConfig,
     executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
 ) -> Result<(), DurableRunnerError> {
     // Keep the durable fence through provider cleanup. If cleanup fails, a
     // replacement may authenticate only to retry terminal reconciliation and
     // cannot restore the suspended runner to ready.
     if state.pending_provider_cleanup.is_some() {
-        return finish_terminal_reconciliation(state, store, executor);
+        return finish_terminal_reconciliation(state, store, config, executor, deliver);
     }
     executor.shutdown()?;
-    complete_terminal_delivery_after_cleanup(state, store)
+    finish_terminal_observations(state, store, config, executor, deliver)
 }
 
 fn finish_terminal_reconciliation<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
+    config: &DurableRunnerConfig,
     executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
 ) -> Result<(), DurableRunnerError> {
     let outcome = executor.reconcile_terminal_delivery()?;
     if outcome == TerminalDeliveryReconciliation::ProviderCleanupPending
@@ -1158,6 +1654,24 @@ fn finish_terminal_reconciliation<E: CommandExecutor>(
     }
     // Clearing delivery never clears a pre-existing physical cleanup fence.
     // Only a new successful turn.stop may do that.
+    finish_terminal_observations(state, store, config, executor, deliver)
+}
+
+fn finish_terminal_observations<E: CommandExecutor>(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+    deliver: impl FnOnce(&mut DurableState) -> Result<(), DurableRunnerError>,
+) -> Result<(), DurableRunnerError> {
+    let events = executor.retained_runner_events()?;
+    commit_executor_events(state, store, config, executor, events)?;
+    deliver(state)?;
+    if !state.outbox.is_empty() {
+        return Err(DurableRunnerError::invalid(
+            "terminal observations remain unacknowledged",
+        ));
+    }
     complete_terminal_delivery_after_cleanup(state, store)
 }
 
@@ -1252,6 +1766,7 @@ fn wait_for_old_authority_outbox_ack(
     )?;
     let target = state.highest_source_seq();
     let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let mut ack_persistence = CumulativeAckPersistence::default();
     while state.acked_source_seq < target {
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
@@ -1268,8 +1783,10 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                state.apply_ack(acked, connection.protocol_version)?;
-                store.save(state)?;
+                // As in normal ingress, checkpoint cumulative ACK bursts
+                // without fsyncing every prefix inside the delivery deadline.
+                // The final empty-outbox ACK is always persisted.
+                ack_persistence.apply(state, store, acked, connection.protocol_version)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -1468,6 +1985,23 @@ fn deliver_warm_attachment(
     }
 }
 
+/// A replayed terminal command must reproduce the lifecycle its fence
+/// recorded. One legacy exception: runners built before a failed
+/// `runner.suspend` stopped being terminal persisted a `suspended` fence for
+/// it. Its replay now continues; honour that old fence so an upgraded runner
+/// can still deliver the journaled result and finish the old transition.
+fn replay_satisfies_terminal_fence(
+    pending: &PendingTerminalDelivery,
+    result_status: &str,
+    lifecycle: CommandLifecycle,
+) -> bool {
+    lifecycle.durable_state() == Some(pending.lifecycle.as_str())
+        || (pending.command_type == "runner.suspend"
+            && pending.lifecycle == "suspended"
+            && matches!(result_status, "failed" | "rejected")
+            && lifecycle == CommandLifecycle::Continue)
+}
+
 fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
     state: &mut DurableState,
     store: &DurableStateStore,
@@ -1492,7 +2026,7 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
             ));
         }
         let (result, lifecycle) = process_command(state, store, config, executor, command)?;
-        if lifecycle.durable_state() != Some(pending.lifecycle.as_str()) {
+        if !replay_satisfies_terminal_fence(&pending, &result.status, lifecycle) {
             return Err(DurableRunnerError::invalid(
                 "pending terminal command did not replay its durable lifecycle",
             ));
@@ -1538,7 +2072,9 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
         let _ = shutdown_preserving_cleanup(state, executor);
         return Err(error);
     }
-    finish_terminal_reconciliation(state, store, executor)
+    finish_terminal_reconciliation(state, store, config, executor, |state| {
+        wait_for_old_authority_outbox_ack(transport, state, store, connection, &mut sent_source_seq)
+    })
 }
 
 fn stop_after_terminal_result_delivery_failure<E: CommandExecutor>(
@@ -1556,6 +2092,40 @@ fn stop_after_terminal_result_delivery_failure<E: CommandExecutor>(
     store.save(state)?;
     let _ = shutdown_preserving_cleanup(state, executor);
     Err(error)
+}
+
+fn poll_disconnected_executor_events<E: CommandExecutor>(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+) -> Result<(), DurableRunnerError> {
+    // Maintenance has already run. Leave the rejected suffix at the provider until
+    // a reconnect ACK frees space.
+    if state.warm_transition.is_some()
+        || state.pending_terminal_delivery.is_some()
+        || state.pending_provider_cleanup.is_some()
+        || state.backpressure
+    {
+        return Ok(());
+    }
+    let events = executor.poll_disconnected_events();
+    let polled = persist_polled_events(state, store, config, executor, events);
+    match polled {
+        Err(error)
+            if error.classification() == Some("outbox_backpressure")
+                && !state.outbox.is_empty() =>
+        {
+            store.save(state)
+        }
+        Err(error) => {
+            let _ = shutdown_preserving_cleanup(state, executor);
+            state.record_diagnostic(format!("disconnected provider ingestion failed: {error}"));
+            store.save(state)?;
+            Err(error)
+        }
+        Ok(()) => Ok(()),
+    }
 }
 
 fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
@@ -1618,7 +2188,18 @@ fn poll_executor_events<E: CommandExecutor>(
     if state.pending_provider_cleanup.is_some() {
         return Ok(());
     }
-    let events = match executor.poll_events() {
+    let events = executor.poll_events();
+    persist_polled_events(state, store, config, executor, events)
+}
+
+fn persist_polled_events<E: CommandExecutor>(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &DurableRunnerConfig,
+    executor: &mut E,
+    events: Result<Vec<PolledEvent>, DurableRunnerError>,
+) -> Result<(), DurableRunnerError> {
+    let events = match events {
         Ok(events) => events,
         Err(error) => {
             drain_retained_events(state, store, config, executor).map_err(|secondary| {
@@ -1724,6 +2305,15 @@ fn process_command<E: CommandExecutor>(
         }
     }
     match state.begin_command(command)? {
+        CommandDisposition::Replay(result)
+            if result.status == "indeterminate"
+                && command.command_type == "semantic_tool.result"
+                && executor.can_reconcile_result_delivery()? =>
+        {
+            // begin_command already checked the complete immutable command
+            // fingerprint. Only replay receipt delivery, never the operation.
+            state.resume_result_delivery(command)?;
+        }
         CommandDisposition::Replay(result) => {
             let lifecycle =
                 if result.status == "pending" || state.pending_provider_cleanup.is_some() {
@@ -1731,6 +2321,8 @@ fn process_command<E: CommandExecutor>(
                     // the old receipt must not replace the newer command cursor
                     // with another terminal-delivery fence at an older sequence.
                     CommandLifecycle::Continue
+                } else if result.status == "failed" {
+                    CommandLifecycle::after_failure(command)
                 } else {
                     CommandLifecycle::for_terminal(command)
                 };
@@ -1742,8 +2334,8 @@ fn process_command<E: CommandExecutor>(
         CommandDisposition::Execute => {}
     }
     // Persist the pending marker before any command effect. If the process dies
-    // in the effect window, recovery returns an indeterminate result and never
-    // executes the same logical command twice.
+    // in the effect window, recovery remains indeterminate unless the provider
+    // explicitly supports exact, idempotent semantic result delivery above.
     store.save(state)?;
     let mut execution = match executor.execute(command) {
         Ok(execution) => execution,
@@ -1766,17 +2358,28 @@ fn process_command<E: CommandExecutor>(
                 "{} command failed: {message}",
                 command.command_type
             ));
-            let result = state.fail_command(
-                command,
-                json!({
-                    "code": "command_execution_failed",
-                    "message": message,
-                }),
-            )?;
+            let mut failure = json!({
+                "code": "command_execution_failed",
+                "message": message,
+            });
+            if let Some(classification) = error.classification() {
+                failure["classification"] = json!(classification);
+            }
+            if let Some(provider_failure) = error.provider_failure() {
+                failure["providerFailure"] = provider_failure;
+            }
+            let result = state.fail_command(command, failure)?;
             store.save(state)?;
-            return Ok((result, CommandLifecycle::for_terminal(command)));
+            return Ok((result, CommandLifecycle::after_failure(command)));
         }
     };
+    if matches!(
+        command.command_type.as_str(),
+        "runner.suspend" | "runner.shutdown"
+    ) {
+        let events = executor.retained_runner_events()?;
+        commit_executor_events(state, store, config, executor, events)?;
+    }
     if command.command_type == "runner.drain" {
         // An explicit drain must make progress even while control traffic
         // prevents idle polling. Only move one already-retained prefix under
@@ -1850,7 +2453,11 @@ fn process_command<E: CommandExecutor>(
 
 fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64) -> Value {
     let mut envelope = event.envelope.clone();
-    if protocol_version == 1 && envelope.pointer("/payload/schemaVersion") == Some(&json!(2)) {
+    if envelope
+        .pointer("/payload/schemaVersion")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > protocol_version)
+    {
         // Preserve the source sequence on a v1 connection so its cumulative
         // ACK can advance past an event family that only exists in PRP v2.
         // Never copy the v2 payload because it can include a goal objective.
@@ -1858,7 +2465,7 @@ fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64)
         envelope["payload"]["eventType"] = json!("runner.diagnostic");
         envelope["payload"]["schemaVersion"] = json!(1);
         envelope["payload"]["payload"] = json!({
-            "reasonCode": "event_requires_prp_v2",
+            "reasonCode": if event.envelope.pointer("/payload/schemaVersion") == Some(&json!(3)) { "event_requires_prp_v3" } else { "event_requires_prp_v2" },
             "originalEventType": event.event_type,
         });
     }
@@ -1997,20 +2604,202 @@ mod tests {
     }
 
     #[test]
+    fn terminal_commands_commit_runner_events_without_draining_the_provider() {
+        struct ObserverExecutor {
+            pending: Vec<PolledEvent>,
+            calls: usize,
+        }
+        impl CommandExecutor for ObserverExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                self.calls += 1;
+                Ok(CommandExecution::result(json!({"status":"completed"})))
+            }
+            fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                Ok(self.pending.clone())
+            }
+            fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("terminal command must preserve the provider backlog")
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("terminal command must not poll or launch a provider")
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                assert_eq!(count, 1);
+                self.pending.clear();
+                Ok(())
+            }
+        }
+        for kind in ["runner.suspend", "runner.shutdown"] {
+            let directory = std::env::temp_dir()
+                .join(format!("runner-observer-terminal-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = ObserverExecutor {
+                pending: vec![PolledEvent {
+                    executor_event_id: "credential_update_0000000000000001".to_owned(),
+                    event_type: "auth.credentials.updated".to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({"schema":"paperclip.auth.credentials.updated.v1", "provider":"codex",
+                    "bindingId":"harness-auth", "revision":1, "detection":"credential_store"}),
+                }],
+                calls: 0,
+            };
+            let command = command(kind);
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+            assert!(executor.pending.is_empty());
+            let (mut recovered, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(recovered.outbox.len(), 1);
+            assert_eq!(recovered.outbox[0].event_type, "auth.credentials.updated");
+            assert_eq!(
+                recovered.processed_commands[&command.command_id].status,
+                "completed"
+            );
+            process_command(&mut recovered, &store, &config, &mut executor, &command).unwrap();
+            assert_eq!(executor.calls, 1);
+            assert_eq!(recovered.outbox.len(), 1);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn response_persistence_failure_with_blocked_drain_remains_indeterminate_on_replay() {
+        struct PersistenceFailedResponseExecutor {
+            delivered_responses: usize,
+            retained_reads: usize,
+        }
+        impl CommandExecutor for PersistenceFailedResponseExecutor {
+            fn execute(
+                &mut self,
+                command: &Command,
+            ) -> Result<CommandExecution, DurableRunnerError> {
+                assert_eq!(command.command_type, "request.resolve");
+                assert_eq!(command.payload["requestId"], "input-1");
+                // Model a real pipe delivery ACK followed by an uncertain
+                // provider-state write. Its staged settlement is not durable.
+                self.delivered_responses += 1;
+                Err(DurableRunnerError::invalid(
+                    "ACPX response state persistence failed after delivery",
+                ))
+            }
+
+            fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                self.retained_reads += 1;
+                Err(DurableRunnerError::invalid(
+                    "ACPX persistence latch blocks retained settlement",
+                ))
+            }
+
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("failed response settlement must not poll or restore the provider")
+            }
+
+            fn acknowledge_events(&mut self, _: usize) -> Result<(), DurableRunnerError> {
+                panic!("an uncertain settlement must not receive a journal ACK")
+            }
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-response-persistence-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = PersistenceFailedResponseExecutor {
+            delivered_responses: 0,
+            retained_reads: 0,
+        };
+        let mut resolve = command("request.resolve");
+        resolve.payload = json!({
+            "requestId": "input-1",
+            "resolution": {"action": "submit", "response": {"answer": "accepted"}},
+        });
+
+        let failure =
+            process_command(&mut state, &store, &config, &mut executor, &resolve).unwrap_err();
+        assert!(failure
+            .to_string()
+            .starts_with("ACPX response state persistence failed after delivery"));
+        assert!(failure
+            .to_string()
+            .contains("retained failure evidence remains uncommitted"));
+        assert!(failure
+            .to_string()
+            .contains("ACPX persistence latch blocks retained settlement"));
+        assert_eq!(executor.delivered_responses, 1);
+        assert_eq!(executor.retained_reads, 1);
+        assert_eq!(
+            state.processed_commands[&resolve.command_id].status,
+            "pending"
+        );
+        assert!(state.outbox.is_empty());
+        assert_eq!(state.highest_source_seq(), 0);
+
+        // Inspect the actual journal before recovery changes pending into
+        // indeterminate. Neither a failed/completed result nor a resolved event
+        // may replace the pre-effect marker while the provider snapshot is unsure.
+        let journal: DurableState =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(
+            journal.processed_commands[&resolve.command_id].status,
+            "pending"
+        );
+        assert!(journal.outbox.is_empty());
+        assert_eq!(journal.highest_source_seq(), 0);
+
+        let pending = process_command(&mut state, &store, &config, &mut executor, &resolve)
+            .unwrap()
+            .0;
+        assert_eq!(pending.status, "pending");
+        assert_eq!(executor.delivered_responses, 1);
+        assert_eq!(executor.retained_reads, 1);
+
+        let (mut recovered, existed) = store.load_or_create(&config).unwrap();
+        assert!(existed);
+        assert_eq!(
+            recovered.processed_commands[&resolve.command_id].status,
+            "indeterminate"
+        );
+        let mut replacement = CountingExecutor { calls: 0 };
+        let replay = process_command(&mut recovered, &store, &config, &mut replacement, &resolve)
+            .unwrap()
+            .0;
+        assert_eq!(replay.status, "indeterminate");
+        assert_eq!(replay.result["code"], "execution_indeterminate");
+        assert_eq!(
+            replacement.calls, 0,
+            "recovery must never resend the response"
+        );
+        assert!(recovered.outbox.is_empty());
+        let (reloaded_again, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(
+            reloaded_again.processed_commands[&resolve.command_id],
+            replay
+        );
+        assert!(reloaded_again.outbox.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn unlimited_lifetime_keeps_attempts_bounded_after_weeks_of_work() {
         let mut config = config(std::env::temp_dir());
         config.max_runtime = Duration::ZERO;
         config.validate().unwrap();
         let started = Instant::now() - Duration::from_secs(21 * 24 * 60 * 60);
         let before = Instant::now();
-        let deadline = connection_attempt_deadline(&config, started, None);
+        let deadline = connection_attempt_deadline(&config, started, None, None);
         assert!(deadline >= before + Duration::from_secs(29));
         assert!(deadline <= Instant::now() + Duration::from_secs(30));
         config.reconnect_grace = Some(Duration::from_secs(5));
-        let deadline = connection_attempt_deadline(&config, started, Some(Instant::now()));
+        let deadline = connection_attempt_deadline(&config, started, Some(Instant::now()), None);
         assert!(deadline <= Instant::now() + Duration::from_secs(5));
+        let lease_expires_at = current_unix_ms().unwrap() + 2_000;
+        let deadline = connection_attempt_deadline(&config, started, None, Some(lease_expires_at));
+        assert!(deadline <= Instant::now() + Duration::from_secs(2));
+        assert!(connection_attempt_deadline(&config, started, None, Some(1)) <= Instant::now());
         config.max_runtime = Duration::from_secs(7 * 24 * 60 * 60);
-        assert!(connection_attempt_deadline(&config, started, None) <= Instant::now());
+        assert!(connection_attempt_deadline(&config, started, None, None) <= Instant::now());
         config.max_runtime = Duration::from_secs(30 * 24 * 60 * 60);
         config.validate().unwrap();
     }
@@ -2139,6 +2928,17 @@ mod tests {
         }
     }
 
+    struct IncompatibleStateExecutor;
+
+    impl CommandExecutor for IncompatibleStateExecutor {
+        fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+            Err(
+                DurableRunnerError::invalid("saved provider state cannot be adopted")
+                    .with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+            )
+        }
+    }
+
     impl CommandExecutor for ShutdownFailingExecutor {
         fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
             Ok(CommandExecution::result(json!({"status": "completed"})))
@@ -2169,6 +2969,10 @@ mod tests {
 
         fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
             Ok(self.events.iter().cloned().collect())
+        }
+
+        fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+            self.poll_events()
         }
 
         fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
@@ -2203,6 +3007,7 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -2222,6 +3027,271 @@ mod tests {
             deadline_at: None,
             precondition: None,
             payload: json!({}),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_parking_requires_exact_cut_and_replays_claim_without_reusing_ticket() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct IdleExecutor {
+            proofs: usize,
+            shutdowns: usize,
+            ready: bool,
+        }
+        impl CommandExecutor for IdleExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.proofs += 1;
+                Ok(self.ready)
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdowns += 1;
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-host-retirement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let mut state = DurableState::new(&config);
+        let (socket, mut host) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(host.try_clone().unwrap());
+        let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+        let mut executor = IdleExecutor {
+            proofs: 0,
+            shutdowns: 0,
+            ready: true,
+        };
+        let park = json!({"op":"park","id":"park-1","identity":{
+            "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+            "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+        },"lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        let mut exchange = |request: &Value,
+                            state: &mut DurableState,
+                            control: &mut HostedRunnerControl,
+                            executor: &mut IdleExecutor,
+                            parked: bool| {
+            writeln!(host, "{request}").unwrap();
+            let action = process_host_control(
+                control,
+                state,
+                &store,
+                executor,
+                parked,
+                Some(Duration::from_secs(1)),
+            )
+            .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (action, serde_json::from_str::<Value>(&line).unwrap())
+        };
+        state.last_controller_command_seq = 1;
+        assert_eq!(
+            exchange(&park, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.last_controller_command_seq = 0;
+        assert!(matches!(
+            exchange(&park, &mut state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        assert!(matches!(
+            exchange(&park, &mut state, &mut control, &mut executor, true).0,
+            HostAction::None
+        ));
+        assert_eq!(executor.proofs, 1);
+        let claim = json!({"op":"claim","id":"claim-1","parkId":"park-1","bootstrapTicket":"fresh-private-ticket"});
+        assert!(matches!(
+            exchange(&claim, &mut state, &mut control, &mut executor, true).0,
+            HostAction::Claim(_)
+        ));
+        assert!(matches!(
+            exchange(&claim, &mut state, &mut control, &mut executor, false).0,
+            HostAction::None
+        ));
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        let mut next_authority = config.clone();
+        next_authority.run_id = "next-run".to_owned();
+        assert!(admit_host_claim(
+            Some(&control),
+            &command("run.attach"),
+            Some(&next_authority)
+        )
+        .is_ok());
+        let mut changed = claim;
+        changed["bootstrapTicket"] = json!("different-private-ticket");
+        assert_eq!(
+            exchange(&changed, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        assert_eq!(executor.shutdowns, 0);
+        let mut premature_park = park.clone();
+        premature_park["id"] = json!("park-before-attach");
+        assert_eq!(
+            exchange(
+                &premature_park,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-1"});
+        assert_eq!(
+            exchange(&retire, &mut state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        let conditional_retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1",
+            "claimId":"claim-1","identity":park["identity"],
+            "lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        for (field, value) in [
+            ("parkId", json!("wrong-park")),
+            ("claimId", json!("wrong-claim")),
+            ("lastControllerCommandSeq", json!(1)),
+            ("ackedSourceSeq", json!(1)),
+        ] {
+            let mut stale = conditional_retire.clone();
+            stale["id"] = json!(format!("stale-{field}"));
+            stale[field] = value;
+            assert_eq!(
+                exchange(&stale, &mut state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        let mut wrong_identity = conditional_retire.clone();
+        wrong_identity["id"] = json!("stale-identity");
+        wrong_identity["identity"]["runId"] = json!("another-run");
+        assert_eq!(
+            exchange(
+                &wrong_identity,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        executor.ready = false;
+        assert_eq!(
+            exchange(
+                &conditional_retire,
+                &mut state,
+                &mut control,
+                &mut executor,
+                false
+            )
+            .1["status"],
+            "conflict"
+        );
+        assert_eq!(executor.shutdowns, 0);
+        executor.ready = true;
+        // Simulate completed run.attach before a later exact parked cut.
+        control.claiming = None;
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
+        let mut next_park = park.clone();
+        next_park["id"] = json!("park-2");
+        assert!(matches!(
+            exchange(&next_park, &mut state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-2"});
+        assert!(matches!(
+            exchange(&retire, &mut state, &mut control, &mut executor, true).0,
+            HostAction::Retire
+        ));
+        assert_eq!(executor.shutdowns, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_blocks_without_provider_polls_and_retires_on_eof_or_lifetime() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct ParkedExecutor(Arc<AtomicUsize>);
+        impl CommandExecutor for ParkedExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("parked provider cannot execute");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(true)
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("parked provider cannot poll");
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        for eof in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-hosted-park-stop-{}-{eof}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            let mut config = config(directory.clone());
+            config.max_runtime = if eof {
+                Duration::ZERO
+            } else {
+                // Include durable startup under parallel-suite filesystem load.
+                Duration::from_secs(2)
+            };
+            let (socket, mut host) = UnixStream::pair().unwrap();
+            let control = HostControl::new(socket).unwrap();
+            writeln!(host,"{}",json!({"op":"park","id":"park-stop","identity":{
+                "runnerInstanceId":config.runner_instance_id,"environmentLeaseId":config.environment_lease_id,
+                "runId":config.run_id,"normalizedSessionId":config.normalized_session_id,"turnId":config.turn_id,"itemId":config.item_id,
+            },"lastControllerCommandSeq":0,"ackedSourceSeq":0})).unwrap();
+            let shutdowns = Arc::new(AtomicUsize::new(0));
+            let executor = ParkedExecutor(shutdowns.clone());
+            let saved_config = config.clone();
+            let task = std::thread::spawn(move || {
+                run_durable_runner_with_host_control(
+                    config,
+                    BootstrapTicket::new("unused-bootstrap".to_owned()).unwrap(),
+                    executor,
+                    Some(control),
+                )
+            });
+            let mut reply = String::new();
+            BufReader::new(&host).read_line(&mut reply).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply).unwrap()["status"],
+                "parked"
+            );
+            if eof {
+                drop(host);
+                assert!(task.join().unwrap().is_err());
+            } else {
+                assert!(task.join().unwrap().is_ok());
+            }
+            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                DurableStateStore::new(&directory)
+                    .unwrap()
+                    .load_or_create(&saved_config)
+                    .unwrap()
+                    .0
+                    .lifecycle,
+                "suspended"
+            );
+            fs::remove_dir_all(directory).unwrap();
         }
     }
 
@@ -2488,7 +3558,8 @@ mod tests {
         // Failed/expired terminal delivery cleanup must also remain cold.
         shutdown_preserving_cleanup(&state, &mut executor).unwrap();
         assert!(state.pending_terminal_delivery.is_some());
-        finish_terminal_reconciliation(&mut state, &store, &mut executor).unwrap();
+        finish_terminal_reconciliation(&mut state, &store, &config, &mut executor, |_| Ok(()))
+            .unwrap();
         let (mut state, _) = store.load_or_create(&config).unwrap();
         assert!(state.pending_terminal_delivery.is_none());
         assert_eq!(
@@ -3249,6 +4320,80 @@ mod tests {
     }
 
     #[test]
+    fn warm_external_attachment_preserves_the_original_ingress() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-warm-external-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let mut current = config(directory.clone());
+        current.connect_url = format!("listen://0.0.0.0:{port}{path}");
+        current.ca_bundle_path = Some(PathBuf::from("/fixture/trusted-ca.pem"));
+        current.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let original_url = current.connect_url.clone();
+        let mut endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        for run in 2..=3 {
+            let mut attach = command("run.attach");
+            attach.payload = json!({"paperclipNextAuthority":{
+                "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                    "runId":format!("run_{run}"),"normalizedSessionId":current.normalized_session_id,
+                    "turnId":format!("turn_{run}"),"itemId":format!("item_{run}")},
+                "connection":{"mode":"external"}
+            }});
+            let next = next_authority_config(&attach, &current).unwrap().unwrap();
+            assert_eq!(next.connect_url, original_url);
+            assert_eq!(next.ca_bundle_path, current.ca_bundle_path);
+            let result = StoredCommandResult {
+                command_id: attach.command_id.clone(),
+                controller_seq: attach.controller_seq,
+                command_type: "run.attach".to_owned(),
+                status: "completed".to_owned(),
+                result: json!({"status":"resumed"}),
+            };
+            let receipt = WarmRunTransition::new(
+                &current,
+                &next,
+                &attach,
+                &result,
+                0,
+                "lease".to_owned(),
+                u64::MAX,
+                0,
+            )
+            .unwrap();
+            state.schema = TRANSITION_STATE_SCHEMA.to_owned();
+            state.warm_transition = Some(PendingWarmRunTransition {
+                receipt,
+                phase: "prepared".to_owned(),
+                command: attach,
+                result,
+            });
+            apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next)
+                .unwrap();
+            assert_eq!(current.run_id, format!("run_{run}"));
+            match &endpoint {
+                RunnerTransportEndpoint::Listen {
+                    listener,
+                    path: retained_path,
+                } => {
+                    assert_eq!(listener.local_addr().unwrap().port(), port);
+                    assert_eq!(retained_path, &path);
+                }
+                _ => panic!("external attachment must preserve the listener"),
+            }
+            state.warm_transition = None;
+            state.schema = "paperclip.runner.durable.state.v1".to_owned();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn warm_run_attachment_reuses_the_provider_ingress_listener() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-warm-listener-authority-{}",
@@ -3386,6 +4531,109 @@ mod tests {
     }
 
     #[test]
+    fn final_shutdown_observations_keep_recovery_fenced_until_host_ack() {
+        struct LateObserver {
+            pending: Vec<PolledEvent>,
+            observed: bool,
+        }
+        impl CommandExecutor for LateObserver {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                Ok(CommandExecution::result(json!({"status":"completed"})))
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                if !self.observed {
+                    self.observed = true;
+                    self.pending.push(PolledEvent {
+                        executor_event_id: "final-credential-update".to_owned(),
+                        event_type: "auth.credentials.updated".to_owned(), priority: EventPriority::P0,
+                        payload: json!({"schema":"paperclip.auth.credentials.updated.v1", "provider":"codex",
+                            "bindingId":"harness-auth", "revision":1, "detection":"credential_store"}),
+                    });
+                }
+                Ok(())
+            }
+            fn retained_runner_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                Ok(self.pending.clone())
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                assert_eq!(count, 1);
+                self.pending.clear();
+                Ok(())
+            }
+        }
+        for fail_delivery in [false, true] {
+            let directory = std::env::temp_dir()
+                .join(format!("runner-final-observation-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&directory).unwrap();
+            let (mut state, _) = store.load_or_create(&config).unwrap();
+            let mut executor = LateObserver {
+                pending: vec![],
+                observed: false,
+            };
+            let terminal = command("runner.shutdown");
+            let (result, lifecycle) =
+                process_command(&mut state, &store, &config, &mut executor, &terminal).unwrap();
+            persist_lifecycle_before_command_delivery(
+                &mut state,
+                &store,
+                lifecycle.durable_state().unwrap(),
+                &result,
+            )
+            .unwrap();
+            let outcome = finish_terminal_transition_after_ack(
+                &mut state,
+                &store,
+                &config,
+                &mut executor,
+                |state| {
+                    let (saved, _) = store.load_or_create(&config).unwrap();
+                    assert!(saved.pending_terminal_delivery.is_some());
+                    assert_eq!(saved.outbox.len(), 1);
+                    assert_eq!(saved.outbox[0].event_type, "auth.credentials.updated");
+                    if fail_delivery {
+                        return Err(DurableRunnerError::invalid("final host ACK lost"));
+                    }
+                    state.apply_ack(state.highest_source_seq(), 1)?;
+                    store.save(state)
+                },
+            );
+            assert_eq!(outcome.is_err(), fail_delivery);
+            assert!(executor.pending.is_empty());
+            let (mut recovered, _) = store.load_or_create(&config).unwrap();
+            assert_eq!(recovered.pending_terminal_delivery.is_some(), fail_delivery);
+            if fail_delivery {
+                let event_id = recovered.outbox[0].envelope["payload"]["sourceEventId"].clone();
+                let mut replacement = LateObserver {
+                    pending: vec![],
+                    observed: true,
+                };
+                finish_terminal_reconciliation(
+                    &mut recovered,
+                    &store,
+                    &config,
+                    &mut replacement,
+                    |state| {
+                        assert_eq!(state.outbox.len(), 1);
+                        assert_eq!(
+                            state.outbox[0].envelope["payload"]["sourceEventId"],
+                            event_id
+                        );
+                        state.apply_ack(state.highest_source_seq(), 1)?;
+                        store.save(state)
+                    },
+                )
+                .unwrap();
+                let (saved, _) = store.load_or_create(&config).unwrap();
+                assert!(saved.pending_terminal_delivery.is_none());
+                assert!(saved.outbox.is_empty());
+                assert_eq!(saved.lifecycle, "stopped");
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
     fn failed_terminal_cleanup_keeps_the_recovery_fence() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-terminal-cleanup-failed-{}",
@@ -3407,8 +4655,14 @@ mod tests {
         )
         .unwrap();
 
-        let error = finish_terminal_transition_after_ack(&mut state, &store, &mut executor)
-            .expect_err("cleanup failure remains fenced");
+        let error = finish_terminal_transition_after_ack(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            |_| Ok(()),
+        )
+        .expect_err("cleanup failure remains fenced");
         let (recovered, existed) = store.load_or_create(&config).unwrap();
 
         assert!(error.to_string().contains("terminal cleanup failure"));
@@ -3514,6 +4768,91 @@ mod tests {
         let (fully_acked, _) = store.load_or_create(&config).unwrap();
         assert_eq!(fully_acked.acked_source_seq, 128);
         assert!(fully_acked.outbox.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn disconnected_ingestion_keeps_durable_prefix_and_resumes_after_backpressure_ack() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-offline-backpressure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut config = config(directory.clone());
+        config.max_outbox_bytes = 16 * 1024;
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = RetainingEventExecutor {
+            events: (1..=128)
+                .map(|index| PolledEvent {
+                    executor_event_id: format!("offline-{index}"),
+                    event_type: "item.delta".to_owned(),
+                    priority: EventPriority::P1,
+                    payload: json!({"index":index,"text":"x".repeat(512)}),
+                })
+                .collect(),
+            fail_acknowledgement: false,
+            acknowledgements: Vec::new(),
+        };
+        poll_disconnected_executor_events(&mut state, &store, &config, &mut executor).unwrap();
+        assert!(state.backpressure);
+        assert!(!state.outbox.is_empty());
+        assert!(!executor.events.is_empty());
+        assert_eq!(state.outbox.len() + executor.events.len(), 128);
+        assert_eq!(state.last_controller_command_seq, 0);
+        let (reloaded, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(reloaded.outbox, state.outbox);
+        assert!(reloaded.backpressure);
+        let prefix = state.highest_source_seq();
+        poll_disconnected_executor_events(&mut state, &store, &config, &mut executor).unwrap();
+        assert_eq!(state.highest_source_seq(), prefix);
+        while !executor.events.is_empty() {
+            state.apply_ack(state.highest_source_seq(), 2).unwrap();
+            poll_disconnected_executor_events(&mut state, &store, &config, &mut executor).unwrap();
+        }
+        assert_eq!(state.highest_source_seq(), 128);
+        assert_eq!(executor.acknowledgements.iter().sum::<usize>(), 128);
+        assert!(state.peak_outbox_bytes <= config.max_outbox_bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn disconnected_ingestion_retires_provider_on_unrecoverable_output() {
+        struct OversizedExecutor {
+            shutdowns: usize,
+        }
+        impl CommandExecutor for OversizedExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("offline ingestion cannot execute commands");
+            }
+            fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                Ok(vec![PolledEvent {
+                    executor_event_id: "oversized".to_owned(),
+                    event_type: "item.delta".to_owned(),
+                    priority: EventPriority::P1,
+                    payload: json!({"text":"x".repeat(2048)}),
+                }])
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdowns += 1;
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-offline-output-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut config = config(directory.clone());
+        config.max_frame_bytes = 1024;
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = OversizedExecutor { shutdowns: 0 };
+        let error = poll_disconnected_executor_events(&mut state, &store, &config, &mut executor)
+            .unwrap_err();
+        assert!(error.to_string().contains("transport frame limit"));
+        assert_eq!(executor.shutdowns, 1);
+        assert_eq!(state.highest_source_seq(), 0);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -4330,13 +5669,56 @@ mod tests {
             .diagnostics
             .iter()
             .all(|diagnostic| !diagnostic.contains("test-secret")));
+        assert!(failed.result.get("classification").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn classified_executor_failure_keeps_its_closed_class_in_the_durable_result() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-command-classified-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let command = command("run.attach");
+        let (failed, _) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap();
+        let (mut recovered, _) = store.load_or_create(&config).unwrap();
+        let replay = process_command(
+            &mut recovered,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.result["code"], "command_execution_failed");
+        assert_eq!(
+            failed.result["classification"],
+            "provider_state_incompatible"
+        );
+        assert_eq!(failed, replay);
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
     fn failed_lifecycle_commands_replay_their_terminal_transition() {
         for (command_type, expected_lifecycle) in [
-            ("runner.suspend", CommandLifecycle::Suspend),
+            // A rejected suspension leaves the provider's session live, so the
+            // runner keeps serving its controller (which may retry) rather
+            // than recording `suspended` over it and exiting.
+            ("runner.suspend", CommandLifecycle::Continue),
             ("runner.shutdown", CommandLifecycle::Shutdown),
         ] {
             let directory = std::env::temp_dir().join(format!(
@@ -4363,6 +5745,150 @@ mod tests {
             assert_eq!(replay_lifecycle, expected_lifecycle);
             assert_eq!(executor.calls, 1);
             fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn interrupted_result_delivery_reconciles_exact_receipts_without_reexecuting_operations() {
+        use crate::provider_bridge::{
+            authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet, ProviderToolBridge,
+            ToolResult,
+        };
+        struct ReceiptExecutor {
+            path: PathBuf,
+            deliveries: usize,
+            supported: bool,
+        }
+        impl CommandExecutor for ReceiptExecutor {
+            fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(self.supported)
+            }
+            fn execute(
+                &mut self,
+                command: &Command,
+            ) -> Result<CommandExecution, DurableRunnerError> {
+                assert_eq!(
+                    command.command_type, "semantic_tool.result",
+                    "must never redispatch an operation"
+                );
+                self.deliveries += 1;
+                let mut bridge: ProviderToolBridge =
+                    serde_json::from_slice(&fs::read(&self.path).unwrap()).unwrap();
+                let result: ToolResult = serde_json::from_value(command.payload.clone()).unwrap();
+                bridge
+                    .apply_result(result)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                fs::write(&self.path, serde_json::to_vec(&bridge).unwrap()).unwrap();
+                Ok(CommandExecution::result(json!({"status":"delivered"})))
+            }
+        }
+        for applied in [false, true] {
+            for supported in [false, true] {
+                let directory = std::env::temp_dir().join(format!(
+                    "result-delivery-crash-{}-{applied}-{supported}",
+                    std::process::id()
+                ));
+                let _ = fs::remove_dir_all(&directory);
+                let config = config(directory.clone());
+                let store = DurableStateStore::new(&directory).unwrap();
+                let (mut state, _) = store.load_or_create(&config).unwrap();
+                let operations = vec![AuthorizedTool {
+                    operation_id: "write_document".into(),
+                    version: 1,
+                    description: "Fixture write already committed on the server".into(),
+                    input_schema: json!({"type":"object"}),
+                    response_schema: json!({"type":"object"}),
+                }];
+                let mut bridge = ProviderToolBridge::default();
+                bridge
+                    .prepare(AuthorizedToolSet {
+                        schema: "paperclip.runner.authorized-tools.v1".into(),
+                        schema_version: 1,
+                        catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                        operations,
+                    })
+                    .unwrap();
+                bridge
+                    .begin_call(
+                        "call-1".into(),
+                        "write_document".into(),
+                        json!({"content":"exact original"}),
+                    )
+                    .unwrap();
+                bridge.settle_turn("provider_turn_stopped").unwrap();
+                let path = directory.join("tool-receipts.json");
+                fs::write(&path, serde_json::to_vec(&bridge).unwrap()).unwrap();
+                let mut executor = ReceiptExecutor {
+                    path: path.clone(),
+                    deliveries: 0,
+                    supported,
+                };
+                let mut delivery = command("semantic_tool.result");
+                delivery.payload = json!({"callId":"call-1", "operationId":"write_document", "isError":false,
+                    "result":{"revisionId":"one-committed-write"}});
+                assert_eq!(
+                    state.begin_command(&delivery).unwrap(),
+                    CommandDisposition::Execute
+                );
+                store.save(&state).unwrap();
+                if applied {
+                    executor.execute(&delivery).unwrap();
+                }
+                // Crash before receipt application, or after receipt application
+                // but before the command completion journal commits.
+                let (mut recovered, _) = store.load_or_create(&config).unwrap();
+                let before = executor.deliveries;
+                let (result, _) =
+                    process_command(&mut recovered, &store, &config, &mut executor, &delivery)
+                        .unwrap();
+                assert_eq!(
+                    result.status,
+                    if supported {
+                        "completed"
+                    } else {
+                        "indeterminate"
+                    }
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let saved: ProviderToolBridge =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(
+                    saved.pending_calls().count(),
+                    usize::from(!applied && !supported)
+                );
+                let (mut reopened, _) = store.load_or_create(&config).unwrap();
+                assert_eq!(
+                    process_command(&mut reopened, &store, &config, &mut executor, &delivery)
+                        .unwrap()
+                        .0,
+                    result
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let mut changed = delivery.clone();
+                changed.payload["result"]["revisionId"] = json!("conflicting-write");
+                assert!(
+                    process_command(&mut reopened, &store, &config, &mut executor, &changed)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("different command data")
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let mut ordinary = command("session.open");
+                ordinary.command_id = "ordinary-effect".into();
+                ordinary.controller_seq = 2;
+                reopened.begin_command(&ordinary).unwrap();
+                store.save(&reopened).unwrap();
+                let (mut after_crash, _) = store.load_or_create(&config).unwrap();
+                assert_eq!(
+                    process_command(&mut after_crash, &store, &config, &mut executor, &ordinary)
+                        .unwrap()
+                        .0
+                        .status,
+                    "indeterminate"
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                fs::remove_dir_all(directory).unwrap();
+            }
         }
     }
 
@@ -4451,6 +5977,87 @@ mod tests {
     }
 
     #[test]
+    fn legacy_failed_suspend_fence_still_reconciles_after_upgrade() {
+        let fence = |command_type: &str, lifecycle: &str| PendingTerminalDelivery {
+            command_id: "command_1".to_owned(),
+            controller_seq: 1,
+            command_type: command_type.to_owned(),
+            lifecycle: lifecycle.to_owned(),
+        };
+        // An old runner persisted `suspended` for a failed suspend; the
+        // upgraded replay continues, and must still satisfy that fence.
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Suspend
+        ));
+        assert!(replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Shutdown
+        ));
+        // A completed suspend or a shutdown must still replay its own lifecycle.
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.suspend", "suspended"),
+            "completed",
+            CommandLifecycle::Continue
+        ));
+        assert!(!replay_satisfies_terminal_fence(
+            &fence("runner.shutdown", "stopped"),
+            "failed",
+            CommandLifecycle::Continue
+        ));
+    }
+
+    #[test]
+    fn rejected_suspend_keeps_the_runner_serving_its_controller() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-rejected-suspend-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = FailingExecutor { calls: 0 };
+        let command = command("runner.suspend");
+
+        let (result, lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+        let (replayed, replay_lifecycle) =
+            process_command(&mut state, &store, &config, &mut executor, &command).unwrap();
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(replayed.status, "failed");
+        // The provider still owns its session: no `suspended` lifecycle and no
+        // exit, so a fresh runner.suspend from the controller can be served.
+        assert_eq!(lifecycle, CommandLifecycle::Continue);
+        assert_eq!(replay_lifecycle, CommandLifecycle::Continue);
+        assert_eq!(lifecycle.durable_state(), None);
+        assert_eq!(executor.calls, 1);
+        let mut retry = CountingExecutor { calls: 0 };
+        let (_, retry_lifecycle) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut retry,
+            &Command {
+                command_id: "command-suspend-retry".to_owned(),
+                controller_seq: 2,
+                ..command.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(retry_lifecycle, CommandLifecycle::Suspend);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn completed_suspend_replay_remains_restartable() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-suspend-replay-{}",
@@ -4473,5 +6080,131 @@ mod tests {
         assert_eq!(first_lifecycle.durable_state(), Some("suspended"));
         assert_eq!(executor.calls, 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn released_kimi_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("kimi")
+                .unwrap()
+                .qualification_pending
+        );
+        let directory =
+            std::env::temp_dir().join(format!("kimi-grant-handoff-{}", std::process::id()));
+        let mut current = config(directory);
+        let mut grant = crate::acpx_candidate_admission::test_admission(
+            "run_1",
+            &current.normalized_session_id,
+        );
+        grant.agent = "kimi".to_owned();
+        grant.profile_digest = crate::generated_acpx_profiles::acpx_release_profile("kimi")
+            .unwrap()
+            .command_digest
+            .to_owned();
+        grant.platform = if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        }
+        .to_owned();
+        grant.architecture = if cfg!(target_os = "macos") {
+            "arm64"
+        } else {
+            "x64"
+        }
+        .to_owned();
+        grant.native_closure_digest = format!(
+            "sha256:{}",
+            crate::generated_acpx_profiles::kimi_native_closure(
+                &grant.platform,
+                &grant.architecture
+            )
+            .unwrap()
+        );
+        current.acpx_launch_profile = Some(crate::durable::AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/fixture/node"),
+            args: vec!["/fixture/sidecar.cjs".to_owned()],
+            artifacts: vec![crate::durable::QualifiedLaunchArtifact {
+                path: PathBuf::from("/fixture/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        });
+        current.validate().unwrap();
+        let mut next_grant = grant.clone();
+        next_grant.run_id = "run_2".to_owned();
+        let mut attach = command("run.attach");
+        attach.payload = json!({"paperclipNextAuthority":{
+            "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                "runId":"run_2","normalizedSessionId":current.normalized_session_id,"turnId":"turn_2","itemId":"item_2"},
+            "connection":{"mode":"external"}
+        }});
+        let next = next_authority_config(&attach, &current).unwrap().unwrap();
+        assert!(next
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        assert_eq!(next.acpx_launch_profile, current.acpx_launch_profile);
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.turn_id, "turn_2");
+        assert_eq!(next.item_id, "item_2");
+        let mut injected = attach.clone();
+        injected.payload["paperclipNextAuthority"]["candidateAdmission"] = json!(next_grant);
+        assert!(next_authority_config(&injected, &current).is_err());
+        assert_eq!(next.runner_instance_id, current.runner_instance_id);
+        assert_eq!(next.environment_lease_id, current.environment_lease_id);
+        assert_eq!(next.normalized_session_id, current.normalized_session_id);
+        for (field, value) in [
+            ("companyId", json!("foreign-company")),
+            ("agent", json!("antigravity")),
+            ("model", json!("different-model")),
+            ("profileDigest", json!(format!("sha256:{}", "f".repeat(64)))),
+            (
+                "nativeClosureDigest",
+                json!(format!("sha256:{}", "e".repeat(64))),
+            ),
+            ("expiresAt", json!(grant.expires_at + 1)),
+            ("runId", json!("unbound-run")),
+            ("normalizedSessionId", json!("foreign-session")),
+        ] {
+            let mut changed = injected.clone();
+            changed.payload["paperclipNextAuthority"]["candidateAdmission"][field] = value;
+            assert!(
+                next_authority_config(&changed, &current).is_err(),
+                "{field}"
+            );
+        }
+        for field in [
+            "runnerInstanceId",
+            "environmentLeaseId",
+            "normalizedSessionId",
+        ] {
+            let mut changed = attach.clone();
+            changed.payload["paperclipNextAuthority"]["identity"][field] = json!("foreign");
+            assert!(
+                next_authority_config(&changed, &current).is_err(),
+                "{field}"
+            );
+        }
+        let mut missing = injected.clone();
+        missing.payload["paperclipNextAuthority"]
+            .as_object_mut()
+            .unwrap()
+            .remove("candidateAdmission");
+        assert!(next_authority_config(&missing, &current).unwrap().is_some());
+        let mut stale_candidate = current.clone();
+        stale_candidate
+            .acpx_launch_profile
+            .as_mut()
+            .unwrap()
+            .candidate_admission = Some(grant);
+        assert!(stale_candidate.validate().is_err());
+        assert!(next_authority_config(&injected, &stale_candidate).is_err());
     }
 }

@@ -7,6 +7,77 @@ type ShutdownLogger = {
   error(obj: object, msg: string): void;
 };
 
+export const PRE_DRAIN_SHUTDOWN_BUDGET_MS = 20_000;
+
+export type ShutdownStepResult<T> =
+  | { outcome: "completed"; value: T; durationMs: number }
+  | { outcome: "timed_out"; durationMs: number }
+  | { outcome: "failed"; error: unknown; durationMs: number };
+
+export async function runBoundedShutdownStep<T>(input: {
+  step: string;
+  signal: "SIGINT" | "SIGTERM";
+  timeoutMs: number;
+  run: () => Promise<T>;
+  log: ShutdownLogger;
+  now?: () => number;
+}): Promise<ShutdownStepResult<T>> {
+  const now = input.now ?? Date.now;
+  const startedAt = now();
+  const timeoutMs = Math.max(0, input.timeoutMs);
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const result = await Promise.race([
+      Promise.resolve()
+        .then(input.run)
+        .then(
+          (value) => ({ outcome: "completed" as const, value }),
+          (error: unknown) => ({ outcome: "failed" as const, error }),
+        ),
+      new Promise<{ outcome: "timed_out" }>((resolve) => {
+        timer = setTimeout(() => resolve({ outcome: "timed_out" }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    const durationMs = now() - startedAt;
+    const fields = { signal: input.signal, step: input.step, durationMs, timeoutMs };
+    if (result.outcome === "completed") {
+      input.log.info(fields, "shutdown step completed");
+      return { outcome: "completed", value: result.value, durationMs };
+    }
+    if (result.outcome === "failed") {
+      input.log.error({ ...fields, err: result.error }, "shutdown step failed; continuing shutdown");
+      return { outcome: "failed", error: result.error, durationMs };
+    }
+    input.log.info(fields, "shutdown step timed out; continuing shutdown without it");
+    return { outcome: "timed_out", durationMs };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function createPreDrainShutdownBudget(input: {
+  signal: "SIGINT" | "SIGTERM";
+  budgetMs?: number;
+  log: ShutdownLogger;
+  now?: () => number;
+}) {
+  const now = input.now ?? Date.now;
+  const deadline = now() + (input.budgetMs ?? PRE_DRAIN_SHUTDOWN_BUDGET_MS);
+  return {
+    run<T>(step: string, run: () => Promise<T>) {
+      return runBoundedShutdownStep({
+        step,
+        signal: input.signal,
+        timeoutMs: deadline - now(),
+        run,
+        log: input.log,
+        now,
+      });
+    },
+  };
+}
+
 export async function drainRunExecutionFinalizersForShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   drain: (() => Promise<void>) | null;
@@ -55,22 +126,28 @@ export async function closeHttpListenerForShutdown(input: {
   server: ShutdownHttpListener;
   signal: "SIGINT" | "SIGTERM";
   timeoutMs?: number;
+  drainRequests?: (signal: AbortSignal) => Promise<void>;
   log: ShutdownLogger;
 }): Promise<"closed" | "timed_out" | "not_listening"> {
   if (!input.server.listening) return "not_listening";
   const timeoutMs = input.timeoutMs ?? 5_000;
   let timer: NodeJS.Timeout | null = null;
+  const controller = new AbortController();
   try {
+    const closed = new Promise<"closed">((resolve) => {
+      input.server.close((err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+          input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+        }
+        resolve("closed");
+      });
+      input.server.closeIdleConnections?.();
+    });
     return await Promise.race([
-      new Promise<"closed">((resolve) => {
-        input.server.close((err) => {
-          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
-            input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
-          }
-          resolve("closed");
-        });
+      input.drainRequests ? input.drainRequests(controller.signal).then(() => {
         input.server.closeIdleConnections?.();
-      }),
+        return "closed" as const;
+      }) : closed,
       new Promise<"timed_out">((resolve) => {
         timer = setTimeout(() => {
           input.log.info(
@@ -85,6 +162,7 @@ export async function closeHttpListenerForShutdown(input: {
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    controller.abort();
   }
 }
 
@@ -271,4 +349,19 @@ export async function coordinateHeartbeatSchedulerShutdown<
     preparationError,
     waitedForSchedulerIdle: true,
   };
+}
+
+export async function finishServiceShutdown(
+  stop: () => Promise<void>,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  let retryStop = false;
+  try { await stop(); } catch { retryStop = true; }
+  try { await cleanup(); } catch (error) { failures.push(error); }
+  if (retryStop) {
+    try { await stop(); } catch (error) { failures.unshift(error); }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Service shutdown failed");
 }

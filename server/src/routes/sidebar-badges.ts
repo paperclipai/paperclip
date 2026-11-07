@@ -4,9 +4,10 @@ import { and, eq } from "drizzle-orm";
 import { inboxDismissals, joinRequests } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
-import { dashboardService } from "../services/dashboard.js";
 import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
 import { assertCompanyAccess } from "./authz.js";
+import { issueService } from "../services/issues.js";
+import { approvalReadSqlCondition, issueReadSqlCondition } from "../services/authorization.js";
 
 function buildDismissedAtByKey(
   dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
@@ -28,7 +29,7 @@ export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
   const access = accessService(db);
-  const dashboard = dashboardService(db);
+  const issues = issueService(db);
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -78,18 +79,25 @@ export function sidebarBadgeRoutes(db: Db) {
           .then(buildDismissedAtByKey)
         : new Map<string, number>();
 
+    // Company health alerts belong in All, not the personal inbox badge.
+    // These IDs reconcile optimistic archives in the board UI. An agent's
+    // responsible user does not grant it access to that user's task collection.
+    const currentUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
+    const unreadIssueIds = currentUserId
+      ? await issues.unreadInboxIssueIds(companyId, currentUserId, await issueReadSqlCondition(db, req.actor))
+      : [];
     const badges = await svc.get(companyId, {
+      currentUserId: req.actor.type === "board"
+        ? req.actor.userId ?? null
+        : req.actor.onBehalfOfUserId ?? null,
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
+      unreadTouchedIssues: unreadIssueIds.length,
+      approvalReadCondition: await approvalReadSqlCondition(db, req.actor),
+      actor: req.actor,
     });
-    const summary = await dashboard.summary(companyId);
-    const hasFailedRuns = badges.failedRuns > 0;
-    const alertsCount =
-      (summary.agents.error > 0 && !hasFailedRuns ? 1 : 0) +
-      (summary.costs.monthBudgetCents > 0 && summary.costs.monthUtilizationPercent >= 80 ? 1 : 0);
-    badges.inbox = badges.failedRuns + alertsCount + badges.joinRequests + badges.approvals;
 
-    res.json(badges);
+    res.json({ ...badges, unreadIssueIds });
   });
 
   return router;

@@ -1,8 +1,11 @@
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const mockAssertAgentsReadyForEnvironmentChange = vi.hoisted(() => vi.fn(async () => {}));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
@@ -17,6 +20,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  prepareIdleWarmNativeSessionsForSleep: vi.fn(),
+  readUpgradeReadiness: vi.fn(),
+  resumeQueuedRunsAfterDrain: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -29,8 +35,10 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockReadIdleSleepSafety = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/idle-sleep-safety.js", () => ({ readIdleSleepSafety: mockReadIdleSleepSafety }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
@@ -40,6 +48,10 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+  vi.doMock("../services/plugin-environment-driver.js", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../services/plugin-environment-driver.js")>(),
+    assertAgentsReadyForEnvironmentChange: mockAssertAgentsReadyForEnvironmentChange,
   }));
 }
 
@@ -65,30 +77,43 @@ const mockDb = {
   select: vi.fn(() => ({ from: () => Promise.resolve(mockCompanyRows) })),
 };
 
+function localAdminActor() {
+  return {
+    type: "board",
+    userId: "local-board",
+    source: "local_implicit",
+    isInstanceAdmin: true,
+  };
+}
+
 describe("instance settings routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [{ errorHandler }, { instanceSettingsRoutes }] = await Promise.all([
+    const [{ errorHandler }, { instanceSettingsRoutes }, { cloudControlMiddleware }, controlIdentity] = await Promise.all([
       vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
       vi.importActual<typeof import("../routes/instance-settings.js")>("../routes/instance-settings.js"),
+      vi.importActual<typeof import("../middleware/cloud-control.js")>("../middleware/cloud-control.js"),
+      vi.importActual<typeof import("../services/cloud-runtime-identity.js")>("../services/cloud-runtime-identity.js"),
     ]);
-    return { errorHandler, instanceSettingsRoutes };
+    return { errorHandler, instanceSettingsRoutes, cloudControlMiddleware, controlIdentity };
   });
 
-  function createApp(actor: any) {
-    const { errorHandler, instanceSettingsRoutes } = routeModules.value;
+  function createApp(actor: any, pluginWorkers?: PluginWorkerManager, prepareBackup?: () => Promise<boolean>, verifyControl = false) {
+    const { errorHandler, instanceSettingsRoutes, cloudControlMiddleware } = routeModules.value;
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = actor;
       next();
     });
-    app.use("/api", instanceSettingsRoutes(mockDb as any));
+    if (verifyControl) app.use(cloudControlMiddleware());
+    app.use("/api", instanceSettingsRoutes(mockDb as any, pluginWorkers, prepareBackup));
     app.use(errorHandler);
     return app;
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadIdleSleepSafety.mockReset();
     // vi.clearAllMocks() clears recorded calls only; it does not remove a
     // mockImplementation a prior test installed. Reinstall the default here
     // so a stateful implementation from one test can never leak into the
@@ -106,6 +131,9 @@ describe("instance settings routes", () => {
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
     mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.readUpgradeReadiness.mockReset();
+    mockHeartbeatService.resumeQueuedRunsAfterDrain.mockReset();
+    mockHeartbeatService.resumeQueuedRunsAfterDrain.mockResolvedValue(undefined);
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
@@ -124,7 +152,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: null,
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -149,7 +176,6 @@ describe("instance settings routes", () => {
     });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
@@ -174,7 +200,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: "env-1",
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -201,7 +226,6 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       },
     });
@@ -234,12 +258,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to read and update experimental settings", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     const getRes = await request(app).get("/api/instance/settings/experimental");
     expect(getRes.status).toBe(200);
@@ -273,12 +292,7 @@ describe("instance settings routes", () => {
   }, 10_000);
 
   it("does not expose the retired liveness auto-recovery endpoints", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview")
@@ -303,12 +317,7 @@ describe("instance settings routes", () => {
   });
 
   it("accepts the instance-wide Streamlined UI preference", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -321,12 +330,7 @@ describe("instance settings routes", () => {
   });
 
   it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -343,12 +347,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to read and update the instance default environment", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     const getRes = await request(app).get("/api/instance/settings");
     expect(getRes.status).toBe(200);
@@ -359,89 +358,43 @@ describe("instance settings routes", () => {
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
-      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
-      { db: TX_SENTINEL },
-    );
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
+      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
+    });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
-    // A tenant write of defaultEnvironmentId reclassifies the default as
-    // tenant-chosen: the reconciliation stamp marker on the managed
-    // sandbox row must not survive, or a later managed-sandbox-only
-    // mode-off pass would mistake the tenant's choice for a stamp.
-    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
-      id: "managed-env-1",
-      driver: "sandbox",
-      status: "active",
-      config: {},
-      envVars: {},
-      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
-    });
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+  it("refuses an instance default that gives inheriting agents an unprepared plugin", async () => {
+    const app = await createApp(localAdminActor());
+    const { conflict } = await import("../errors.js");
+    mockAssertAgentsReadyForEnvironmentChange.mockRejectedValueOnce(conflict("need setup first"));
+    const res = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+    expect(res.status).toBe(409);
+    expect(mockAssertAgentsReadyForEnvironmentChange.mock.lastCall?.at(3)).toEqual({ inheritsDefault: true });
+    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
+  });
+
+  it("writes an explicit default as a plain set value, touching no environment row", async () => {
+    // Boot only fills an unset, local or dangling default, so an admin's
+    // choice needs no marker and no sibling write to stay theirs.
+    const app = await createApp(localAdminActor());
 
     const patchRes = await request(app)
       .patch("/api/instance/settings")
       .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
 
     expect(patchRes.status).toBe(200);
-    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
-      "managed-env-1",
-      { metadata: { managedByPaperclip: true } },
-      { db: TX_SENTINEL },
-    );
-    // Both writes commit in ONE transaction — each receives the SAME tx —
-    // so no partial failure can desync the stamp marker from the default
-    // (neither a stale stamp on a tenant choice, nor a reconciliation
-    // default that lost its marker and can never revert).
-    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith(
-      { defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" },
-      { db: TX_SENTINEL },
-    );
-  });
-
-  it("aborts the whole request (no committed settings) when the stamp-marker clear fails inside the transaction", async () => {
-    // The marker clear and the settings write share a transaction, so a
-    // failure in either rolls the whole thing back — a real DB would
-    // discard both; here the settings write is never even reached.
-    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
-      id: "managed-env-1",
-      driver: "sandbox",
-      status: "active",
-      config: {},
-      envVars: {},
-      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    expect(mockInstanceSettingsService.update).toHaveBeenCalledWith({
+      defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
     });
-    mockEnvironmentService.update.mockRejectedValue(new Error("metadata write failed"));
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
-
-    const patchRes = await request(app)
-      .patch("/api/instance/settings")
-      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
-
-    expect(patchRes.status).toBeGreaterThanOrEqual(500);
-    expect(mockInstanceSettingsService.update).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {
     mockEnvironmentService.getById.mockResolvedValue(null);
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     const res = await request(app)
       .patch("/api/instance/settings")
@@ -453,12 +406,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update guarded dev-server auto-restart", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -473,12 +421,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update external object detection", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -491,12 +434,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update built-in agents", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -509,12 +447,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update the goals sidebar link", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -527,12 +460,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update the server info debug view", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -545,12 +473,7 @@ describe("instance settings routes", () => {
   });
 
   it("allows local board users to update environment controls", async () => {
-    const app = await createApp({
-      type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-    });
+    const app = await createApp(localAdminActor());
 
     await request(app)
       .patch("/api/instance/settings/experimental")
@@ -581,19 +504,67 @@ describe("instance settings routes", () => {
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
-  it("allows local board users to read and update general settings", async () => {
-    const app = await createApp({
+  describe("Cloud stack admin experimental settings access", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    const stackAdmin = {
       type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
+      userId: "stack-admin-1",
+      source: "cloud_tenant",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+      canManageExperimentalSettings: true,
+    };
+
+    it("allows a Cloud stack admin to enable fast responses and audits the change", async () => {
+      const app = createApp(stackAdmin);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableFastResponses: true });
+      expect(mockLogActivity).toHaveBeenCalledWith(mockDb, expect.objectContaining({
+        actorId: "stack-admin-1",
+        action: "instance.settings.experimental_updated",
+        details: expect.objectContaining({ changedKeys: ["enableFastResponses"] }),
+      }));
     });
+
+    it.each([
+      ["patch", "/api/instance/settings", { defaultEnvironmentId: null }],
+      ["patch", "/api/instance/settings/general", { censorUsernameInLogs: true }],
+      ["post", "/api/instance/task-drain", {}],
+    ] as const)("keeps %s %s restricted to instance admins", async (method, path, body) => {
+      const app = createApp(stackAdmin);
+      await request(app)[method](path).send(body).expect(403);
+    });
+
+    it.each([
+      { ...stackAdmin, source: "session" },
+      { ...stackAdmin, source: "mcp_oauth" },
+      { ...stackAdmin, type: "agent" },
+      { ...stackAdmin, canManageExperimentalSettings: false },
+    ])("rejects actors without trusted Cloud experimental authority (%j)", async (actor) => {
+      const app = createApp(actor);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("keeps operator-hidden experimental settings locked for stack admins", async () => {
+      vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental.enableFastResponses");
+      const app = createApp(stackAdmin);
+      await request(app).patch("/api/instance/settings/experimental")
+        .send({ enableFastResponses: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+  });
+
+  it("allows local board users to read and update general settings", async () => {
+    const app = await createApp(localAdminActor());
 
     const getRes = await request(app).get("/api/instance/settings/general");
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -601,14 +572,12 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
@@ -628,7 +597,6 @@ describe("instance settings routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
   });
@@ -660,7 +628,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true, keyboardShortcuts: true });
+      .send({ censorUsernameInLogs: true });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
@@ -701,7 +669,6 @@ describe("instance settings routes", () => {
     it("rejects a write that changes executionMode", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -730,7 +697,6 @@ describe("instance settings routes", () => {
     it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -738,12 +704,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+        .send({ executionMode: "kubernetes", censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         executionMode: "kubernetes",
-        keyboardShortcuts: true,
+        censorUsernameInLogs: true,
       });
     });
 
@@ -752,11 +718,11 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
-      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ censorUsernameInLogs: true });
     });
 
     it("keeps executionMode writable on self-hosted instances", async () => {
@@ -809,12 +775,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ censorUsernameInLogs: false, keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: false, feedbackDataSharingPreference: "allowed" });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         censorUsernameInLogs: false,
-        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
       });
     });
 
@@ -822,7 +788,6 @@ describe("instance settings routes", () => {
       process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.backupRetention";
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       });
@@ -930,6 +895,128 @@ describe("instance settings routes", () => {
     });
   });
 
+  describe("Cloud staging experiments", () => {
+    it.each([
+      ["team.staging.paperclip.app", 200],
+      ["team.paperclip.app", 403],
+    ] as const)(
+      "keeps private Notebook operator-only under the real hidden wildcard on %s",
+      async (primaryHost, visibleExperimentStatus) => {
+        vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+        vi.stubEnv("PAPERCLIP_PRIMARY_HOST", primaryHost);
+        vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental.*");
+        mockInstanceSettingsService.getExperimental.mockResolvedValue({
+          enablePaperclipNotebook: false, enableChatConnectors: false,
+        });
+        const app = createApp({
+          type: "board", userId: "stack-admin-1", source: "cloud_tenant",
+          companyIds: ["company-1"], isInstanceAdmin: false, canManageExperimentalSettings: true,
+        });
+        const denied = await request(app).patch("/api/instance/settings/experimental")
+          .send({ enablePaperclipNotebook: true }).expect(403);
+        expect(denied.body.details).toMatchObject({ code: "settings_operator_managed" });
+        expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+
+        await request(app).patch("/api/instance/settings/experimental")
+          .send({ enableChatConnectors: true }).expect(visibleExperimentStatus);
+        if (visibleExperimentStatus === 200) {
+          expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledExactlyOnceWith({ enableChatConnectors: true });
+        } else {
+          expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+        }
+      },
+    );
+
+    it.each(["team.staging.paperclip.app", "team.paperclip.app"])(
+      "reads Cloud-enabled isolation and rejects disabling it through the real service on %s",
+      async (primaryHost) => {
+        const { instanceSettingsService } = await vi.importActual<typeof import("../services/instance-settings.js")>(
+          "../services/instance-settings.js",
+        );
+        const update = vi.fn();
+        const db = {
+          select: () => ({ from: () => ({ where: async () => [{
+            id: "settings-1",
+            experimental: { enableIsolatedWorkspaces: false },
+          }] }) }),
+          update,
+        } as unknown as Parameters<typeof instanceSettingsService>[0];
+        const service = instanceSettingsService(db, { runtimeEnv: {
+          PAPERCLIP_PRIMARY_HOST: primaryHost,
+          PAPERCLIP_MANAGED_CONFIG: JSON.stringify({
+            v: 1, mode: "cloud", catalogVersion: "test",
+            features: { enableIsolatedWorkspaces: true }, plugins: { autoInstall: [] },
+          }),
+        } });
+        mockInstanceSettingsService.getExperimental.mockImplementation(service.getExperimental);
+        mockInstanceSettingsService.updateExperimental.mockImplementation(service.updateExperimental);
+        const app = createApp({
+          type: "board", userId: "stack-admin-1", source: "cloud_tenant",
+          companyIds: ["company-1"], isInstanceAdmin: false, canManageExperimentalSettings: true,
+        });
+        const current = await request(app).get("/api/instance/settings/experimental").expect(200);
+        expect(current.body).toMatchObject({
+          enableIsolatedWorkspaces: true,
+          managedKeys: { enableIsolatedWorkspaces: { managed: true } },
+        });
+        const denied = await request(app).patch("/api/instance/settings/experimental")
+          .send({ enableIsolatedWorkspaces: false }).expect(403);
+        expect(denied.body.details).toMatchObject({ code: "settings_operator_managed" });
+        expect(update).not.toHaveBeenCalled();
+        expect(mockLogActivity).not.toHaveBeenCalled();
+      },
+    );
+
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each(["instance.experimental", "instance.experimental.*"])(
+      "keeps hidden Cloud sandbox policy protected when staging reveals %s",
+      async (hidden) => {
+        vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+        vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.staging.paperclip.app");
+        vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", hidden);
+        mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+        const app = createApp(localAdminActor());
+        await request(app).patch("/api/instance/settings/experimental")
+          .send({ enableManagedSandboxOnly: false }).expect(403);
+        expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+      },
+    );
+
+    it("lets a staging admin change hidden experiments but keeps general settings locked", async () => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+      vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.staging.paperclip.app");
+      vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental,instance.experimental.*,instance.general.censorUsernameInLogs");
+      const app = createApp({
+        type: "board", userId: "admin-1", source: "cloud_tenant",
+        isInstanceAdmin: false, canManageExperimentalSettings: true,
+      });
+      await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true }).expect(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      await request(app).patch("/api/instance/settings/general").send({ censorUsernameInLogs: true }).expect(403);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("keeps production locked even with a staging request hostname", async () => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+      vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.paperclip.app");
+      vi.stubEnv("PAPERCLIP_HIDDEN_SETTINGS", "instance.experimental.*");
+      const app = createApp(localAdminActor());
+      await request(app).patch("/api/instance/settings/experimental")
+        .set("Host", "team.staging.paperclip.app").send({ enableChatConnectors: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("still denies ordinary board members on staging", async () => {
+      vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+      vi.stubEnv("PAPERCLIP_PRIMARY_HOST", "team.staging.paperclip.app");
+      const app = createApp({ type: "board", userId: "member-1", source: "session", isInstanceAdmin: false });
+      await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true }).expect(403);
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+  });
+
   describe("task drain", () => {
     const adminActor = {
       type: "board",
@@ -958,6 +1045,7 @@ describe("instance settings routes", () => {
       // A drain the mock left active must not carry over into an unrelated
       // test, so every test starts from the idle status again.
       mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.readUpgradeReadiness.mockReset();
       mockHeartbeatService.computeTaskDrain.mockReset();
       mockHeartbeatService.applyTaskDrain.mockReset();
       mockHeartbeatService.stopTaskDrain.mockReset();
@@ -971,6 +1059,273 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+      expect(mockHeartbeatService.readUpgradeReadiness).not.toHaveBeenCalled();
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it("restricts the on-demand upgrade report to instance operators and does not start a drain", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.readUpgradeReadiness.mockResolvedValue({ version: 1, ready: true, activeRuns: 1 });
+      await request(createApp(nonAdminActor)).get("/api/instance/task-drain?upgradeReadiness=1").expect(403);
+      expect(mockHeartbeatService.readUpgradeReadiness).not.toHaveBeenCalled();
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?upgradeReadiness=1").expect(200);
+      expect(res.body.upgradeReadiness).toEqual({ version: 1, ready: true, activeRuns: 1 });
+      expect(mockHeartbeatService.computeTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("acquires an owned bounded idle hold and forwards its owner for inspection", async () => {
+      const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({ ownerId, startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) });
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
+      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
+      await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+    });
+
+    it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ ...body, purpose: "idle" }).expect(400);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("rejects replacement and ownerless or stale release of an idle hold", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId: "current-owner" });
+      const app = createApp(adminActor);
+      await request(app).post("/api/instance/task-drain").send({}).expect(409);
+      await request(app).delete("/api/instance/task-drain").expect(409);
+      await request(app).delete("/api/instance/task-drain?ownerId=previous-owner").expect(409);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+      await request(app).delete("/api/instance/task-drain?ownerId=current-owner").expect(200);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledOnce();
+    });
+
+    it("returns the opt-in instance-wide safety report to an instance admin", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const report = { version: 1, backgroundWork: "unknown" };
+      mockReadIdleSleepSafety.mockResolvedValue(report);
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+      expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it.each([
+      [{ closed: 1, busy: 0, failed: 0 }, "none"],
+      [{ closed: 0, busy: 1, failed: 0 }, "present"],
+      [{ closed: 0, busy: 0, failed: 1 }, "present"],
+    ] as const)("binds native retirement to the safety owner's current-admission predicate: %j", async (result, state) => {
+      const canPrepare = () => true;
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.prepareIdleWarmNativeSessionsForSleep.mockResolvedValue(result);
+      mockReadIdleSleepSafety.mockImplementation(async (_db, _status, _now, _owner, _local, _plugins, _backup, _routines, _monitors, options) =>
+        ({ version: 1, backgroundWork: await options.prepareLocalWork({ canPrepare }) }));
+      const response = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+      expect(mockHeartbeatService.prepareIdleWarmNativeSessionsForSleep).toHaveBeenCalledWith({ canRetire: canPrepare });
+      expect(response.body.idleSleepSafety.backgroundWork).toBe(state);
+    });
+
+    it("collects fixed-key diagnostics only through the privileged safety report", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockReadIdleSleepSafety.mockResolvedValue({ version: 1, backgroundWork: "present",
+        diagnostics: { version: 1, complete: true, checks: [{ reason: "agent_api_keys", state: "present" }] } });
+      await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepDiagnostics=1").expect(200);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      const response = await request(createApp(adminActor))
+        .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&ownerId=fixture-owner").expect(200);
+      expect(response.body.idleSleepSafety.diagnostics.checks).toEqual([{ reason: "agent_api_keys", state: "present" }]);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function), collectDiagnostics: true });
+      mockReadIdleSleepSafety.mockClear();
+      for (const actor of [nonAdminActor, { type: "agent", agentId: "agent-1", companyId: "company-1", source: "api_key" }]) {
+        await request(createApp(actor))
+          .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&ownerId=fixture-owner").expect(403);
+      }
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(createApp(adminActor))
+        .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&scheduledWake=2&ownerId=fixture-owner").expect(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it.each(["1", "2"])("reserves scheduling capability %s for verified Cloud control callers", async version => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      for (const source of ["session", "cloud_tenant", "local_implicit"]) {
+        await request(createApp({ ...adminActor, source }))
+          .get(`/api/instance/task-drain?idleSleepSafety=1&scheduledWake=${version}&ownerId=fixture-owner`).expect(403);
+      }
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(createApp({ ...adminActor, source: "cloud_control" }))
+        .get(`/api/instance/task-drain?idleSleepSafety=1&scheduledWake=${version}&ownerId=fixture-owner`).expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, undefined, true, version === "2", { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+    });
+
+    describe("signed incoming capability handoff", () => {
+      const createControlApp = (actor: any) => createApp(actor, undefined, undefined, true);
+      const keyPair = generateKeyPairSync("ed25519");
+      const publicJwk = { ...keyPair.publicKey.export({ format: "jwk" }), kid: "idle-route-test", alg: "EdDSA", use: "sig" };
+      const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
+      const catalog = {
+        incomingWake: { version: 1, ownerId, generation: "a".repeat(64), apiKeyProof: { version: 1, challenge: "c".repeat(64) }, routes: ["tenant-api-http-v2"] },
+        deadlineCatalog: "domain_deadlines_v1",
+      };
+      const path = `/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`;
+      function assertion(claims: Record<string, unknown> = {}) {
+        const identity = routeModules.value.controlIdentity;
+        const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+        const iat = Math.floor(Date.now() / 1000);
+        const header = encode({ alg: "EdDSA", typ: identity.CLOUD_CONTROL_JWS_TYPE, kid: publicJwk.kid });
+        const payload = encode({ v: 1, iss: identity.CLOUD_RUNTIME_IDENTITY_ISSUER, aud: identity.CLOUD_CONTROL_AUDIENCE,
+          sub: "stack-idle-route-test", action: "task-drain:read", requestId: randomUUID(), iat, exp: iat + 60,
+          idleCapabilities: catalog, ...claims });
+        return `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`, "ascii"), keyPair.privateKey).toString("base64url")}`;
+      }
+      beforeEach(() => {
+        vi.stubEnv("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS", JSON.stringify({ keys: [publicJwk] }));
+        vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-idle-route-test");
+        routeModules.value.controlIdentity.resetCloudControlReplayFenceForTests();
+        mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+        mockReadIdleSleepSafety.mockResolvedValue({ version: 3, backgroundWork: "none" });
+      });
+      afterEach(() => vi.unstubAllEnvs());
+
+      it("passes only the immutable signed catalog through real middleware and the production route", async () => {
+        const token = assertion();
+        const response = await request(createControlApp({ type: "none" }))
+          .get(`${path}&incomingWake=${encodeURIComponent(JSON.stringify({ ...catalog.incomingWake, generation: "b".repeat(64) }))}`)
+          .set("x-paperclip-cloud-control", token)
+          .send({ idleCapabilities: { incomingWake: { ...catalog.incomingWake, ownerId: randomUUID() } } }).expect(200);
+        expect(response.body.idleSleepSafety).toEqual({ version: 3, backgroundWork: "none" });
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
+          ownerId, expect.any(Function), undefined, undefined, false, false,
+          { incomingWake: catalog, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+        const options = mockReadIdleSleepSafety.mock.calls[0][9];
+        expect(options.deadlineCapability).toBeUndefined();
+        expect(Object.isFrozen(options.incomingWake)).toBe(true);
+        expect(Object.isFrozen(options.incomingWake.incomingWake)).toBe(true);
+        expect(Object.isFrozen(options.incomingWake.incomingWake.routes)).toBe(true);
+        await request(createControlApp({ type: "none" })).get(path).set("x-paperclip-cloud-control", token).expect(401);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledTimes(1);
+      });
+
+      it("passes the signed deadline catalog only for its explicit named query", async () => {
+        await request(createControlApp({ type: "none" })).get(`${path}&scheduledWake=domain-deadlines-v1`)
+          .set("x-paperclip-cloud-control", assertion()).expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
+          ownerId, expect.any(Function), undefined, undefined, true, true,
+          { incomingWake: catalog, deadlineCapability: catalog, prepareLocalWork: expect.any(Function) });
+        const options = mockReadIdleSleepSafety.mock.calls[0][9];
+        expect(options.incomingWake).toBe(options.deadlineCapability);
+        expect(Object.isFrozen(options.deadlineCapability)).toBe(true);
+      });
+
+      it.each([
+        ["wrong stack", () => ({ sub: "other-stack" })],
+        ["wrong action", () => ({ action: "task-drain:start" })],
+        ["expired", () => ({ iat: Math.floor(Date.now() / 1000) - 600, exp: Math.floor(Date.now() / 1000) - 300 })],
+        ["unsupported catalog", () => ({ idleCapabilities: { incomingWake: { ...catalog.incomingWake, routes: ["unverified-path"] } } })],
+      ])("rejects %s before safety inspection", async (_name, claims) => {
+        await request(createControlApp(adminActor)).get(path).set("x-paperclip-cloud-control", assertion(claims())).expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      });
+
+      it("rejects a tampered catalog signature before safety inspection", async () => {
+        const [header, payload, signature] = assertion().split(".");
+        const changed = JSON.parse(Buffer.from(payload!, "base64url").toString());
+        changed.idleCapabilities.incomingWake.generation = "b".repeat(64);
+        const tampered = `${header}.${Buffer.from(JSON.stringify(changed)).toString("base64url")}.${signature}`;
+        await request(createControlApp(adminActor)).get(path).set("x-paperclip-cloud-control", tampered).expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      });
+
+      it("leaves legacy signed reads without a catalog conservative", async () => {
+        await request(createControlApp({ type: "none" })).get(path)
+          .set("x-paperclip-cloud-control", assertion({ idleCapabilities: undefined })).expect(200);
+        expect(mockReadIdleSleepSafety.mock.calls[0][9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+      });
+
+      it("cannot install capabilities from tenant, actor, query or body values", async () => {
+        for (const source of ["session", "cloud_tenant", "local_implicit", "cloud_control"]) {
+          const actor = { ...adminActor, source, idleCapabilities: catalog, incomingWake: catalog };
+          await request(createControlApp(actor)).get(`${path}&incomingWake=${encodeURIComponent(JSON.stringify(catalog))}`)
+            .send({ idleCapabilities: catalog }).expect(200);
+          expect(mockReadIdleSleepSafety.mock.lastCall?.[9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+        }
+        mockReadIdleSleepSafety.mockClear();
+        await request(createControlApp(nonAdminActor)).get(path).send({ idleCapabilities: catalog }).expect(403);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      });
+    });
+
+    it("uses the live worker manager for inspection and releases only the owned hold", async () => {
+      const inspect = vi.fn(async () => ({ backgroundWork: "none", pluginIds: [] }));
+      const release = vi.fn();
+      const workers = {
+        inspectIdleSleep: inspect,
+        releaseIdleSleep: release,
+      } as unknown as PluginWorkerManager;
+      const ownerId = "fixture-idle-owner";
+      const lease = { ownerId, expiresAt: Date.now() + 60_000 };
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId });
+      mockReadIdleSleepSafety.mockImplementation(async (_db, _status, _now, owner, _local, inspectPlugins) => {
+        expect(owner).toBe(ownerId);
+        return { version: 1, backgroundWork: (await inspectPlugins(lease)).backgroundWork };
+      });
+      const app = createApp(adminActor, workers);
+      await request(app).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(inspect).toHaveBeenCalledWith(lease);
+      expect(inspect.mock.contexts[0]).toBe(workers);
+      await request(app).delete("/api/instance/task-drain?ownerId=stale-owner").expect(409);
+      expect(release).not.toHaveBeenCalled();
+      await request(app).delete(`/api/instance/task-drain?ownerId=${ownerId}`).expect(200);
+      expect(release).toHaveBeenCalledOnce();
+    });
+
+    it("passes the operator backup hook only through the protected safety report", async () => {
+      const backup = vi.fn(async () => true);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const app = createApp(adminActor, undefined, backup);
+      await request(app).get("/api/instance/task-drain").expect(200);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      await request(app).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+        "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+      mockReadIdleSleepSafety.mockClear();
+      await request(createApp(nonAdminActor, undefined, backup)).get("/api/instance/task-drain?idleSleepSafety=1").expect(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+      expect(backup).not.toHaveBeenCalled();
+    });
+
+    it("reserves managed checkpoint creation for verified Cloud control actors", async () => {
+      const backup = vi.fn(async () => true);
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-managed-signal";
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      try {
+        for (const source of ["session", "cloud_tenant", "local_implicit"]) {
+          const tenantAdmin = createApp({ ...adminActor, source }, undefined, backup);
+          await request(tenantAdmin).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner")
+            .set("x-paperclip-cloud-control", "unverified-header").expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        expect(backup).not.toHaveBeenCalled();
+        const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
+        await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+          "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
+      } finally {
+        delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      }
+    });
+
+    it.each([
+      ["company member", nonAdminActor],
+      ["agent", { type: "agent", agentId: "agent-1", companyId: "company-1" }],
+      ["anonymous caller", { type: "none" }],
+    ])("does not expose the instance-wide work report to a %s", async (_name, actor) => {
+      const res = await request(createApp(actor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {
@@ -1121,6 +1476,23 @@ describe("instance settings routes", () => {
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
     });
 
+    it("does not dispatch work when the drain-stop audit transaction rejects", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      mockLogActivity.mockRejectedValue(new Error("activity insert failed"));
+      const res = await request(createApp(adminActor)).delete("/api/instance/task-drain");
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.resumeQueuedRunsAfterDrain).not.toHaveBeenCalled();
+    });
+
+    it("reports the committed drain release even when queued dispatch fails", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      mockHeartbeatService.resumeQueuedRunsAfterDrain.mockRejectedValue(new Error("database unavailable"));
+      const res = await request(createApp(adminActor)).delete("/api/instance/task-drain");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ wasActive: true });
+      expect(mockHeartbeatService.resumeQueuedRunsAfterDrain).toHaveBeenCalledTimes(1);
+    });
+
     it("does not stop the drain when the audit transaction rejects", async () => {
       mockHeartbeatService.getTaskDrainStatus.mockReturnValue({
         draining: true,
@@ -1177,7 +1549,7 @@ describe("instance settings routes", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual(drain);
       expect(mockPublishActivity).toHaveBeenCalledTimes(2);
-      expect(mockPublishActivity.mock.calls.map(([publication]: [{ companyId: string }]) => publication.companyId)).toEqual([
+      expect(mockPublishActivity.mock.calls.map(([publication]) => publication.companyId)).toEqual([
         "company-1",
         "company-2",
       ]);

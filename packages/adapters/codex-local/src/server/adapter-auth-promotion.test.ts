@@ -128,6 +128,11 @@ describe("device-login credential promotion", () => {
       log: noopLog,
     });
     expect(result.outcome).toBe("promoted");
+    expect(result.accountId).toBe(ACCOUNT);
+    expect(result.accountHomeDir).toBe(
+      path.dirname(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
+    );
+    expect(result.accountHomeCreated).toBe(true);
 
     const homeAuth = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
     expect(JSON.parse(homeAuth).tokens.account_id).toBe(ACCOUNT);
@@ -229,40 +234,6 @@ describe("device-login credential promotion", () => {
     expect(otherAccountAuth.tokens.account_id).toBe(OTHER_ACCOUNT);
   });
 
-  it("promotion returns the account id and the account home path", async () => {
-    const home = await makeInstanceRoot();
-    const env = envFor(home);
-    const result = await promoteDeviceLoginCredential({
-      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
-      companyId: COMPANY_A,
-      userInitiated: true,
-      checkReadiness: ready,
-      isSoleActiveOwner: soleOwner,
-      env,
-      log: noopLog,
-    });
-    expect(result.accountId).toBe(ACCOUNT);
-    expect(result.accountHomeDir).toBe(
-      path.dirname(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
-    );
-  });
-
-  it("promotion reports accountHomeCreated true for a first login of an account", async () => {
-    const home = await makeInstanceRoot();
-    const env = envFor(home);
-    const result = await promoteDeviceLoginCredential({
-      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
-      companyId: COMPANY_A,
-      userInitiated: true,
-      checkReadiness: ready,
-      isSoleActiveOwner: soleOwner,
-      env,
-      log: noopLog,
-    });
-    expect(result.outcome).toBe("promoted");
-    expect(result.accountHomeCreated).toBe(true);
-  });
-
   it("promotion reports accountHomeCreated false for a repeat login of the same account", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
@@ -354,23 +325,6 @@ describe("device-login credential promotion", () => {
     // The company default home fallback still names the first account: a
     // second account never clobbers it once some account has claimed it.
     expect(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8")).toBe(before);
-  });
-
-  it("promotion seeds the company default home when it holds no usable credential", async () => {
-    const home = await makeInstanceRoot();
-    const env = envFor(home);
-    const result = await promoteDeviceLoginCredential({
-      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
-      companyId: COMPANY_A,
-      userInitiated: true,
-      checkReadiness: ready,
-      isSoleActiveOwner: soleOwner,
-      env,
-      log: noopLog,
-    });
-    expect(result.outcome).toBe("promoted");
-    const homeAuth = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
-    expect(JSON.parse(homeAuth).tokens.account_id).toBe(ACCOUNT);
   });
 
   it("a strictly-newer same-account login refreshes the company default home", async () => {

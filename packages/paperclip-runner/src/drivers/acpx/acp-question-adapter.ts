@@ -148,6 +148,7 @@ function normalizeField(
       question: {
         ...base,
         answerMode: "text",
+        ...(property.default !== undefined ? { initialText: initialText(property.default, type) } : {}),
         textValidation: {
           inputType: "text",
           ...(minLength !== undefined ? { minLength } : {}),
@@ -168,6 +169,7 @@ function normalizeField(
       question: {
         ...base,
         answerMode: "text",
+        ...(property.default !== undefined ? { initialText: initialText(property.default, type) } : {}),
         textValidation: {
           inputType: type,
           ...(minimum !== undefined ? { minimum } : {}),
@@ -375,4 +377,11 @@ function finiteNonNegativeInteger(value: unknown): number | undefined {
   return Number.isSafeInteger(value) && Number(value) >= 0
     ? Number(value)
     : undefined;
+}
+
+/** Defaults are editable presentation, not acceptance or native response content. */
+function initialText(value: unknown, type: string): string {
+  if (type === "string" && typeof value === "string") return value;
+  if ((type === "number" || type === "integer") && typeof value === "number" && Number.isFinite(value)) return String(value);
+  throw new Error(`ACP ${type} text field default has an incompatible type`);
 }

@@ -1,3 +1,6 @@
+import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
+import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
+import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
 import { companies, type Db } from "@paperclipai/db";
 import {
@@ -6,13 +9,17 @@ import {
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
+import { assertAgentsReadyForEnvironmentChange } from "../services/plugin-environment-driver.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
   isCloudManagedInstance,
 } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -92,6 +99,17 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+function assertCanManageExperimentalSettings(req: Request) {
+  if (
+    req.actor.type === "board"
+    && req.actor.source === "cloud_tenant"
+    && req.actor.canManageExperimentalSettings
+  ) {
+    return;
+  }
+  assertCanManageInstanceSettings(req);
+}
+
 // A task-drain start or stop reads the live drain state, writes an audit
 // transaction, and only then mutates the process-local drain state. The
 // audit write is an async gap: two overlapping requests can commit their
@@ -106,7 +124,7 @@ function assertCanManageInstanceSettings(req: Request) {
 let taskDrainTransitionQueue: Promise<void> = Promise.resolve();
 
 function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
-  const turn = taskDrainTransitionQueue.then(run);
+  const turn = trackIdleWork(taskDrainTransitionQueue.then(run));
   // Normalize to a settled void promise for the next caller in line, so a
   // rejected transition (a failed audit write, for example) cannot wedge
   // every later transition behind it.
@@ -117,11 +135,17 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(
+  db: Db,
+  pluginWorkers?: PluginWorkerManager,
+  prepareIdleDatabaseBackup?: () => Promise<boolean>,
+  deadlineOwners?: IdleDeadlineOwners,
+  prepareIdlePluginLifecycle?: (input: { canRetire: () => boolean }) => Promise<"none" | "present" | "unknown">,
+) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -139,27 +163,15 @@ export function instanceSettingsRoutes(db: Db) {
           "instance",
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
+        const previousId = (await svc.get()).defaultEnvironmentId;
+        const environmentById = async (id: unknown) => typeof id === "string" ? environments.getById(id) : null;
+        await assertAgentsReadyForEnvironmentChange(db, await environmentById(previousId), await environmentById(req.body.defaultEnvironmentId),
+          { inheritsDefault: true });
       }
-      // An explicit tenant write of the instance default reclassifies its
-      // attribution: whatever the default becomes — including a deliberate
-      // re-selection of the managed sandbox row — it is tenant-chosen, so
-      // the reconciliation stamp marker must not survive to let a later
-      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
-      // stamp and revert it. The marker clear and the settings write commit
-      // in ONE transaction, so no partial failure can desync attribution
-      // from the default (neither a stale stamp on a tenant choice, nor a
-      // reconciliation default that lost its marker and can never revert).
-      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
-      const managedSandbox = writesDefault
-        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
-        : null;
-      const updated = await db.transaction(async (tx) => {
-        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
-          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
-          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
-        }
-        return svc.update(req.body, { db: tx });
-      });
+      // An explicit default write is an ordinary set value: boot only fills an
+      // unset, local or dangling default (`fillUnsetInstanceDefault`), and the
+      // lock it takes on this row means it never overwrites a concurrent write.
+      const updated = await svc.update(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
@@ -248,9 +260,6 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    // Experimental settings are readable by any authenticated org member
-    // or instance admin. Updating them remains instance-admin only because
-    // this payload includes instance-wide operational controls.
     assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
   });
@@ -259,7 +268,7 @@ export function instanceSettingsRoutes(db: Db) {
     "/instance/settings/experimental",
     validate(patchInstanceExperimentalSettingsSchema),
     async (req, res) => {
-      assertCanManageInstanceSettings(req);
+      assertCanManageExperimentalSettings(req);
       // Hiding the whole Experimental page floors every toggle; otherwise
       // only individually hidden keys are floored.
       const hidden = getHiddenSettings();
@@ -297,6 +306,49 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.upgradeReadiness === "1") {
+      // This covers all companies and must not expose instance-wide work to a member.
+      assertCanManageInstanceSettings(req);
+      res.json({ ...heartbeat.getTaskDrainStatus(), upgradeReadiness: await heartbeat.readUpgradeReadiness() });
+      return;
+    }
+    if (req.query.idleSleepSafety === "1") {
+      // The report covers every company in this process. Ordinary company
+      // members may read process counters, but not instance-wide work state.
+      assertCanManageInstanceSettings(req);
+      const domainDeadlines = req.query.scheduledWake === "domain-deadlines-v1";
+      const capabilities = verifiedIdleCapabilities(req);
+      if (domainDeadlines && capabilities?.deadlineCatalog !== "domain_deadlines_v1") {
+        throw forbidden("Domain deadline reports require the signed Cloud deadline catalog");
+      }
+      const scheduledIssueMonitors = req.query.scheduledWake === "2" || domainDeadlines;
+      const scheduledRoutines = req.query.scheduledWake === "1" || scheduledIssueMonitors;
+      if (scheduledRoutines && req.actor.source !== "cloud_control") {
+        throw forbidden("Scheduled wake reports require Cloud control authority");
+      }
+      // A checkpoint performs platform-owned backup work. Tenant owners can
+      // have instance-admin elevation, but that must not grant the manual
+      // backup authority which managed instances deliberately withhold.
+      if (prepareIdleDatabaseBackup && isCloudManagedInstance() && req.actor.source !== "cloud_control") {
+        throw forbidden("Backup checkpoints are platform-managed on cloud-managed instances", {
+          code: "database_backups_platform_managed",
+        });
+      }
+      const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
+        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
+        diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic,
+          deadlineCapability: domainDeadlines ? capabilities : undefined }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
+        { deadlineOwners, incomingWake: capabilities, deadlineCapability: domainDeadlines ? capabilities : undefined,
+          prepareLocalWork: async ({ canPrepare }) => {
+            const result = await heartbeat.prepareIdleWarmNativeSessionsForSleep({ canRetire: canPrepare });
+            if (result.busy || result.failed) return "present";
+            return prepareIdlePluginLifecycle ? prepareIdlePluginLifecycle({ canRetire: canPrepare }) : "none";
+          },
+          ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
+      res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
+      return;
+    }
     res.json(heartbeat.getTaskDrainStatus());
   });
 
@@ -315,7 +367,12 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        const computed = heartbeat.computeTaskDrain({ ttlMs });
+        const prior = heartbeat.getTaskDrainStatus();
+        if (prior?.ownerId || (req.body.purpose === "idle" && prior?.draining)) {
+          throw conflict("Another task drain is already active");
+        }
+        const computed = heartbeat.computeTaskDrain({ ttlMs,
+          ...(req.body.purpose === "idle" ? { purpose: "idle" as const } : {}) });
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
         // partial activity history behind — either every company gets the
@@ -339,6 +396,7 @@ export function instanceSettingsRoutes(db: Db) {
                 details: {
                   startedAt: computed.startedAt,
                   expiresAt: computed.expiresAt,
+                  ...(computed.ownerId ? { purpose: "idle", ownerId: computed.ownerId } : {}),
                 },
               }, postCommitActivityPublications),
             ),
@@ -369,6 +427,10 @@ export function instanceSettingsRoutes(db: Db) {
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
       const priorStatus = heartbeat.getTaskDrainStatus();
+      if ((priorStatus.ownerId || req.query.ownerId !== undefined) &&
+          (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) {
+        throw conflict("Task drain ownership changed");
+      }
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
       // separate reads would otherwise make the two values disagree.
@@ -397,6 +459,7 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       heartbeat.stopTaskDrain();
+      pluginWorkers?.releaseIdleSleep?.();
       // See the POST handler above for why a publish failure here is
       // swallowed instead of failing the route: the audit record already
       // committed, so a publish failure here must not undo a drain-stop
@@ -405,6 +468,11 @@ export function instanceSettingsRoutes(db: Db) {
       publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
       return wasActive;
     });
+    if (wasActive) {
+      void heartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+        logger.error({ err }, "failed to resume queued work after task drain; durable work remains queued");
+      });
+    }
     res.json({ wasActive });
   });
 

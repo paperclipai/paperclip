@@ -1,4 +1,10 @@
 import {
+  PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../../contracts/completion-result.js";
+import {
   CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
   CODEX_INVALID_REQUEST,
   CODEX_METHOD_NOT_FOUND,
@@ -109,6 +115,17 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {
+      code: "insufficient_quota", message: "The provider allowance is exhausted." }, status: 429 }), -32603));
+    const driver = makeDriver([transport], { driverIdentity: { kind, displayName: "Fixture", version: "1" } });
+    const error = await driver.openSession({ runId: "startup-cause", normalizedSessionId: "startup-cause", workingDirectory: WORKSPACE }).catch(error => error);
+    if (kind === "codex_app_server") expect(error.providerFailure).toMatchObject({ provider: "openai", phase: "startup",
+      category: "quota_exhausted", message: "The provider allowance is exhausted.", httpStatus: 429 });
+    else expect(error.providerFailure).toBeUndefined();
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);
@@ -122,9 +139,10 @@ describe("Codex app-server Codex driver", () => {
       message: { role: "user", text: "first turn" },
     });
     await expect(
-      session.attachRun?.({ runId: "run-warm-second" }),
+      session.attachRun?.({ runId: "run-warm-second", currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } }),
     ).resolves.toBeUndefined();
     expect(transport.attachments).toHaveLength(1);
+    expect(transport.attachments[0]).toMatchObject({ currentRunGrant: { runtimeContext: null, instructions: "Current registered instructions." } });
     expect((await session.snapshot()).activeTurnId).toBeNull();
 
     await expect(
@@ -408,6 +426,61 @@ describe("Codex app-server Codex driver", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it("ends the detached controller's event stream so its consumer can unwind", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-consumer",
+      normalizedSessionId: "normalized-detach-consumer",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    // Drain what the provider published before the restart.
+    for (;;) {
+      const pending = await Promise.race([
+        iterator.next(),
+        new Promise<"waiting">(resolve => setTimeout(() => resolve("waiting"), 20)),
+      ]);
+      if (pending === "waiting") break;
+      expect(pending.done).toBe(false);
+    }
+    const next = iterator.next();
+
+    await session.detachControllerForRestart?.();
+    // The provider keeps running for the next controller; a late notification
+    // must not reach the detached consumer.
+    transport.push("item/agentMessage/delta", { threadId: "thread-1", turnId: "turn-1", itemId: "m", delta: "late" });
+
+    await expect(Promise.race([
+      next,
+      new Promise<"hung">(resolve => setTimeout(() => resolve("hung"), 200)),
+    ])).resolves.toEqual({ value: undefined, done: true });
+  });
+
+  it("drops events the detached controller had not read yet", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, { detachControllerForRestart: vi.fn(async () => undefined) });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-detach-buffered",
+      normalizedSessionId: "normalized-detach-buffered",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Keep working" } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+    // Let the notification pump buffer these events without a reader.
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    await session.detachControllerForRestart?.();
+
+    // The next controller replays them from the runner journal instead.
+    await expect(session.events()[Symbol.asyncIterator]().next())
+      .resolves.toEqual({ value: undefined, done: true });
+  });
+
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport], { conversationMode: "direct" });
@@ -477,7 +550,7 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
-  it("places Paperclip runtime instructions in Codex's system channel and enables only selected skill instructions", async () => {
+  it("adds Paperclip developer instructions without replacing the Codex base and enables selected skills", async () => {
     const transport = new FakeCodexTransport();
     const baseInstructions = [
       "You are running as a Paperclip agent.",
@@ -499,15 +572,70 @@ describe("Codex app-server Codex driver", () => {
       (call) => call.method === "thread/start",
     );
     expect(threadStart?.params).toMatchObject({
-      baseInstructions,
+      developerInstructions: baseInstructions,
       config: {
         "skills.include_instructions": true,
         include_apps_instructions: false,
       },
     });
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
     expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(
       baseInstructions,
     );
+  });
+
+  it.each(["task", "prepared", "direct"] as const)("preserves stock Codex instructions on %s recovery", async (conversationMode) => {
+    const originalTransport = new FakeCodexTransport();
+    const recoveryTransport = new FakeCodexTransport();
+    const baseInstructions = "Paperclip coordination and assigned instruction paths.";
+    const driver = makeDriver([originalTransport, recoveryTransport], {
+      conversationMode,
+      baseInstructions,
+      includeSkillInstructions: true,
+    });
+    const original = await driver.openSession({
+      runId: "run-additive-recovery",
+      normalizedSessionId: "normalized-additive-recovery",
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    recoveryTransport.readResponse = {
+      thread: { id: snapshot.driverSessionId, sessionId: snapshot.providerSessionId, cwd: WORKSPACE, turns: [] },
+    };
+    await original.close({ reason: "verify additive recovery" });
+
+    const recovered = await driver.recoverSession(snapshot);
+    expect(recovered.recovered).toBe(true);
+    const started = originalTransport.calls.find((call) => call.method === "thread/start")!.params;
+    const resumed = recoveryTransport.calls.find((call) => call.method === "thread/resume")!.params;
+    expect(started).not.toHaveProperty("baseInstructions");
+    expect(resumed).not.toHaveProperty("baseInstructions");
+    expect(started.developerInstructions).toBe(conversationMode === "direct" ? undefined : baseInstructions);
+    expect(resumed.developerInstructions).toBe(conversationMode === "direct" ? "" : baseInstructions);
+    expect(resumed.dynamicTools).toEqual(started.dynamicTools);
+    expect(started.dynamicTools).toEqual(conversationMode === "direct" ? [] : [
+      { name: "paperclip_finish", description: PRP_COMPLETION_TOOL_DESCRIPTION, inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
+      { name: "paperclip_block", description: PRP_BLOCK_TOOL_DESCRIPTION, inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
+    ]);
+    expect(resumed.config).toEqual(started.config);
+    await recovered.session?.close({ reason: "verified additive recovery" });
+  });
+
+  it("retains the instruction field for non-Codex provider facades", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], {
+      baseInstructions: "Provider-specific runtime context.",
+      driverIdentity: { kind: "opencode_server", displayName: "OpenCode", version: "1" },
+    });
+    const session = await driver.openSession({
+      runId: "run-facade-instructions",
+      normalizedSessionId: "normalized-facade-instructions",
+      workingDirectory: WORKSPACE,
+    });
+    const started = transport.calls.find((call) => call.method === "thread/start")!.params;
+    expect(started.baseInstructions).toBe("Provider-specific runtime context.");
+    expect(started).not.toHaveProperty("developerInstructions");
+    await session.close({ reason: "verified facade instructions" });
   });
 
   it("passes the common typed-event contract and reports one provider turn terminal", async () => {
@@ -712,6 +840,7 @@ describe("Codex app-server Codex driver", () => {
         runId: "run-1",
         environmentLeaseId: "lease-1",
         runnerInstanceId: "runner-codex",
+        driverSessionId: "thread-1",
         normalizedSessionId: "normalized-1",
       },
       capabilities,
@@ -746,7 +875,7 @@ it("sends explicit skill input on every requested turn", async () => {
     await collectUntilTerminal(session.events());
     transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
   }
-  await session.close();
+  await session.close({ reason: "fixture complete" });
 });
 
 
@@ -757,7 +886,7 @@ it("reapplies explicit skills after recovery without persisting them into ordina
     runId: "initial", normalizedSessionId: "skill-recovery", workingDirectory: WORKSPACE,
   });
   const snapshot = await original.snapshot();
-  await original.close();
+  await original.close({ reason: "fixture complete" });
   for (const selected of [skillInputs, []]) {
     const transport = new FakeCodexTransport();
     const recovery = await makeDriver([transport], { skillInputs: selected }).recoverSession(snapshot);
@@ -767,6 +896,6 @@ it("reapplies explicit skills after recovery without persisting them into ordina
       await session.startTurn({ message: { role: "user", text: "Continue" } });
       const items = transport.calls.find((call) => call.method === "turn/start")?.params.input as Array<{type:string}>;
       expect(items.filter((item) => item.type === "skill")).toEqual(selected);
-    } finally { await session.close(); }
+    } finally { await session.close({ reason: "fixture complete" }); }
   }
 });
