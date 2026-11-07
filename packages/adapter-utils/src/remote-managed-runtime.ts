@@ -134,6 +134,17 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const remoteRunDir = syncWorkspace ? path.posix.dirname(workspaceRemoteDir) : null;
+  const removeRemoteRunDir = async (): Promise<void> => {
+    if (!remoteRunDir) return;
+    try {
+      await runSshCommand(input.spec, `rm -rf -- ${shellQuote(remoteRunDir)}`);
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove remote run directory ${remoteRunDir}. ${String(error)}`,
+      );
+    }
+  };
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -183,16 +194,20 @@ export async function prepareRemoteManagedRuntime(input: {
       });
     }
   } catch (error) {
-    if (preparedWorkspace && baselineSnapshot) {
-      await restoreWorkspaceFromSshExecution({
-        spec: input.spec,
-        localDir: input.workspaceLocalDir,
-        remoteDir: workspaceRemoteDir,
-        baselineSnapshot,
-        restoreGitHistory: preparedWorkspace.gitBacked,
-        onProgress: input.onProgress,
-        repositories: repositoryBaselines,
-      });
+    try {
+      if (preparedWorkspace && baselineSnapshot) {
+        await restoreWorkspaceFromSshExecution({
+          spec: input.spec,
+          localDir: input.workspaceLocalDir,
+          remoteDir: workspaceRemoteDir,
+          baselineSnapshot,
+          restoreGitHistory: preparedWorkspace.gitBacked,
+          onProgress: input.onProgress,
+          repositories: repositoryBaselines,
+        });
+      }
+    } finally {
+      await removeRemoteRunDir();
     }
     throw error;
   }
@@ -251,23 +266,27 @@ export async function prepareRemoteManagedRuntime(input: {
     assetDirs,
     additionalSourceDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
-      if (preparedWorkspace && baselineSnapshot) {
-        await restoreWorkspaceFromSshExecution({
-          spec: input.spec,
-          localDir: input.workspaceLocalDir,
-          remoteDir: workspaceRemoteDir,
-          baselineSnapshot,
-          restoreGitHistory: preparedWorkspace.gitBacked,
-          onProgress,
-          repositories: repositoryBaselines,
-        });
-      }
-      for (const asset of input.assets ?? []) {
-        if (!asset.restore) continue;
-        await asset.restore({
-          assetDir: path.posix.join(runtimeRootDir, asset.key),
-          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
-        });
+      try {
+        if (preparedWorkspace && baselineSnapshot) {
+          await restoreWorkspaceFromSshExecution({
+            spec: input.spec,
+            localDir: input.workspaceLocalDir,
+            remoteDir: workspaceRemoteDir,
+            baselineSnapshot,
+            restoreGitHistory: preparedWorkspace.gitBacked,
+            onProgress,
+            repositories: repositoryBaselines,
+          });
+        }
+        for (const asset of input.assets ?? []) {
+          if (!asset.restore) continue;
+          await asset.restore({
+            assetDir: path.posix.join(runtimeRootDir, asset.key),
+            readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+          });
+        }
+      } finally {
+        await removeRemoteRunDir();
       }
     },
   };
