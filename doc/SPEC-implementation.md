@@ -1613,7 +1613,7 @@ The current app also exposes V1-supporting surfaces for:
   automatic cleanup proves the finalized HEAD reached its captured destination through GitHub ancestry
   or an exact-head merged PR, including squash merges. Recorded PR work products are optional hints.
   Fresh storage, recoverability, and lifecycle checks remain mandatory. Terminal issue trees with a
-  merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
+  merged delivery and no queued or running heartbeat bound to the workspace or any linked issue become cleanup-eligible with reason `issue_terminal` and are archived
   through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
   Before that, terminal isolated worktrees are compacted: ignored, untracked dependency, build, and cache directories
   are removed while the workspace, its branch, and all source changes stay, and reuse regenerates them.

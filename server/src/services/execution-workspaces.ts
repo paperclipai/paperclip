@@ -127,6 +127,36 @@ type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
+function activeWorkspaceRunCondition(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">): SQL<boolean> {
+  return sql<boolean>`
+    ${heartbeatRuns.companyId} = ${workspace.companyId}
+    AND ${heartbeatRuns.status} IN ('queued', 'running')
+    AND (
+      ${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId' = ${workspace.id}
+      OR EXISTS (
+        SELECT 1 FROM ${environmentLeases} workspace_lease
+        WHERE workspace_lease.company_id = ${workspace.companyId}
+          AND workspace_lease.execution_workspace_id = ${workspace.id}
+          AND workspace_lease.heartbeat_run_id = ${heartbeatRuns.id}
+          AND workspace_lease.status = 'active'
+      )
+      OR EXISTS (
+        SELECT 1 FROM ${issues} linked_issue
+        WHERE linked_issue.company_id = ${workspace.companyId}
+          AND (linked_issue.execution_workspace_id = ${workspace.id}
+            OR linked_issue.id = ${workspace.sourceIssueId})
+          AND (
+            linked_issue.checkout_run_id = ${heartbeatRuns.id}
+            OR linked_issue.execution_run_id = ${heartbeatRuns.id}
+            OR linked_issue.id = ${heartbeatRuns.issueId}
+            OR linked_issue.id = ${heartbeatRuns.nativeIssueId}
+            OR linked_issue.id::text = ${heartbeatRuns.contextSnapshot} ->> 'issueId'
+            OR linked_issue.id::text = ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+          )
+      )
+    )`;
+}
+
 // Return the timestamp when an issue became terminal. A `done` issue uses
 // `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown
 // measures the age of the terminal transition from this timestamp. Fall back to
@@ -2149,32 +2179,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
-    const linkedIssues = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(and(
-        eq(issues.companyId, workspace.companyId),
-        or(
-          eq(issues.executionWorkspaceId, workspace.id),
-          ...(workspace.sourceIssueId ? [eq(issues.id, workspace.sourceIssueId)] : []),
-        ),
-      ));
-    const runIds = [...new Set(linkedIssues.flatMap((issue) => [
-      issue.checkoutRunId,
-      issue.executionRunId,
-    ]).filter((runId): runId is string => Boolean(runId)))];
-    if (runIds.length === 0) return false;
     const active = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, workspace.companyId),
-        inArray(heartbeatRuns.id, runIds),
-        inArray(heartbeatRuns.status, ["queued", "running"]),
-      ))
+      .where(activeWorkspaceRunCondition(workspace))
       .limit(1);
     return active.length > 0;
   }
@@ -3071,11 +3079,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .from(issues)
           .where(and(
             eq(issues.companyId, input.companyId),
-            isNull(issues.hiddenAt),
             linkedIssueConditions.length === 1 ? linkedIssueConditions[0]! : or(...linkedIssueConditions),
           ))
-          .orderBy(desc(issues.updatedAt))
-          .limit(20);
+          .orderBy(desc(issues.updatedAt));
 
         const runToIssue = new Map<string, { id: string; identifier: string | null }>();
         for (const issue of linkedIssueRows) {
@@ -3084,30 +3090,29 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
 
         let activeRun: NonNullable<ExecutionWorkspaceGitWorktreeContention>["activeRun"] = null;
-        const runIds = [...runToIssue.keys()];
-        if (runIds.length > 0) {
-          const [row] = await db
-            .select({
-              id: heartbeatRuns.id,
-              status: heartbeatRuns.status,
-            })
-            .from(heartbeatRuns)
-            .where(and(
-              eq(heartbeatRuns.companyId, input.companyId),
-              inArray(heartbeatRuns.id, runIds),
-              inArray(heartbeatRuns.status, ["queued", "running"]),
-            ))
-            .orderBy(desc(heartbeatRuns.startedAt), desc(heartbeatRuns.createdAt))
-            .limit(1);
-          if (row && (row.status === "queued" || row.status === "running")) {
-            const issue = runToIssue.get(row.id) ?? null;
-            activeRun = {
-              id: row.id,
-              status: row.status,
-              issueId: issue?.id ?? null,
-              issueIdentifier: issue?.identifier ?? null,
-            };
-          }
+        const [row] = await db
+          .select({
+            id: heartbeatRuns.id,
+            status: heartbeatRuns.status,
+            issueId: heartbeatRuns.issueId,
+            nativeIssueId: heartbeatRuns.nativeIssueId,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .where(activeWorkspaceRunCondition({ ...candidate, companyId: input.companyId }))
+          .orderBy(desc(heartbeatRuns.startedAt), desc(heartbeatRuns.createdAt))
+          .limit(1);
+        if (row && (row.status === "queued" || row.status === "running")) {
+          const issue = runToIssue.get(row.id) ?? linkedIssueRows.find(issue =>
+            issue.id === row.issueId || issue.id === row.nativeIssueId
+            || issue.id === row.contextSnapshot?.issueId || issue.id === row.contextSnapshot?.taskId,
+          );
+          activeRun = {
+            id: row.id,
+            status: row.status,
+            issueId: issue?.id ?? null,
+            issueIdentifier: issue?.identifier ?? null,
+          };
         }
 
         const claimedIssue =
@@ -3236,6 +3241,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      if (await workspaceHasActiveRun(workspace)) {
+        blockingReasons.push("This workspace is still used by a queued or running heartbeat.");
+      }
       const remoteWorkspace = readRemoteWorkspaceAuthority(workspace.metadata);
       if (!statusInspectionSucceeded) {
         blockingReasons.push(remoteWorkspace ? gitWarnings[0] ?? "The remote workspace save is incomplete."
@@ -4088,18 +4096,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND source_issue.status IN ('done', 'cancelled')
               )`,
               sql<boolean>`NOT EXISTS (
-                SELECT 1
-                FROM ${issues} linked_issue
-                JOIN ${heartbeatRuns} live_run
-                  ON live_run.id = linked_issue.checkout_run_id
-                  OR live_run.id = linked_issue.execution_run_id
-                WHERE linked_issue.company_id = ${workspace.companyId}
-                  AND (
-                    linked_issue.execution_workspace_id = ${workspace.id}
-                    OR linked_issue.id = ${workspace.sourceIssueId}
-                  )
-                  AND live_run.company_id = ${workspace.companyId}
-                  AND live_run.status IN ('queued', 'running')
+                SELECT 1 FROM ${heartbeatRuns}
+                WHERE ${activeWorkspaceRunCondition(workspace)}
               )`,
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (

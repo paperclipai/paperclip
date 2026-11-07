@@ -3058,6 +3058,13 @@ dispatch gates, and terminal cleanup.
 Workspace preparation is in `server/src/services/heartbeat/workspace-preparation.ts`.
 `prepareHeartbeatWorkspace` resolves and provisions the workspace, persists its
 metadata and issue binding, then acquires and realizes the execution environment.
+The run context records the durable workspace before acquisition and again after
+realization replaces it. The execution-workspace service uses that context,
+active environment leases and linked issue/run bindings as one company-scoped
+active-run predicate for close readiness, contention and terminal reaping. The
+archive statement repeats the predicate under the lifecycle lock. A terminal
+issue with released checkout pointers therefore keeps its worktree until every
+bound queued or running heartbeat settles.
 It preserves the immutable workspace binding used by native recovery and records
 preparation spans even when acquisition or realization fails. The executor retains
 dispatch gates and terminal lease cleanup. Persistence
