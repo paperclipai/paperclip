@@ -104,6 +104,9 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    // Legacy: no writer since process loss moved onto the durable failure
+    // retry budget (contextSnapshot.executionRetryAccounting). Kept so rows and
+    // readers from earlier releases stay valid; never gate retries on it.
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),
