@@ -25,7 +25,7 @@ import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPap
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
-import { reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
+import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -1396,6 +1396,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findEnvironmentProviderUnavailableError(outerErr) : null;
     const repositoryCatalogUnavailable = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null ? findRepositoryCatalogUnavailableError(outerErr) : null;
+    const reviewedChatBindingNotReady = !providerDispatchStarted && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && outerErr instanceof ReviewedChatBindingNotReadyError
+      ? outerErr : null;
     const runnerRevisionMismatch = !providerDispatchStarted && run.runtimeMode === "legacy"
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
@@ -1406,6 +1409,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       pluginWorkerUnavailableFailure?.code ??
       environmentProviderUnavailable?.code ??
       repositoryCatalogUnavailable?.code ??
+      reviewedChatBindingNotReady?.code ??
       (runnerRevisionMismatch ? RUNNER_REVISION_MISMATCH_CODE : null) ??
       workspaceGitScanFailure?.code ??
       workspaceValidationSetupFailure?.code ??
@@ -1580,7 +1584,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           // carries the interaction and escalates on exhaustion.
           const interactionOwnsRetry = (livenessRun.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE
             || livenessRun.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
-            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
+            || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
+            || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
           await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE

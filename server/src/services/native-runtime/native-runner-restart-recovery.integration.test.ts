@@ -7,9 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, QUALIFIED_ACPX_PROFILES } from "@paperclipai/paperclip-runner";
 import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "@paperclipai/paperclip-runner/live";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -152,7 +152,24 @@ child.on("exit", code => process.exit(code ?? 1));
 process.on("SIGTERM", () => child.kill("SIGTERM"));
 `;
     await writeFile(shim, script);
-    const nodeDigest = digest(await readFile(process.execPath));
+    // Runnerd refuses a group- or world-writable qualified ACPX launch. A
+    // hosted CI image can ship such a Node, or run under umask 0002.
+    await chmod(shim, 0o600);
+    let sidecarNode = process.execPath;
+    if ((await stat(sidecarNode)).mode & 0o022) {
+      // Same approach as the runner's copyOwnedNodeRuntime test helper.
+      const owned = join(root, "sidecar-node");
+      await mkdir(owned);
+      sidecarNode = join(owned, "runtime");
+      await copyFile(process.execPath, sidecarNode);
+      await chmod(sidecarNode, 0o700);
+      // Homebrew Node resolves its libnode dylib next to the relocated executable.
+      const libraries = join(dirname(process.execPath), "..", "lib");
+      for (const name of (await readdir(libraries).catch(() => [] as string[])).filter(name => /^libnode\..*\.dylib$/.test(name))) {
+        await copyFile(join(libraries, name), join(owned, name));
+      }
+    }
+    const nodeDigest = digest(await readFile(sidecarNode));
     const identity = { runId: "fresh-resume-run", normalizedSessionId: "checkpointed-session", runnerInstanceId: "fresh-runner",
       environmentLeaseId: "same-lease", turnId: "same-turn", itemId: "same-item" };
     const stateDirectory = join(root, ".paperclip-runtime", "paperclip-runner", "sessions",
@@ -172,11 +189,11 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         },
         prepareLaunch: async input => ({ configurationId: "qualified-fixture", requirementsDigest: runnerLaunchRequirementsDigest(input),
           provider: createRunnerProviderLaunch(input, { options: {}, root: directory, cwd: root, codexHome: root,
-            codexCommand: "", providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
+            codexCommand: "", providerNodeCommand: sidecarNode, opencodeProxyPath: "", acpxSidecarPath: shim }) }),
         runnerProcessLauncher: spec => {
           launches(adoptExistingRunner);
           const child = spawn(binary, [...spec.args, "--acpx-launch-authority-digest", digest("fixture authority"),
-            "--acpx-sidecar-command", process.execPath, "--acpx-sidecar-command-sha256", nodeDigest,
+            "--acpx-sidecar-command", sidecarNode, "--acpx-sidecar-command-sha256", nodeDigest,
             "--acpx-sidecar-script", shim, "--acpx-sidecar-script-sha256", digest(script)],
           { env: { PATH: process.env.PATH, ...spec.environment }, stdio: ["ignore", "ignore", "pipe"], detached: true });
           children.push(child);
