@@ -61,6 +61,7 @@ const failedLoads = new Set<string>();
 const loadPromises = new Map<string, Promise<DynamicParserModule | null>>();
 
 let resultNotifier: (() => void) | null = null;
+let resultNotificationFrame: number | null = null;
 
 export function setDynamicParserResultNotifier(fn: (() => void) | null): void {
   resultNotifier = fn;
@@ -81,7 +82,11 @@ function lineCacheKey(line: string, ts: string): string {
 }
 
 function notifyResultReady(): void {
-  resultNotifier?.();
+  if (resultNotificationFrame !== null) return;
+  resultNotificationFrame = requestAnimationFrame(() => {
+    resultNotificationFrame = null;
+    resultNotifier?.();
+  });
 }
 
 /**
