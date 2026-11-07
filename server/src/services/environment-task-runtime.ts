@@ -80,6 +80,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   } : null;
   const launches = operation.kind === "submit" || operation.kind === "prepare";
   const scopesProjects = launches || operation.kind === "check_project_auth" || operation.kind === "read_file";
+  const retainedTask = operation.kind === "release" || operation.kind === "resume";
   const resumeFrom = launches || checkpointIdentity ? (operation as { resumeFrom?: string }).resumeFrom : undefined;
   const savedIdentity = metadata.runnerTaskIdentity as Record<string, unknown> | undefined;
   const prior = operation.kind === "prepare" ? operation.priorIdentity : undefined;
@@ -192,7 +193,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     freshWorkspace = await stageProviderFreshWorkspace({ db, companyId: input.companyId,
       issueId: lease.issueId, ...freshWorkspace, existing: freshWorkspace });
   }
-  const projectIds = scopesProjects ? operation.projectIds : [];
+  const savedProjectIds = metadata.runnerTaskProjectIds ?? [];
+  if (retainedTask && (!Array.isArray(savedProjectIds) || savedProjectIds.some(id => typeof id !== "string")))
+    throw new Error("Plugin Runner project scope changed");
+  const projectIds: string[] = scopesProjects ? operation.projectIds : retainedTask ? [...savedProjectIds as string[]] : [];
   if (scopesProjects && Array.isArray(metadata.runnerTaskProjectIds) &&
       JSON.stringify(projectIds) !== JSON.stringify(metadata.runnerTaskProjectIds)) throw new Error("Plugin Runner project scope changed");
   if (activeProbe && projectIds.length > 0) throw new Error("Plugin Runner probe cannot use project mounts");
@@ -380,7 +384,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       taskId, runId: run?.id ?? (activeProbe ? String(probe.runId) : null), agentId: run?.agentId ?? null, projectIds,
       lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
       ...(workspaceBinding ? { workspace: workspaceBinding } : {}),
-      ...(freshWorkspace && scopesProjects ? { fresh: freshWorkspace } : {}), operation,
+      ...(freshWorkspace && (scopesProjects || retainedTask) ? { fresh: freshWorkspace } : {}), operation,
       executionContextSupported: 1 as const,
       ...(executionContext ? { executionContext } : {}),
     };
