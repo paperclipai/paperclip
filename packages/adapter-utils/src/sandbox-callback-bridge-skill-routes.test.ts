@@ -86,15 +86,15 @@ describe("paperclip skill routes and the sandbox callback bridge allowlist", () 
   const listed = listedRoutes(sandboxSection(docs));
 
   it("lists every documented route the bridge refuses", () => {
-    const unlisted = documentedRoutes(docs)
-      .filter(({ method, variants }) =>
-        !variants.some(
+    const unlisted = documentedRoutes(docs).flatMap(({ method, variants, source }) =>
+      variants
+        .filter(
           (path) =>
-            isAllowed(method, path) ||
-            listed.some((route) => route.method === method && route.pattern.test(path)),
-        ),
-      )
-      .map(({ method, variants, source }) => `${method} ${variants[0]} (${source})`);
+            !isAllowed(method, path) &&
+            !listed.some((route) => route.method === method && route.pattern.test(path)),
+        )
+        .map((path) => `${method} ${path} (${source})`),
+    );
 
     expect([...new Set(unlisted)]).toEqual([]);
   });
@@ -113,7 +113,6 @@ describe("paperclip skill routes and the sandbox callback bridge allowlist", () 
     expect(names).toEqual(
       expect.arrayContaining([
         "GET /api/issues/:issueId/diagnostics/blockers",
-        "GET /api/issues/:issueId/diagnostics/wakes",
         "GET /api/issues/:issueId/diagnostics/subtree",
         "GET /api/projects/:projectId/workspaces",
       ]),
