@@ -17,8 +17,9 @@ import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
 
-type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date };
+type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -79,7 +80,7 @@ async function* retainedSources(db: Db, signal?: AbortSignal) {
   for (;;) {
     signal?.throwIfAborted();
     const rows = await db.execute<Selected>(sql`select s.id, s.company_id as "companyId", s.agent_id as "agentId",
-      r.native_issue_id as "issueId", r.native_session_id as "sessionId", r.created_at as "createdAt"
+      r.native_issue_id as "issueId", r.native_session_id as "sessionId", r.created_at as "createdAt", r.id as "lastRunId"
       from agent_task_sessions s join heartbeat_runs r on r.id = s.last_run_id
         and r.company_id = s.company_id and r.agent_id = s.agent_id
       where s.adapter_type = 'paperclip_runner' and r.native_issue_id is not null and r.native_session_id is not null
@@ -110,6 +111,9 @@ async function readPrivateSource(file: string, maxBytes: number): Promise<string
 
 async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
   const execution = parseNativeExecutionInput(source.runnerProfileJson.nativeExecutionInput);
+  if (execution.binding.companyId !== source.companyId || execution.binding.agentId !== source.agentId
+    || execution.binding.issueId !== source.nativeIssueId || execution.binding.runId !== source.id
+    || execution.session.normalizedSessionId !== source.nativeSessionId) throw new Error("native_controller_migration_artifact_binding");
   const descriptor = nativeControllerMigrationDescriptor(execution, source.runnerProfileJson.nativeToolContractFingerprint);
   const root = await lstat(descriptor.root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined; throw error;
@@ -121,6 +125,14 @@ async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNati
   });
   if (directory && (!directory.isDirectory() || directory.isSymbolicLink())) throw new Error("native_controller_migration_unsafe_source");
   return { ...descriptor, execution, controlFile: join(control, "control-plane-state.json") };
+}
+
+export async function readLegacyNativeControllerArchiveSource(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
+  const paths = await localPaths(source);
+  const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
+  const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
+    ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
+  return { paths, controller, supervisor };
 }
 
 function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
@@ -264,6 +276,7 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
     native_controller_migration_unsafe_source: "unsafe_source",
     native_controller_migration_artifact_binding: "artifact_binding",
     native_controller_migration_artifact_unavailable: "artifact_unavailable",
+    native_controller_archive_source_unsettled: "archive_source_unsettled",
   };
   if (reasons[error.message]) return reasons[error.message];
   if (error.message.startsWith("runner_remote_provider_artifact_incompatible:")) return "artifact_incompatible";
@@ -272,13 +285,13 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
   return null;
 }
 
-export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal }) {
-  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
+export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService }) {
+  const counts = { inspected: 0, imported: 0, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
   const defer = (reason: string) => { counts.deferred[reason] = (counts.deferred[reason] ?? 0) + 1; };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
     counts.inspected++;
     input.signal.throwIfAborted();
-    const outcome = await db.transaction(async tx => {
+    let outcome = await db.transaction(async tx => {
       await tx.execute(sql`set local lock_timeout = '1s'`);
       const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, selected.companyId),
         eq(issues.id, selected.issueId))).for("update");
@@ -290,7 +303,7 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, source.id),
         eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.agentId, selected.agentId),
         eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.nativeSessionId, selected.sessionId))).for("update");
-      if (current?.status !== "succeeded" || !current.finishedAt) return "source_not_successful";
+      if (!current || !["succeeded", "failed"].includes(current.status) || !current.finishedAt) return "source_not_successful";
       const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, selected.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
         or(eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.issueId, selected.issueId),
@@ -331,7 +344,18 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
       throw error;
     });
-    if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
+    if (source.status === "failed" && ["owner_not_released", "artifact_unproven", "checkpoint_binding", "source_unproven", "artifact_binding"].includes(outcome)) {
+      const storage = input.storage ?? durableNativeHarnessStorage();
+      if (storage) outcome = await archiveSettledFailedNativeController(db, { selected, source, storage, signal: input.signal }).catch(error => {
+        input.signal.throwIfAborted();
+        const reason = onlineControllerSourceDeferral(error);
+        if (reason) return reason;
+        if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
+        throw error;
+      });
+    }
+    if (outcome === "archived_failed") counts.archivedFailed++;
+    else if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
     else if (outcome === "source_already_absent") counts.sourceAlreadyAbsent++;
     else defer(outcome);
   }
