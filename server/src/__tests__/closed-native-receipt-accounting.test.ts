@@ -471,6 +471,35 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  // Wave s7403 (run 3c1d7b70): the final bootstrap died in session.open. No
+  // usage receipt was ever journaled and the model was never known, yet the
+  // run held company work like a lost receipt.
+  async function neverStartedFixture(processState: "never_launched" | "verified_stop" | "unverified") {
+    const f = await fixture({ processPid: processState === "unverified" ? 15099 : null,
+      stopEvidence: processState === "verified_stop" });
+    await db.update(heartbeatRuns).set({ errorCode: "native_session_interrupted",
+      usageJson: sql`(${heartbeatRuns.usageJson} - 'accountingReceiptOwner' - 'budgetExposure') || '{"accountingReceiptSequence":0,"model":null,"costStatus":null,"provider":null,"biller":null}'::jsonb` })
+      .where(eq(heartbeatRuns.id, f.run.id));
+    if (processState === "never_launched") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    return f;
+  }
+
+  it.each(["never_launched", "verified_stop"] as const)("settles a run whose provider never started at once (%s)", async processState => {
+    const f = await neverStartedFixture(processState);
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    await flushBudgetEvaluationWork(db);
+    expect((await f.readRun()).costAccountingPending).toBe(false);
+    expect(await f.charges()).toHaveLength(0);
+    expect((await f.reservation()).state).toBe("released");
+    expect(await f.block()).toBeNull();
+  });
+
+  it("keeps waiting for the bound when the provider process was never verified stopped", async () => {
+    const f = await neverStartedFixture("unverified");
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 0 });
+    expect((await f.readRun()).costAccountingPending).toBe(true);
+  });
+
   it("keeps the blocking policy for a timed-out closure, since the run may still spend", async () => {
     const f = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(budgetPolicies).set({ unpricedUsagePolicy: "block" }).where(eq(budgetPolicies.id, f.policy.id));
