@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { processExists } from "./controller-process-identity.js";
+import { currentProcessStartedAtMs, processExists, resetCurrentProcessStartedAtForTests } from "./controller-process-identity.js";
 import * as hotRestart from "./hot-restart.js";
 import {
   currentLocalOwnerStamp,
@@ -151,6 +151,13 @@ describe("proveOwnerGone: local owners", () => {
     expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: STARTED }),
       probe({ groups: [5000], alive: [5000] })))
       .toEqual({ verdict: "unprovable", reason: "process_group_ambiguous" });
+  });
+
+  it("stamps the start time resolved by any earlier identity read", async () => {
+    resetCurrentProcessStartedAtForTests();
+    vi.spyOn(hotRestart, "readProcessStartedAt").mockResolvedValue("2026-11-07T09:00:00.000Z");
+    await currentProcessStartedAtMs();
+    expect(currentLocalOwnerStamp("test").processStartedAt).toBe("2026-11-07T09:00:00.000Z");
   });
 
   it("stamps this process without I/O and proves it alive", async () => {
