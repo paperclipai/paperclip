@@ -624,6 +624,19 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     "services/project-git-authorization.ts",
     "services/public-mcp/capabilities.ts",
     "services/public-mcp/file-transfers.ts",
+    // Arrived in master after this branch opened, in #19427. Both the
+    // projection and the read apply `membershipRole !== "viewer"` to the
+    // agent-purpose branch, so a client's dot-runner MCP credential survives
+    // an idle-tenant sleep where a viewer's does not. This is a downstream
+    // consumer rather than a new kind of exposure: the credential it keeps
+    // alive is minted by `services/public-mcp/oauth.ts`, whose own
+    // `=== "viewer"` gates on creating an agent-purpose grant are already
+    // pinned below as deferred -- so whether a client can hold one at all is
+    // decided there, not here. No company-scope helper runs before it and
+    // none should: the caller chain is idle-sleep-proof.ts <-
+    // services/idle-incoming-wake.ts, reached from the Cloud control plane,
+    // whose `cloud_control` actor source carries no memberships.
+    "services/public-mcp/idle-wake-proof.ts",
     "services/public-mcp/oauth.ts",
     "services/satisfied-connection-intents.ts",
     "services/slack-board-authority.ts",
