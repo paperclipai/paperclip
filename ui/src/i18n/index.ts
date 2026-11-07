@@ -1,10 +1,10 @@
-import { createInstance, type InitOptions, type TOptions } from "i18next";
-import { initReactI18next, useTranslation as useReactI18nextTranslation } from "react-i18next";
+import { createInstance, type i18n as I18n, type InitOptions, type TOptions } from "i18next";
+import { initReactI18next } from "react-i18next";
 
 import { DEFAULT_LOCALE, i18nextResources } from "./locales";
 import { isSelectableLocale, readLocalePreference, selectableLocales, writeLocalePreference } from "./locale-preference";
 
-const i18n = createInstance();
+const i18n: I18n = createInstance();
 
 const i18nextOptions: InitOptions = {
   resources: i18nextResources,
@@ -32,6 +32,5 @@ export function t(key: string, options: TOptions = {}) {
   return i18n.t(key, options);
 }
 
-export const useTranslation = useReactI18nextTranslation;
-export { Trans } from "react-i18next";
+export { Trans, useTranslation } from "react-i18next";
 export { i18n };

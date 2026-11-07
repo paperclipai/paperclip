@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { i18n as I18n } from "i18next";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 
 beforeEach(() => {
   vi.resetModules();
@@ -16,6 +17,8 @@ describe("i18n runtime", () => {
   it("exposes react-i18next hooks and Trans without a custom translation layer", async () => {
     const runtime = await import("./index");
     const reactI18next = await import("react-i18next");
+    expectTypeOf(runtime.i18n).toEqualTypeOf<I18n>();
+    expectTypeOf(runtime.useTranslation).toEqualTypeOf<typeof reactI18next.useTranslation>();
     expect(runtime.useTranslation).toBe(reactI18next.useTranslation);
     expect(runtime.Trans).toBe(reactI18next.Trans);
   });
