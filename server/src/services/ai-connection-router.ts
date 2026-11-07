@@ -67,6 +67,9 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
 }
 export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection, configuredAdapterType?: string, sourcePolicyConfig = config): Record<string, unknown> {
   const targetAdapter = selection.adapterType ?? configuredAdapterType;
+  if (!selection.adapterType && configuredAdapterType && LOCAL_POOL_ADAPTERS.includes(configuredAdapterType) &&
+      poolExecutionAdapterType(selection.binding, configuredAdapterType) !== configuredAdapterType)
+    throw unprocessable("Cannot preserve an older pool execution policy across providers; start a new task turn");
   const switchingHarness = configuredAdapterType && targetAdapter && poolHarnessChanges(sourcePolicyConfig, configuredAdapterType, targetAdapter, selection.runtimeConfig);
   if (switchingHarness) assertPoolAdapterPolicyCompatible(sourcePolicyConfig, configuredAdapterType, targetAdapter!, selection.runtimeConfig);
   const sourceEngine = typeof sourcePolicyConfig.engine === "string" ? sourcePolicyConfig.engine.trim().toLowerCase() : "";
@@ -92,11 +95,12 @@ export function poolExecutionAdapterType(binding: { provider: string }, configur
 }
 
 function samePoolSelection(left: AiConnectionRouterSelection, right: AiConnectionRouterSelection, configuredAdapterType: string) {
+  const retainedAdapter = left.adapterType ?? right.adapterType ?? configuredAdapterType;
   const identity = (selection: AiConnectionRouterSelection) => ({
     poolId: selection.poolId,
     memberId: selection.memberId,
     binding: selection.binding,
-    adapterType: selection.adapterType ?? configuredAdapterType,
+    adapterType: selection.adapterType ?? retainedAdapter,
   });
   return isDeepStrictEqual(
     identity(left),

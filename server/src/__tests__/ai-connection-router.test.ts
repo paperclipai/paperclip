@@ -959,10 +959,10 @@ describe("durable, authorized connection routing", () => {
     try { await expect(resolve(pool.id, "disabled-in-flight")).rejects.toThrow("disabled during allocation"); expect(await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id))).toHaveLength(0); }
     finally { await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true }); }
   });
-  it("uses mixed legacy members and makes reassignment an independent pin", async () => {
+  it("keeps mixed plugin members on their legacy harness and makes reassignment an independent pin", async () => {
     const pool = await makePool();
-    expect((await resolve(pool.id, "legacy", { adapterType: "claude_local" })).memberId).toBe(members[0]!.id);
-    expect((await resolve(pool.id, "legacy", { agentId: secondAgentId, adapterType: "codex_local" })).memberId).toBe(members[1]!.id);
+    expect((await resolve(pool.id, "legacy", { adapterType: "claude_local" })).memberId).toBe(members[1]!.id);
+    expect((await resolve(pool.id, "legacy", { agentId: secondAgentId, adapterType: "codex_local" })).memberId).toBe(members[0]!.id);
     const pins = await db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id)); expect(pins).toHaveLength(2);
   });
   it("adopts a valid existing account and requires explicit reset for an unrelated session", async () => {
