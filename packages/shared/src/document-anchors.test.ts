@@ -95,6 +95,16 @@ describe("document text projection", () => {
     const projection = projectMarkdownToText("Use &unknown; and a - b - c");
     expect(projection.text).toBe("Use &unknown; and a - b - c");
   });
+
+  it("keeps text the renderer shows literally", () => {
+    expect(projectMarkdownToText("# - Roadmap").text).toBe("- Roadmap");
+    expect(projectMarkdownToText("> # - Quoted heading").text).toBe("- Quoted heading");
+    expect(projectMarkdownToText("Intro\n\n| --- |").text).toBe("Intro ---");
+    expect(projectMarkdownToText("| A | B |\n| --- | --- |\n| 1 | 2 |").text).not.toContain("---");
+    expect(projectMarkdownToText("Show \\&amp; and &Amp; and &constructor;").text)
+      .toBe("Show &amp; and &Amp; and &constructor;");
+    expect(projectMarkdownToText("&AMP; &amp;").text).toBe("& &");
+  });
 });
 
 describe("document anchor verification and remapping", () => {

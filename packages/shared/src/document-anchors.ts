@@ -59,6 +59,7 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
   const lines = markdown.match(/[^\n]*(?:\n|$)/g) ?? [markdown];
   let offset = 0;
   let inFence = false;
+  let previousLine = "";
 
   for (const rawLine of lines) {
     if (rawLine === "") continue;
@@ -70,6 +71,7 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
       inFence = !inFence;
       offset += rawLine.length;
       builder.addSeparator(offset - (hasNewline ? 1 : 0));
+      previousLine = "";
       continue;
     }
 
@@ -80,7 +82,9 @@ export function projectMarkdownToText(markdown: string): DocumentTextProjection 
       continue;
     }
 
-    if (isNonTextBlockLine(line)) {
+    const nonText = isNonTextBlockLine(line, previousLine);
+    previousLine = line;
+    if (nonText) {
       builder.addSeparator(offset + line.length);
       offset += rawLine.length;
       continue;
@@ -250,10 +254,10 @@ export function remapDocumentAnchor(input: RemapDocumentAnchorInput): RemapDocum
   return { anchorState: "orphaned", confidence: "missing", anchor: null, projection, reason: "missing" };
 }
 
-/** Thematic breaks and table delimiter rows render no text. */
-function isNonTextBlockLine(line: string): boolean {
+/** Thematic breaks and table delimiter rows (under a header row) render no text. */
+function isNonTextBlockLine(line: string, previousLine: string): boolean {
   if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) return true;
-  return line.includes("|") && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*(?::?-+:?\s*)?$/.test(line);
+  return previousLine.includes("|") && line.includes("|") && /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*(?::?-+:?\s*)?$/.test(line);
 }
 
 /**
@@ -264,8 +268,6 @@ function isNonTextBlockLine(line: string): boolean {
  */
 function stripBlockSyntax(line: string, absoluteOffset: number): { text: string; sourceOffset: number } {
   let consumed = 0;
-  const heading = line.match(/^\s{0,3}#{1,6}\s+/);
-  if (heading) consumed = heading[0].length;
   for (;;) {
     const rest = line.slice(consumed);
     const quote = rest.match(/^\s*>\s?/);
@@ -278,19 +280,27 @@ function stripBlockSyntax(line: string, absoluteOffset: number): { text: string;
       consumed += listItem[0].length;
       continue;
     }
+    // Heading text is inline content, so markers after `#` stay visible.
+    const heading = rest.match(/^\s{0,3}#{1,6}\s+/);
+    if (heading) consumed += heading[0].length;
     break;
   }
   return { text: line.slice(consumed), sourceOffset: absoluteOffset + consumed };
 }
 
-const NAMED_HTML_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: "\"",
-  apos: "'",
-  nbsp: " ",
-};
+// Entity names are case-sensitive; `&Amp;` renders literally.
+const NAMED_HTML_ENTITIES = new Map<string, string>([
+  ["amp", "&"],
+  ["AMP", "&"],
+  ["lt", "<"],
+  ["LT", "<"],
+  ["gt", ">"],
+  ["GT", ">"],
+  ["quot", "\""],
+  ["QUOT", "\""],
+  ["apos", "'"],
+  ["nbsp", " "],
+]);
 
 function decodeHtmlEntity(entity: string): string | null {
   const body = entity.slice(1, -1);
@@ -301,7 +311,7 @@ function decodeHtmlEntity(entity: string): string | null {
     if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) return null;
     return String.fromCodePoint(codePoint);
   }
-  return NAMED_HTML_ENTITIES[body.toLowerCase()] ?? null;
+  return NAMED_HTML_ENTITIES.get(body) ?? null;
 }
 
 function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceOffset: number): void {
@@ -333,6 +343,13 @@ function addInlineMarkdownText(builder: ProjectionBuilder, text: string, sourceO
         index = closing;
         continue;
       }
+    }
+
+    // A backslash escape renders the next punctuation literally (`\&amp;` shows `&amp;`).
+    if (char === "\\" && /^[!-/:-@[-`{-~]$/.test(text[index + 1] ?? "")) {
+      builder.addChar(text[index + 1] ?? "", absolute + 1, absolute + 2);
+      index += 1;
+      continue;
     }
 
     if (char === "&") {
