@@ -2692,6 +2692,19 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .toHaveLength(4);
   });
 
+  it("does not credit a resume's work to a later provider attempt started by a normal retry", async () => {
+    const fixture = await seedInterruptedCheckpoint("PROGRESS-THEN-RETRY");
+    await resumeThenCrash(fixture);
+    await appendRunEvents(fixture, [{ eventType: "turn.accepted", turnId: "resumed" },
+      { eventType: "tool.execution.completed", turnId: "resumed" }]);
+    // The resume (attempt 2) did work. A transport failure then started a
+    // normal local retry at attempt 3, which crashed before doing any work.
+    await fixture.db.update(nativeRunFinalizations).set({ attempt: 3 })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const { disposition } = await resumeThenCrash(fixture);
+    expect(disposition).toMatchObject({ kind: "blocked", reason: "execution_recovery_budget_exhausted" });
+  });
+
   it("still exhausts the budget when restart resumes complete no work between crashes", async () => {
     const fixture = await seedInterruptedCheckpoint("NO-PROGRESS-BETWEEN-CRASHES");
     const outcomes: Array<{ kind?: string; attempt?: number; reason?: string }> = [];

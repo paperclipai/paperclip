@@ -174,12 +174,21 @@ export function suspendedByCleanDrain(coordinator: {
 export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = 12;
 const RESUME_PROGRESS_EVENT_TYPES = ["tool.execution.completed", "item.completed"] as const;
 
+type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
+
+/**
+ * The watermark of the most recent claim, only while the run is still on the
+ * provider attempt that claim resumed. A normal retry in between starts a new
+ * attempt, so the earlier resume's work no longer counts for it.
+ */
 export function lastRecoveryClaimProgressWatermark(
-  recoveryHistory: ReadonlyArray<{ disposition?: unknown; progressWatermarkSeq?: unknown }>,
+  recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>,
+  currentAttempt: number,
 ): number | null {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
     if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
+    if (entry?.progressAttempt !== currentAttempt) return null;
     const watermark = entry?.progressWatermarkSeq;
     return typeof watermark === "number" && Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : null;
   }
@@ -199,12 +208,12 @@ export async function previousResumeMadeProgress(tx: Pick<Db, "select">, input: 
   coordinator: {
     attempt: number;
     controllerGeneration: number;
-    recoveryHistory: ReadonlyArray<{ disposition?: unknown; progressWatermarkSeq?: unknown }>;
+    recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>;
   };
 }): Promise<boolean> {
   if (input.coordinator.attempt <= 0) return false;
   if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
-  const watermark = lastRecoveryClaimProgressWatermark(input.coordinator.recoveryHistory);
+  const watermark = lastRecoveryClaimProgressWatermark(input.coordinator.recoveryHistory, input.coordinator.attempt);
   if (watermark === null) return false;
   const workTurnId = sql`${heartbeatRunEvents.payload} -> 'prpEvent' ->> 'turnId'`;
   const [work] = await tx
@@ -1454,6 +1463,8 @@ export async function claimNativeRestartRecoveries(input: {
       // The next claim credits this resume only for work recorded after here.
       const progressWatermarkSeq = await nativeRunEventWatermark(tx, row.run.id);
       const attemptKeptForProgress = resumeKeepsAttempt && !cleanDrainSuspension;
+      // The attempt the executor runs this resume as (see its execution claim).
+      const progressAttempt = nextNativeProviderAttempt(providerAttempt, claimKind, !resumeKeepsAttempt);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const claimed = await tx
         .update(nativeRunFinalizations)
@@ -1477,7 +1488,7 @@ export async function claimNativeRestartRecoveries(input: {
                 : "bootstrap_incomplete",
           recoveryRequestId: input.recoveryRequestId ?? null,
           recoveryHistory: appendBoundedRecoveryHistory({
-            ...event, progressWatermarkSeq, ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
+            ...event, progressWatermarkSeq, progressAttempt, ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
           }),
           failureCode: null,
           nextAttemptAt: null,
