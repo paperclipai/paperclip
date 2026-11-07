@@ -28,6 +28,7 @@ import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } fr
 import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
+import type { HeartbeatRunValuesPatch } from "../heartbeat-run-lifecycle.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -658,7 +659,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     ), runErrorCode, runErrorMessage);
 
     const ledgerScope = runLedgerScope;
-    const finalRunPatch: Partial<typeof heartbeatRuns.$inferInsert> = {
+    const finalRunPatch: HeartbeatRunValuesPatch = {
       // Accounting must acknowledge even a proven pre-provider failure:
       // that transaction releases the reservation without creating a charge.
       costAccountingPending: true,
