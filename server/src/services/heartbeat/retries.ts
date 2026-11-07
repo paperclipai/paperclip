@@ -506,7 +506,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+      (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        || retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON && run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
         ? readTransientRecoveryContractFromRun(run)
         : null;
     const quotaRetry = transientRecovery?.errorFamily === "provider_quota";
@@ -551,11 +552,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
-    const transientRecovery =
-      (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        || retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON && run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
+
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" && run.errorCode !== REPOSITORY_CATALOG_UNAVAILABLE_CODE &&
       transientRecovery?.errorFamily === "transient_upstream"
