@@ -110,6 +110,9 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.post("/api/routine-triggers/public/:publicId/fire", (req, res) => {
     res.json({ reachedWebhook: true, actorType: req.actor.type });
   });
+  app.post("/api/chat-webhooks/:publicId/:provider", (req, res) => {
+    res.json({ reachedChatWebhook: true, actorType: req.actor.type });
+  });
   app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
     res.json({ reachedGatewayProtocol: true, actorType: req.actor.type });
   });
@@ -258,6 +261,37 @@ describe("agent auth middleware", () => {
   ])("does not bypass actor authentication for %s", async (path) => {
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
     const res = await request(createApp(db)).post(path).set("Authorization", "Bearer routine-secret");
+    expect(res.status).toBe(401);
+  });
+
+  it.each(["authenticated", "local_trusted"] as const)(
+    "leaves chat provider bearer verification to the webhook in %s mode",
+    async (deploymentMode) => {
+      const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+      const res = await request(createApp(db, deploymentMode))
+        .post("/api/chat-webhooks/HiEaKm4yIStsSZ5QWZyKAR62sy-5i14Iog8y6m9yV0c/microsoft-teams")
+        .set("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2FwaS5ib3RmcmFtZXdvcmsuY29tIn0.sig")
+        .send({ type: "message", text: "hello" });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ reachedChatWebhook: true, actorType: "none" });
+    },
+  );
+
+  it.each([
+    "/api/chat-webhooks/public-a",
+    "/api/chat-webhooks/public-a/microsoft-teams/extra",
+    "/api/chat-webhooks/public-a/microsoft-teams%2Fextra",
+  ])("does not bypass actor authentication for %s", async (path) => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const res = await request(createApp(db)).post(path).set("Authorization", "Bearer provider-token");
+    expect(res.status).toBe(401);
+  });
+
+  it("keeps actor authentication for non-POST chat webhook requests", async () => {
+    const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
+    const res = await request(createApp(db))
+      .get("/api/chat-webhooks/public-a/microsoft-teams")
+      .set("Authorization", "Bearer provider-token");
     expect(res.status).toBe(401);
   });
 
