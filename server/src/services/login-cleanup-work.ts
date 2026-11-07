@@ -4,7 +4,7 @@ import { LOGIN_CLEANUP_RETRY_MS } from "./login-cleanup-state.js";
 
 export function registerLoginCleanupWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
-  duties: ReadonlyArray<{ queue: LoginCleanupQueue; run: () => Promise<unknown>; next: () => Promise<number | null> }>,
+  duties: ReadonlyArray<{ queue: LoginCleanupQueue; run: () => Promise<unknown>; next: () => Promise<number | null>; retryDelayMs?: () => number }>,
   canRun: () => boolean,
   retryMs = LOGIN_CLEANUP_RETRY_MS,
 ) {
@@ -26,7 +26,11 @@ export function registerLoginCleanupWork(
         }
         const generation = ++requested;
         earliestRunAt = now + retryMs;
-        await duty.run();
+        try {
+          await duty.run();
+        } finally {
+          earliestRunAt = Date.now() + Math.max(retryMs, duty.retryDelayMs?.() ?? 0);
+        }
         const deadline = await duty.next();
         next = deadline === null ? null : Math.max(deadline, earliestRunAt);
         reconciled = generation;
