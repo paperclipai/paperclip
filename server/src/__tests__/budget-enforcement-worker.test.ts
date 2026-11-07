@@ -7,14 +7,16 @@ import { publishLiveEvent } from "../services/live-events.js";
 import { registerBudgetEnforcementWork, registerCostAccountingWork, wakeCostAccountingWork } from "../services/budget-enforcement-worker.js";
 
 const work = vi.hoisted(() => ({
-  deliver: vi.fn(), pending: vi.fn(), next: vi.fn(), reconcile: vi.fn(), accounting: vi.fn(),
+  deliver: vi.fn(), pending: vi.fn(), next: vi.fn(), reconcile: vi.fn(), accounting: vi.fn(), evaluate: vi.fn(), evaluationPending: vi.fn(),
 }));
 vi.mock("../services/budgets.js", () => ({
   deliverBudgetEnforcement: work.deliver,
   hasPendingBudgetEnforcement: work.pending,
   nextBudgetReconciliationAt: work.next,
   reconcileDueBudgetPolicies: work.reconcile,
+  flushBudgetEvaluationWorkPage: work.evaluate,
 }));
+vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -27,6 +29,8 @@ beforeEach(() => {
   work.next.mockResolvedValue(null);
   work.reconcile.mockResolvedValue({ nextCursor: null });
   work.accounting.mockResolvedValue({ pending: false, nextRunAt: null });
+  work.evaluate.mockResolvedValue({ consumed: 0, nextCursor: null });
+  work.evaluationPending.mockResolvedValue(false);
 });
 afterEach(async () => {
   for (const stop of subscriptions.splice(0)) stop();
@@ -45,6 +49,28 @@ function setup() {
 }
 
 describe("budget accounting delivery", () => {
+  it("continues cancellation delivery and retries a failed startup reconciliation", async () => {
+    const s = setup();
+    work.reconcile.mockResolvedValueOnce({ nextCursor: null, hadFailures: true });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
+    expect(work.deliver).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(work.reconcile).toHaveBeenLastCalledWith(s.db, { startup: true });
+    expect(work.deliver).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+
+  it("rotates evaluation pages past failed companies before revisiting the first page", async () => {
+    const s = setup();
+    work.evaluate.mockResolvedValueOnce({ consumed: 0, nextCursor: "failed-company" });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
+    expect(work.deliver).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(work.evaluate).toHaveBeenLastCalledWith(s.db, { cursor: "failed-company" });
+    expect(work.deliver).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+
   it("recovers at startup, then leaves unchanged budget history completely quiet", async () => {
     const s = setup();
     await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
@@ -55,7 +81,7 @@ describe("budget accounting delivery", () => {
     expect(work.pending).toHaveBeenCalledOnce();
     expect(work.reconcile).toHaveBeenCalledOnce();
     await s.owner.transaction(tx => notifyDeliveryWork(tx as object, DELIVERY_QUEUES.budgetEnforcement));
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(work.reconcile).toHaveBeenCalledOnce();
     expect(work.deliver).toHaveBeenCalledTimes(2);
     expect(s.coordinator.nextWakeAt()).toBeNull();
@@ -95,7 +121,7 @@ describe("budget accounting delivery", () => {
     await registerBudgetEnforcementWork(s.db, s.coordinator, {}).ready;
     expect(work.reconcile).toHaveBeenLastCalledWith(s.db, { startup: true });
     await s.owner.transaction(tx => notifyDeliveryWork(tx as object, DELIVERY_QUEUES.budgetEnforcement));
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(work.reconcile).toHaveBeenLastCalledWith(s.db, { startup: true, cursor: "company:agent:scope" });
     expect(s.coordinator.nextWakeAt()).toBeNull();
   });
@@ -120,6 +146,25 @@ describe("budget accounting delivery", () => {
     await vi.advanceTimersByTimeAsync(3_600_000);
     expect(work.accounting).toHaveBeenCalledTimes(3);
   });
+
+  // A sandbox stop or lease release can close a remote run's lost receipt.
+  it.each([DELIVERY_QUEUES.environmentCleanup, DELIVERY_QUEUES.retainedNativeSessionCleanup])(
+    "wakes accounting when %s work commits", async queue => {
+      const s = setup();
+      const recover = vi.fn(async () => {});
+      const worker = registerCostAccountingWork(s.db, s.coordinator, recover);
+      subscriptions.push(worker.stop);
+      await worker.ready;
+      const before = recover.mock.calls.length;
+      await s.owner.transaction(tx => notifyDeliveryWork(tx as object, queue));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(recover.mock.calls.length).toBeGreaterThan(before);
+      worker.stop();
+      const stopped = recover.mock.calls.length;
+      await s.owner.transaction(tx => notifyDeliveryWork(tx as object, queue));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(recover).toHaveBeenCalledTimes(stopped);
+    });
 
   it("replays durable spool work after a pre-transaction failure and releases its local wake on stop", async () => {
     const s = setup();

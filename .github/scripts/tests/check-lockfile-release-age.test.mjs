@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   addedPackageVersions,
+  addedPackageVersionsAcross,
   checkReleaseAge,
   formatReport,
   parseLockfilePackages,
@@ -64,6 +69,30 @@ test('lists only package versions the refresh adds', () => {
     { key: '@scope/new@0.1.0', name: '@scope/new', version: '0.1.0', resolution: REGISTRY },
     { key: 'old@1.1.0', name: 'old', version: '1.1.0', resolution: REGISTRY },
   ]);
+});
+
+test('lists the versions each lockfile adds, once', () => {
+  const pairs = [
+    [lockfile(['left-pad@1.3.0']), lockfile(['left-pad@1.3.0', 'shared@2.0.0', 'root-only@1.0.0'])],
+    [lockfile([]), lockfile(['shared@2.0.0', 'provider-only@3.0.0'])],
+  ];
+  assert.deepEqual(addedPackageVersionsAcross(pairs).map(entry => entry.key), ['provider-only@3.0.0', 'root-only@1.0.0', 'shared@2.0.0']);
+});
+
+test('the CLI rejects unpaired lockfiles before any registry lookup', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-age-cli-'));
+  try {
+    const file = path.join(root, 'pnpm-lock.yaml');
+    writeFileSync(file, lockfile([]));
+    const result = spawnSync(process.execPath, [
+      path.resolve('.github/scripts/check-lockfile-release-age.mjs'),
+      '--base', file, '--head', file, '--base', file, '--min-age-days', '3',
+    ], { encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /Usage/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('lists an existing version whose resolution changed', () => {

@@ -235,7 +235,8 @@ async function handleMcpGatewayProtocol(
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
       // Provider tool failures are MCP tool results, not successful calls or
       // protocol errors. The service has already recorded the failed invocation.
-      if (req.body?.method === "tools/call" && err.reasonCode === "tool_error") {
+      if (req.body?.method === "tools/call" &&
+          (err.reasonCode === "tool_error" || err.reasonCode === "github_access_denied")) {
         res.json({
           jsonrpc: "2.0",
           id,

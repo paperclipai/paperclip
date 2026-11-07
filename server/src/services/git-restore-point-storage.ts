@@ -282,6 +282,7 @@ export async function applyGitRestorePointToWorktree(input: {
   ref: GitRestorePointRef;
   repositoryCwd: string;
   worktreePath: string;
+  preserveImportedHistory?: boolean;
   signal?: AbortSignal;
 }) {
   const current = await currentRestorePointSnapshot(input.worktreePath, input.signal);
@@ -291,6 +292,9 @@ export async function applyGitRestorePointToWorktree(input: {
   }
   const { payload } = await loadGitRestorePoint(input);
   const manifest = await importRestorePoint({ repositoryCwd: input.repositoryCwd, payload, signal: input.signal });
+  if (input.preserveImportedHistory) {
+    for (const commit of manifest.preserved) await gitCacheCommand(input.repositoryCwd, ["update-ref", `refs/paperclip-preserved/${commit}`, commit], input.signal);
+  }
   if (!matches) await applyRestorePoint({ cwd: input.worktreePath, manifest, signal: input.signal });
 }
 
