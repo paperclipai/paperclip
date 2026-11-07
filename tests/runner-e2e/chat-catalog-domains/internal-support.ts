@@ -44,7 +44,7 @@ export async function observeInternal(ctx: ChatCatalogContext, state: Record<str
   await ctx.refreshIssue();
   const { api, fixtures } = ctx.input;
   const [tasks, projects, goals, runs] = await Promise.all([
-    api.get<Entity[]>(`${companyPath(ctx)}/issues?includeAgentCreatedTasks=true&limit=1000`),
+    api.getRunObservation<Entity[]>(`${companyPath(ctx)}/issues?includeAgentCreatedTasks=true&limit=1000`),
     api.get<Entity[]>(`${companyPath(ctx)}/projects?includeArchived=true`),
     api.get<Entity[]>(`${companyPath(ctx)}/goals`), ctx.allRuns(),
   ]);
@@ -53,7 +53,7 @@ export async function observeInternal(ctx: ChatCatalogContext, state: Record<str
   const replies = chat.filter(row => row.authorAgentId === fixtures.agent.id && runs.some(run => run.id === row.createdByRunId));
   const target = state.task ? entity(state, "task") : undefined;
   const comments = target ? await api.get<Entity[]>(`/api/issues/${target.id}/comments?order=asc`) : [];
-  const companyActivity = await api.get<Entity[]>(`${companyPath(ctx)}/activity?limit=1000`);
+  const companyActivity = await api.getRunObservation<Entity[]>(`${companyPath(ctx)}/activity?limit=1000`);
   const taskActivity = target ? await api.get<Entity[]>(`/api/issues/${target.id}/activity`) : [];
   const activity = [...new Map([...companyActivity, ...taskActivity].map(row => [row.id, row])).values()];
   const renderedLinkEvidence = source ? await collectConversationLinks(ctx.input.page, {
