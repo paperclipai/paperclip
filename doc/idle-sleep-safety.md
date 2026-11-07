@@ -594,6 +594,19 @@ No plugin approval or configuration bypass is supported. Scheduled and
 externally triggered work needs a durable host wake mechanism before it can
 permit sleep.
 
+The host's agent-runtime lifecycle notification listener has separate ownership
+from its SDK worker. A normal owned safety read retires its exclusive listener
+client only after admitted delivery and journal work settle. Failed or uncertain
+retirement remains a blocker; diagnostics never perform this retirement. Closing
+a subscription alone does not prove that its PostgreSQL backend closed. The
+client belongs only to lifecycle delivery, so retirement preserves the main
+pool and other features' notification channels. Releasing the hold or its existing shared expiry deadline
+recreates the listener and reconstructs delivery from the durable journal before
+normal dispatch, including events whose notification arrived while it was closed.
+This preserves at-least-once delivery and existing company filtering; it does not
+promise exactly-once callback invocation or add a wake guarantee for arbitrary
+external SQL writers while compute is stopped.
+
 This is a single-process admission protocol. A restart clears the owner. The
 host must serialize sleep with deploy/wake operations and bind its final check
 to the instance it stops. An unexpected restart after the final check can still

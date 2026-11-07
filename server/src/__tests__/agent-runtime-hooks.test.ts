@@ -1,3 +1,4 @@
+import * as databaseModule from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { createServer, connect, type Socket } from "node:net";
 import { EventEmitter } from "node:events";
@@ -5,7 +6,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, applyPendingMigrations, closeFileStorageDb, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as instructionModule from "../services/agent-instructions.js";
@@ -18,7 +19,18 @@ import { resolveManagedInstructionsRoot } from "../services/agent-instructions.j
 import { agentFileStore } from "../services/agent-file-store.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = process.env.PAPERCLIP_AGENT_RUNTIME_HOOKS_TEST_DATABASE_URL;
+const expectedDatabase = process.env.PAPERCLIP_AGENT_RUNTIME_HOOKS_EXPECTED_DATABASE;
+if (externalUrl || expectedDatabase) {
+  if (!externalUrl || !expectedDatabase || !/^sleep2_[a-z0-9_]+_test$/.test(expectedDatabase)) {
+    throw new Error("Explicit external fixture URL and expected database are required");
+  }
+  const target = new URL(externalUrl);
+  if (!["postgres:", "postgresql:"].includes(target.protocol) || target.hostname !== "127.0.0.1" || target.port !== "55448" || target.pathname !== `/${expectedDatabase}` || target.search) {
+    throw new Error("External fixture must match the exact owned database");
+  }
+}
+const support = externalUrl ? { supported: true as const } : await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
 
 describeDatabase("agent runtime synchronization hooks", () => {
@@ -29,11 +41,21 @@ describeDatabase("agent runtime synchronization hooks", () => {
   let agentId: string;
   let home: string;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-agent-runtime-");
-    db = createDb(database.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-agent-runtime-");
+    db = createDb(externalUrl ?? database.connectionString, { maxConnections: 4 });
     home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-runtime-home-"));
   }, 90_000);
-  afterAll(async () => { await database?.cleanup(); await fs.rm(home, { recursive: true, force: true }); });
+  afterAll(async () => {
+    try { if (db) await closeFileStorageDb(db, 1); }
+    finally {
+      try { await db?.$client.end({ timeout: 1 }); }
+      finally {
+        try { await database?.cleanup(); }
+        finally { if (home) await fs.rm(home, { recursive: true, force: true }); }
+      }
+    }
+  });
   afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
   beforeEach(async () => {
     vi.stubEnv("PAPERCLIP_HOME", home);
@@ -232,14 +254,17 @@ describeDatabase("agent runtime synchronization hooks", () => {
   });
 
   it("wakes delivery after a commit on an independent database client, without polling", async () => {
-    const other = createDb(database.connectionString);
+    const other = createDb(externalUrl ?? database.connectionString, { maxConnections: 4 });
     const initialCount = (await events()).length;
     const notifications: string[] = [];
-    const listen = db.$client.listen.bind(db.$client);
-    vi.spyOn(db.$client, "listen").mockImplementation((channel, onnotify, onlisten) => listen(channel, payload => {
-      notifications.push(payload);
-      onnotify(payload);
-    }, onlisten));
+    const createListener = databaseModule.createOwnedDatabaseListener;
+    vi.spyOn(databaseModule, "createOwnedDatabaseListener").mockImplementation(owner => {
+      const listener = createListener(owner);
+      return { listen: (channel, onnotify, onlisten) => listener.listen(channel, payload => {
+        notifications.push(payload);
+        onnotify(payload);
+      }, onlisten), close: () => listener.close() };
+    });
     const call = vi.fn(async (_plugin, _method, event) => ({ eventId: event.id, status: "acknowledged" }));
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     const delivery = registerPluginLifecycleDelivery(coordinator, db, { call, isRunning: () => true, onConfigApplied: () => () => {} } as never, new EventEmitter() as never);
@@ -268,10 +293,10 @@ describeDatabase("agent runtime synchronization hooks", () => {
       });
       await vi.waitFor(() => expect(delivered().map(call => call[2].id)).toContain(committedEventId), { timeout: 5000 });
       expect(delivered().find(call => call[2].id === committedEventId)![2]).toMatchObject({ companyId, resourceId: agentId, resourceType: "agent_runtime" });
-    } finally { delivery.dispose(); await coordinator.stop(); await other.$client.end(); }
+    } finally { await delivery.dispose(); await coordinator.stop(); await other.$client.end(); }
   });
   it("recovers work committed during real listener connection loss without another write", async () => {
-    const target = new URL(database.connectionString);
+    const target = new URL(externalUrl ?? database.connectionString);
     const upstreamHost = target.hostname; const upstreamPort = Number(target.port);
     let blocked = false;
     const sockets = new Set<Socket>();
@@ -287,7 +312,7 @@ describeDatabase("agent runtime synchronization hooks", () => {
     });
     await new Promise<void>(resolve => proxy.listen(0, "127.0.0.1", resolve));
     target.hostname = "127.0.0.1"; target.port = String((proxy.address() as { port: number }).port);
-    const listenerDb = createDb(target.toString(), { connectTimeoutSeconds: 1 });
+    const listenerDb = createDb(target.toString(), { connectTimeoutSeconds: 1, maxConnections: 4 });
     const call = vi.fn(async (_plugin, _method, event) => ({ eventId: event.id, status: "acknowledged" }));
     const coordinator = createDeliveryWorkCoordinator({ owner: listenerDb, canRun: () => true, onError: () => {} });
     const delivery = registerPluginLifecycleDelivery(coordinator, listenerDb, { call, isRunning: () => true, onConfigApplied: () => () => {} } as never, new EventEmitter() as never);
@@ -304,7 +329,7 @@ describeDatabase("agent runtime synchronization hooks", () => {
       blocked = false;
       await vi.waitFor(() => expect(call.mock.calls.some(call => call[2].id === String(queued.id))).toBe(true), { timeout: 10000 });
     } finally {
-      blocked = false; delivery.dispose(); await coordinator.stop(); await listenerDb.$client.end({ timeout: 1 });
+      blocked = false; await delivery.dispose(); await coordinator.stop(); await listenerDb.$client.end({ timeout: 1 });
       for (const socket of sockets) socket.destroy();
       await new Promise<void>(resolve => proxy.close(() => resolve()));
     }
