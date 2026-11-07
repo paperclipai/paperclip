@@ -1,6 +1,4 @@
-import * as completionModule from "../services/heartbeat/run-completion.js";
-import { createAgentIdentityRedactor } from "../services/agent-identity-redaction.js";
-import { releaseAbandonedNativeOwners } from "../services/native-runtime/native-failed-run-owner-release.js";
+import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { nativeControllerAuthorityDigest } from "../services/native-runtime/native-runner-ownership.js";
 import { cancelHeartbeatNativeRun } from "../services/heartbeat/run-control.js";
 import { claimCancellationRequest } from "../services/native-runtime/native-cancellation-request.js";
@@ -683,7 +681,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
         || !("digest" in authority) || typeof authority.digest !== "string") throw new Error("Expected exact server-owned controller authority");
       return { ...f, action, digest: authority.digest, userId: source.responsibleUserId };
     }
-    function boardRoutes(f: Awaited<ReturnType<typeof namespaceHold>>, actor?: Express.Request["actor"]) {
+    function boardRoutes(f: Pick<Awaited<ReturnType<typeof namespaceHold>>, "db" | "userId">, actor?: Express.Request["actor"]) {
       const app = express();
       app.use(express.json());
       app.use((req, _res, next) => {
@@ -876,7 +874,9 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       });
       try {
         const app = boardRoutes(f);
-        const response = await request(app).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(confirmation(f));
+        const [currentTask] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+        const response = await request(app).post(`/api/issues/${f.issueId}/recovery-actions/resolve`)
+          .send({ ...confirmation(f), sourceIssueStatus: currentTask.status });
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
         expect(source).toMatchObject({ status: "failed", usageJson: before.usageJson, costAccountingPending: before.costAccountingPending });
@@ -924,59 +924,141 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       await completeContainedRetry(await namespaceHold("CLAIM-CONTAINMENT-ORDINARY-RETRY"));
     }, 90_000);
 
-    async function failDuringNormalPreparation(f: Awaited<ReturnType<typeof seedClaim>>) {
-      const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-      const actualCompletion = completionModule.createHeartbeatRunCompletion;
-      const captured: { owner: ReturnType<typeof actualCompletion> | undefined } = { owner: undefined };
-      const capture = vi.spyOn(completionModule, "createHeartbeatRunCompletion").mockImplementation((db, dependencies) => {
-        captured.owner = actualCompletion(db, dependencies); return captured.owner;
-      });
-      const failureService = heartbeatService(f.db);
-      capture.mockRestore();
-      try {
-        const completion = captured.owner;
-        if (!completion) throw new Error("Expected the normal heartbeat completion owner");
-        await completion.failRunSetup({ run: source, runId: source.id,
-          outerErr: new Error("Controlled pre-provider workspace preparation failure"),
-          signal: new AbortController().signal, providerDispatchStarted: false,
-          identityRedactor: createAgentIdentityRedactor(), readFailureReportSecrets: () => [] });
-        const [failed] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-        expect(failed.status).toBe("failed");
-        expect(failed.finishedAt).not.toBeNull();
-        expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
-        expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
-      } finally { capture.mockRestore(); await failureService.drainActiveRunExecutions(); }
-    }
-
-    it("recovers a normal setup failure with cleared execution pointer through containment then a new useful Retry", async () => {
-      const f = await seedClaim("CLAIM-FAILED-CLEARED-RETRY", "expired", "foreign-process-space");
+    /** Historical INITIAL fixture, not a failed execution manufactured by the
+     * tested owners. Preparation produced the normal contract/profile; these
+     * are the complete persisted abandoned-source facts at journey start:
+     * failed+finished, setup_failed, no result/usage added, cleared issue and
+     * checkout pointers, same assignee/responsible operator, observed resultless
+     * expired foreign claim with its original token/generation/PID/birth. */
+    async function seedHistoricalFailedForeignSource(label: string) {
+      const f = await seedClaim(label, "expired", "foreign-process-space");
       const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
-      await f.db.update(issues).set({ responsibleUserId: source.responsibleUserId }).where(eq(issues.id, f.issueId));
-      await failDuringNormalPreparation(f);
-      expect(await releaseAbandonedNativeOwners(f.db)).toBe(0);
+      await f.db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), errorCode: "setup_failed",
+          error: "Historical pre-executor failure with retained foreign ownership", controllerLeaseExpiresAt: null })
+          .where(eq(heartbeatRuns.id, f.runId));
+        await tx.update(issues).set({ executionRunId: null, checkoutRunId: null, responsibleUserId: source.responsibleUserId })
+          .where(eq(issues.id, f.issueId));
+      });
+      const [initialRun] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [initialOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const [initialTask] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(initialRun).toMatchObject({ status: "failed", errorCode: "setup_failed", usageJson: source.usageJson });
+      expect(initialRun.finishedAt).not.toBeNull();
+      expect(initialOwner).toMatchObject({ phase: "observed", resultId: null, controllerHostHash: "foreign-process-space" });
+      expect(initialOwner.leaseOwner).not.toBeNull();
+      expect(initialOwner.leaseExpiresAt!.getTime()).toBeLessThan(Date.now());
+      expect(initialTask).toMatchObject({ executionRunId: null, checkoutRunId: null, assigneeAgentId: initialRun.agentId });
+      expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
+      return { ...f, userId: source.responsibleUserId, initialRun, initialOwner, initialTask };
+    }
+
+    async function inspectHistoricalFailedSource(f: Awaited<ReturnType<typeof seedHistoricalFailedForeignSource>>) {
+      // Actual normal startup/mutation finalization duty. No status, token,
+      // lease, provider result or usage is rewritten by this fixture now.
+      const inspected = await reconcileAbandonedExecutionControl(f.db);
+      expect(inspected.releasedOwners).toBe(0);
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(f.initialOwner);
       const [action] = await f.db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
         eq(issueRecoveryActions.status, "active")));
       const authority = action?.evidence.controllerAuthority;
-      if (!authority || typeof authority !== "object" || Array.isArray(authority) || !("digest" in authority) || typeof authority.digest !== "string")
-        throw new Error("Normal failed-owner inspection must publish exact containment authority");
-      await completeContainedRetry({ ...f, action, digest: authority.digest, userId: source.responsibleUserId });
+      if (!authority || typeof authority !== "object" || Array.isArray(authority)
+        || !("digest" in authority) || typeof authority.digest !== "string")
+        throw new Error("Normal historical failed-owner inspection must publish exact containment authority");
+      return { ...f, action, digest: authority.digest };
+    }
+
+    it("contains a historical already-failed foreign source with cleared pointer then completes a new ordinary Retry", async () => {
+      const initial = await seedHistoricalFailedForeignSource("CLAIM-HISTORICAL-FAILED-CLEARED-RETRY");
+      // The journey begins after the declared INITIAL state above exists.
+      await completeContainedRetry(await inspectHistoricalFailedSource(initial));
     }, 90_000);
 
     it("rejects cleared-pointer containment when a newer coordinator binds the issue without a nativeIssueId column", async () => {
-      const f = await namespaceHold("CLAIM-CONTAINMENT-NEWER-COORDINATOR");
-      await failDuringNormalPreparation(f);
+      const f = await inspectHistoricalFailedSource(await seedHistoricalFailedForeignSource("CLAIM-CONTAINMENT-NEWER-COORDINATOR"));
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
       const newerId = randomUUID();
       await f.db.insert(heartbeatRuns).values({ id: newerId, companyId: fixture.current.companyId,
         agentId: fixture.current.agentId, status: "queued", runtimeMode: "native", contextSnapshot: {}, nativeIssueId: null });
       await f.db.insert(nativeRunFinalizations).values({ runId: newerId, companyId: fixture.current.companyId,
         issueId: f.issueId, phase: "observed", attempt: 0 });
-      const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`).send(confirmation(f));
+      const [currentTask] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+      const response = await request(boardRoutes(f)).post(`/api/issues/${f.issueId}/recovery-actions/resolve`)
+        .send({ ...confirmation(f), sourceIssueStatus: currentTask.status });
       expect(response.status, JSON.stringify(response.body)).toBe(409);
       expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
       expect((await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id)))[0].status).toBe("active");
       expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
+    }, 90_000);
+
+    it("recovers a known-current preparation failure through ordinary Retry without controller containment", async () => {
+      const actual = await controllerProcess.currentControllerProcess();
+      expect(actual.hostHash).not.toBe("unknown");
+      const f = await seedClaim("CLAIM-CURRENT-PREPARATION-RETRY", "expired", actual.hostHash);
+      const [source] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      if (!source.responsibleUserId) throw new Error("A genuine responsible operator is required");
+      await f.db.update(issues).set({ responsibleUserId: source.responsibleUserId }).where(eq(issues.id, f.issueId));
+      const [initialOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const forbiddenProvider = vi.fn(() => { throw new Error("Preparation failure must precede any provider dispatch"); });
+      let realClaimObserved = false;
+      const failureService = heartbeatService(f.db, { nativeSessionBackendFactory: forbiddenProvider,
+        beforeNativeRuntimeSelection: async () => {
+          const native = await currentNativeControllerIdentity();
+          const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+          expect(owner).toMatchObject({ controllerBootId: native.bootId, controllerPid: native.pid,
+            controllerHostHash: actual.hostHash, phase: "observed", resultId: null });
+          expect(owner.leaseOwner).not.toBeNull();
+          expect(owner.leaseOwner).not.toBe(initialOwner.leaseOwner);
+          expect(owner.controllerGeneration).toBeGreaterThan(initialOwner.controllerGeneration);
+          realClaimObserved = true;
+          throw new Error("Controlled preparation failure after the normal current claim and before provider dispatch");
+        } });
+      try {
+        const recovery = await failureService.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+        expect(recovery.claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+        await waitForCondition("normal known-current preparation failure and cleanup", async () => {
+          const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+          return run.status === "failed" && failureService.getTaskDrainStatus().quiescent;
+        });
+        expect(realClaimObserved).toBe(true);
+        expect(forbiddenProvider).not.toHaveBeenCalled();
+        const [failedOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        expect(failedOwner).toMatchObject({ phase: "terminal_failure", resultId: null, leaseOwner: null, leaseExpiresAt: null });
+        const [taskBefore] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+        expect(taskBefore.executionRunId).toBeNull();
+        const actions = await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+        expect(actions.every(action => action.evidence.reason !== "controller_process_space_unverified"
+          && action.evidence.controllerAuthority === undefined)).toBe(true);
+        const opened: string[] = [];
+        const services: ReturnType<typeof heartbeatService>[] = [];
+        const actualFactory = heartbeatModule.heartbeatService;
+        const factory = vi.spyOn(heartbeatModule, "heartbeatService").mockImplementation((db, options) => {
+          const service = actualFactory(db, { ...options, nativeSessionBackendFactory: retryBackend(db, opened) });
+          services.push(service); return service;
+        });
+        try {
+          // An ordinary NEW user Retry uses existing stopped/preparation evidence;
+          // the foreign-host containment fields are neither submitted nor faked.
+          const app = boardRoutes({ db: f.db, userId: source.responsibleUserId });
+          const retried = await request(app).post(`/api/issues/${f.issueId}/retry`).send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+          expect(retried.status, JSON.stringify(retried.body)).toBe(202);
+          await waitForCondition("ordinary known-current setup Retry useful execution", async () => {
+            const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
+            return !!wake?.runId && services.every(service => service.getTaskDrainStatus().quiescent);
+          });
+          const [wake] = await f.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retried.body.requestId));
+          expect(wake.runId).not.toBe(f.runId);
+          expect(opened).toEqual([wake.runId]);
+          const [successor] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+          expect(successor.status).toBe("succeeded");
+          expect(successor.resultJson?.nativeResult).toMatchObject({ summary: "The explicitly retried task produced this useful completion." });
+          expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+          expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([]);
+          expect(await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toHaveLength(1);
+          expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].leaseOwner).toBeNull();
+        } finally { factory.mockRestore(); for (const service of services) await service.drainActiveRunExecutions(); }
+      } finally { await failureService.drainActiveRunExecutions(); }
     }, 90_000);
 
     it("requires new Retry only for exact unadmitted receipts and keeps other accepted work", async () => {
