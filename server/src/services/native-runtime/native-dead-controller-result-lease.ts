@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, ne, notInArray, notLike, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -14,10 +14,11 @@ type TakeoverProbe = Pick<Parameters<typeof evaluateNativeControllerTakeover>[0]
  * finalization waits the full lease (up to 20 minutes) and the run stays
  * `running` with its follow-up work held.
  *
- * Ownership is proved by controller identity, never by lease age: the lease
- * belongs to a different boot and its recorded controller process has exited
- * (or its PID now names a different process). A live or unidentifiable owner
- * keeps its lease. Remote workspaces keep their fenced lease semantics.
+ * Ownership is proved by controller identity, never by lease age: the
+ * executor lease belongs to a different boot and its recorded controller
+ * process has exited (or its PID now names a different process). A live or
+ * unidentifiable owner, and any lease not written with that identity, keeps
+ * its lease. Remote workspaces keep their fenced lease semantics.
  */
 export async function releaseDeadControllerResultLeases(db: Db, input: {
   now: Date;
@@ -45,6 +46,13 @@ export async function releaseDeadControllerResultLeases(db: Db, input: {
       isNotNull(nativeRunFinalizations.resultId),
       notInArray(nativeRunFinalizations.phase, ["committed", "terminal_failure"]),
       isNotNull(nativeRunFinalizations.leaseOwner),
+      // Only the executor's lease is written with the controller identity
+      // probed below. Finalizer, cleanup, and finalization-resume claims keep
+      // the identity of an earlier executor, so a dead earlier executor proves
+      // nothing about them. Their own leases are short and expire normally.
+      notLike(nativeRunFinalizations.leaseOwner, "native-finalizer:%"),
+      notLike(nativeRunFinalizations.leaseOwner, "native-cleanup:%"),
+      notLike(nativeRunFinalizations.leaseOwner, "%:resume:%"),
       gt(nativeRunFinalizations.leaseExpiresAt, input.now),
       isNotNull(nativeRunFinalizations.controllerBootId),
       ne(nativeRunFinalizations.controllerBootId, controller.bootId),

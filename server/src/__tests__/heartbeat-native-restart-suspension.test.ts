@@ -345,7 +345,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
 
   it.each([
     { holder: "runner execution", leaseOwner: (runner: string) => `${runner}:${randomUUID()}` },
-    { holder: "finalizer", leaseOwner: () => `native-finalizer:${randomUUID()}` },
+    { holder: "restart-claimed execution", leaseOwner: () => `${randomUUID()}:2:${randomUUID()}` },
   ])("finalizes an accepted result promptly when a hard kill left its $holder lease to a dead controller", async ({ holder, leaseOwner }) => {
     // RC-41: K1 lands after run.result is committed but before finalization.
     // The dead boot's 20-minute lease must not hold the run `running`.
@@ -379,6 +379,16 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const f = await seedAcceptedResult("ACCEPTED-LIVE-FOREIGN", () => `native-finalizer:${randomUUID()}`);
     const self = await currentNativeControllerIdentity();
     await killedController(f, { bootId: randomUUID(), pid: process.pid, processStartedAt: self.processStartedAt });
+    const { run, owner } = await restart(f);
+    expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
+      .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
+  }, 60_000);
+
+  it.each(["native-finalizer", "native-cleanup", "runner:resume"])("keeps a %s lease whose controller identity names an earlier executor", async (prefix) => {
+    // These claims do not rewrite the controller identity, so the dead earlier
+    // executor proves nothing about the process that holds the lease now.
+    const f = await seedAcceptedResult(`ACCEPTED-${prefix}-OF-LIVE-CLAIMANT`, () => `${prefix}:${randomUUID()}`);
+    await killedController(f, { bootId: randomUUID(), pid: 2_000_000_001, processStartedAt: new Date(Date.now() - 60_000) });
     const { run, owner } = await restart(f);
     expect({ status: run.status, phase: owner.phase, leaseExpiresAt: owner.leaseExpiresAt })
       .toEqual({ status: "running", phase: "workspace_finalizing", leaseExpiresAt: f.leaseExpiresAt });
