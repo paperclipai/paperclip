@@ -66,6 +66,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut goal = Value::Null;
     let mut provider_lost = false;
     let mut session_identity = Value::Null;
+    let mut source_run = String::new();
+    let mut source_pending_completion: Option<String> = None;
+    let mut source_goal_revision = 0_u64;
+    let mut source_journal = if mode == "source-reconcile" {
+        let path = args
+            .windows(2)
+            .find(|pair| pair[0] == "--journal")
+            .ok_or("source journal is missing")?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path[1])?;
+        write_json(&mut file, &json!({"processStart": std::process::id()}))?;
+        if args.iter().any(|arg| arg == "--spawn-owned-child") {
+            let child = std::process::Command::new("/bin/sleep")
+                .arg("120")
+                .spawn()?;
+            write_json(&mut file, &json!({"childPid": child.id()}))?;
+        }
+        Some(file)
+    } else {
+        None
+    };
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
         let id = request
@@ -76,6 +99,192 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if command == "turn.start" {
+            if let Some(fault) = args
+                .windows(2)
+                .find(|pair| pair[0] == "--reject-turn-start")
+            {
+                let fault = fault[1].as_str();
+                if fault == "event" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        request["params"]["turnId"].as_str().unwrap(),
+                        json!({"type":"text_delta","text":"Work may have started."}),
+                    )?;
+                    next_sequence += 1;
+                }
+                let code = match fault {
+                    "unknown" | "message-only" => "UNKNOWN",
+                    "lowercase" => "session_resume_required",
+                    _ => "SESSION_RESUME_REQUIRED",
+                };
+                let mut error = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":if fault == "wrong-id" {id + 1} else {id},"ok":false,
+                    "error":{"code":code,"message":"SESSION_RESUME_REQUIRED retryable=true classification=session_resume_required",
+                        "retryable":fault != "permanent"}});
+                if fault == "malformed" {
+                    error["error"]["retryable"] = json!("true");
+                }
+                write_json(&mut stdout, &error)?;
+                continue;
+            }
+        }
+        if let Some(journal) = source_journal.as_mut() {
+            write_json(journal, &request)?;
+            if command == "run.attach" {
+                source_run = request["params"]["runId"].as_str().unwrap().to_owned();
+            }
+            let fault = args
+                .windows(2)
+                .find(|pair| pair[0] == "--source-fault")
+                .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
+                .unwrap_or_default();
+            let mut response = bootstrap_success(
+                id,
+                command,
+                &request,
+                mode,
+                profile_digest,
+                lifetime_fence_candidates,
+                &mut session_identity,
+            );
+            if command == "session.snapshot" {
+                response["result"] = json!({"identity":session_identity, "runId":source_run,
+                    "turnId":if fault == "active" {json!("unexpected-turn")} else {json!(source_pending_completion)},
+                    "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
+                    "pendingRuntimeRequests":[]});
+            }
+            if command == "session.snapshot" && fault == "foreign-snapshot" {
+                response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
+            }
+            if command == "session.goal.get" {
+                source_goal_revision += 1;
+                response["result"]["providerRevision"] = json!(source_goal_revision);
+            }
+            if command == "session.goal.get"
+                && matches!(fault.as_str(), "read-diagnostic" | "read-burst")
+            {
+                let count = if fault == "read-burst" { 200 } else { 1 };
+                for _ in 0..count {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                        "payload":{"code":"ordinary_read_tail","message":"Retained before an ordinary turn."}}),
+                    )?;
+                    next_sequence += 1;
+                }
+            }
+            if command == "session.goal.get" && fault == "read-invalid-tail" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    "unbound-old-turn",
+                    json!({"type":"text_delta","text":"Rejected stale tail."}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.snapshot" && fault == "slow-snapshot" {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                    "payload":{"code":"slow_park_observation","message":"Retained after a slow read."}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.snapshot" && fault == "goal-during-snapshot" {
+                source_goal_revision += 1;
+                let frame = json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.goal","runId":source_run,"turnId":null,
+                    "payload":{"schema":"paperclip.session_goal.snapshot.v1","providerRevision":source_goal_revision,
+                        "goal":{"objective":"Changed during final status","status":"active","workingNow":false},"workingNow":false}
+                });
+                write_json(journal, &json!({"emitted":frame}))?;
+                write_json(&mut stdout, &frame)?;
+                next_sequence += 1;
+            }
+            if command == "session.goal.get" && matches!(fault.as_str(), "goal" | "paused") {
+                response["result"]["goal"] = json!({"objective":"Continue independently", "status":if fault == "goal" {"active"} else {"paused"},
+                    "tokenBudget":null,"tokensUsed":null,"elapsedSeconds":null,"iterations":null,
+                    "lastReason":null,"createdAt":null,"updatedAt":null,"completedAt":null,"workingNow":false});
+                response["result"]["sessionGoals"] = json!({"availability":"available", "actions":["set","pause","resume","clear"],
+                    "autonomousUpdates":true,"persistentAcrossResume":true,"maxObjectiveChars":4000,"tokenBudgetControl":false,"usageReporting":false});
+            }
+            if (command == "session.goal.get" && fault == "reject-goal")
+                || (command == "session.snapshot" && fault == "reject-snapshot")
+            {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
+            }
+            write_json(&mut stdout, &response)?;
+            if command == "turn.start" {
+                let turn = request["params"]["turnId"].as_str().unwrap();
+                if args.iter().any(|arg| arg == "--wait-completion-feedback") {
+                    let report = json!({"schema":"paperclip.run_result.v1", "reportedWorkDisposition":"done", "summary":"Completed fake ACPX work",
+                    "completionClaim":{"contractRevision":"1","objectiveSatisfied":true,
+                        "criteria":[{"criterionId":"objective","status":"satisfied","evidenceRefs":[]}],"remainingWork":[]},
+                    "evidence":[],"verification":[],"attentionRequests":[],"artifacts":[]});
+                    let call_id = format!("finish-{turn}");
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.tool_called",
+                        &source_run,
+                        turn,
+                        json!({"callId":call_id,"operationId":"paperclip_finish","input":report}),
+                    )?;
+                    next_sequence += 1;
+                    source_pending_completion = Some(turn.to_owned());
+                    continue;
+                }
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    turn,
+                    json!({"type":"text_delta", "text":"Completed fake ACPX work."}),
+                )?;
+                next_sequence += 1;
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.turn_terminal",
+                    &source_run,
+                    turn,
+                    json!({"status":"completed"}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "tool.resolve" {
+                let turn = source_pending_completion
+                    .take()
+                    .ok_or("missing source completion")?;
+                if request["params"]["turnId"] != turn
+                    || request["params"]["callId"] != format!("finish-{turn}")
+                {
+                    return Err("source completion identity mismatch".into());
+                }
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.turn_terminal",
+                    &source_run,
+                    &turn,
+                    json!({"status":if request["params"]["error"].is_null() {"completed"} else {"failed"}}),
+                )?;
+                next_sequence += 1;
+            }
+            continue;
+        }
         if mode == "turns-provider-death" && provider_lost && command == "session.goal.get" {
             write_json(
                 &mut stdout,
@@ -314,6 +523,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -349,6 +559,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
                 if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
                     let turn_id = request
                         .pointer("/params/turnId")
@@ -443,6 +665,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -459,7 +682,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;

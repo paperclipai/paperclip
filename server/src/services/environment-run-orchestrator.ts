@@ -20,6 +20,9 @@ import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRe
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { EnvironmentProviderUnavailableError, readTransientEnvironmentProviderFailure } from "./environment-provider-unavailable-error.js";
+import { findReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import type {
   Environment,
   EnvironmentLease,
@@ -29,7 +32,11 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
+import {
+  resolveRunnerEnvironmentForRun,
+  resolveRunnerReconnectGraceMsForRun,
+  resolveWarmRunnerIdleTimeoutMsForRun,
+} from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -217,17 +224,27 @@ export function environmentRunOrchestrator(
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
     runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
+    warmRunnerIdleTimeoutMs?: number;
+    runnerReconnectGraceMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
+      // setup path with its bounded bootstrap budget. Saved-sandbox resume and
+      // stopped-worker refusals keep their own, more specific classifications.
+      const transient = findReusableSandboxResumeError(err) || findPluginWorkerUnavailableError(err)
+        ? null : readTransientEnvironmentProviderFailure(err);
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
         {
           environmentId: input.environment.id,
           driver: input.environment.driver,
-          cause: err,
+          cause: transient
+            ? new EnvironmentProviderUnavailableError({ environmentName: input.environment.name,
+              driver: input.environment.driver, evidence: transient, cause: err })
+            : err,
         },
       );
     }
@@ -313,6 +330,12 @@ export function environmentRunOrchestrator(
     }
 
     // Step 2: Acquire lease
+    const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    );
+    const runnerReconnectGraceMs = input.adapterType
+      ? resolveRunnerReconnectGraceMsForRun(selectedEnvironment, input.adapterType)
+      : undefined;
     const acquisitionInput = {
       companyId: input.companyId,
       environment,
@@ -324,12 +347,13 @@ export function environmentRunOrchestrator(
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
+      warmRunnerIdleTimeoutMs,
+      runnerReconnectGraceMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
-      // Reattachment is inspection of an already running sandbox, never a new
-      // acquisition or a lifecycle resume. Those paths can create a replacement
-      // when the admitted per-turn policy deliberately disables reusable leases.
+      // Reattachment keeps the original lease, including ephemeral leases.
+      // Never reacquire: acquisition can replace a non-reusable sandbox.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
       if (!lease ||
@@ -346,6 +370,23 @@ export function environmentRunOrchestrator(
             : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
               || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
         throw new Error("native_remote_recovery_lease_mismatch");
+      }
+      if (expected.kind !== "plugin_task") {
+        // The provider may have archived this retained sandbox while its
+        // controller was offline. Ready the exact lease under its lifecycle
+        // budget before short preparation commands (such as project-auth
+        // checks) can run. This API cannot acquire a replacement.
+        const resumed = await environmentRuntime.resumeRunLease({
+          environment, lease, requestedCwd: expected.remoteCwd,
+          ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+          ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
+        });
+        if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
+            resumed.metadata?.expired === true) {
+          throw new Error("native_remote_recovery_lease_mismatch");
+        }
+        // Resume confirms allocation readiness. Its optional metadata may
+        // describe the allocation root; keep the validated lease's workspace.
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
     } else {

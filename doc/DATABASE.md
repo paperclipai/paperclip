@@ -49,6 +49,38 @@ failed results and recovery blockers stay unchanged. A successful retained
 session without artifact proof still blocks migration. The migration receipt
 reports failed-session archives separately from imported recovery authorities.
 
+An internal maintenance owner can separately record
+`runnerProfileJson.nativeHarnessFilesystemIndependence` when an original-volume
+inspection finds no uncovered provider or Runner payload. This is not a backup
+or a successful recovery. It requires a fresh, independently reviewed provider
+attachment witness and a private nonce anchor on that original volume. The
+anchor survives normal releases; current deployment and mount identities are
+verified afresh. Replacement hosts cannot create the receipt from missing files.
+
+Publication binds the retained session, canonical newest resume source, frozen
+inputs and checkpoints, every associated lease and destroyed-provider receipt,
+released controller/finalizer ownership, and existing immutable skill references.
+Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Source locks and a final comparison fence publication; original files, stamps,
+warnings, failed statuses and session pointers remain unchanged. Startup can
+validate the published receipt using only database bindings, without the old
+volume, a fresh source witness, or storage reads. Changed or missing bindings
+invalidate it. Existing resume and replacement policies remain authoritative,
+including governed-wait failures and warm-session refusals. No provider history
+is reconstructed or declared recovered, and uncertain provider sources remain
+enrollment blockers.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -224,6 +256,18 @@ legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two ne
 indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
+
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -794,6 +838,78 @@ identity state, not parent keys. The lock still serializes identity writers and
 blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
+
+## Remote workspace row locks
+
+The runtime workspace service takes company `KEY SHARE`, current task `UPDATE`,
+run `UPDATE`, then workspace `UPDATE` locks. It rechecks the run's task binding
+under the run lock. A shared workspace can retain a different original source
+task; new provisioning and snapshot operations belong to the current run's task.
+Existing operation receipts keep their recorded attribution.
+
+| Owning transaction | Locks after company, current task and run |
+| --- | --- |
+| Workspace reservation | Shared-selection advisory lock when needed, workspace |
+| Preparation publication | Workspace, source lease, existing restore receipt |
+| Snapshot reservation and publication | Workspace, operation and snapshot rows |
+| Provisioning reservation | Workspace, existing operation or new receipt |
+
+`workspace_operations` has ordinary company, task, run and workspace foreign
+keys. An insert takes `KEY SHARE` locks on those parents even when the service
+does not explicitly select them. Locking the parents first prevents their
+foreign-key checks, or a later run-reference write, from reversing the order.
+File preservation already takes task, run, workspace and lease locks in that
+order. Confirmed lease destruction locks matching workspaces before the lease;
+its workspace-location update takes no task or run lock afterward.
+
+Provisioning settlement and save-invocation settlement lock the workspace and
+update existing receipt metadata. They neither add a parent foreign-key
+reference nor lock a task or run afterward. Snapshot upload and retention own
+snapshot rows; the snapshot ledger has no parent foreign keys. These paths do
+not need an otherwise unused parent lock.
+
+Administrative import reservation takes company `KEY SHARE`, original source
+task `UPDATE`, then workspace `UPDATE`, and rechecks that source binding. This
+also applies to an already-imported no-op, which can overlap runtime saves.
+Import publication takes the same company and recorded source-task locks before
+its legacy coordinator and run locks, then the workspace and saved allocation
+leases. Native claim, status and cancellation owners do not share one row-lock
+order. Import therefore requests those legacy coordinator, run and lease locks
+with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
+`remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
+archive and local files remain available for a later administrative retry. Other
+database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
+
+The workspace fingerprint pins the recorded source. An arriving reservation can
+reach a legacy workspace before refusing it, so publication must follow this
+order too. The lifecycle advisory lock alone does not fence runtime operations.
+Publication still rechecks current writers and unresolved work. Offline imports
+also require the deployment-stopped maintenance fence. Ordinary save requires an
+existing prepared remote location and refuses the unpublished legacy authority.
+
+The workspace lock still serializes generations and publication. Foreign keys,
+ownership and epoch checks, and transaction-aware work notifications remain in
+place. Remote preparation, command execution, archive capture and object upload
+run outside these transactions. No workspace or parent row lock spans that I/O.
 
 ## Execution admission accounting
 
@@ -1797,3 +1913,42 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+## Independent accounting and budget evaluation
+
+`budget_evaluation_work` holds independent pending inputs for committed exposure
+changes, with company and captured agent/project attribution. Producers append
+in their financial transaction after registering transaction-aware notification.
+The worker evaluates a consistent snapshot, fences policy publication through
+`budget_policies.evaluation_version`, and deletes only its selected committed
+input IDs in the publication transaction. A later commit with an older allocated
+ID remains pending. Policy creation/edits also append inputs, so a previously
+consumed no-policy batch cannot hide a newly applicable threshold.
+
+No financial commit increments a company/agent spend counter or company dirty
+version. Monthly API totals aggregate `cost_events`; runtime totals use existing
+`accounting_runtime_baselines` plus acknowledged v2 run ledger. Retained counter
+columns are non-authoritative. Invoice and verified late-receipt corrections
+retain append-only `cost_adjustments` evidence and immutable reported amounts.
+`cost_events.reported_usage_json` retains original placeholder usage before a
+verified late receipt updates effective token/request fields; each adjustment
+retains its previous usage in `previous_usage_json`.
+Unknown late run receipts remain durable per-receipt debt; resolving one receipt
+cannot clear another unresolved receipt.
+
+Upgrade all controllers/workers to this accounting contract and drain incompatible
+pre-upgrade database transactions before enabling independent writers. Do not run
+pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
+Rollback must use a compatible version that reads the ledger and retains the
+durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.

@@ -88,6 +88,16 @@ describe("MarkdownBody code block interactions", () => {
     expect(node.querySelector("a")).toBeNull();
     expect(node.textContent).not.toContain("View recommendations");
   });
+  it("renders a document link inside a sentence as inline text, not a padded card", () => {
+    const node = renderMarkdown("Your [plan is saved](#document-plan), approved, and handed off.", true);
+    const link = node.querySelector<HTMLAnchorElement>("[data-sidebar-document-link]")!;
+    expect(link).toBeTruthy();
+    expect(link.closest("p")).toBeTruthy();
+    // A card (inline-flex box with vertical padding and a full-size icon) is
+    // taller than the text line and overlaps the lines around it.
+    expect(link.className).not.toMatch(/(^|\s)(inline-flex|flex|block|py-\S+|p-\S+)(\s|$)/);
+    expect(link.className).toMatch(/(^|\s)inline(\s|$)/);
+  });
   it("toggles line wrapping for indented preformatted markdown blocks", () => {
     const node = renderMarkdown("Plan:\n\n    source fetch/sync -> signal inbox");
     const pre = node.querySelector("pre");

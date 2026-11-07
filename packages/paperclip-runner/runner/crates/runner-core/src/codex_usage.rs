@@ -65,6 +65,31 @@ impl CodexRunUsage {
         .then(|| self.latest.clone());
     }
 
+    /// Records usage above the known thread total and returns that increment.
+    /// Raising the baseline with the total leaves this run's delta unchanged, so
+    /// the sum across runs always equals the total. Anything at or below the known
+    /// total was already counted, so a replay or out-of-order report adds nothing.
+    pub(crate) fn absorb_late_usage(&mut self, total: &Value) -> Value {
+        let mut late = serde_json::Map::new();
+        for (key, value) in total.as_object().into_iter().flatten() {
+            let Some(reported) = value.as_u64() else {
+                continue;
+            };
+            let known = self.latest.get(key).and_then(Value::as_u64).unwrap_or(0);
+            let increment = reported.saturating_sub(known);
+            late.insert(key.clone(), json!(increment));
+            if increment == 0 {
+                continue;
+            }
+            self.latest.insert(key.clone(), json!(reported));
+            if let Some(baseline) = self.baseline.as_mut() {
+                let base = baseline.get(key).and_then(Value::as_u64).unwrap_or(0);
+                baseline.insert(key.clone(), json!(base + increment));
+            }
+        }
+        Value::Object(late)
+    }
+
     pub(crate) fn observe(&mut self, total: &Value, historical: bool) -> (Value, bool) {
         let measurement: BTreeMap<String, Value> = total
             .as_object()
@@ -181,6 +206,52 @@ mod tests {
             next,
             json!({"inputTokens":30,"outputTokens":4,"cachedInputTokens":2})
         );
+    }
+
+    #[test]
+    fn late_usage_moves_to_its_owner_without_changing_the_attached_runs_delta() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        let (paid, _) = usage.observe(&json!({"inputTokens":130,"outputTokens":14}), false);
+        assert_eq!(paid, json!({"inputTokens":30,"outputTokens":4}));
+        let late = usage.absorb_late_usage(&json!({"inputTokens":150,"outputTokens":14}));
+        assert_eq!(late, json!({"inputTokens":20,"outputTokens":0}));
+        let (next, complete) = usage.observe(&json!({"inputTokens":160,"outputTokens":20}), false);
+        assert!(complete);
+        assert_eq!(next, json!({"inputTokens":40,"outputTokens":10}));
+    }
+
+    #[test]
+    fn already_counted_late_usage_stays_with_the_run_that_counted_it() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        let late = usage.absorb_late_usage(&json!({"inputTokens":120,"outputTokens":12}));
+        assert_eq!(late, json!({"inputTokens":0,"outputTokens":0}));
+        let (run, _) = usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        assert_eq!(run, json!({"inputTokens":50,"outputTokens":5}));
+    }
+
+    #[test]
+    fn late_totals_sum_exactly_with_live_usage_and_replays_between_them() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        let mut moved = 0;
+        for reported in [180, 180, 190, 180] {
+            let late = usage.absorb_late_usage(&json!({"inputTokens":reported,"outputTokens":15}));
+            moved += late["inputTokens"].as_u64().unwrap();
+        }
+        assert_eq!(moved, 40);
+        let (run, _) = usage.observe(&json!({"inputTokens":200,"outputTokens":15}), false);
+        assert_eq!(run["inputTokens"], 60);
+        let late = usage.absorb_late_usage(&json!({"inputTokens":195,"outputTokens":15}));
+        assert_eq!(late["inputTokens"], 0);
+        // The prior run's 100, the attached run's 60 and the 40 moved late.
+        assert_eq!(100 + 60 + moved, 200);
     }
 
     #[test]

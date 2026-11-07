@@ -96,6 +96,7 @@ export const heartbeatRuns = pgTable(
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
+    legacyProcessSettlement: jsonb("legacy_process_settlement").$type<Record<string, unknown>>(),
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),
@@ -140,6 +141,10 @@ export const heartbeatRuns = pgTable(
     ),
     scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
       .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Runs a dispatch gate refused for a pause; that hold's release resumes them.
+    treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
+      .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
+      .where(sql`${table.status} = 'cancelled' and ${table.resultJson} ? 'treeHoldSuppression'`),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
