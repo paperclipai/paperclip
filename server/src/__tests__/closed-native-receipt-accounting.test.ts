@@ -685,6 +685,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.block())?.reason).toMatch(/hard-stop|budget/i);
   });
 
+  it("settles a lost receipt at no less than its observed live price", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || ${JSON.stringify({
+      inputTokens: 1200, outputTokens: 80, model: "unknown-model", costUsd: null,
+      budgetExposure: { sourceId: f.sourceId, sequence: 2, costCents: "600.0000000" } })}::jsonb` }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(await reconcileRunCosts(db)).toMatchObject({ accounted: 1 });
+    const [charge] = await f.charges();
+    expect(Number(charge?.costCents)).toBeGreaterThanOrEqual(600);
+    expect(charge?.costStatus).toBe("estimated");
+  });
+
   it("never schedules a wake for a bound that already passed or for a capture failure", async () => {
     const past = await acceptedResultFixture({ stopEvidence: false, finishedMinutesAgo: 11 });
     await db.update(heartbeatRuns).set({ usageJson: sql`${heartbeatRuns.usageJson} || '{"accountingCaptureFailed":true}'::jsonb` })

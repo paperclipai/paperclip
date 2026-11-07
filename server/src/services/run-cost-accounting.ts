@@ -322,9 +322,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     }
     const reportedCostUsd = amount(usage.cacheAdjustedCostUsd) ?? text(usage.costUsdExact) ?? amount(usage.costUsd);
     // A later checkpoint can clear the raw cost fields while the live budget
-    // projection keeps the price already observed. A failed capture settles at
-    // no less than that observed money, so settlement never lowers spend.
-    const observedCents = captureFailed ? text(object(usage.budgetExposure).costCents) : null;
+    // projection keeps the price already observed. A receipt that will never
+    // complete (lost, timed out, or a failed capture) settles at no less than
+    // that observed money, so settlement never lowers spend.
+    const observedCents = receiptUnavailable ? text(object(usage.budgetExposure).costCents) : null;
     let observedCostUsd: string | null = null;
     if (observedCents) {
       try {
