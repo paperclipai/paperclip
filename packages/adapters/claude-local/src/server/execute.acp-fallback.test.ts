@@ -60,7 +60,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
-import { execute } from "./execute.js";
+import { execute, runClaudeLogin } from "./execute.js";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -118,6 +118,56 @@ describe("claude_local ACP startup fallback", () => {
           networkScope: "allowlist",
           networkTrustedUrls: [paperclipApiUrl],
         }),
+      }),
+    );
+  });
+
+  it("disables background tasks for CLI print runs", async () => {
+    const ctx = buildContext({ engine: "cli" });
+
+    await execute(ctx as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      expect.arrayContaining(["--print"]),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+        }),
+      }),
+    );
+  });
+
+  it("enforces foreground-only CLI turns despite a conflicting configured environment", async () => {
+    const ctx = buildContext({ engine: "cli", env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0" } });
+
+    await execute(ctx as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      expect.arrayContaining(["--print"]),
+      expect.objectContaining({
+        env: expect.objectContaining({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }),
+      }),
+    );
+  });
+
+  it("does not set the CLI print-only environment flag during login", async () => {
+    const ctx = buildContext({ engine: "cli" });
+
+    await runClaudeLogin({ runId: ctx.runId, agent: ctx.agent as never, config: ctx.config, context: {}, onLog: ctx.onLog });
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      ["login"],
+      expect.objectContaining({
+        env: expect.not.objectContaining({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" }),
       }),
     );
   });

@@ -950,6 +950,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`,
       );
     }
+    env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+    loggedEnv.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
