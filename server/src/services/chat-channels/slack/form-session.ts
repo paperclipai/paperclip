@@ -1,3 +1,4 @@
+import { isSlackFormEnrollmentActionId } from "./form-enrollment-identity.js";
 import { parseSlackFormRetirementReceipt, slackFormRetirementHistoryReceipt } from "./ack-retirement-receipt.js";
 import { createHash } from "node:crypto";
 import type { IssueThreadInteraction } from "@paperclipai/shared";
@@ -334,7 +335,7 @@ export function projectSlackFormRetainedOwner(row: SlackFormRetainedRow, current
     const receipt = parseSlackFormRetirementReceipt(row.result.retirementReceipt), enrollment = parseSlackFormPublicEnrollment(row.payload.enrollment), binding = receipt.binding;
     if (receipt.binding.instanceId !== currentInstanceId || currentEnvironment !== undefined && receipt.environment !== currentEnvironment) return null;
     if (row.companyId !== binding.companyId || row.endpointId !== binding.endpointId || row.payload.subject !== receipt.subject
-      || row.providerActionId !== `slack-form-owner:${createHash("sha256").update(JSON.stringify(enrollment)).digest("hex")}`
+      || !isSlackFormEnrollmentActionId(row.providerActionId, enrollment)
       || row.payload.environment !== receipt.environment || typeof row.result.retirementReceiptJws !== "string"
       || Buffer.byteLength(row.result.retirementReceiptJws, "ascii") > 12000
       || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(row.result.retirementReceiptJws)

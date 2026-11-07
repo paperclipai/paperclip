@@ -1,10 +1,10 @@
+import { slackFormEnrollmentActionId, slackFormEnrollmentCompatibleActionIds } from "./form-enrollment-identity.js";
 import { acceptSlackFormRetirementLocally, transferSlackFormRetirement } from "./form-retirement-work.js";
 import { reconcileSlackFormNormalAck } from "./form-ack-work.js";
 import { HttpError } from "../../../errors.js";
 import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv, PaperclipCloudConnectorError } from "../../paperclip-cloud-connector.js";
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatActions, chatEndpoints, chatPublications, issueThreadInteractions, toolConnections, type Db } from "@paperclipai/db";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import { resolveChatQuestionFormOpen, type ResolvedChatQuestionFormOpen } from "../../chat-question-forms.js";
@@ -17,7 +17,6 @@ import { slackFormConnectorIdentity, type SlackFormConnectorIdentity } from "./c
 
 type Tx = Pick<Db, "select" | "insert" | "update">;
 export type SlackFormProtocol = (input: { subject: string; companyId: string; operation: Record<string, unknown> }) => Promise<unknown>;
-const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function attention(code: string): never { throw new SlackCloudReceiptError(code, "attention"); }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return attention("form_owner_response_invalid");
@@ -45,8 +44,11 @@ export async function stageSlackFormEnrollment(tx: Tx, input: { enrollment: Slac
     || endpoint.publicId !== enrollment.publicId || endpoint.connectionId !== enrollment.connectionId
     || setup?.runtimeGeneration !== enrollment.runtimeGeneration || setup?.slackCloudInstanceId !== enrollment.instanceId
     || setup?.slackCloudSubject !== input.subject || !isDeepStrictEqual(projectSlackFormPublicEnrollment(endpoint), enrollment)) return attention("form_owner_current_enrollment_changed");
-  const providerActionId = `slack-form-owner:${hash(enrollment)}`;
-  const [existing] = await tx.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.companyId, endpoint.companyId), eq(chatActions.providerActionId, providerActionId))).for("update");
+  const providerActionId = slackFormEnrollmentActionId(enrollment);
+  const existingRows = await tx.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.companyId, endpoint.companyId),
+    inArray(chatActions.providerActionId, [...slackFormEnrollmentCompatibleActionIds(enrollment)]))).for("update");
+  if (existingRows.length > 1) return attention("form_owner_identity_ambiguous");
+  const [existing] = existingRows;
   const payload = { enrollment, subject: input.subject, environment: input.environment };
   if (existing) {
     if (existing.kind !== "slack_form_owner" || !Object.keys(payload).every(key => isDeepStrictEqual(existing.payload[key], Reflect.get(payload, key)))) return attention("form_owner_custody_changed");

@@ -1,6 +1,6 @@
+import { isSlackFormEnrollmentActionId } from "./form-enrollment-identity.js";
 import { replaceSlackFormReceiptSignature } from "./form-signature-refresh.js";
 import { parseSlackFormRetirementReceipt } from "./ack-retirement-receipt.js";
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, sql } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
@@ -24,8 +24,7 @@ export function assertSlackFormRetirementWorkAuthority(row: Row, identity: Slack
     throw new SlackCloudReceiptError("form_retirement_fingerprint_changed", "attention");
   if (row.result?.retirementReceipt !== undefined && !isDeepStrictEqual(row.result.retirementReceipt, receipt))
     throw new SlackCloudReceiptError("form_retirement_receipt_changed", "attention");
-  const expectedAction = `slack-form-owner:${createHash("sha256").update(JSON.stringify(enrollment)).digest("hex")}`;
-  if (row.providerActionId !== expectedAction) throw new SlackCloudReceiptError("form_retirement_owner_changed", "attention");
+  if (!isSlackFormEnrollmentActionId(row.providerActionId, enrollment)) throw new SlackCloudReceiptError("form_retirement_owner_changed", "attention");
 }
 export function verifyRetainedSlackFormRetirement(compactJws: string) {
   try { return verifySlackFormRetirementReceipt({ compactJws }); }

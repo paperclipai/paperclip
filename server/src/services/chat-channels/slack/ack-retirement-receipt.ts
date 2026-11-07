@@ -1,3 +1,4 @@
+import { isSlackFormEnrollmentActionId } from "./form-enrollment-identity.js";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { parseSlackFormBinding as parseFormBinding, parseSlackFormPublicEnrollment, type SlackFormBinding as FormBinding } from "./cloud-forms.js";
@@ -53,7 +54,7 @@ export function slackFormRetirementHistoryReceipt(row: SlackRetirementHistoryRow
     if (enrollment.bindingId !== binding.eventBindingId
       || ["instanceId", "companyId", "endpointId", "publicId", "connectionId", "runtimeGeneration", "teamId", "appId"].some(key => Reflect.get(enrollment, key) !== Reflect.get(binding, key))) throw new Error("Slack retirement enrollment history changed");
   }
-  if (row.kind === "slack_form_owner" && row.providerActionId !== `slack-form-owner:${createHash("sha256").update(JSON.stringify(parseSlackFormPublicEnrollment(row.payload.enrollment))).digest("hex")}`)
+  if (row.kind === "slack_form_owner" && !isSlackFormEnrollmentActionId(row.providerActionId, parseSlackFormPublicEnrollment(row.payload.enrollment)))
     throw new Error("Slack retirement history owner changed");
   return receipt;
 }

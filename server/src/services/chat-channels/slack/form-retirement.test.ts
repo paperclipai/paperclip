@@ -72,3 +72,17 @@ it("only exact committed transfer discharges history and its retained consumer",
   expect(() => slackFormRetirementHistoryReceipt({ ...current, result: { ...current.result, retirement: { ...retirement, receiptDigest: "0".repeat(64) } } })).toThrow();
   expect(() => slackFormRetirementHistoryReceipt({ ...current, result: { phase: "transferred", nextAttemptAt: null } })).toThrow();
 });
+
+it("preserves exact legacy custody through JSONB ordering for acceptance, polling and history", () => {
+  const current = row();
+  current.payload = { ...current.payload, enrollment: Object.fromEntries(Object.entries(enrollment).sort(([a], [b]) => Buffer.byteLength(a) - Buffer.byteLength(b) || a.localeCompare(b))) };
+  expect(() => assertSlackFormRetirementWorkAuthority(current, identity, receipt)).not.toThrow();
+  const input = signed();
+  current.result = { phase: "retirement_accepted", retirementReceipt: receipt, retirementReceiptJws: input.compactJws, nextAttemptAt: new Date(0).toISOString() };
+  expect(projectSlackFormRetainedOwner(current, identity.instanceId, identity.environment)?.requiresDelivery).toBe(false);
+  current.status = "processed";
+  current.result = { phase: "transferred", nextAttemptAt: null, retirement: { version: 1, binding, instanceId: identity.instanceId,
+    environment: identity.environment, subject: receipt.subject, receiptDigest: receipt.receiptId, receipt } };
+  expect(slackFormRetirementHistoryReceipt(current)).toEqual(receipt);
+  expect(projectSlackFormRetainedOwner(current, identity.instanceId, identity.environment)).toBeNull();
+});
