@@ -99,6 +99,30 @@ and `harness_state.launch_material` for remote state inspection and fresh launch
 material. These events retain the existing schema and carry no paths or exception strings.
 They also become native Observability spans only with an operator OTLP endpoint.
 
+## Local runner startup sub-steps
+
+`run.performance.span` splits a local Runner startup (`runner.session.bootstrap` or
+`runner.session.resume`) into three sequential children of `runner.session.startup`:
+
+- `runner.runtime.stage`: controller-side launch preparation before the Runner
+  process exists (runtime context, provider home, launch profiles; on resume, the
+  durable-state checks and authority rotation as well).
+- `runner.process.launch`: from spawning `paperclip-runnerd` until it has
+  authenticated to the PRP control plane and accepted the run (`run.prepare`, or
+  the recovery attachment on resume). An exact adoption of a live Runner records
+  no launch, so this span keeps meaning a fresh Runner process (see startup
+  reuse above).
+- `provider.session.load`: from `session.open` (or the recovery probe) until the
+  provider session identity is confirmed.
+
+Each carries `mode` (`bootstrap` or `resume`), `target: "local"`, and `outcome`
+(`failed` when startup fails inside the step). The Runner transport reports each
+milestone synchronously; the controller writes the row as deferred diagnostic
+work, so the run-log write never delays `turn.start`. Remote launchers keep their
+own `runner.runtime.stage` and `runner.process.launch` spans. These rows stay in
+the instance run log; with an operator OTLP endpoint they are also Observability
+spans. They are not Telemetry.
+
 ## Native PRP Run-Log Events
 
 Provider startup command failures and failed provider turns can carry a

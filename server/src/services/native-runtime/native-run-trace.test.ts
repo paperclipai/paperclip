@@ -10,6 +10,7 @@ import {
   nativeRunPreparationStarts,
   recordFailedSkillPreparation,
   recordNativeProviderPerformanceSpans,
+  recordNativeRunnerStartupStep,
   resolveNativeTimeToFirstTokenStart,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
@@ -602,5 +603,43 @@ describe("deferred diagnostics", () => {
     trace.defer(late);
     await Promise.resolve();
     expect(late).not.toHaveBeenCalled();
+  });
+});
+
+describe("local runner startup sub-steps", () => {
+  it("records each step beneath runner.session.startup without blocking the caller", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    let releaseSink!: () => void;
+    const sinkGate = new Promise<void>((resolve) => { releaseSink = resolve; });
+    const { traceContext, spans } = createRecordingTraceContext();
+    const trace = createNativeRunTrace({
+      runId: "startup-steps", startedAtMs: 1_000, traceContext,
+      onEvent: async (event) => { await sinkGate; events.push(event); },
+    });
+    const startup = trace.start("runner.session.startup", { parentName: "task.provider_session", startedAtMs: 1_000 });
+    // Synchronous and detached: a stalled run-log sink cannot delay turn.start.
+    recordNativeRunnerStartupStep(trace, { name: "runner.runtime.stage", mode: "bootstrap", startedAtMs: 1_000, endedAtMs: 1_200, outcome: "ok" });
+    recordNativeRunnerStartupStep(trace, { name: "runner.process.launch", mode: "bootstrap", startedAtMs: 1_200, endedAtMs: 1_900, outcome: "ok" });
+    recordNativeRunnerStartupStep(trace, { name: "provider.session.load", mode: "resume", startedAtMs: 1_900, endedAtMs: 4_000, outcome: "failed" });
+    expect(events).toHaveLength(0);
+    const ended = trace.end(startup, { endedAtMs: 4_000 });
+    const finished = trace.finish("ok");
+    releaseSink();
+    await ended;
+    await finished;
+    const payloads = events.map((event) => event.payload as Record<string, unknown>);
+    const step = (name: string) => payloads.find((payload) => payload.span === name);
+    expect(step("runner.runtime.stage")).toMatchObject({ parentSpan: "runner.session.startup", startOffsetMs: 0, durationMs: 200, outcome: "ok", mode: "bootstrap", target: "local" });
+    expect(step("runner.process.launch")).toMatchObject({ parentSpan: "runner.session.startup", startOffsetMs: 200, durationMs: 700, outcome: "ok" });
+    expect(step("provider.session.load")).toMatchObject({ parentSpan: "runner.session.startup", durationMs: 2_100, outcome: "failed", mode: "resume" });
+    expect(events.find((event) => (event.payload as Record<string, unknown>).span === "provider.session.load")?.level).toBe("warn");
+    expect(spans.find((span) => span.name === "runner.process.launch")?.parentName).toBe("runner.session.startup");
+    // Settled before the root measurement closes.
+    const names = payloads.map((payload) => payload.span);
+    expect(names.indexOf("provider.session.load")).toBeLessThan(names.indexOf("task.provider_session.measured"));
+  });
+
+  it("is a no-op without a trace", () => {
+    expect(() => recordNativeRunnerStartupStep(undefined, { name: "runner.process.launch", mode: "bootstrap", startedAtMs: 1, endedAtMs: 2, outcome: "ok" })).not.toThrow();
   });
 });

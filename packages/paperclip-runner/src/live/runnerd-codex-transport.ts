@@ -1569,6 +1569,11 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   /** Controller-owned opt-in operation timing. No exporter lives in Runner. */
   measureOperation?<T>(phase: string, work: () => Promise<T>, attributes?: Record<string, number | boolean>): Promise<T>;
   recordTimingReceipt?(receipt: unknown): void;
+  /**
+   * Controller-owned startup sub-steps for the run log. Called synchronously
+   * at each milestone; the controller must not wait on it before turn.start.
+   */
+  onStartupStep?(step: RunnerdStartupStep): void;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;
   /** Persist process ownership immediately after spawn, before waiting for
@@ -1634,6 +1639,15 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   onWarmTransitionRecoveryCompleted?: (input: {
     transitionId: string;
   }) => void | Promise<void>;
+}
+
+/** One measured local startup sub-step, named for the run-log span it becomes. */
+export interface RunnerdStartupStep {
+  name: "runner.runtime.stage" | "runner.process.launch" | "provider.session.load";
+  mode: "bootstrap" | "resume";
+  startedAtMs: number;
+  endedAtMs: number;
+  outcome: "ok" | "failed";
 }
 
 export type RunnerdCodexTransportOptions =
@@ -3950,6 +3964,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
+  #startupSteps: { begin(name: RunnerdStartupStep["name"]): void; end(): void } | null = null;
   #pendingTraceRehydrations: PendingTraceRehydration[] = [];
   #pendingDriverTraceInterpretations: PendingDriverTraceInterpretation[] = [];
   #restoredRuntimeRequests: CodexRpcServerRequest[] = [];
@@ -5781,7 +5796,38 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #start(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.cold_start", () => this.#startWork(params)) : this.#startWork(params);
+    const work = () => this.#withStartupSteps("bootstrap", () => this.#startWork(params));
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.cold_start", work) : work();
+  }
+
+  /**
+   * Time this startup's sub-steps for the controller's run log. A nested
+   * startup (exact adoption from thread/start) keeps the outer clock.
+   */
+  async #withStartupSteps<T>(mode: RunnerdStartupStep["mode"], work: () => Promise<T>): Promise<T> {
+    const onStep = this.options.onStartupStep;
+    if (!onStep || this.#startupSteps !== null) return work();
+    let open: { name: RunnerdStartupStep["name"]; startedAtMs: number } | null = null;
+    const close = (outcome: RunnerdStartupStep["outcome"]) => {
+      if (!open) return;
+      const step = { ...open, mode, endedAtMs: Date.now(), outcome };
+      open = null;
+      try { onStep(step); } catch { /* Diagnostics never change startup. */ }
+    };
+    this.#startupSteps = {
+      begin: name => { close("ok"); open = { name, startedAtMs: Date.now() }; },
+      end: () => close("ok"),
+    };
+    try {
+      const value = await work();
+      close("ok");
+      return value;
+    } catch (error) {
+      close("failed");
+      throw error;
+    } finally {
+      this.#startupSteps = null;
+    }
   }
 
   /** Runner state held by an external Runner host (a plugin task or a sandbox). */
@@ -5866,7 +5912,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       });
     }
     const unclaimedBootstrap = core.unclaimedBootstrapCheckpoint();
+    this.#startupSteps?.begin("runner.runtime.stage");
     const prepared = await this.#prepareLaunch(params, identity, dynamicTools);
+    this.#startupSteps?.end();
     const { runAttachTemplate } = prepared;
     // Preserve the first generation's provider attachment seed independently
     // of bounded command history. The in-memory copy serves a live warm
@@ -5897,6 +5945,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const bootstrapTicket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
     await core.flushCheckpoint();
     this.#assertStartupOpen();
+    this.#startupSteps?.begin("runner.process.launch");
     const handle = spawnRunner({
       connection: registration?.connection ?? {
         mode: "connect",
@@ -5942,8 +5991,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitCommand("run.prepare", undefined, undefined, true);
+    this.#startupSteps?.begin("provider.session.load");
     await this.#waitCommand("session.open", undefined, admissionDeadline, true);
     await this.#waitForProviderIdentity(undefined, admissionDeadline);
+    this.#startupSteps?.end();
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");
     return this.#openedThreadResponse(params);
@@ -5988,11 +6039,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #resume(): Promise<void> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.resume", () => this.#resumeWork()) : this.#resumeWork();
+    const work = () => this.#withStartupSteps("resume", () => this.#resumeWork());
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.resume", work) : work();
   }
 
   async #resumeWork(): Promise<void> {
     if (this.options.acpxCandidateAdmission?.agent === "antigravity") throw new Error("ACPX candidate durable runner recovery is not admitted");
+    this.#startupSteps?.begin("runner.runtime.stage");
     let desiredIdentity = this.options.prpIdentity;
     if (desiredIdentity === undefined) {
       throw new Error("PRP provider resume state is unavailable");
@@ -6709,6 +6762,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const admissionDeadline = this.#sourceAttachmentDeadline === null
       ? this.#coldAdmissionDeadline(adoptedRunner === undefined)
       : Math.min(Date.now() + 30_000, this.#sourceAttachmentDeadline);
+    // An adopted runner is already live: no launch step (a launch span means a fresh process).
+    if (adoptedRunner) this.#startupSteps?.end();
+    else this.#startupSteps?.begin("runner.process.launch");
     const handle = adoptedRunner
       ? null
       : spawnRunner({
@@ -6860,6 +6916,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (runAttachment) {
       await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
     }
+    this.#startupSteps?.begin("provider.session.load");
     if (recoveryProbeCommandId !== null) {
       await this.#waitCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true);
       if (this.#checkpointProviderIdentityExpectation !== null) {
@@ -6889,6 +6946,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : undefined,
       admissionDeadline,
     );
+    this.#startupSteps?.end();
     this.#startupComplete = true;
     if (recoveringAttachment && staged) {
       this.#sourceRecoveryIdentity = null;
