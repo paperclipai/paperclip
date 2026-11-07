@@ -1062,6 +1062,28 @@ describe("PaperclipRunnerToolAuthority", () => {
     }
   });
 
+  it("keeps node-heavy assigned catalogs discoverable and calls them through the gateway", async () => {
+    const properties = Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`field_${i}`, { type: "string" }]));
+    const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 80 }, (_, i) => ({
+      name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",
+      parametersSchema: { type: "object", properties }, risk: "read",
+    })));
+    const executeTool = vi.fn().mockResolvedValue({ status: "completed", result: { value: "ok" } });
+    const assignedMcpTools = await createAssignedMcpTools({
+      gateway: { listToolsForNamedGateway, executeTool } as unknown as ToolGatewayService,
+      gatewayPublicId: "fixture", bearerToken: "fixture-token",
+    });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, assignedMcpTools });
+    const names = authority.definitions().map(tool => tool.name);
+    expect(names).toContain("paperclip_search_assigned_tools");
+    expect(names).toContain("paperclip_call_assigned_tool");
+    expect(names.some(name => String(name).startsWith("app_"))).toBe(false);
+    const page = await authority.execute({ tool: "paperclip_search_assigned_tools", callId: "node-heavy-search", arguments: { query: "Action 0", limit: 1 } }) as { tools: Array<{ name: string }> };
+    expect(page.tools).toHaveLength(1);
+    await expect(authority.execute({ tool: "paperclip_call_assigned_tool", callId: "node-heavy-call", arguments: { name: page.tools[0]!.name, arguments: { field_0: "value" } } })).resolves.toEqual({ value: "ok" });
+    expect(executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tool: "app.action_0", parameters: { field_0: "value" }, gatewayPublicId: "fixture", sessionToken: "fixture-token" }));
+  });
+
   it("relays assigned MCP calls only while the native run still owns its task", async () => {
     const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
     const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
