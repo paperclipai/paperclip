@@ -45,6 +45,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   deleteSkill: vi.fn(),
   auditSkill: vi.fn(),
   getById: vi.fn(),
+  getByRouteRef: vi.fn(),
   installUpdate: vi.fn(),
   resetSkill: vi.fn(),
   listTestInputs: vi.fn(),
@@ -314,6 +315,10 @@ describe("company skill mutation permissions", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCompanySkillService.getByRouteRef.mockImplementation(async (companyId: string, ref: string) => {
+      const skill = await mockCompanySkillService.getById(companyId, ref);
+      return skill ? { ...skill, id: ref } : skill;
+    });
     mockHeartbeatFactory.mockReturnValue(mockHeartbeatService);
     mockCaptureRunIdentity.mockResolvedValue({ run: { responsibleUserId: "validated-owner" } });
     mockSkillSourceService.sourceForSkill.mockResolvedValue(null);
@@ -824,6 +829,32 @@ describe("company skill mutation permissions", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Actor is restricted from changing skill configuration.");
     expect(mockCompanySkillService.scanProjectWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("resolves skill slugs in the skillId param to the canonical skill id", async () => {
+    const skillId = "22222222-2222-4222-8222-222222222222";
+    mockCompanySkillService.getByRouteRef.mockResolvedValue({ id: skillId, slug: "inbox-triage" });
+    const app = await createApp(boardActor("board-user", "session"));
+
+    await request(app)
+      .post("/api/companies/company-1/skills/inbox-triage/audit")
+      .send({})
+      .expect(200);
+
+    expect(mockCompanySkillService.getByRouteRef).toHaveBeenCalledWith("company-1", "inbox-triage");
+    expect(mockCompanySkillService.auditSkill).toHaveBeenCalledWith("company-1", skillId);
+  });
+
+  it("returns 404 when the skillId param does not match any skill", async () => {
+    mockCompanySkillService.getByRouteRef.mockResolvedValue(null);
+    const app = await createApp(boardActor("board-user", "session"));
+
+    await request(app)
+      .post("/api/companies/company-1/skills/missing-skill/audit")
+      .send({})
+      .expect(404);
+
+    expect(mockCompanySkillService.auditSkill).not.toHaveBeenCalled();
   });
 
   it("allows board users with skills:create to create, import, install, update, delete, audit, and reset company skills", async () => {
