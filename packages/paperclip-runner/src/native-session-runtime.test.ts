@@ -337,7 +337,7 @@ describe("executeNativeSession recovery", () => {
 
   it.each([
     "completed", "pending", "duplicate", "conflicting", "other turn", "newer turn",
-    "wrong session", "invalid",
+    "wrong session", "invalid", "restore-lost live", "restore-lost read",
   ])("recovers a journaled completion proposal after restart: %s", async (scenario) => {
     const originalTransport = new FakeCodexTransport();
     const recoveredTransport = new FakeCodexTransport();
@@ -387,7 +387,9 @@ describe("executeNativeSession recovery", () => {
     await original.close({ reason: "controller disconnected after persisting the proposal" });
     recoveredTransport.readResponse = { thread: {
       id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
-      turns: [{ id: "turn-1", status: scenario === "pending" ? "inProgress" : "completed", items: [
+      turns: [{ id: "turn-1", ...(scenario === "restore-lost read"
+        ? { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true } }
+        : { status: ["pending", "restore-lost live"].includes(scenario) ? "inProgress" : "completed" }), items: [
         { id: "answer", type: "agentMessage", text: "The review was published." },
       ] }],
     } };
@@ -429,11 +431,15 @@ describe("executeNativeSession recovery", () => {
       expect(recoveredTransport.calls.filter(call => call.method === "turn/start")).toEqual([]);
       return;
     }
-    if (scenario === "pending") {
+    if (scenario === "pending" || scenario === "restore-lost live") {
       await vi.waitFor(() => expect(checkpoints[0]?.semanticResult).toEqual(result));
       expect(completeRun).not.toHaveBeenCalled();
+      // ACPX reports a turn lost on restore as a live terminal once the
+      // restored runner reopens the conversation.
       recoveredTransport.push("turn/completed", {
-        threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] },
+        threadId: "thread-1", turn: scenario === "pending"
+          ? { id: "turn-1", status: "completed", items: [] }
+          : { id: "turn-1", status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true }, items: [] },
       });
     }
     await expect(execution).resolves.toMatchObject({ result, turnId: "turn-1", terminal });

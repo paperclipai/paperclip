@@ -1324,6 +1324,44 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it.each([true, false])("settles a live restore-lost terminal from its durable result only when one is held (held=%s)", async (held) => {
+    // ACPX reports the lost turn as a live notification after the session
+    // reopens, not through thread/read. An accepted result for that exact turn
+    // must still finalize as a completed turn instead of a failed run.
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: `run-live-lost-${held}`,
+      normalizedSessionId: `normalized-live-lost-${held}`,
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    if (held) {
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      });
+    }
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const collecting = collectUntilTerminal(recovery!.session!.events());
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    const events = await collecting;
+    const terminal = events.find((event) => event.eventType.startsWith("turn."));
+    expect(terminal?.eventType).toBe(held ? "turn.completed" : "turn.failed");
+    if (!held) expect(terminal?.payload).toMatchObject({ error: lost });
+    if (held) expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+  });
+
   it.each([true, false])("settles a restore-lost turn from its durable result only when one is held (held=%s)", async (held) => {
     // The runner can report the checkpointed turn lost on restore when it
     // cannot prove the accepted result itself, while Paperclip already holds it.

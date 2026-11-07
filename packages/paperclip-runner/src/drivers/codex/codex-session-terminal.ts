@@ -101,6 +101,26 @@ function finalize(
     state.terminal = true;
   }
 
+/**
+ * The restored runner reports a turn lost on restore when it cannot prove the
+ * turn's outcome itself. When Paperclip already holds the semantic result this
+ * exact turn proposed, that result is the turn's outcome: the turn settles as
+ * completed instead of failing the run and rerunning finished work. Live
+ * notifications and recovery reads use the same rule. Any other terminal, or a
+ * lost turn without a held result, is returned unchanged.
+ */
+export function settleRestoreLostTurnWithHeldResult(
+  state: CodexSessionState,
+  turn: Record<string, unknown>,
+  turnId = text(turn.id),
+): Record<string, unknown> {
+  if (text(turn.status) !== "failed" || !isNativeRestartInterruption(turn.error) ||
+      state.result === null || turnId.length === 0 || state.resultTurnId !== turnId) {
+    return turn;
+  }
+  return { ...turn, status: "completed", error: null };
+}
+
 export function mapTerminalTurn(
   state: CodexSessionState,
     turn: Record<string, unknown>,
@@ -108,6 +128,7 @@ export function mapTerminalTurn(
     reconciling = false,
   ): void {
     const turnId = text(turn.id, fallbackTurnId || state.activeTurnId || "");
+    turn = settleRestoreLostTurnWithHeldResult(state, turn, turnId);
     const status = text(turn.status, "completed");
     const previous = state.terminalTurns.get(turnId);
     if (previous !== undefined) {
