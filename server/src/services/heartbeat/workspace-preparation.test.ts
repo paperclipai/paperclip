@@ -2100,6 +2100,31 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(acquire.mock.calls[1]![0]).not.toHaveProperty("reattachRemoteLease");
   });
 
+  it("keeps a live retained lease's scope failure instead of acquiring another sandbox", async () => {
+    const { input, envOrchestrator } = await fixture();
+    retiredInheritedRunner(input);
+    const scope = new Error("native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_scope");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(scope);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(scope);
+    expect(acquire).toHaveBeenCalledOnce();
+  });
+
+  it("resumes a retired inherited runner's native workspace sync sandbox", async () => {
+    const { input, envOrchestrator } = await fixture();
+    const location = { leaseId: randomUUID(), providerLeaseId: "retained-sync-sandbox", remoteCwd: "/retained-sync" };
+    input.run.runnerProfileJson = { ...(input.run.runnerProfileJson ?? {}),
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared", workspaceId: randomUUID(),
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        resourceDisposition: "destroy", ...location },
+      nativeInheritedRunnerRetirement: { schema: "paperclip.native-inherited-runner-retirement.v1",
+        predecessorRunId: randomUUID(), retainedSandbox: location } };
+    input.reuse.runOptions = { nativeLeaseOwner: "resume-owner" };
+    const reached = new Error("Reached the retained sync sandbox");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(reached);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(reached);
+    expect(acquire).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ reattachRemoteLease: location }));
+  });
+
   it("does not reuse a retained sandbox without a retired inherited runner", async () => {
     const { input, envOrchestrator } = await fixture();
     retiredInheritedRunner(input);

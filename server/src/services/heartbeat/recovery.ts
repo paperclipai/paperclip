@@ -2205,7 +2205,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) {
           // A continuation that never started its own runner holds only its
           // predecessor's identity: resume it the way its failed attempt ran.
-          if (await retireInheritedRemoteRunnerIdentity(db, run.id)) claimableNativeRunIds.add(run.id);
+          const retirement = await retireInheritedRemoteRunnerIdentity(db, run.id);
+          if (retirement === "retired") claimableNativeRunIds.add(run.id);
+          // A lock or database error is not evidence: retry on the next sweep.
+          else if (retirement === "transient") scope.onDeferredDeadline?.(Date.now() + 30_000);
           else remoteRetryRunIds.push(run.id);
         } else {
           const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(

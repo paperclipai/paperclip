@@ -1,3 +1,4 @@
+import { retireInheritedRemoteRunnerIdentity } from "../native-runtime/native-inherited-runner-retry.js";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -433,6 +434,44 @@ describePostgres("heartbeat recovery module ownership", () => {
       expect(child.alive()).toBe(true);
     } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
   });
+
+  it("routes a run another sweep already retired to the same resume", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    try {
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      expect(await retireInheritedRemoteRunnerIdentity(db, f.run.id)).toBe("retired");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      expect(events.filter(event => event.payload?.reason === "inherited_runner_never_launched")).toHaveLength(1);
+    } finally { try { await f.cleanupAll(); } finally { await child.stop(); } }
+  });
+
+  it("defers instead of reattaching when the retirement cannot take its locks", async () => {
+    const child = await ownedProcess();
+    const f = await inheritedRunnerRetry(child.pid, "staging");
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const holding = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.run.issueId!)).for("update");
+      locked();
+      await released;
+    });
+    try {
+      await holding;
+      native.claims.mockClear();
+      const deferred = vi.fn();
+      await createHeartbeatRecovery(db, f.deps).resumeRetryableNativeProcessSessions({ runId: f.run.id, onDeferredDeadline: deferred });
+      expect(deferred).toHaveBeenCalled();
+      expect(native.claims.mock.calls.some(([input]) => input?.runIds?.includes(f.run.id))).toBe(false);
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+      expect((await f.current()).processPid).toBe(child.pid);
+    } finally {
+      release(); await holder;
+      try { await f.cleanupAll(); } finally { await child.stop(); }
+    }
+  }, 30_000);
 
   it.each(["own_turn", "own_launch", "own_checkpoint", "no_predecessor", "pending_side_effect", "legacy_detail"] as const)(
     "keeps verified reattachment when the run's own runner may hold work or the proof is incomplete: %s", async condition => {

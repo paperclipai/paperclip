@@ -74,39 +74,45 @@ export function readInheritedRunnerRetainedSandbox(profile: Record<string, unkno
  * Anything else, including rows saved by a release that did not record these
  * facts, keeps the existing verified reattachment path.
  */
-export async function retireInheritedRemoteRunnerIdentity(db: Db, runId: string): Promise<boolean> {
+export type InheritedRunnerRetirement = "retired" | "not_applicable" | "transient";
+
+export async function retireInheritedRemoteRunnerIdentity(db: Db, runId: string): Promise<InheritedRunnerRetirement> {
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     await tx.execute(sql`select set_config('lock_timeout', '2000', true)`);
     const [candidate] = await tx.select({ companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.nativeIssueId })
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
-    if (!candidate?.issueId) return false;
+    if (!candidate?.issueId) return "not_applicable";
     // Same lock order as same-run resumption: issue, coordinator, run.
     const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
       eq(issues.companyId, candidate.companyId), eq(issues.id, candidate.issueId))).for("update").limit(1);
-    if (!issue) return false;
+    if (!issue) return "not_applicable";
     const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, candidate.companyId), eq(nativeRunFinalizations.runId, runId),
       eq(nativeRunFinalizations.issueId, issue.id))).for("update").limit(1);
     const [run] = await tx.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, runId))).for("update").limit(1);
+    // A concurrent sweep already retired it: route it to the same resume.
+    if (coordinator && run && run.processPid === null && run.processGroupId === null
+      && record(record(run.runnerProfileJson)[NATIVE_INHERITED_RUNNER_RETIREMENT_KEY]).schema === RETIREMENT_SCHEMA
+      && coordinator.phase === "retryable_failure" && coordinator.resultId === null) return "retired";
     if (!coordinator || !run || run.runtimeMode !== "native" || isNativeRunnerOwnershipHeld(run)
       || !["running", "failed"].includes(run.status) || run.sessionIdAfter
-      || (run.processPid === null && run.processGroupId === null) || !run.nativeSessionId) return false;
+      || (run.processPid === null && run.processGroupId === null) || !run.nativeSessionId) return "not_applicable";
     const detail = record(coordinator.failureDetail);
     if (coordinator.phase !== "retryable_failure" || coordinator.resultId !== null || coordinator.leaseOwner !== null
       || detail.recoveryMode !== "exact_checkpoint_resume" || detail.providerEventsExist !== false
-      || typeof detail.successorRunId === "string") return false;
+      || typeof detail.successorRunId === "string") return "not_applicable";
 
     const profile = record(run.runnerProfileJson);
     const location = savedRemoteLocation(profile);
     const checkpoint = record(profile.sessionCheckpoint);
     const pending = checkpoint.pendingRuntimeRequests;
     if (!location || checkpoint.activeTurnId != null
-      || (pending !== undefined && pending !== null && (!Array.isArray(pending) || pending.length > 0))) return false;
-    if (await hasNativeExecutionStartEvidence(tx, run)) return false;
-    if ((await nativeSessionProviderEvidence(tx, [run.id])).has(run.id)) return false;
-    if (await hasNativeRunnerCheckpoint(tx, { companyId: run.companyId, issueId: issue.id, runId: run.id })) return false;
+      || (pending !== undefined && pending !== null && (!Array.isArray(pending) || pending.length > 0))) return "not_applicable";
+    if (await hasNativeExecutionStartEvidence(tx, run)) return "not_applicable";
+    if ((await nativeSessionProviderEvidence(tx, [run.id])).has(run.id)) return "not_applicable";
+    if (await hasNativeRunnerCheckpoint(tx, { companyId: run.companyId, issueId: issue.id, runId: run.id })) return "not_applicable";
 
     // The identity must be exactly the one a settled predecessor recorded.
     const [predecessor] = await tx.select({ id: heartbeatRuns.id, processStartedAt: heartbeatRuns.processStartedAt })
@@ -117,7 +123,7 @@ export async function retireInheritedRemoteRunnerIdentity(db: Db, runId: string)
       run.processPid === null ? isNull(heartbeatRuns.processPid) : eq(heartbeatRuns.processPid, run.processPid),
       run.processGroupId === null ? isNull(heartbeatRuns.processGroupId) : eq(heartbeatRuns.processGroupId, run.processGroupId),
     )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-    if (!predecessor || !sameTime(predecessor.processStartedAt, run.processStartedAt)) return false;
+    if (!predecessor || !sameTime(predecessor.processStartedAt, run.processStartedAt)) return "not_applicable";
 
     // Keep the run's own sandbox when its lease is still live.
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
@@ -142,9 +148,10 @@ export async function retireInheritedRemoteRunnerIdentity(db: Db, runId: string)
       payload: { reason: "inherited_runner_never_launched", predecessorRunId: predecessor.id,
         retainedSandbox: Boolean(lease) },
     });
-    return true;
-  }).catch(error => {
+    return "retired" as const;
+  }).catch((error): InheritedRunnerRetirement => {
+    // A busy lock or a database error proves nothing. Keep the run for the next sweep.
     logger.warn({ err: error, runId }, "failed to retire an inherited remote runner identity");
-    return false;
+    return "transient";
   });
 }

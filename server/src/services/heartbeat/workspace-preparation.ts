@@ -98,6 +98,9 @@ import type {
 type WorkspaceResolver = ReturnType<typeof createHeartbeatWorkspaceResolver>;
 type WorkspaceMetadataInput = Parameters<typeof buildEffectiveRunWorkspaceConfigMetadata>[0];
 
+/** Exact-lease failures that prove the retained sandbox can no longer be used. */
+const RETAINED_SANDBOX_GONE = new RegExp(`^${NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH}: stage=environment_(?:acquire|resume) field=(?:lease|lease_status|lease_expired|provider_lease_id)$`);
+
 /** Prepares the workspace and environment; dispatch and terminal lease release stay with the caller. */
 export interface HeartbeatWorkspacePreparationInput {
   run: typeof heartbeatRuns.$inferSelect;
@@ -1316,8 +1319,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       try {
         return await envOrchestrator.acquireForRun({ ...input, reattachRemoteLease: retainedSandbox });
       } catch (error) {
-        // The retained sandbox is gone. Acquire as an ordinary resume does.
-        if (!(error instanceof Error) || !error.message.startsWith(`${NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH}: `)) throw error;
+        // Only proof that the retained sandbox is gone permits ordinary
+        // acquisition. A live lease with another scope keeps the failure.
+        if (!(error instanceof Error) || !RETAINED_SANDBOX_GONE.test(error.message)) throw error;
         logger.warn({ runId: run.id, detail: error.message }, "retained sandbox unavailable for same-run resume; acquiring");
         return envOrchestrator.acquireForRun(input);
       }
