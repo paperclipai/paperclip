@@ -140,20 +140,41 @@ function lockHolderToken(lockContent: Buffer): string | null {
  * lock races for one exclusive claim named by the holder's unique token, so
  * only one of them ever unlinks it. While the stale lock exists no one else
  * can acquire or remove it (its holder is gone), so the inode check before the
- * unlink only confirms the claim is still about that lock. The claim file is
- * kept: a waiter that read the stale lock late finds it and does nothing,
- * rather than judging a newer lock by a reused inode number.
+ * unlink only confirms the claim is still about that lock. The claim and the
+ * holder's owner file are kept: the owner file pins the stale inode so it is
+ * never reused, and a waiter that read the stale lock late finds the claim and
+ * does nothing. A claim is itself a lock with a token and controller: when its
+ * claimer provably exited before finishing, the same rule releases the claim
+ * and the next poll claims the stale lock again.
  */
-export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: string, stale: { inode: number; token: string }): Promise<void> {
+export async function releaseExitedRuntimeSkillCacheLock(root: string, lock: string,
+  stale: { inode: number; token: string }, depth = 0): Promise<void> {
   const claim = `${lock}.released-${stale.token}`;
-  try { await fs.writeFile(claim, JSON.stringify({ controller: currentControllerProcessStamp() }), { flag: "wx" }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return; throw error; }
+  try {
+    await fs.writeFile(claim, JSON.stringify({ token: randomUUID(), controller: currentControllerProcessStamp() }), { flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    // Bounded: a claimer crash inside this two-syscall window is already rare.
+    if (depth >= 2) return;
+    const handle = await fs.open(claim, constants.O_RDONLY | constants.O_NOFOLLOW).catch((openError: NodeJS.ErrnoException) => {
+      if (openError.code === "ENOENT") return null;
+      throw openError;
+    });
+    if (!handle) return;
+    let held: { content: Buffer; inode: number };
+    try { held = { content: await handle.readFile(), inode: (await handle.stat()).ino }; }
+    finally { await handle.close(); }
+    const claimToken = lockHolderToken(held.content);
+    if (claimToken && await runtimeSkillCacheLockHolderExited(held.content)) {
+      await releaseExitedRuntimeSkillCacheLock(root, claim, { inode: held.inode, token: claimToken }, depth + 1);
+    }
+    return;
+  }
   const current = await fs.lstat(lock).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
   if (current?.ino === stale.inode) await fs.unlink(lock);
-  await fs.unlink(path.join(root, `.owner-${stale.token}`)).catch(() => {});
 }
 
 // Serialize builds and cleanup for one skill across processes as well as callers.

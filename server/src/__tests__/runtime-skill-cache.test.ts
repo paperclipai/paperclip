@@ -113,9 +113,23 @@ describe("runtime skill revision cache", () => {
       resolveRuntimeSkillCache(runtimeSkillCacheSpec(root, { ...skill })!, reader())]);
     expect(new Set(sources)).toEqual(new Set([path.join(spec.entry, "files")]));
     expect(Date.now() - startedAt).toBeLessThan(5_000);
-    const left = await fs.readdir(namespace);
-    expect(left).not.toContain(`${skill.id}.lock`);
-    expect(left).not.toContain(`.owner-${token}`);
+    expect(await fs.readdir(namespace)).not.toContain(`${skill.id}.lock`);
+  });
+
+  it("takes over a release claim whose claimer exited before removing the stale lock", async () => {
+    const spec = runtimeSkillCacheSpec(root, skill)!;
+    const namespace = path.dirname(spec.root);
+    await fs.mkdir(namespace, { recursive: true });
+    const dead = { ...currentControllerProcessStamp(), bootId: randomUUID(), processStartedAt: null };
+    const token = randomUUID();
+    await fs.writeFile(path.join(namespace, `.owner-${token}`), lockStamp({ ...dead, pid: await exitedPid() }, token));
+    await fs.link(path.join(namespace, `.owner-${token}`), path.join(namespace, `${skill.id}.lock`));
+    // The waiter that claimed the stale lock crashed before unlinking it.
+    await fs.writeFile(path.join(namespace, `${skill.id}.lock.released-${token}`),
+      JSON.stringify({ token: randomUUID(), controller: { ...dead, pid: await exitedPid() } }));
+    const startedAt = Date.now();
+    expect(await resolveRuntimeSkillCache(spec, reader())).toBe(path.join(spec.entry, "files"));
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
 
   it("never removes a newer lock for a waiter that read a stale one late", async () => {
