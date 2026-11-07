@@ -31,7 +31,8 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
     const [uid, parent, executable, command, startedAt] = await Promise.all([ps("uid"), ps("ppid"), ps("comm"), ps("args"), readProcessStartedAt(pid)]);
     // A pinned binary may be executed from an inherited descriptor (/proc/self/fd/N); its real
     // executable is then only reachable through the kernel's /proc/<pid>/exe link.
-    const canonical = await realpath(ownedNativeExecutablePath(pid, executable)).catch(() => realpath(`/proc/${pid}/exe`));
+    // An in-memory (memfd) binary has no resolvable path, but the kernel link still reads its bytes.
+    const canonical = await realpath(ownedNativeExecutablePath(pid, executable)).catch(() => realpath(`/proc/${pid}/exe`)).catch(() => `/proc/${pid}/exe`);
     const args = command.split(/\s+/);
     // node may carry runtime flags before the script; the absolute proxy script is the last argument.
     const script = args.at(-1)!, flags = args.slice(1, -1);
@@ -41,7 +42,7 @@ async function providerIdentity(pid: number): Promise<ProviderIdentity> {
     return { pid, parentPid: Number(parent), uid: Number(uid), startedAt, executable: canonical,
       digest: createHash("sha256").update(await readFile(canonical)).digest("hex"), appServer: /(?:^|\s)app-server(?=\s|$)/.test(command),
       // `opencode serve` runs either as its own binary or as node running the opencode launcher script.
-      openCodeServe: args.includes("serve") && (/^opencode/.test(path.basename(canonical))
+      openCodeServe: args.includes("serve") && (/^opencode/.test(path.basename(canonical)) || /^\/(?:proc\/self|dev)\/fd\/\d+$/.test(args[0] ?? "")
         || args.slice(1, args.indexOf("serve")).some(arg => path.isAbsolute(arg) && /^opencode(?:\.[cm]?js)?$/.test(path.basename(arg)))), proxyScript: proxy, proxyDigest };
   } catch { throw new Error("Provider cleanup fixture could not qualify the exact owned process; private diagnostics withheld"); }
 }

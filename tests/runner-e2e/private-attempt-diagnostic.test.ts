@@ -136,3 +136,10 @@ it("names other filesystem refusals by their closed error code", () => {
   expect(privateAttemptDiagnostic({ stage: "seal-original", error }).finalization).toBe("fs-EEXIST");
   expect(JSON.stringify(privateAttemptDiagnostic({ stage: "seal-original", error }))).not.toContain("/private/path");
 });
+it("names Node error codes, error types and non-error throws without their messages", () => {
+  const node = Object.assign(new Error("File size (3) is greater than 2 GiB: /private/x"), { code: "ERR_FS_FILE_TOO_LARGE" });
+  expect(privateAttemptDiagnostic({ stage: "attach-original", error: node }).finalization).toBe("fs-ERR_FS_FILE_TOO_LARGE");
+  expect(privateAttemptDiagnostic({ stage: "attach-original", error: new TypeError("x of /private/y") }).finalization).toBe("error-type-TypeError");
+  expect(privateAttemptDiagnostic({ stage: "attach-original", error: "raw /private/z" }).finalization).toBe("non-error-thrown");
+  expect(JSON.stringify(privateAttemptDiagnostic({ stage: "attach-original", error: node }))).not.toContain("/private/");
+});

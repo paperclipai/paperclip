@@ -195,7 +195,9 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
     status: member(result.status, ["passed", "failed", "skipped"]),
     failureClass: member(result.failureClass, ["candidate_failure", "transient_infrastructure", "permanent_infrastructure", "secret_leak", "cleanup_failure"]),
     finalization: failures.get(message) ?? (record(input.error).code === "ENOENT" ? "missing-file"
-      : typeof record(input.error).code === "string" && /^E[A-Z]{2,15}$/.test(record(input.error).code) ? `fs-${record(input.error).code}`
+      : typeof record(input.error).code === "string" && /^(?:E[A-Z]{2,15}|ERR_[A-Z0-9_]{2,48})$/.test(record(input.error).code) ? `fs-${record(input.error).code}`
+      : input.error !== undefined && !(input.error instanceof Error) ? "non-error-thrown"
+      : input.error instanceof Error && input.error.name !== "Error" && /^[A-Z][A-Za-z]{2,40}$/.test(input.error.name) ? `error-type-${input.error.name}`
       : /^Secret leak in [\s\S]*: (?:exact secret value|secret-shaped value)$/.test(message) ? "text-secret-finding" : "unclassified"),
     phase: phases.find(([label]) => [...errors, message].some(error => error.includes(label!)))?.[1] ?? "unclassified",
     privacy: { persistedState: errors.some(error => error.startsWith("Secret leak in persisted ")),
