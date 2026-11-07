@@ -186,7 +186,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   it("replays saved user intent through normal Retry after a first-attempt retained runner failure", async () => {
     for (const mode of ["unattached", "archive_failed", "provider_started", "system_wake", "stopped", "stopped_failed", "promoted"] as const) {
       const f = await fixture({ runtimeMode: mode === "promoted" ? "legacy" : "native" }, `CMP${randomUUID().slice(0, 6)}`);
-      const failureMessage = mode === "archive_failed" ? "runner_continuity_break_archive_failed" : "runner_remote_process_identity_unavailable";
+      const failureMessage = mode === "archive_failed"
+        ? "runner_continuity_break_archive_failed: exit=1 timedOut=false mv: cannot remove 'runner': Directory not empty"
+        : "runner_remote_process_identity_unavailable";
       const retryExpected = mode === "unattached" || mode === "archive_failed" || mode === "promoted";
       const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Continue saved work",
         assigneeAgentId: f.agent.id, status: "in_progress" }).returning();
@@ -1138,6 +1140,17 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
     expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed",
       workspaceProviderFailure: { kind: "provider", reason: "runtime_connection_invalid", retryable: false } });
+  });
+
+  it("logs the driver cause code of a wrapped setup query failure without its text", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("write CONNECTION_CLOSED 127.0.0.1:5432"), { code: "CONNECTION_CLOSED" });
+    await f.completion.failRunSetup(f.setup(new Error("Failed query: select 1", { cause: driverError })));
+    const setupLog = logged.mock.calls.find(call => call[1] === "heartbeat execution setup failed");
+    expect(setupLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "setup_failed", causeCode: "CONNECTION_CLOSED" });
+    expect(JSON.stringify(setupLog?.[0])).not.toContain("127.0.0.1:5432");
   });
 
   it("retries a workspace operation the stopped provider worker never received", async () => {

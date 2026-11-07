@@ -449,6 +449,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "paperclip/runResult") {
+      // Like a terminal, a semantic result can reach the notification channel
+      // before turn/start's response binds its turn (for example, a restart
+      // continuation). Bind it only after that start settles.
+      await state.turnStartSettled;
       if (
         threadId !== state.opened.threadId
         || !state.notificationNamesActiveTurn(turnId, "semantic result")

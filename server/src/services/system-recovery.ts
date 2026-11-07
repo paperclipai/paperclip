@@ -48,6 +48,11 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
 }
 
 export function exhaustedSystemRecoveryAction(state: SystemRecoveryState): string {
+  // Another Retry cannot release a copyback owner that stopped without reporting.
+  if (state.failure?.code === "copyback_stop_unconfirmed")
+    return "Automatic recovery of saved work is waiting for the previous server's file copy to stop, and Paperclip cannot verify "
+      + "that it stopped. A board member who manages this company's runtime can confirm that it stopped; recovery then "
+      + "resumes. No provider turn is submitted.";
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
   const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
   return `Automatic recovery of saved work stopped after ${state.attempts} attempts${reason}. `

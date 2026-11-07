@@ -44,7 +44,10 @@ const envelopeSchema = z.object({
   runId: z.string().uuid(), sourceId: z.string().uuid(), sequence: z.number().int().positive(), receivedAt: z.iso.datetime(),
   adapterType: z.string().max(100), receipt: checkpointSchema,
   producerEvent: z.object({ sourceEventId: z.string(), turnId: z.string().optional(), providerTurnId: z.string().optional(),
-    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional() }).optional(),
+    eventType: z.string(), usage: z.record(z.string(), z.unknown()).optional(),
+    // The restored Runner failed this turn as lost on restore: its usage can
+    // never be reported, so it does not hold the receipt open.
+    lostOnRestore: z.literal(true).optional() }).optional(),
   // Derived by the recorder, not a provider's final charge. Keeping it in the
   // fsynced envelope preserves known partial attempts through database replay.
   liveCostCents: z.string().max(160).refine(value => {
@@ -340,7 +343,14 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
         accountingLateReceiptDebts: debts, accountingLateReceiptId: nextId,
         accountingLateReceiptAttemptedId: nextId && debts[nextId] ? nextId : null,
         ...(reconciled && advanceReceiptIdentity ? { accountingReconciledReceiptId: currentId,
-          accountingReconciledReceiptSourceId: late!.sourceId, accountingReconciledReceiptSequence: late!.sequence } : {}),
+          accountingReconciledReceiptSourceId: late!.sourceId,
+          accountingReconciledReceiptSequence: late!.sequence } : {}),
+        // A complete receipt now accounts for the usage a closure timeout
+        // could not see, so its unknown-spend charge stops blocking.
+        // Only a complete whole-run receipt from the run's own source does;
+        // an increment reported by a later run does not.
+        ...(reconciled && late?.receipt.complete && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId
+          && previous.accountingClosureTimedOut === true ? { accountingClosureTimedOut: false } : {}),
       },
     }).where(eq(heartbeatRuns.id, run.id));
   }

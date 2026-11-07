@@ -19,7 +19,7 @@ import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, im
 import { findRegenerableWorkspaceDirs, REGENERABLE_WORKSPACE_DIR_NAMES, WORKSPACE_COMPACTION_TRASH_DIR } from "./workspace-compaction.js";
 import { ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
-import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
+import { canonicalRepositoryRoot, localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { loadGitRestorePoint } from "./git-restore-point-storage.js";
 import { nestedWorktreeBranchPrefix, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
@@ -355,8 +355,7 @@ async function undoMove(db: Db | Tx, workspaceId: string, pending: IsolatedRepos
 export function withWorkspaceMoveLocks<T>(db: Db, workspace: Workspace, work: (tx: Tx) => Promise<T>) {
   return withIsolatedRepositorySourceLock(db, workspace.companyId, workspace.sourceIssueId!, () =>
     withWorkspaceSourceLocks(db, { companyId: workspace.companyId, projectIds: workspace.projectId ? [workspace.projectId] : [] }, async () => {
-      const cwd = workspace.cwd ?? workspace.providerRef;
-      if (cwd) await retainCurrentWorkspaceSource(cwd);
+      for (const cwd of localWorkspaceSourcePaths(workspace)) await retainCurrentWorkspaceSource(cwd);
       return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
         const rows = await tx.execute<{ locked: boolean; idle_timeout_ms: string | number | null }>(sql`select
           pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0)) as locked,

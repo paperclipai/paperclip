@@ -4,12 +4,31 @@ import { sql } from "drizzle-orm";
 import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
+import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 
 type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction };
+type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction; active: boolean };
 const sourceLocks = new AsyncLocalStorage<SourceLockScope>();
 export class IsolatedRepositorySourceBusy extends Error {}
+
+// Timers and detached promises keep the async context that created them, so
+// work can see a scope whose transaction has committed and whose dedicated
+// connection is closed. Only a live scope holds locks.
+function heldScope(): SourceLockScope | undefined {
+  const scope = sourceLocks.getStore();
+  return scope?.active ? scope : undefined;
+}
+
+/** Acquires source locks in a new owner scope and ignores an inherited one.
+ * Use it at the root of independent work, such as a run's workspace
+ * preparation, that can start inside another operation's source scope.
+ * Joining that scope would tie these locks to the other transaction. */
+export function withIndependentWorkspaceSourceLocks<T>(db: Db,
+  input: { companyId: string; issueIds?: readonly string[]; projectIds?: readonly string[] },
+  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false): Promise<T> {
+  return sourceLocks.exit(() => withWorkspaceSourceLocks(db, input, action, tryOnly));
+}
 
 export function withIsolatedRepositorySourceLock<T>(db: Db, companyId: string, issueId: string,
   action: () => Promise<T>, tryOnly = false): Promise<T> {
@@ -24,7 +43,7 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     ...(input.projectIds ?? []).map(id => `managed_project_source:${input.companyId}:${id}`),
   ])].sort();
   if (keys.length > 128) throw new Error("workspace_source_scope_limit");
-  const held = sourceLocks.getStore();
+  const held = heldScope();
   const acquire = async (scope: SourceLockScope, nonblocking: boolean) => {
     for (const key of keys) {
       if (scope.keys.has(key)) continue;
@@ -38,17 +57,21 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
   if (held?.db === db) {
     if (new Set([...held.keys, ...keys]).size > 128) throw new Error("workspace_source_scope_limit");
     if (held.companyId !== input.companyId) throw new Error("workspace_source_company_mismatch");
-    const onlyProjectKeys = keys.every(key => key.startsWith("managed_project_source:"));
+    const onlyProjectKeys = keys.filter(key => !held.keys.has(key)).every(key => key.startsWith("managed_project_source:"));
     const alreadyHasProject = [...held.keys].some(key => key.startsWith("managed_project_source:"));
     await acquire(held, !onlyProjectKeys || alreadyHasProject);
     return action(held.transaction);
   }
   return withDedicatedDbConnection(db, connection => connection.transaction(async transaction => {
-    const scope = { db, companyId: input.companyId, transaction, keys: new Set<string>() };
-    await acquire(scope, tryOnly);
-    const rows = await transaction.execute(sql`select setting::bigint as idle_timeout_ms from pg_settings where name = 'idle_in_transaction_session_timeout'`);
-    return withWorkspaceLockKeepalive(transaction, Number(rows[0]?.idle_timeout_ms),
-      () => sourceLocks.run(scope, () => action(transaction)));
+    const scope: SourceLockScope = { db, companyId: input.companyId, transaction, keys: new Set<string>(), active: true };
+    try {
+      await acquire(scope, tryOnly);
+      const rows = await transaction.execute(sql`select setting::bigint as idle_timeout_ms from pg_settings where name = 'idle_in_transaction_session_timeout'`);
+      return await withWorkspaceLockKeepalive(transaction, Number(rows[0]?.idle_timeout_ms),
+        () => sourceLocks.run(scope, () => action(transaction)));
+    } finally {
+      scope.active = false;
+    }
   }));
 }
 
@@ -65,7 +88,8 @@ export async function managedProjectSourceIdentity(companyId: string, cwd: strin
 export async function isolatedTaskSourceIdentity(companyId: string, cwd: string): Promise<string | null> {
   const root = await canonicalRepositoryRoot(resolvePaperclipInstanceRoot());
   const relative = path.relative(root, await canonicalRepositoryRoot(cwd)).split(path.sep);
-  if (!["isolated-workspaces", "isolated-workspace-attempts"].includes(relative[0])) return null;
+  if (!["isolated-workspaces", "isolated-workspace-attempts", "isolated-repository-sources"].includes(relative[0])) return null;
+  if (relative[0] === "isolated-repository-sources" && relative[3] !== "checkout") return null;
   if (relative[1] !== companyId) throw new Error("workspace_source_company_mismatch");
   return relative[2] && /^[a-f0-9-]{36}$/.test(relative[2]) ? relative[2] : null;
 }
@@ -73,35 +97,39 @@ export async function isolatedTaskSourceIdentity(companyId: string, cwd: string)
 export async function retainManagedProjectSource(db: Db, companyId: string, cwd: string): Promise<void> {
   const projectId = await managedProjectSourceIdentity(companyId, cwd);
   if (!projectId) return;
-  if (sourceLocks.getStore()?.db !== db) throw new Error("workspace_source_admission_scope_required");
+  if (heldScope()?.db !== db) throw new Error("workspace_source_admission_scope_required");
   await withWorkspaceSourceLocks(db, { companyId, projectIds: [projectId] }, async () => undefined, true);
 }
 
-export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
-  const scope = sourceLocks.getStore();
-  if (!scope) return;
-  const instance = await canonicalRepositoryRoot(resolvePaperclipInstanceRoot());
-  const task = path.relative(instance, await canonicalRepositoryRoot(cwd)).split(path.sep);
-  if (["isolated-workspaces", "isolated-workspace-attempts"].includes(task[0]) && task.length >= 3) {
-    const issueId = await isolatedTaskSourceIdentity(scope.companyId, cwd);
-    if (issueId) await withWorkspaceSourceLocks(scope.db, { companyId: scope.companyId, issueIds: [issueId] }, async () => undefined, true);
-    return;
+export async function workspaceSourceIdentities(companyId: string, cwd: string) {
+  cwd = await canonicalRepositoryRoot(cwd);
+  const git = await readWorkspaceGitSourceRoots(cwd, { ancestors: true });
+  const roots = [cwd, ...(git ? [git.root, git.gitDirectory.path, git.commonDirectory.path,
+    ...git.objectDirectories.map(directory => directory.path)] : [])];
+  const projectIds = new Set<string>(), issueIds = new Set<string>(), unownedPaths: string[] = [];
+  for (const target of new Set(roots)) {
+    const projectId = await managedProjectSourceIdentity(companyId, target);
+    const issueId = await isolatedTaskSourceIdentity(companyId, target);
+    if (projectId) projectIds.add(projectId);
+    if (issueId) issueIds.add(issueId);
+    if (!projectId && !issueId) unownedPaths.push(target);
   }
-  const root = await canonicalRepositoryRoot(path.join(resolvePaperclipInstanceRoot(), "projects"));
-  const target = await canonicalRepositoryRoot(cwd), relative = path.relative(root, target);
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return;
-  const [companyId, projectId] = relative.split(path.sep);
-  if (!companyId || !projectId || !/^[a-f0-9-]{36}$/.test(companyId) || !/^[a-f0-9-]{36}$/.test(projectId)) return;
-  await retainManagedProjectSource(scope.db, companyId, cwd);
+  return { projectIds: [...projectIds].sort(), issueIds: [...issueIds].sort(), unownedPaths, git };
+}
+
+export async function retainCurrentWorkspaceSource(cwd: string): Promise<void> {
+  const scope = heldScope();
+  if (!scope) return;
+  const identities = await workspaceSourceIdentities(scope.companyId, cwd);
+  await withWorkspaceSourceLocks(scope.db, { companyId: scope.companyId, ...identities }, async () => undefined, true);
 }
 
 export async function assertCurrentWorkspaceSourceHeld(cwd: string): Promise<void> {
-  const scope = sourceLocks.getStore();
+  const scope = heldScope();
   if (!scope) throw new Error("workspace_source_admission_scope_required");
-  const projectId = await managedProjectSourceIdentity(scope.companyId, cwd);
-  const issueId = await isolatedTaskSourceIdentity(scope.companyId, cwd);
-  if (projectId && !scope.keys.has(`managed_project_source:${scope.companyId}:${projectId}`)
-    || issueId && !scope.keys.has(`isolated_repository_source:${scope.companyId}:${issueId}`)) {
+  const identities = await workspaceSourceIdentities(scope.companyId, cwd);
+  if (identities.projectIds.some(id => !scope.keys.has(`managed_project_source:${scope.companyId}:${id}`))
+    || identities.issueIds.some(id => !scope.keys.has(`isolated_repository_source:${scope.companyId}:${id}`))) {
     throw new IsolatedRepositorySourceBusy("workspace_source_busy");
   }
 }
