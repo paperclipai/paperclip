@@ -41,6 +41,7 @@ fn lock_receipt_limit_test() -> MutexGuard<'static, ()> {
 
 /// A process group leader that has already exited, as a provider launch
 /// leaves behind when its runner is killed before admitting it.
+#[cfg(unix)]
 fn exited_provider_process_group() -> u32 {
     use std::os::unix::process::CommandExt;
     let mut child = std::process::Command::new("sleep")
@@ -54,6 +55,7 @@ fn exited_provider_process_group() -> u32 {
     pid
 }
 
+#[cfg(unix)]
 #[test]
 fn restart_relaunches_a_provider_whose_runner_died_before_admitting_it() {
     let directory = temporary_directory("orphaned-provider-startup");
