@@ -168,6 +168,32 @@ describe("issue execution reconciliation with real routes and Postgres", () => {
     await heartbeat.drainActiveRunExecutions();
   });
 
+  it("refuses reconciliation from an agent that neither owns the task nor the recovery action", async () => {
+    const f = await settledProcessHold();
+    const [other] = await db.insert(agents).values({ companyId: f.company.id, name: "Bystander",
+      role: "engineer", status: "active", adapterType: "process" }).returning();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: f.company.id,
+      agentId: other!.id, status: "running", invocationSource: "on_demand",
+      startedAt: new Date(), contextSnapshot: { issueId: f.issue.id } });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", companyId: f.company.id, agentId: other!.id, runId: otherRunId, source: "agent_jwt" };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
+    app.use(errorHandler);
+    const before = (await request(f.app).get(`/api/issues/${f.issue.id}`).expect(200)).body.executionBlocker;
+    expect(before).toMatchObject({ runId: f.run.id });
+    await request(app).post(`/api/issues/${f.issue.id}/recovery-actions/resolve`)
+      .send(resolutionBody(f.run.id)).expect(403);
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, before.recoveryActionId));
+    expect(hold!.evidence).not.toHaveProperty("executionReconciliation");
+    expect((await request(f.app).get(`/api/issues/${f.issue.id}`).expect(200)).body.executionBlocker)
+      .toMatchObject({ runId: f.run.id });
+  });
+
   it("rejects a live process group even when the process PID is missing", async () => {
     const f = await settledProcessHold(false);
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, f.run.id));

@@ -2281,7 +2281,9 @@ retry authority, prove stopped execution, or change the existing recovery budget
 An HTTP 429 alone does not establish a quota reset time or a safe retry.
 
 The canonical recovery-resolution API accepts new execution evidence for a
-settled hold from the board or from an agent that may mutate the issue. When
+settled hold from the board, or from an agent that the existing recovery
+action authority admits: the issue assignee, the recovery owner, or an agent
+with an active checkout management override over one of them. When
 no active recovery action remains and the request carries
 `executionReconciliation`, the server selects the current
 `executionBlocker.recoveryActionId` under the issue lock. The same source,
