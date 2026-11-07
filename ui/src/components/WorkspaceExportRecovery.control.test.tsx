@@ -153,7 +153,75 @@ describe("governed retained-file recovery", () => {
     } });
     await mount();
     expect(button("Recover saved files")).toBeUndefined();
-    expect(container.textContent).toContain("source is unavailable or has changed");
+    expect(container.textContent).toContain("can’t verify the saved files’ recorded source (source_binding_invalid)");
+  });
+
+  // Recovery saved by an older release: a board-owned hold whose
+  // sandbox predates ownership receipts. The server still records a retryable
+  // blocked recovery, but the read-only source probe cannot verify ownership.
+  const legacyHold = { ...action, id: "legacy-hold", ownerType: "board", evidence: { runId: "run-1",
+    workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: "run-1", stage: "verifying_stop",
+      status: "blocked", attempt: 1, attemptLimit: 6, requestIds: [], retryable: true,
+      message: "Automatic recovery of saved work stopped after 1 attempts (last failure: allocation_ownership_ambiguous)." },
+    systemRecovery: { schema: "paperclip.system-recovery.v1", phase: "verify_execution", state: "exhausted", revision: 5,
+      sourceRunId: "run-1", attempts: 1, retriesUsed: 0, preservationOperationIds: [], freshAttemptRunId: null,
+      failure: { code: "allocation_ownership_ambiguous", retryClass: "service_required" } },
+    originalFailureCode: "native_workspace_sync_out_failed", workspaceFinalizeAttempt: 3, previousWorkspaceRecovery: null },
+  } as unknown as IssueRecoveryAction;
+  const blockedInspection = (value: IssueRecoveryAction, failureCode = "allocation_ownership_ambiguous") => ({
+    active: value, actions: [value], sourceInspection: { schema: "paperclip.workspace-source-inspection.v1",
+      actionId: value.id, runId: "run-1", status: "blocked", failureCode,
+      scope: "recorded_source_identity", observedAt: "2026-11-07T14:44:46Z" } });
+
+  it("hands the next action to the task Retry for an old-release hold whose source cannot be verified", async () => {
+    api.inspect.mockResolvedValue(blockedInspection(legacyHold));
+    const owns = vi.fn();
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <WorkspaceExportRecovery action={legacyHold} issueId="issue-1" companyId="company-1" onRecoveryControlChange={owns} />
+    </QueryClientProvider>));
+    await settle();
+    expect(owns).toHaveBeenLastCalledWith(false);
+    expect(button("Recover saved files")).toBeUndefined();
+    // No dead-end: no "changed, refresh" alert and no status check that can only repeat it.
+    expect(button("Check file recovery status")).toBeUndefined();
+    expect(container.textContent).not.toContain("has changed");
+    expect(container.textContent).toContain("can’t confirm that this run alone used the sandbox");
+    expect(container.textContent).toContain("company owner or administrator");
+    expect(api.recover).not.toHaveBeenCalled();
+  });
+
+  it("keeps ownership of the next action while the source is verified", async () => {
+    const owns = vi.fn();
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <WorkspaceExportRecovery action={action} issueId="issue-1" companyId="company-1" onRecoveryControlChange={owns} />
+    </QueryClientProvider>));
+    await settle();
+    expect(owns).toHaveBeenLastCalledWith(true);
+    expect(button("Recover saved files")).toBeDefined();
+  });
+
+  it("reports recovered files even when the source no longer matches after recovery", async () => {
+    // Preservation completed, so the workspace moved past the
+    // recorded source and inspection reports a reference mismatch.
+    const recovered = { ...legacyHold, ownerType: "system", evidence: { ...legacyHold.evidence,
+      workspaceRecovery: { ...(legacyHold.evidence.workspaceRecovery as object), status: "recovered" },
+      systemRecovery: { ...(legacyHold.evidence.systemRecovery as object), state: "complete",
+        preservationOperationIds: ["preservation-1"] } } } as IssueRecoveryAction;
+    api.inspect.mockResolvedValue(blockedInspection(recovered, "source_binding_invalid"));
+    await mount(recovered);
+    expect(container.textContent).toContain("Saved files recovered");
+    expect(container.textContent).not.toContain("need recovery");
+    expect(container.textContent).not.toContain("has changed");
+    expect(button("Recover saved files")).toBeUndefined();
+  });
+
+  it("reloads the task instead of looping when the recovery record was replaced", async () => {
+    api.inspect.mockResolvedValue({ active: null, actions: [], sourceInspection: undefined });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await mount(legacyHold);
+    await click("Check file recovery status");
+    expect(container.textContent).not.toContain("Refresh the task");
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.detail("issue-1") });
   });
 
   it("persists the exact request before POST and prevents a double click", async () => {

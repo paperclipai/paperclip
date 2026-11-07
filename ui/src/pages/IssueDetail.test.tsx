@@ -3756,7 +3756,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it.each(["verified", "unverified", "stale", "denied"] as const)("keeps native export Retry closed with %s preservation access or source", async mode => {
+  it.each(["verified", "unverified", "stale", "denied"] as const)("offers exactly one native export recovery control with %s preservation access or source", async mode => {
     const action = {
       id: "file-recovery", companyId: "company-1", sourceIssueId: "issue-1",
       kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
@@ -3765,9 +3765,11 @@ describe("IssueDetail", () => {
         stage: "restoring_files", requestIds: [], retryable: true,
       }, systemRecovery: { state: "exhausted", preservationOperationIds: [] } },
     } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
-    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action,
-      interruption: { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
-        canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run" },
+    const interruption: NonNullable<Issue["interruption"]> = { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
+      canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run",
+      retryWait: { reason: "saved_work_recovery_failed",
+        message: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work." } };
+    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action, interruption,
       executionBlocker: { runId: "stopped-run", cause: "native_workspace_sync_out_retry_exhausted", canRetry: false, workspaceRepairRequired: true,
         workspaceRecovery: { status: "blocked", stage: "restoring_files", canRetry: true } } as Issue["executionBlocker"],
     });
@@ -3782,13 +3784,29 @@ describe("IssueDetail", () => {
       status: mode === "unverified" ? "blocked" : "verified", scope: "recorded_source_identity",
     } });
     mockIssuesApi.recoverWorkspace.mockResolvedValue({ actionId: action.id, status: "queued" });
+    mockIssuesApi.retryTask.mockResolvedValue({ requestId: "export-retry", accepted: true, stale: false, presentation: interruption });
     await act(async () => renderIssueView());
-    if (mode !== "verified") {
-      await waitForAssertion(() => expect(container.textContent).toContain(mode === "denied"
-        ? "A board member with task access" : "The recorded source is unavailable or has changed"));
-      expect([...container.querySelectorAll("button")].some(button => ["Recover saved files", "Retry"].includes(button.textContent ?? ""))).toBe(false);
+    const labels = () => [...container.querySelectorAll("button")].map(button => button.textContent ?? "");
+    if (mode === "denied") {
+      await waitForAssertion(() => expect(container.textContent).toContain("A board member with task access"));
+      expect(labels().some(label => ["Recover saved files", "Retry"].includes(label))).toBe(false);
       expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
       expect(mockIssuesApi.retryTask).not.toHaveBeenCalled();
+      return;
+    }
+    if (mode !== "verified") {
+      // The notice says "Retry to try again"; an unverifiable source must not
+      // leave it without a Retry. The server re-verifies the source.
+      await waitForAssertion(() => expect(labels()).toContain("Retry"));
+      expect(labels()).not.toContain("Recover saved files");
+      expect(container.textContent).not.toContain("Refresh the task");
+      const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
+      await act(async () => retry.click());
+      await waitForAssertion(() => expect(mockIssuesApi.retryTask).toHaveBeenCalledExactlyOnceWith(issue.id, {
+        idempotencyKey: expect.any(String), observedRunId: "stopped-run",
+      }));
+      expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
+      expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
       return;
     }
     await waitForAssertion(() => expect([...container.querySelectorAll("button")]
