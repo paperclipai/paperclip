@@ -9,7 +9,7 @@ Run Paperclip locally with zero external dependencies.
 
 - Node.js 24.11+
 - pnpm 9+
-- Rust toolchain (for building the native Paperclip Runner binary; can be skipped with `PAPERCLIP_SKIP_RUNNER_BINARY=1` or pointed to a prebuilt binary with `PAPERCLIP_RUNNER_BINARY`)
+- Rust toolchain (for building the native Paperclip Runner binary; point `PAPERCLIP_RUNNER_BINARY` to a prebuilt binary instead, or set `PAPERCLIP_SKIP_RUNNER_BINARY=1` to skip the binary in `pnpm build`, which `pnpm dev` does not read)
 
 ## Start Dev Server
 

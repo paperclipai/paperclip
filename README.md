@@ -424,7 +424,7 @@ This starts the UI and API at `http://localhost:3100`. An embedded PostgreSQL da
 Local Claude and Codex subscription sign-in also needs Python 3 and the
 corresponding provider CLI on the Paperclip host. The Docker image includes them.
 
-Source development also builds the native Paperclip Runner when enabled (the self-hosted default). Install a Rust toolchain, set `PAPERCLIP_RUNNER_BINARY` to a compatible prebuilt runner, or set `PAPERCLIP_SKIP_RUNNER_BINARY=1` to skip building the native runner binary (native-runtime providers require the binary at runtime).
+Source development also builds the native Paperclip Runner when enabled (the self-hosted default). Install a Rust toolchain, or set `PAPERCLIP_RUNNER_BINARY` to a compatible prebuilt runner. A source build with `pnpm build` can skip the native runner binary when `PAPERCLIP_SKIP_RUNNER_BINARY=1` is set (native-runtime providers require the binary at runtime). `pnpm dev` does not read this setting.
 
 <br/>
 

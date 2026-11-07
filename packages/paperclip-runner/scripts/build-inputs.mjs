@@ -424,6 +424,14 @@ export function assessRunnerBuild({
       stampPath,
     };
   }
+  if (!runnerBinary && stamp.runnerBinary !== false) {
+    return {
+      current: false,
+      code: "runner_binary_present",
+      detail: "the recorded build staged the native runner binary, and this consumer skips it",
+      stampPath,
+    };
+  }
   const missing = expectedBuildOutputs(packageRoot, platform, { runnerBinary }).filter((file) => !existsSync(file));
   if (missing.length > 0) {
     return {

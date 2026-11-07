@@ -378,6 +378,22 @@ test("a build that skips the native binary is recorded without it, and serves on
   });
 });
 
+test("a build that staged the native binary does not serve a consumer that skips it", async () => {
+  await withRepo(async ({ repoRoot, packageRoot }) => {
+    const skip = { PAPERCLIP_SKIP_RUNNER_BINARY: "1" };
+
+    beginRunnerBuild({ repoRoot, packageRoot });
+    const record = recordRunnerBuild({ repoRoot, packageRoot, env: {} });
+    assert.equal(record.recorded, true);
+    assert.equal(record.runnerBinary, true);
+
+    assert.equal(assessRunnerBuild({ repoRoot, packageRoot, env: {} }).current, true);
+    const assessment = assessRunnerBuild({ repoRoot, packageRoot, env: skip });
+    assert.equal(assessment.current, false);
+    assert.equal(assessment.code, "runner_binary_present");
+  });
+});
+
 test("record-build-inputs.mjs brackets the build for the package it is pointed at", async () => {
   await withRepo(async ({ repoRoot, packageRoot }) => {
     const run = (...args) => execFileAsync(process.execPath, [recordScript, ...args, "--package-root", packageRoot]);

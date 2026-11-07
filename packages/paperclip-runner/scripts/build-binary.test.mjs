@@ -79,6 +79,41 @@ test("buildRunnerBinary runs the package's build:binary script when the option i
   }
 });
 
+test("buildRunnerBinary runs build:binary through the pnpm that runs the build", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "runner-build-test-"));
+  try {
+    const run = async (env, platform) => {
+      const calls = [];
+      await buildRunnerBinary({
+        packageRoot: tempDir,
+        env,
+        platform,
+        nodeExecPath: "/opt/node/bin/node",
+        spawnFn: (command, args, options) => {
+          calls.push({ command, args, shell: options.shell });
+          return { status: 0 };
+        },
+      });
+      return calls[0];
+    };
+
+    assert.deepEqual(await run({ npm_execpath: "/corepack/pnpm/bin/pnpm.cjs" }, "linux"), {
+      command: "/opt/node/bin/node",
+      args: ["/corepack/pnpm/bin/pnpm.cjs", "run", "build:binary"],
+      shell: false,
+    });
+    assert.deepEqual(await run({ npm_execpath: "/usr/local/bin/pnpm" }, "linux"), {
+      command: "/usr/local/bin/pnpm",
+      args: ["run", "build:binary"],
+      shell: false,
+    });
+    assert.deepEqual(await run({}, "win32"), { command: "pnpm", args: ["run", "build:binary"], shell: true });
+    assert.deepEqual(await run({}, "linux"), { command: "pnpm", args: ["run", "build:binary"], shell: false });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("buildRunnerBinary fails without fallback when the binary step cannot start", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "runner-build-test-"));
   try {

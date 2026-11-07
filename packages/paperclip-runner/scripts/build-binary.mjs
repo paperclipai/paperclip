@@ -14,6 +14,25 @@ export function shouldSkipRunnerBinary(env = process.env) {
   return value === "true" || value === "1" || value === "yes";
 }
 
+/**
+ * The pnpm that is running this script, the same rule as the server's
+ * prepare-runner-vendor.mjs: pnpm sets npm_execpath to its own entry, which is a
+ * JavaScript file for a normal install (run through this Node) or a native
+ * executable for a standalone pnpm (run directly). The pnpm entry is not always
+ * on PATH in a script (corepack, for one). Outside a pnpm script, `pnpm` on PATH
+ * is the only option, and on Windows that is pnpm.cmd, which needs the shell.
+ */
+export function resolvePnpmInvocation(env = process.env, nodeExecPath = process.execPath, platform = process.platform) {
+  const npmExecPath = env.npm_execpath?.trim();
+  if (npmExecPath && npmExecPath.toLowerCase().includes("pnpm")) {
+    if (/\.(cjs|mjs|js)$/i.test(npmExecPath)) {
+      return { command: nodeExecPath, argsPrefix: [npmExecPath], shell: false };
+    }
+    return { command: npmExecPath, argsPrefix: [], shell: false };
+  }
+  return { command: "pnpm", argsPrefix: [], shell: platform === "win32" };
+}
+
 export async function buildRunnerBinary(options = {}) {
   const env = options.env ?? process.env;
   const root = options.packageRoot ?? packageRoot;
@@ -28,10 +47,12 @@ export async function buildRunnerBinary(options = {}) {
   }
 
   const spawnFn = options.spawnFn ?? spawnSync;
-  const result = spawnFn("pnpm", ["run", "build:binary"], {
+  const pnpm = resolvePnpmInvocation(env, options.nodeExecPath, options.platform);
+  const result = spawnFn(pnpm.command, [...pnpm.argsPrefix, "run", "build:binary"], {
     cwd: root,
     stdio: options.stdio ?? "inherit",
     env,
+    shell: pnpm.shell,
   });
   if (result.error) {
     throw result.error;
