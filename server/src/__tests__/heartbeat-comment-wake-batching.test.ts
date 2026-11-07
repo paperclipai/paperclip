@@ -1238,11 +1238,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       // simulating completion by that provider, or startup correctly rejects
       // the already-closed task before this scenario reaches its follow-up.
       await waitFor(() => gateway.getAgentPayloads().length >= 1);
+      // Explicit post-completion resume requires the deferred comment to be
+      // newer than completedAt. Stamp completion just before that comment so
+      // resumeIntent reopen stays distinct from stale pre-done wakes.
+      const completedAt =
+        shouldReopen && comment.createdAt instanceof Date
+          ? new Date(comment.createdAt.getTime() - 1_000)
+          : new Date();
       await db
         .update(issues)
         .set({
           status: terminalStatus,
-          completedAt: new Date(),
+          completedAt,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
