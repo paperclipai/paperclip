@@ -59,7 +59,15 @@ export async function openRuntimeAgentProfile(ctx: ChatCatalogContext, agent: Ru
   const href = o && agentLink(o, agent);
   if (href) await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
   else await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/agents/${agent.id}`, { waitUntil: "domcontentloaded" });
-  await expect(ctx.input.page.getByRole("heading", { name: agent.name!, exact: true }).first()).toBeVisible();
+  await expect(agentProfileIdentity(ctx.input.page, agent)).toBeVisible();
+}
+/**
+ * The profile header's h1 is the agent's editable title (falling back to its
+ * role), and the name is secondary text. The header portrait carries the
+ * name as "<name> avatar", so it identifies whose profile is open.
+ */
+export function agentProfileIdentity(page: Page, agent: RuntimeAgent) {
+  return page.locator("header").getByRole("img", { name: `${agent.name} avatar`, exact: true }).first();
 }
 export async function verifyRuntimeResult(ctx: ChatCatalogContext, state: Record<string, unknown>, value: unknown) {
   const o = runtimeObservation(value); if (!o) throw new Error("Missing independent runtime result");
@@ -68,7 +76,7 @@ export async function verifyRuntimeResult(ctx: ChatCatalogContext, state: Record
   const source = ctx.input.page.url();
   await openRuntimeAgentProfile(ctx, target, o);
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
-  await expect(ctx.input.page.getByRole("heading", { name: target.name!, exact: true }).first()).toBeVisible();
+  await expect(agentProfileIdentity(ctx.input.page, target)).toBeVisible();
   await ctx.input.evidence("chat-catalog-runtime-profile-opened.json", { agentId: target.id, companyId: target.companyId, url: ctx.input.page.url() });
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
 }
