@@ -71,8 +71,13 @@ describe("proveOwnerGone: local owners", () => {
   it("proves a reused PID gone only at a start-time gap of at least 1 s", async () => {
     expect(await proveOwnerGone(stamp(), probe({ alive: [4242], starts: { 4242: at(1_000) } })))
       .toEqual({ verdict: "gone", reason: "pid_reused" });
-    expect(await proveOwnerGone(stamp(), probe({ alive: [4242], starts: { 4242: at(-60_000) } })))
+    expect(await proveOwnerGone(stamp(), probe({ alive: [4242], starts: { 4242: at(60_000) } })))
       .toEqual({ verdict: "gone", reason: "pid_reused" });
+  });
+
+  it("treats a live PID that started before the stamp as inconsistent, not reused", async () => {
+    expect(await proveOwnerGone(stamp(), probe({ alive: [4242], starts: { 4242: at(-60_000) } })))
+      .toEqual({ verdict: "unprovable", reason: "pid_start_inconsistent" });
   });
 
   it("treats a live PID with an unreadable or unrecorded start time as unprovable", async () => {
@@ -135,6 +140,12 @@ describe("proveOwnerGone: local owners", () => {
       .toEqual({ verdict: "gone", reason: "pid_dead" });
   });
 
+  it("never treats an older group leader as a replacement group", async () => {
+    expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: STARTED }),
+      probe({ groups: [5000], alive: [5000], starts: { 5000: at(-30_000) } })))
+      .toEqual({ verdict: "unprovable", reason: "process_group_ambiguous" });
+  });
+
   it("treats a non-empty group with an unreadable leader as unprovable", async () => {
     expect(await proveOwnerGone(stamp({ processGroupId: 5000, processGroupStartedAt: STARTED }),
       probe({ groups: [5000], alive: [5000] })))
@@ -186,6 +197,11 @@ describe("proveOwnerGone: remote owners (fenced handoff)", () => {
     const kill = vi.spyOn(process, "kill");
     await proveOwnerGone(remote(), { currentFenceToken: "boot:2:token", currentGeneration: 2, leaseExpiresAt: earlier }, now);
     expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("never ties a provider stop proof to a stamp without a fence token", async () => {
+    expect(await proveOwnerGone(remote({ fenceToken: null }), { currentFenceToken: "boot:2:token", currentGeneration: 2,
+      leaseExpiresAt: earlier, provider: "stopped" }, now)).toEqual({ verdict: "unprovable", reason: "missing_identity" });
   });
 
   it("treats a remote stamp without a fence token as unprovable", async () => {

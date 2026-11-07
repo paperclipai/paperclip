@@ -6,6 +6,7 @@ import {
   observedProcessStartedAt,
   processExists,
   processStartsDefinitelyDiffer,
+  PROCESS_START_PRECISION_MS,
   UNKNOWN_PROCESS_SPACE,
 } from "./controller-process-identity.js";
 
@@ -68,6 +69,7 @@ export type OwnerProofReason =
   | "different_process_space"
   | "different_host"
   | "pid_start_unreadable"
+  | "pid_start_inconsistent"
   | "process_group_ambiguous"
   | "fence_expired_without_provider_proof";
 
@@ -142,10 +144,11 @@ const validPid = (pid: number | null | undefined): pid is number =>
  * - this process's boot id is alive;
  * - the stamp must name this PID space (host, kernel boot, PID namespace); a
  *   different host or namespace is never proof;
- * - the PID must be dead, or reused: a live PID whose start time differs from
- *   the stamp by at least 1 s (`ps lstart` has 1 s precision). EPERM is alive;
- * - the recorded process group must be empty, or led by a process that is
- *   definitely not the recorded group leader. A non-empty group without a
+ * - the PID must be dead, or reused: a live PID that started at least 1 s
+ *   after the stamp (`ps lstart` has 1 s precision). An earlier start is
+ *   inconsistent and unprovable. EPERM is alive;
+ * - the recorded process group must be empty, or led by a process that
+ *   started definitely after the recorded group leader. A non-empty group without a
  *   recorded leader start time is unprovable: it may hold surviving children.
  *
  * Remote rules: a superseded fence token or generation, or a provider proof
@@ -187,9 +190,11 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
     if (!stamp.processStartedAt || observed === null) {
       return { verdict: "unprovable", reason: "pid_start_unreadable" };
     }
-    if (!processStartsDefinitelyDiffer(stamp.processStartedAt, observed)) {
-      return { verdict: "alive", reason: "pid_alive" };
-    }
+    const order = compareStarts(stamp.processStartedAt, observed);
+    if (order === "same") return { verdict: "alive", reason: "pid_alive" };
+    // A reused PID belongs to a later process. An earlier start means the
+    // stamp is inconsistent (clock skew or a migrated value): never proof.
+    if (order !== "later") return { verdict: "unprovable", reason: "pid_start_inconsistent" };
     processReason = "pid_reused";
   }
 
@@ -205,16 +210,29 @@ async function proveLocalOwnerGone(stamp: LocalOwnerStamp, probe: ProcessProbe):
     if (!recordedLeaderStart || leaderStartedAt === null) {
       return { verdict: "unprovable", reason: "process_group_ambiguous" };
     }
-    if (!processStartsDefinitelyDiffer(recordedLeaderStart, leaderStartedAt)) {
-      return { verdict: "alive", reason: "process_group_alive" };
-    }
+    const order = compareStarts(recordedLeaderStart, leaderStartedAt);
+    if (order === "same") return { verdict: "alive", reason: "process_group_alive" };
+    if (order !== "later") return { verdict: "unprovable", reason: "process_group_ambiguous" };
   }
   return { verdict: "gone", reason: processReason };
 }
 
+/** "same" within `ps lstart` precision (1 s), "later" when the observed process
+ * started definitely after the recorded one, "earlier" when definitely before,
+ * "unknown" when either time is unreadable. */
+function compareStarts(recorded: string, observed: Date): "same" | "later" | "earlier" | "unknown" {
+  const left = Date.parse(recorded);
+  const right = observed.getTime();
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return "unknown";
+  if (!processStartsDefinitelyDiffer(recorded, observed)) return "same";
+  return right - left >= PROCESS_START_PRECISION_MS ? "later" : "earlier";
+}
+
 function proveRemoteOwnerGone(stamp: RemoteOwnerStamp, fence: RemoteFenceState, now: Date): OwnerProof {
-  if (fence.provider === "stopped") return { verdict: "gone", reason: "provider_stopped" };
+  // The identity check comes first: a provider proof for the current lease
+  // cannot be tied to a stamp that names no token.
   if (!stamp.fenceToken) return { verdict: "unprovable", reason: "missing_identity" };
+  if (fence.provider === "stopped") return { verdict: "gone", reason: "provider_stopped" };
   if (stamp.generation !== null && fence.currentGeneration !== null && fence.currentGeneration > stamp.generation) {
     return { verdict: "gone", reason: "generation_superseded" };
   }
