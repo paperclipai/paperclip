@@ -18,6 +18,7 @@ import { StatusCardTile } from "./StatusCardTile";
 import { ArchivedStatusCardRow } from "./ArchivedStatusCardRow";
 import { CreateStatusCardDialog } from "./CreateStatusCardDialog";
 import { StatusCardDetailDrawer } from "./StatusCardDetailDrawer";
+import { isStatusCardTab, statusCardPath, type StatusCardTab } from "./routes";
 import type { StatusCardView } from "./types";
 
 export function StatusCards() {
@@ -25,14 +26,12 @@ export function StatusCards() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { cardId } = useParams<{ cardId?: string }>();
+  const { cardId, tab: routeTab } = useParams<{ cardId?: string; tab?: string }>();
 
   const [showArchived, setShowArchived] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  // Which tab the detail drawer opens to (the tile's "Query debug"/"Edit"
-  // actions deep-link into Settings).
-  const [detailTab, setDetailTab] = useState("summary");
   const [actionError, setActionError] = useState<string | null>(null);
+  const detailTab = isStatusCardTab(routeTab) ? routeTab : "summary";
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Status" }]);
@@ -99,10 +98,7 @@ export function StatusCards() {
     onError: (err) => setActionError(describeError(err, { action: "restore the card" }).body),
   });
 
-  const openDetail = (id: string, tab: string = "summary") => {
-    setDetailTab(tab);
-    navigate(`/status/${id}`);
-  };
+  const openDetail = (id: string, tab: StatusCardTab = "summary") => navigate(statusCardPath(id, tab));
   const closeDetail = () => navigate("/status");
 
   const todayTotals = activeCards.reduce(
@@ -211,7 +207,8 @@ export function StatusCards() {
         companyId={selectedCompanyId}
         open={Boolean(cardId)}
         onOpenChange={(open) => (open ? undefined : closeDetail())}
-        initialTab={detailTab}
+        tab={detailTab}
+        onTabChange={(nextTab) => navigate(statusCardPath(cardId!, nextTab))}
       />
     </div>
   );
