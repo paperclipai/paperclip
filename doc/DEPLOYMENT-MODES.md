@@ -139,6 +139,9 @@ npx paperclipai run --bind tailnet
 
 `configure --section server` follows the same interactive behavior.
 
+Browser onboarding uses the shared UUID fallback for first-agent setup IDs when
+`crypto.randomUUID()` is unavailable, including plain-HTTP LAN and tailnet origins.
+
 ## 5. Doctor UX Contract
 
 Default doctor remains flagless:
