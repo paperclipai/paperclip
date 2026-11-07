@@ -658,12 +658,13 @@ it("returns missing-field guidance before dispatch and accepts an explicit retry
   } }], handler });
   bridges.push(bridge);
   const request = { id: "scope-retry", method: "tools/call", params: { name: "read_task_document", arguments: { key: "sentry-case" } } };
-  const rejected = await (await rpc(bridge, request)).json();
+  type ScopeResponse = { result: { isError?: boolean; content: Array<{ text: string }> } };
+  const rejected = await (await rpc(bridge, request)).json() as ScopeResponse;
   expect(rejected).toMatchObject({ result: { isError: true } });
   expect(handler).not.toHaveBeenCalled();
   expect(rejected.result.content[0].text).toContain(guidance);
   const taskId = "00000000-0000-4000-8000-000000000005";
-  const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json();
+  const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
   expect(accepted.result.isError).not.toBe(true);
   expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
 });
