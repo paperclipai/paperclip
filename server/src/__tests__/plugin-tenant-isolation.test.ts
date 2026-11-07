@@ -667,4 +667,37 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(listB[0]?.title).toBe("Lead B");
     expect(listB[0]?.companyId).toBe(companyB);
   });
+  it("buildHostServices entities.list with companyId: null returns only instance-level entities and excludes company records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "instance",
+      companyId: null,
+      externalId: "global-conf",
+      title: "Global Config",
+      status: "active",
+      data: { key: "global" },
+    });
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "company-conf",
+      title: "Company Config",
+      status: "active",
+      data: { key: "company" },
+    });
+
+    const instanceList = await services.entities.list({
+      entityType: "system-config",
+      companyId: null,
+    });
+    expect(instanceList).toHaveLength(1);
+    expect(instanceList[0]?.title).toBe("Global Config");
+    expect(instanceList[0]?.companyId).toBeNull();
+  });
 });

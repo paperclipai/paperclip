@@ -985,7 +985,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           : null;
         const existingId = externalKey ? entityExternalIndex.get(externalKey) : undefined;
         const existing = existingId ? entities.get(existingId) : undefined;
-        const recordCompanyId = (input as any).companyId ?? (input.scopeKind === "company" && input.scopeId ? input.scopeId : null);
+        const recordCompanyId = input.companyId !== undefined ? input.companyId : (input.scopeKind === "company" && input.scopeId ? input.scopeId : null);
         const now = new Date().toISOString();
         const previousExternalKey = existing?.externalId
           ? `${existing.entityType}|${existing.scopeKind}|${existing.scopeId ?? ""}|${existing.externalId}`
@@ -993,7 +993,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const record: PluginEntityRecord = existing
           ? {
             ...existing,
-            companyId: recordCompanyId ?? existing.companyId ?? null,
+            companyId: recordCompanyId !== undefined ? recordCompanyId : (existing.companyId ?? null),
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId ?? null,

@@ -1743,16 +1743,18 @@ export function buildHostServices(
 
     entities: {
       async upsert(params) {
-        const companyId = (params as any).companyId
-          ?? (params.scopeKind === "company" && params.scopeId ? params.scopeId : null);
+        const companyId = (params as any).companyId !== undefined
+          ? (params as any).companyId
+          : (params.scopeKind === "company" && params.scopeId ? params.scopeId : null);
         return registry.upsertEntity(pluginId, {
           ...params,
           companyId,
         } as any) as any;
       },
       async list(params) {
-        const companyId = (params as any).companyId
-          ?? (params.scopeKind === "company" && params.scopeId ? params.scopeId : undefined);
+        const companyId = (params as any).companyId !== undefined
+          ? (params as any).companyId
+          : (params.scopeKind === "company" && params.scopeId ? params.scopeId : undefined);
         return registry.listEntities(pluginId, {
           ...params,
           ...(companyId !== undefined ? { companyId } : {}),
