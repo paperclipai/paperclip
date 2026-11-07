@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -15,6 +17,7 @@ import { getRecoveryPostgresSupport } from "../../__tests__/helpers/recovery-pos
 import { heartbeatService } from "../heartbeat.js";
 import { flushBudgetEvaluationWork } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import { secretService } from "../secrets.js";
 import { issueRoutes } from "../../routes/issues.js";
 import { errorHandler } from "../../middleware/index.js";
@@ -173,9 +176,13 @@ describeRecoveryPostgres("native idle sleep cold continuation", () => {
       app.use((req, _res, next) => { req.actor = { type: "board", userId, source: "local_implicit" }; next(); });
       app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
       app.use(errorHandler);
+      const commentServer = createServer(app);
       heartbeat.startTaskDrain({ ttlMs: 60_000 });
       try {
-        await request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Continue the saved work and record the continuation.", reopen: true, resume: true }).expect(201);
+        commentServer.listen(0, "127.0.0.1");
+        await once(commentServer, "listening");
+        expect(commentServer.address()).toMatchObject({ address: "127.0.0.1" });
+        await request(commentServer).post(`/api/issues/${issueId}/comments`).send({ body: "Continue the saved work and record the continuation.", reopen: true, resume: true }).expect(201);
         await vi.waitFor(async () => {
           const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_reopened_via_comment")));
           expect(wakes).toHaveLength(1);
@@ -183,7 +190,12 @@ describeRecoveryPostgres("native idle sleep cold continuation", () => {
           expect(heartbeat.getTaskDrainStatus().pendingWakes).toBe(0);
         });
         expect(turns).toHaveLength(1);
-      } finally { heartbeat.stopTaskDrain(); }
+      } finally {
+        heartbeat.stopTaskDrain();
+        if (commentServer.listening) await new Promise<void>((resolve, reject) => {
+          commentServer.close(error => error ? reject(error) : resolve());
+        });
+      }
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
       await heartbeat.reconcileCostAccounting();
