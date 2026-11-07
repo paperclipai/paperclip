@@ -13,6 +13,7 @@ import { privateArtifactKey, retainPrivateTransfer, transferPrivateArtifact, ver
 import { authorizeManualPrivateEvidence, MANUAL_PRIVATE_PROTOCOL, manualCellKind, manualPrivateSessionPolicy } from "./manual-private-retention.js";
 import { shippedChatEvidenceAuthority } from "./testops-chat-admission.js";
 import { manualDispatchEvidenceAuthority } from "./manual-dispatch-authority.js";
+import { privateRefusalCode } from "./private-refusal-code.js";
 
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 function request(env: NodeJS.ProcessEnv) {
@@ -233,5 +234,6 @@ async function main() {
   else throw new Error("Invalid private evidence command");
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main().catch(() => { process.stderr.write("Restricted manual evidence operation failed; no public fallback\n"); process.exitCode = 1; });
+  // Name only a closed refusal code (never message text) so a refused attempt is diagnosable.
+  main().catch(error => { process.stderr.write(`Restricted manual evidence operation failed (refusal: ${privateRefusalCode(error)}); no public fallback\n`); process.exitCode = 1; });
 }
