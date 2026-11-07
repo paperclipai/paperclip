@@ -11597,17 +11597,20 @@ export function issueService(db: Db) {
           ? receiptExisting.unblockDescriptor
           : issueData.unblockDescriptor;
         const descriptorChanged = !isDeepStrictEqual(receiptExisting.unblockDescriptor, nextDescriptor);
+        const nextStatus = issueData.status ?? receiptExisting.status;
         const resumesSelfOwnedBlock = receiptExisting.blockedTransitionAt &&
+          receiptExisting.status === "in_progress" &&
           nextDescriptor && nextDescriptor.owner !== "board" &&
           "agentId" in nextDescriptor.owner &&
           nextDescriptor.owner.agentId === receiptExisting.assigneeAgentId &&
           (issueData.assigneeAgentId === undefined || issueData.assigneeAgentId === receiptExisting.assigneeAgentId) &&
           !descriptorChanged;
-        if ((issueData.status ?? receiptExisting.status) === "blocked" &&
+        if (nextStatus === "blocked" &&
             ((receiptExisting.status !== "blocked" && !resumesSelfOwnedBlock) || descriptorChanged)) {
           patch.blockedTransitionAt = patch.updatedAt;
           patch.blockedOwnerNotifiedAt = null;
-        } else if (receiptExisting.status === "blocked" && issueData.status && issueData.status !== "blocked") {
+        } else if (nextStatus !== "blocked" && nextStatus !== receiptExisting.status &&
+            (receiptExisting.status === "blocked" || receiptExisting.blockedTransitionAt)) {
           patch.unblockDescriptor = null;
           patch.blockedTransitionAt = null;
           patch.blockedOwnerNotifiedAt = null;

@@ -1049,6 +1049,47 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     }
   });
 
+  it.each(["done", "todo"] as const)("wakes the owner when a checked-out block moves to %s and the same request blocks it again", async (leaveStatus) => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      ...agentRow(companyId, { id: agentId, name: "ReopenedCoder" }),
+      adapterType: "process", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: "blocker-owner", status: "active", membershipRole: "owner",
+    });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() }).returning();
+    const transitionAt = new Date("2026-10-27T12:00:00.000Z");
+    const descriptor = { owner: { agentId }, action: "Restore registry access" };
+    const [issue] = await db.insert(issues).values({
+      companyId, title: "Wait for registry access", status: "blocked", assigneeAgentId: agentId,
+      unblockDescriptor: descriptor, blockedTransitionAt: transitionAt,
+      blockedOwnerNotifiedAt: new Date("2026-10-27T12:00:01.000Z"),
+    }).returning();
+    await svc.checkout(issue!.id, agentId, ["blocked"], null);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", agentId, companyId, runId: run!.id, source: "agent_key", keyScope: { kind: "standard" } };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const left = await request(app).patch(`/api/issues/${issue!.id}`).send({ status: leaveStatus });
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    const [afterLeave] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    expect(afterLeave).toMatchObject({ unblockDescriptor: null, blockedTransitionAt: null, blockedOwnerNotifiedAt: null });
+    const reblocked = await request(app).patch(`/api/issues/${issue!.id}`).send({ status: "blocked", unblockDescriptor: descriptor });
+    expect(reblocked.status, JSON.stringify(reblocked.body)).toBe(200);
+    await heartbeatService(db).drainActiveRunExecutions();
+    const [updated] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter(wake => wake.reason === "issue_unblock_requested")).toHaveLength(1);
+    expect(updated!.blockedTransitionAt).not.toEqual(transitionAt);
+    expect(updated!.blockedOwnerNotifiedAt).not.toBeNull();
+  });
+
   it("rejects checkout by a terminated agent before assigning the issue", async () => {
     const companyId = await seedAssignableAgentCompany();
     const terminatedAgentId = randomUUID();
