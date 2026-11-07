@@ -1,6 +1,6 @@
 ---
 description: Run, session, launch, and pack state saved by one release must resume on the next or fail with a permanent, named code - never a generic retryable one.
-globs: "server/src/services/native-runtime/**,server/src/services/recovery/**,server/src/services/heartbeat/session-preparation.ts,server/src/services/heartbeat/run-state.ts,server/src/services/runner-revision-mismatch.ts,server/src/services/sandbox-provider-runtime.ts,packages/paperclip-runner/**,packages/adapter-utils/src/acpx-engine/**,docker/daytona-runner/**"
+globs: "server/src/services/native-runtime/**,server/src/services/recovery/**,server/src/services/heartbeat/session-preparation.ts,server/src/services/heartbeat/run-state.ts,server/src/services/runner-revision-mismatch.ts,server/src/services/sandbox-provider-runtime.ts,packages/paperclip-runner/**,packages/adapter-utils/src/acpx-engine/**,docker/daytona-runner/**,packages/db/src/schema/native_*.ts,packages/db/src/schema/agent_task_sessions.ts,packages/db/src/schema/run_identity_contexts.ts"
 alwaysApply: false
 ---
 
@@ -9,7 +9,8 @@ alwaysApply: false
 ## Scope and purpose
 
 This rule covers native runtime, recovery, session preparation, runner, ACPX
-engine, provider-pack, and sandbox image code. Deploys and restarts happen while
+engine, provider-pack, and sandbox image code, and the database schema for
+native run, checkpoint, session, and run identity state. Deploys and restarts happen while
 runs are saved or in flight, so state written by one release is routinely
 resumed by the next. Code here must treat that cutover as a normal path, not an
 edge case.

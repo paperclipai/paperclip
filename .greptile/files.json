@@ -115,7 +115,10 @@
         "server/src/services/sandbox-provider-runtime.ts",
         "packages/paperclip-runner/**",
         "packages/adapter-utils/src/acpx-engine/**",
-        "docker/daytona-runner/**"
+        "docker/daytona-runner/**",
+        "packages/db/src/schema/native_*.ts",
+        "packages/db/src/schema/agent_task_sessions.ts",
+        "packages/db/src/schema/run_identity_contexts.ts"
       ]
     }
   ]

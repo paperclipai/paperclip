@@ -46,7 +46,8 @@ contract registry, and ACPX driver and provider code under
 `packages/paperclip-runner/`, read
 [`rules/acpx-profile-identity.mdc`](rules/acpx-profile-identity.mdc).
 For native runtime, recovery, session preparation, runner, ACPX engine, and
-provider-pack or sandbox image code that persists or resumes run state, read
+provider-pack or sandbox image code that persists or resumes run state, and for
+the native run, checkpoint, and session schema in `packages/db`, read
 [`rules/upgrade-safe-run-state.mdc`](rules/upgrade-safe-run-state.mdc).
 See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 

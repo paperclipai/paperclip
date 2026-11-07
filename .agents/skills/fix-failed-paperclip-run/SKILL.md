@@ -30,8 +30,8 @@ available tools and records before asking the user for missing information:
   source. Trace effective values back through task overrides, inherited settings,
   defaults, and saved session state. Redact credential values.
 - Whether a deploy or restart separated save from resume. Compare the served
-  revision and runner/provider pack versions when the session, checkpoint, lease,
-  or launch input was saved with those that resumed it. Failures clustered after
+  revision and runner/provider pack versions that saved the session, checkpoint,
+  lease, or launch input with those that resumed it. Failures clustered after
   a deploy usually mean the new release refuses state the old one saved.
 - Which endpoint is authorized: verified fix and green PR, or also rollout and
   recovery. Preserve the requested work and success criteria throughout.
