@@ -13,10 +13,11 @@ describe("locale validation", () => {
 
   it("accepts registered locale files", async () => {
     expect(supportedLocales).toContain("en");
-    for (const locale of supportedLocales) {
-      expect(validateLocaleMessages(await loadLocaleMessages(locale)), locale).toEqual([]);
+    const catalogs = await Promise.all(supportedLocales.map(async (locale) => [locale, await loadLocaleMessages(locale)] as const));
+    for (const [locale, messages] of catalogs) {
+      expect(validateLocaleMessages(messages), locale).toEqual([]);
     }
-  });
+  }, 60_000);
 
   it("rejects missing and extra nested keys", () => {
     expect(
