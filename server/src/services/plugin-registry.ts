@@ -1,7 +1,7 @@
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { isDeepStrictEqual } from "node:util";
 import { writePluginJobChange } from "./plugin-job-work-notifications.js";
-import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
+import { asc, eq, isNull, ne, sql, and, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
@@ -546,9 +546,29 @@ export function pluginRegistryService(db: Db) {
         conditions.push(query.scopeId === null ? isNull(pluginEntities.scopeId) : eq(pluginEntities.scopeId, query.scopeId));
       }
       if (query?.companyId !== undefined) {
-        conditions.push(query.companyId === null ? isNull(pluginEntities.companyId) : eq(pluginEntities.companyId, query.companyId));
+        if (query.companyId === null) {
+          conditions.push(isNull(pluginEntities.companyId));
+        } else {
+          const companyCond = or(
+            eq(pluginEntities.companyId, query.companyId),
+            and(
+              isNull(pluginEntities.companyId),
+              eq(pluginEntities.scopeKind, "company"),
+              eq(pluginEntities.scopeId, query.companyId),
+            ),
+          );
+          if (companyCond) conditions.push(companyCond);
+        }
       } else if (query?.scopeKind === "company" && query?.scopeId) {
-        conditions.push(eq(pluginEntities.companyId, query.scopeId));
+        const companyCond = or(
+          eq(pluginEntities.companyId, query.scopeId),
+          and(
+            isNull(pluginEntities.companyId),
+            eq(pluginEntities.scopeKind, "company"),
+            eq(pluginEntities.scopeId, query.scopeId),
+          ),
+        );
+        if (companyCond) conditions.push(companyCond);
       }
 
       return db
@@ -584,7 +604,14 @@ export function pluginRegistryService(db: Db) {
       const companyIdPredicate =
         companyId == null
           ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, companyId);
+          : or(
+              eq(pluginEntities.companyId, companyId),
+              and(
+                isNull(pluginEntities.companyId),
+                eq(pluginEntities.scopeKind, "company"),
+                eq(pluginEntities.scopeId, companyId),
+              ),
+            );
       return db
         .select()
         .from(pluginEntities)
@@ -628,7 +655,14 @@ export function pluginRegistryService(db: Db) {
       const companyIdPredicate =
         resolvedCompanyId == null
           ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, resolvedCompanyId);
+          : or(
+              eq(pluginEntities.companyId, resolvedCompanyId),
+              and(
+                isNull(pluginEntities.companyId),
+                eq(pluginEntities.scopeKind, "company"),
+                eq(pluginEntities.scopeId, resolvedCompanyId),
+              ),
+            );
       const existing = await db
         .select()
         .from(pluginEntities)

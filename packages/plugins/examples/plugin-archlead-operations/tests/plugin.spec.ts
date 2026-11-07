@@ -949,6 +949,16 @@ describe("ArchLead Operations plugin", () => {
     expect(overview.pagination).toMatchObject({ limit: 200, offset: 0 });
   });
 
+  it("clamps unbounded overview bridge limit to MAX_RECORDS to prevent amplification", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const overview = await harness.getData<{
+      totals: { leads: number; requests: number; isLimited: boolean };
+      pagination: { limit: number; offset: number };
+    }>("overview", { companyId: COMPANY_ID, limit: 1_000_000, offset: -50 });
+    expect(overview.pagination).toMatchObject({ limit: 200, offset: 0 });
+  });
+
   it("self-heals and recovers an unfinished sandbox qualification task on retry", async () => {
     const harness = createTestHarness({ manifest });
     await plugin.definition.setup(harness.ctx);

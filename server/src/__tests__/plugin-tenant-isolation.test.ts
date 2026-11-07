@@ -569,4 +569,52 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(listB[0]?.externalId).toBe("lead-2");
     expect(listB[0]?.companyId).toBe(companyB);
   });
+
+  it("resolves and backfills legacy records with NULL company_id during list and upsert", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    // Seed a legacy row where companyId is NULL, but scopeKind = 'company' and scopeId = companyA
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead",
+      status: "open",
+      data: { name: "Legacy" },
+    });
+
+    // 1. Querying by companyId or scopeId should find the legacy row
+    const list = await registry.listEntities(pluginId, { companyId: companyA });
+    expect(list).toHaveLength(1);
+    expect(list[0]?.externalId).toBe("legacy-lead-1");
+
+    // 2. Querying by externalId with companyA should find the legacy row
+    const legacyByExt = await registry.getEntityByExternalId(pluginId, "lead", "legacy-lead-1", companyA);
+    expect(legacyByExt).not.toBeNull();
+    expect(legacyByExt?.externalId).toBe("legacy-lead-1");
+
+    // 3. Upserting the legacy row should update it and backfill companyId without creating duplicates
+    const updated = await registry.upsertEntity(pluginId, {
+      companyId: companyA,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead Updated",
+      status: "qualified",
+      data: { name: "Legacy", updated: true },
+    });
+    expect(updated?.id).toBe(list[0]?.id);
+    expect(updated?.companyId).toBe(companyA);
+    expect(updated?.title).toBe("Legacy Lead Updated");
+
+    const all = await db.select().from(pluginEntities);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.companyId).toBe(companyA);
+  });
 });

@@ -141,8 +141,16 @@ const plugin = definePlugin({
 
     ctx.data.register("overview", async (params) => {
       const companyId = requireCompanyScope(params.companyId);
-      const limit = typeof params.limit === "number" ? params.limit : undefined;
-      const offset = typeof params.offset === "number" ? params.offset : undefined;
+      const rawLimit = params.limit;
+      const limit =
+        typeof rawLimit === "number"
+          ? (Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_RECORDS) : MAX_RECORDS)
+          : (typeof rawLimit === "string" ? parseLimit(rawLimit) ?? MAX_RECORDS : undefined);
+      const rawOffset = params.offset;
+      const offset =
+        typeof rawOffset === "number"
+          ? (Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0)
+          : (typeof rawOffset === "string" && /^\d+$/.test(rawOffset) ? Math.max(0, Number(rawOffset)) : undefined);
       return listOverview(ctx, companyId, { limit, offset });
     });
 

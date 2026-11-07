@@ -623,8 +623,16 @@ export async function listOverview(
   companyId: string,
   options?: { limit?: number; offset?: number },
 ) {
-  const limit = options?.limit ?? MAX_RECORDS;
-  const offset = options?.offset ?? 0;
+  const rawLimit = options?.limit;
+  const limit =
+    typeof rawLimit === "number" && Number.isSafeInteger(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, MAX_RECORDS)
+      : MAX_RECORDS;
+  const rawOffset = options?.offset;
+  const offset =
+    typeof rawOffset === "number" && Number.isSafeInteger(rawOffset) && rawOffset > 0
+      ? rawOffset
+      : 0;
   const [leads, requests, clients, tickets, qualificationRecords, paymentReceipts] = await Promise.all([
     ctx.entities.list({ entityType: ENTITY_TYPES.lead, scopeKind: "company", scopeId: companyId, limit, offset }),
     ctx.entities.list({ entityType: ENTITY_TYPES.request, scopeKind: "company", scopeId: companyId, limit, offset }),
