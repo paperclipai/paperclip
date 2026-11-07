@@ -75,6 +75,7 @@ it("keeps V1 plugin pools on the configured legacy harness", async () => {
 });
 
 it("dispatches a V1 plugin Pi pool through Pi without remapping it to Codex", async () => {
+  await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
   const member = { ...members[0]!, id: randomUUID(), profile: { provider: "codex" as const, model: "openai/gpt-5.6-sol" } };
   const pool = await makePool({ members: [member] });
   const [agent] = await db.insert(agents).values({ companyId, name: "Plugin Pi dispatch", adapterType: "pi_local",
@@ -119,6 +120,10 @@ it.each(["quota", "runner"] as const)("rechecks a fresh native pool pin for a co
     const saved = await heartbeat.getRun(run!.id);
     expect(saved?.errorCode).toBe("ai_connection_pool_exhausted");
     expect(saved?.resultJson).toMatchObject({ executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false } });
+    await expect.poll(async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).length, { timeout: 20_000 }).toBe(1);
+    const [waiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(waiting.scheduledRetryReason).toBe("ai_connection_pool_wait");
+    expect(waiting.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(deadline.getTime());
   } finally { await heartbeat.drainActiveRunExecutions(); await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId)); await instanceSettingsService(db).updateExperimental(original); }
 }, 30_000);
 
