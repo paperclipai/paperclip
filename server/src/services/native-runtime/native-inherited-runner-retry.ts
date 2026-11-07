@@ -34,8 +34,8 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-/** Lock unavailable, serialization failure, deadlock, admin shutdown, or a connection class error. */
-const TRANSIENT_SQLSTATES = new Set(["55P03", "40001", "40P01", "57P01", "57P03"]);
+/** Lock unavailable, statement timeout, serialization failure, deadlock, shutdown, or a connection class error. */
+const TRANSIENT_SQLSTATES = new Set(["55P03", "57014", "40001", "40P01", "57P01", "57P03"]);
 
 function isTransientDatabaseError(error: unknown): boolean {
   for (let current = error, depth = 0; current && typeof current === "object" && depth < 5;

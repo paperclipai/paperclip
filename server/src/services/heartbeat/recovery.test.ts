@@ -479,6 +479,9 @@ describePostgres("heartbeat recovery module ownership", () => {
     const lockTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("lock timeout"), { code: "55P03" }) });
     const contended = { transaction: async () => { throw lockTimeout; } } as unknown as Db;
     expect(await retireInheritedRemoteRunnerIdentity(contended, randomUUID())).toBe("transient");
+    const statementTimeout = Object.assign(new Error("Failed query"), { cause: Object.assign(new Error("statement timeout"), { code: "57014" }) });
+    const slow = { transaction: async () => { throw statementTimeout; } } as unknown as Db;
+    expect(await retireInheritedRemoteRunnerIdentity(slow, randomUUID())).toBe("transient");
   });
 
   it.each(["own_turn", "own_launch", "own_checkpoint", "no_predecessor", "pending_side_effect", "legacy_detail"] as const)(
