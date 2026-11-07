@@ -366,7 +366,9 @@ authorization and repository checks.
 Unaddressed follow-ups and incidental human or unknown mentions retain the existing
 subscription behavior. Thread identity keeps the repository name as GitHub sends
 it, including uppercase letters, so automatic review, issue, and inline-finding
-threads receive the same unaddressed follow-ups as mention-created threads.
+threads receive the same unaddressed follow-ups as mention-created threads. The
+next automatic pull request event renames an older lowercase thread to GitHub's
+casing and keeps its task and its main response comment.
 Explicitly mentioning this bot admits a request even when another recipient is
 named. The routing rule does not change automatic issue or PR event policies.
 Archived bots and identities from other companies or providers are excluded from

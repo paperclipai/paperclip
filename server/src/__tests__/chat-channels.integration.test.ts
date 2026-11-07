@@ -53,6 +53,7 @@ import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions
 import type { Db } from "@paperclipai/db";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { githubResponseAuthorityFields } from "../services/chat-channels/github/response-authority-read.js";
+import { stagePullResponse } from "../services/chat-channels/github/response-target.js";
 import * as activityLogModule from "../services/activity-log.js";
 import * as connectionCredentialBindings from "../services/connection-credential-bindings.js";
 import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
@@ -7097,7 +7098,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(comments[1].body).toContain("Plain follow-up without a mention");
       const [followUp] = await db.select().from(chatDeliveries).where(and(eq(chatDeliveries.endpointId, f.endpoint.id), eq(chatDeliveries.eventKind, "message")));
       expect(followUp).toMatchObject({ state: "processed", redactedError: null });
-    });
+    }, 25_000);
+    it("binds automatic PR events to a legacy lowercase thread by adopting GitHub's repository casing", async () => {
+      const f = await reviewBotFixture();
+      const pull = { number: 85, title: "Legacy casing", body: "", draft: false, user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) } };
+      const repository = (full_name: string) => ({ id: 97531, full_name, name: "paperclip", owner: { id: 1357, login: "paperclipai" } });
+      const send = async (event: unknown) => expect((await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: randomUUID(), payload: event, webhookSecret: f.webhookSecret }))).status).toBeLessThan(300);
+      await send({ action: "opened", installation: { id: 2468 }, sender: { id: 42, login: "octocat" }, pull_request: pull, repository: repository("paperclipai/paperclip") });
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readChatConversationsByEndpointId(f.endpoint.id)).length;
+      }, { timeout: 10_000 }).toBe(1);
+      const [legacy] = await readChatConversationsByEndpointId(f.endpoint.id);
+      expect(legacy.externalThreadId).toBe("github:paperclipai/paperclip:85");
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const [saved] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: legacy.id,
+        kind: "github_pr_response_comment", providerActionId: "github_pr_response:github:paperclipai/paperclip:85", status: "processed",
+        payload: { botExternalId: endpoint.botExternalId, agentId: endpoint.assignedAgentId },
+        result: { id: 9001, url: "https://github.com/PaperclipAI/Paperclip/pull/85#issuecomment-9001" } }).returning();
+      await send({ action: "synchronize", installation: { id: 2468 }, sender: { id: 42, login: "octocat" }, before: pull.head.sha,
+        pull_request: { ...pull, head: { sha: "c".repeat(40) } }, repository: repository("PaperclipAI/Paperclip") });
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readChatDeliveriesByEndpointId(f.endpoint.id)).filter(delivery => delivery.state === "processed").length;
+      }, { timeout: 10_000 }).toBe(2);
+      const conversations = await readChatConversationsByEndpointId(f.endpoint.id);
+      expect(conversations).toHaveLength(1);
+      expect(conversations[0]).toMatchObject({ id: legacy.id, externalThreadId: "github:PaperclipAI/Paperclip:85",
+        externalConversationId: legacy.externalConversationId.replace("paperclipai/paperclip", "PaperclipAI/Paperclip") });
+      const deliveries = await readChatDeliveriesByEndpointId(f.endpoint.id).orderBy(asc(chatDeliveries.createdAt));
+      await expect(stagePullResponse(db, { endpoint, conversation: conversations[0], delivery: deliveries[1], number: 85, replyId: null }))
+        .resolves.toMatchObject({ id: saved.id, conversationId: legacy.id });
+    }, 25_000);
     it.each(["created", "edited"])("retains attachment provenance in a signed GitHub mention %s", async action => {
       const f = await reviewBotFixture();
       const file = "https://github.com/user-attachments/files/31917991/proof.txt";
