@@ -1,0 +1,5 @@
+schema: paperclip/v1
+agents:
+  delivery-lead:
+    permissions:
+      canCreateAgents: true
