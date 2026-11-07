@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
+  asNumber,
   asString,
   ensurePathInEnv,
   runChildProcess,
@@ -9,12 +10,18 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const DEFAULT_MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
 // `opencode models` is a lightweight metadata call, but on a shared ollama
 // daemon it can queue behind an in-flight `opencode run` generation on the
 // same host and either time out or fail with an opaque error. Retry a few
 // times with backoff before surfacing a hard failure (SAG-6326/SAG-6336).
 const MODELS_DISCOVERY_RETRY_DELAYS_MS = [2_000, 4_000];
+
+function resolveModelsDiscoveryTimeoutMs(modelsProbeTimeoutSec: unknown): number {
+  const overrideSec = asNumber(modelsProbeTimeoutSec, 0);
+  if (overrideSec > 0) return overrideSec * 1000;
+  return DEFAULT_MODELS_DISCOVERY_TIMEOUT_MS;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -120,13 +127,14 @@ function discoveryCacheKey(
   command: string,
   cwd: string,
   env: Record<string, string>,
+  timeoutMs: number,
 ) {
   const envKey = Object.entries(env)
     .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${hashValue(value)}`)
     .join("\n");
-  return `${command}\n${cwd}\n${envKey}`;
+  return `${command}\n${cwd}\n${timeoutMs}\n${envKey}`;
 }
 
 function pruneExpiredDiscoveryCache(now: number) {
@@ -140,12 +148,14 @@ export async function discoverOpenCodeModels(
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
+    modelsProbeTimeoutSec?: unknown;
     refresh?: boolean;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs(input.modelsProbeTimeoutSec);
   // Ensure HOME points to the actual running user's home directory.
   // When the server is started via `runuser -u <user>`, HOME may still
   // reflect the parent process (e.g. /root), causing OpenCode to miss
@@ -168,6 +178,7 @@ export async function discoverOpenCodeModels(
     }),
   );
 
+  const timeoutSec = timeoutMs / 1000;
   const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
   let lastError: Error | undefined;
 
@@ -179,7 +190,7 @@ export async function discoverOpenCodeModels(
       {
         cwd,
         env: runtimeEnv,
-        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        timeoutSec,
         graceSec: 3,
         onLog: async () => {},
       },
@@ -187,7 +198,7 @@ export async function discoverOpenCodeModels(
 
     if (result.timedOut) {
       lastError = new Error(
-        `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`,
+        `\`opencode models\` timed out after ${timeoutSec}s.`,
       );
     } else if ((result.exitCode ?? 1) !== 0) {
       const detail =
@@ -214,18 +225,20 @@ export async function discoverOpenCodeModelsCached(
     command?: unknown;
     cwd?: unknown;
     env?: unknown;
+    modelsProbeTimeoutSec?: unknown;
   } = {},
 ): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs(input.modelsProbeTimeoutSec);
+  const key = discoveryCacheKey(command, cwd, env, timeoutMs);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({ command, cwd, env, modelsProbeTimeoutSec: input.modelsProbeTimeoutSec });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
 }
@@ -234,10 +247,12 @@ async function refreshOpenCodeModelsCached(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  modelsProbeTimeoutSec?: unknown;
 }): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs(input.modelsProbeTimeoutSec);
   // OpenCode 1.18.17 uses `models --refresh` only to update its on-disk
   // models.dev cache. Its stdout is a confirmation message, not the refreshed
   // catalog, so enumerate once more after the refresh under the exact same
@@ -246,11 +261,17 @@ async function refreshOpenCodeModelsCached(input: {
     command,
     cwd,
     env,
+    modelsProbeTimeoutSec: input.modelsProbeTimeoutSec,
     refresh: true,
   });
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({
+    command,
+    cwd,
+    env,
+    modelsProbeTimeoutSec: input.modelsProbeTimeoutSec,
+  });
   if (models.length > 0) {
-    discoveryCache.set(discoveryCacheKey(command, cwd, env), {
+    discoveryCache.set(discoveryCacheKey(command, cwd, env, timeoutMs), {
       expiresAt: Date.now() + MODELS_CACHE_TTL_MS,
       models,
     });
@@ -269,6 +290,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  modelsProbeTimeoutSec?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
 
@@ -292,6 +314,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
       command: input.command,
       cwd: input.cwd,
       env: input.env,
+      modelsProbeTimeoutSec: input.modelsProbeTimeoutSec,
     });
   } catch (err) {
     // The availability probe is a best-effort pre-flight guard, not a gate. If
@@ -328,6 +351,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
         command: input.command,
         cwd: input.cwd,
         env: input.env,
+        modelsProbeTimeoutSec: input.modelsProbeTimeoutSec,
       });
       if (refreshedModels.some((entry) => entry.id === model)) {
         return refreshedModels;

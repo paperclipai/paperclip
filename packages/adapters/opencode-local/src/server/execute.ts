@@ -88,7 +88,7 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
 }
 
-const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 60;
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
 export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
@@ -100,6 +100,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  modelsProbeTimeoutSec?: unknown;
 }) {
   const model = requireOpenCodeModelId(input.model);
 
@@ -113,13 +114,19 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     return;
   }
 
-  const defaultProbeTimeoutSec =
-    input.executionTarget.kind === "remote" && input.executionTarget.transport === "sandbox"
-      ? REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC
-      : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
-  const probeTimeoutSec = input.timeoutSec > 0
-    ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
-    : defaultProbeTimeoutSec;
+  const overrideSec = asNumber(input.modelsProbeTimeoutSec, 0);
+  let probeTimeoutSec: number;
+  if (overrideSec > 0) {
+    probeTimeoutSec = input.timeoutSec > 0 ? Math.min(input.timeoutSec, overrideSec) : overrideSec;
+  } else {
+    const defaultProbeTimeoutSec =
+      input.executionTarget.kind === "remote" && input.executionTarget.transport === "sandbox"
+        ? REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC
+        : REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC;
+    probeTimeoutSec = input.timeoutSec > 0
+      ? Math.min(input.timeoutSec, defaultProbeTimeoutSec)
+      : defaultProbeTimeoutSec;
+  }
   const probe = await runAdapterExecutionTargetProcess(
     input.runId,
     input.executionTarget,
@@ -375,6 +382,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command,
         cwd,
         env: runtimeEnv,
+        modelsProbeTimeoutSec: config.modelsProbeTimeoutSec,
       });
     }
 
@@ -478,6 +486,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        modelsProbeTimeoutSec: config.modelsProbeTimeoutSec,
       });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
