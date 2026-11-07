@@ -130,7 +130,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const runnerRoot = (taskId: string) => join(root, taskId);
     const artifact = readRunnerdArtifactBinding(binary), preparations = new Map<string, { operation: Extract<PluginEnvironmentTaskOperation, { kind: "prepare" }>; launch: { configurationId: string } }>();
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
-    let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false;
+    let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
@@ -183,6 +183,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         websocketUrl: `wss://127.0.0.1:${tlsAddress.port}/runner`, secretHeaders: [{ name: "X-Fixture-Token", value: "synthetic-ingress" }], generation: "fixture" } };
       if (operation.kind === "status") return { kind: "status", taskId, phase: handles.get(taskId)?.isExitConfirmed?.() ? "cancelled" : "running", executionStopped: (cleaning || mode !== "missing stop") && (handles.get(taskId)?.isExitConfirmed?.() ?? false), sessionStateAvailable: (cleaning || mode !== "missing state" && mode !== "missing stop") && handles.get(taskId)?.isExitConfirmed?.() === true && (await state(taskId)).lifecycle === "suspended" };
       if (operation.kind === "read_state") {
+        if (operation.resumeFrom === taskA) sourceReadResponses++;
         const live = await state(operation.resumeFrom ?? taskId);
         const previous = [...preparations.values()].some(({ operation: prepared }) => prepared.priorIdentity && sameSource(prepared.priorIdentity, operation.identity));
         expect(sameSource(operation.identity, live) || previous).toBe(true);
@@ -229,8 +230,10 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       if (method === "environmentAcquireLease") return { providerLeaseId: taskB, metadata: { creationOperationId: params.creationOperationId } };
       try { return await task(params.operation, params.runId, params.taskId); } finally { settled?.(); }
     } } as unknown as PluginWorkerManager;
-    const dispatch = (leaseId: string, operation: PluginEnvironmentTaskOperation, options?: { executionContext?: unknown; expectedTaskId?: string }) =>
-      executeEnvironmentTask(db, workers, { companyId, leaseId, operation, ...options });
+    const dispatch = (leaseId: string, operation: PluginEnvironmentTaskOperation, options?: { executionContext?: unknown; expectedTaskId?: string }) => {
+      if (operation.kind === "read_state" && operation.resumeFrom === taskA) sourceReadRequests++;
+      return executeEnvironmentTask(db, workers, { companyId, leaseId, operation, ...options });
+    };
     const execute = async (current: typeof execution, leaseId: string) => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: current }, runnerInstanceId: native.runnerInstanceId, completionContractId: contract!.id, completionContractSha256: contract!.canonicalSha256, nativeSessionId: current.session.normalizedSessionId })
         .where(eq(heartbeatRuns.id, current.binding.runId));
@@ -293,7 +296,14 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         if (mode === "prepared copy") expect(releasePreparation).toBeTypeOf("function");
         pendingFollowup = execute(next, leaseB);
         if (denied) {
-          await expect(pendingFollowup).rejects.toThrow();
+          const refusal = mode === "working state" ? "checkpoint_not_settled"
+            : mode === "foreign state" ? "Plugin Runner checkpoint identity mismatch"
+            : "Plugin Runner retained session is not authorized";
+          await expect(pendingFollowup).rejects.toThrow(refusal);
+          if (mode === "missing stop") expect(sourceReadRequests).toBe(0);
+          else expect(sourceReadRequests).toBeGreaterThan(0);
+          if (mode === "foreign state" || mode === "working state") expect(sourceReadResponses).toBeGreaterThan(0);
+          else expect(sourceReadResponses).toBe(0);
           expect(submissions).toBe(1); expect(claims).toEqual([]);
           expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runB))).toHaveLength(0);
           expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toHaveLength(1);
