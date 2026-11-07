@@ -61,6 +61,9 @@ export async function recheckRunBudgetReservationInTransaction(
     .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
   if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
     return "Agent is paused or its lifecycle is not ready for new work";
+  // An owned recovery reuses the hold reserveRunBudget already admitted;
+  // other runs' holds filling the budget must not refuse it.
+  if (recoveryLeaseOwner) return null;
   for (const [index, policy] of policies.entries()) {
     const observed = observations[index];
     // This operation's hold is already included in exposure. Do not propose it

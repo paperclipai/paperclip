@@ -220,6 +220,34 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(reserveRunBudget(db, f.companyId, fresh, null)).rejects.toThrow(/recovers its unfinished accounting/);
   });
 
+  it("lets an owned recovery dispatch when other runs' held reservations fill the budget", async () => {
+    const f = await fixture({ phase: "observed" });
+    const [otherIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Recovering task", status: "in_progress",
+      assigneeAgentId: f.otherAgentId }).returning();
+    const recovering = randomUUID(), busy = randomUUID(), owner = `recovery:${randomUUID()}`;
+    await db.insert(heartbeatRuns).values([
+      { id: recovering, companyId: f.companyId, agentId: f.otherAgentId, status: "running",
+        runtimeMode: "native", scopeKind: "issue", issueId: otherIssue.id, nativeIssueId: otherIssue.id },
+      { id: busy, companyId: f.companyId, agentId: f.otherAgentId, status: "running" },
+    ]);
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: otherIssue.id, runId: recovering,
+      phase: "observed", attempt: 2, leaseOwner: owner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    // Held reservations total 600 of the 500-cent budget.
+    const [own] = await db.insert(budgetReservations).values([
+      { companyId: f.companyId, runId: recovering, agentId: f.otherAgentId, amountCents: "300", state: "held", providerStartedAt: new Date() },
+      { companyId: f.companyId, runId: busy, agentId: f.otherAgentId, amountCents: "300", state: "held", providerStartedAt: new Date() },
+    ]).returning();
+    await expect(reserveRunBudget(db, f.companyId, recovering, null, {}, owner)).resolves.toMatchObject({ reused: true });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, recovering));
+    expect(await db.transaction(tx => recheckRunBudgetReservationInTransaction(tx as unknown as typeof db, [],
+      run, own.id, owner))).toBeNull();
+    expect(await recheckAdmittedRunBudgetReadOnly(db, { companyId: f.companyId, agentId: f.otherAgentId, runId: recovering,
+      projectId: null, reservationId: own.id, admittedRecovery: true })).toBeNull();
+    // Without the recovery ownership, the same dispatch is refused.
+    expect(await recheckAdmittedRunBudgetReadOnly(db, { companyId: f.companyId, agentId: f.otherAgentId, runId: recovering,
+      projectId: null, reservationId: own.id })).not.toBeNull();
+  });
+
   // RC-06e: unpriced charges with no observed usage, or with a known partial
   // cost, hard-stopped a company at 120 of 2000 cents.
   it.each([

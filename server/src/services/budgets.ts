@@ -311,6 +311,9 @@ export async function recheckAdmittedRunBudgetReadOnly(db: Db, input: {
       const observed = observations[index];
       if (input.admittedRecovery ? hardStopReached(policy, observed) : observedBlocks(policy, observed))
         return "Applicable budget no longer permits provider work";
+      // An owned recovery reuses the hold reserveRunBudget already admitted;
+      // other runs' holds filling the budget must not refuse it.
+      if (input.admittedRecovery) continue;
       const capacity = compareCents(addCents(observed.ledgerCents, observed.effectiveHeldCents), policy.amount);
       if (capacity > 0 || (compareCents(reservation.amountCents, 0) === 0 && capacity >= 0))
         return "Available budget is reserved by unfinished runs";
