@@ -790,7 +790,9 @@ export const OWNERSHIP_REPORT_INTERVAL_MS = 30_000;
  *   lifecycle, controller renewal and process-evidence writes already emit,
  *   coalesced to at most one pass per 30 s;
  * - a 30 s follow-up only while the last pass saw in-progress records whose
- *   set changed, or owners proven gone that need a second pass for rule I2.
+ *   set changed, or owners proven gone for the first time (rule I2 needs a
+ *   second pass);
+ * - the end of rule I7's grace window for an issue that is still inside it.
  * A pass that finds nothing in progress, or the same stuck set twice, sets no
  * deadline: an idle instance runs no SQL here. The pass runs in the shared
  * scheduler only, never on the path before `turn.start`.
@@ -814,7 +816,10 @@ export function registerOwnershipReconciliationWork(
       const report = await runOwnershipReconciliationPass(db, { state });
       const fingerprint = ownershipReportFingerprint(report);
       const changing = report.inProgress > 0 && fingerprint !== lastFingerprint;
-      nextRunAt = changing || state.goneLastPass.size > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      const followUp = changing || report.awaitingSecondProof > 0 ? Date.now() + OWNERSHIP_REPORT_INTERVAL_MS : null;
+      // A record inside a grace window (rule I7) is a real future obligation.
+      const graceDue = report.nextDueAt?.getTime() ?? null;
+      nextRunAt = followUp === null ? graceDue : graceDue === null ? followUp : Math.min(followUp, graceDue);
       lastFingerprint = fingerprint;
       lastReport = report;
       options.onReport?.(report);

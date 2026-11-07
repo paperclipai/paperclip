@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  budgetPolicies,
   companies,
   createDb,
   environmentLeases,
@@ -40,14 +44,27 @@ describe("report-only ownership reconciliation", () => {
   let agentId: string;
   let ids: Record<string, string>;
 
+  let home: string;
+  let orphanSpool: string;
+
   beforeAll(async () => {
+    // Spool kinds read the instance root; never let a test read a real instance.
+    home = await mkdtemp(join(tmpdir(), "ownership-report-home-"));
+    orphanSpool = join(home, "orphan-spool");
+    vi.stubEnv("PAPERCLIP_HOME", home);
+    vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphanSpool);
     if (!external) database = await startEmbeddedPostgresTestDatabase("ownership-reconciliation-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 120_000);
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => {
+    await db?.$client.end({ timeout: 1 }); await database?.cleanup();
+    vi.unstubAllEnvs();
+    await rm(home, { recursive: true, force: true });
+  });
 
   beforeEach(async () => {
-    await db.execute(sql`truncate activity_log, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
+    await rm(orphanSpool, { recursive: true, force: true });
+    await db.execute(sql`truncate budget_policies, activity_log, agent_wakeup_requests, sandbox_creation_operations, environment_leases,
       native_run_finalizations, heartbeat_runs, issues, agents, companies cascade`);
     companyId = randomUUID(); agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Ownership fixture", issuePrefix: "OWN" });
@@ -57,7 +74,7 @@ describe("report-only ownership reconciliation", () => {
   /** One record per owner class: alive here, provably gone, unprovable, unowned. */
   async function seed() {
     ids = {
-      liveRun: randomUUID(), deadRun: randomUUID(), debtRun: randomUUID(),
+      liveRun: randomUUID(), deadRun: randomUUID(), debtRun: randomUUID(), boundedRun: randomUUID(),
       liveIssue: randomUUID(), stalledIssue: randomUUID(),
       orphanLease: randomUUID(), unownedCleanup: randomUUID(), foreignIntent: randomUUID(), wake: randomUUID(),
     };
@@ -70,9 +87,15 @@ describe("report-only ownership reconciliation", () => {
       { id: ids.liveRun, companyId, agentId, issueId: ids.liveIssue, status: "running", invocationSource: "manual",
         runtimeMode: "native", nativeIssueId: ids.liveIssue },
       { id: ids.deadRun, companyId, agentId, status: "failed", invocationSource: "manual", finishedAt: minutesAgo(1) },
+      // Holds admission: a succeeded run with no observed cost.
       { id: ids.debtRun, companyId, agentId, status: "succeeded", invocationSource: "manual", finishedAt: minutesAgo(20),
         costAccountingPending: true },
+      // Does not hold admission: its observed cost already counts as exposure.
+      { id: ids.boundedRun, companyId, agentId, status: "succeeded", invocationSource: "manual", finishedAt: minutesAgo(20),
+        costAccountingPending: true, usageJson: { budgetExposure: { costCents: 12 } } },
     ]);
+    await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId,
+      windowKind: "calendar_month_utc", amount: 1000 });
     // A fresh native claim held by this process.
     await db.insert(nativeRunFinalizations).values({ runId: ids.liveRun, companyId, issueId: ids.liveIssue,
       phase: "observed", leaseOwner: `${currentControllerBootId()}:1:token`, leaseExpiresAt: new Date(Date.now() + 60_000),
@@ -131,20 +154,26 @@ describe("report-only ownership reconciliation", () => {
     expect(currentProcessSpaceHash()).not.toBe("another-pid-space");
     expect(kindReport(first, "sandbox_creation_intent")).toMatchObject({ inProgress: 1,
       verdicts: { unprovable: 1 }, reasons: { different_process_space: 1 } });
-    expect(kindReport(first, "run_accounting_debt")).toMatchObject({ inProgress: 1 });
+    expect(kindReport(first, "run_accounting_debt")).toMatchObject({ inProgress: 2 });
 
     expect(rules(first, "environment_pending_cleanup")).toEqual(["I1_owned"]);
     // I2 needs the owner proven gone on two consecutive passes.
     expect(rules(first, "environment_run_lease_active")).toEqual([]);
-    expect(rules(first, "run_accounting_debt")).toEqual(["I3_admission_independent"]);
+    expect(first.violations.filter(violation => violation.rule === "I3_admission_independent")
+      .map(violation => violation.recordId)).toEqual([ids.debtRun]);
     expect(rules(first, "wake_request")).toEqual(["I4_exactly_once_intent"]);
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
     expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns"]);
 
+    expect(first.awaitingSecondProof).toBe(1);
     const second = await runOwnershipReconciliationPass(db, { state });
     expect(rules(second, "environment_run_lease_active")).toEqual(["I2_settled"]);
     expect(second.newViolations.map(violation => `${violation.rule}:${violation.kind}`)).toEqual(["I2_settled:environment_run_lease_active"]);
+
+    // A stuck record already reported for I2 needs no further pass.
+    expect(second.awaitingSecondProof).toBe(0);
+    expect((await runOwnershipReconciliationPass(db, { state })).awaitingSecondProof).toBe(0);
 
     // Report-only: nothing was settled, released or retried.
     expect(await snapshot()).toEqual(before);
@@ -167,6 +196,48 @@ describe("report-only ownership reconciliation", () => {
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.length).toBeGreaterThan(0);
     expect(await db.select().from(activityLog)).toEqual([]);
+  });
+
+  it("does not report admission holds without an active budget policy", async () => {
+    await seed();
+    await db.update(budgetPolicies).set({ isActive: false });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
+  });
+
+  it("reads every temporary refusal in a busy window, past unrelated failures", async () => {
+    const state = createOwnershipReportState();
+    await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 5 }, () => ({ companyId, agentId,
+      source: "assignment", status: "failed", error: "adapter exited with code 1" })));
+    const refused = Array.from({ length: 5 }, () => randomUUID());
+    await db.insert(agentWakeupRequests).values(refused.map(id => ({ id, companyId, agentId, source: "assignment",
+      status: "skipped", error: "issue lock busy" })));
+    const report = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(report.violations.filter(violation => violation.rule === "I4_exactly_once_intent")
+      .map(violation => violation.recordId).sort()).toEqual([...refused].sort());
+    const again = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+    expect(again.violations.filter(violation => violation.rule === "I4_exactly_once_intent")).toEqual([]);
+  });
+
+  it("attributes spool files to their company", async () => {
+    await mkdir(orphanSpool, { recursive: true });
+    const runId = randomUUID();
+    await writeFile(join(orphanSpool, "orphan-1.json"), JSON.stringify({ companyId, heartbeatRunId: runId }));
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(report.violations.filter(violation => violation.kind === "sandbox_orphan_cleanup_spool")).toEqual([
+      expect.objectContaining({ rule: "I1_owned", recordId: "orphan-1", companyId, runId }),
+    ]);
+    expect(await db.select({ entityId: activityLog.entityId }).from(activityLog)
+      .where(eq(activityLog.action, OWNERSHIP_INVARIANT_VIOLATION_ACTION))).toEqual([{ entityId: "orphan-1" }]);
+  });
+
+  it("returns the end of the next-action grace window for an issue still inside it", async () => {
+    const updatedAt = minutesAgo(2);
+    await db.insert(issues).values({ companyId, title: "Fresh", status: "in_progress", assigneeAgentId: agentId, updatedAt });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
+    expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
   });
 
   it("goes quiet with nothing in progress and follows up while records change", async () => {

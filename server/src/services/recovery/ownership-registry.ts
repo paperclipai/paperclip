@@ -272,22 +272,44 @@ function recoveryActionKind(id: string, title: string, obligation: Obligation, w
 // ----------------------------------------------------------------------------
 // Local-disk spools
 
+/** Spool files carry their company and run (`companyId` plus `runId` or
+ * `heartbeatRunId`); a file that cannot be read keeps a null attribution. */
+async function readSpoolAttribution(file: string): Promise<{ companyId: string | null; runId: string | null }> {
+  try {
+    const handle = await fs.open(file, "r");
+    try {
+      const buffer = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const record = json(JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")));
+      return { companyId: str(record.companyId), runId: str(record.runId) ?? str(record.heartbeatRunId) };
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return { companyId: null, runId: null };
+  }
+}
+
 function spoolKind(id: string, title: string, obligation: Obligation, directory: () => string): OwnableKind {
   return {
     id, title, obligation, storage: "local_disk", settle: null, invariantChecks: [1, 2],
     listInProgress: async (_db, limit) => {
       let names: string[];
+      const root = directory();
       try {
-        names = (await fs.readdir(directory())).filter(name => name.endsWith(".json")).sort();
+        names = (await fs.readdir(root)).filter(name => name.endsWith(".json")).sort();
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], truncated: false };
         throw error;
       }
       const result = page(names, limit);
-      return { truncated: result.truncated, records: result.rows.map(name => ({
-        recordId: path.basename(name, ".json"), companyId: null, runId: null, issueId: null,
-        owner: { kind: "none" }, updatedAt: null,
-      })) };
+      const records: InProgressRecord[] = [];
+      for (const name of result.rows) {
+        const attribution = await readSpoolAttribution(path.join(root, name));
+        records.push({ recordId: path.basename(name, ".json"), companyId: attribution.companyId,
+          runId: attribution.runId, issueId: null, owner: { kind: "none" }, updatedAt: null });
+      }
+      return { truncated: result.truncated, records };
     },
   };
 }

@@ -1,7 +1,9 @@
-import { and, eq, gt, inArray, isNotNull, isNull, lt, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, notExists, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
+  budgetPolicies,
   heartbeatRuns,
+  nativeRunFinalizations,
   issueRecoveryActions,
   issues,
   type Db,
@@ -68,6 +70,10 @@ export type OwnershipReport = {
   newViolations: InvariantViolation[];
   /** Invariants this pass cannot measure yet, and why. */
   coverageGaps: Record<string, string>;
+  /** Owners proven gone for the first time, whose I2 check needs one more pass. */
+  awaitingSecondProof: number;
+  /** Earliest time a record inside a grace window becomes checkable, if any. */
+  nextDueAt: Date | null;
 };
 
 const COVERAGE_GAPS: Record<string, string> = {
@@ -82,12 +88,12 @@ export type OwnershipReportState = {
   goneLastPass: Set<string>;
   /** Violation keys already written to the activity log by this process. */
   reported: Set<string>;
-  /** Lower bound for the wake-request scan of rule I4. */
-  lastPassAt: Date | null;
+  /** Keyset cursor of the wake-request scan of rule I4 (updated_at, id). */
+  intentCursor: { at: string; id: string } | null;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
-  return { goneLastPass: new Set(), reported: new Set(), lastPassAt: null };
+  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -98,8 +104,9 @@ const ACCOUNTING_CLOSURE_MS = 10 * 60_000;
 const NEXT_ACTION_GRACE_MS = 5 * 60_000;
 /** First I4 scan after boot looks back this far. */
 const INTENT_LOOKBACK_MS = 60 * 60_000;
-/** Refusal texts that name a temporary condition (invariant 4). */
-const TEMPORARY_REFUSAL = /budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout/i;
+/** Refusal texts that name a temporary condition (invariant 4), as a
+ * PostgreSQL case-insensitive regular expression. */
+const TEMPORARY_REFUSAL_PATTERN = "budget|paus|lock|busy|unavailable|retry|admission|hold|drain|restart|capacity|rate.?limit|timeout";
 
 type Classification = { verdict: OwnerProof["verdict"]; reason: string };
 
@@ -134,37 +141,67 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
 
-/** Admission still waits on accounting (inventory finding 3): every terminal
- * run whose accounting outlives the closure deadline holds company admission
- * through `waitingRunCount`. */
+/** Admission still waits on accounting (inventory finding 3). This mirrors
+ * the `waitingRunCount` gate of budget-exposure.ts: a terminal run with
+ * pending accounting holds its company's new work unless it is a succeeded
+ * run with observed cost, or a native run whose coordinator is still
+ * recovering. Only companies with an active budget policy have the gate, and
+ * only runs past the accounting closure deadline are reported. */
 async function checkAdmissionIndependence(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
+  const usage = heartbeatRuns.usageJson;
+  const boundedSucceeded = sql`(${heartbeatRuns.status} = 'succeeded' and ${usage}->'budgetExposure'->>'costCents' is not null)`;
+  const closingReceipt = sql`${usage}->>'accountingReceiptReady' = 'false' and ${usage}->>'accountingCaptureFailed' is distinct from 'true'`;
+  const recovering = sql`(${heartbeatRuns.runtimeMode} = 'native' and exists (select 1 from ${nativeRunFinalizations}
+    where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id} and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+      and ${nativeRunFinalizations.resultId} is null
+      and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt}))))`;
+  const gated = sql`exists (select 1 from ${budgetPolicies} where ${budgetPolicies.companyId} = ${heartbeatRuns.companyId}
+    and ${budgetPolicies.isActive} = true)`;
   const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true),
       inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
-      lt(heartbeatRuns.finishedAt, new Date(now.getTime() - ACCOUNTING_CLOSURE_MS)))).limit(limit);
+      lt(heartbeatRuns.finishedAt, new Date(now.getTime() - ACCOUNTING_CLOSURE_MS)),
+      sql`not ${boundedSucceeded}`, sql`not ${recovering}`, gated)).limit(limit);
   return rows.map(row => ({ rule: "I3_admission_independent", kind: "run_accounting_debt", recordId: row.id,
     companyId: row.companyId, runId: row.id, issueId: row.issueId, reason: "accounting_debt_holds_admission" }));
 }
 
 /** A wake request that ended terminally on a refusal that names a temporary
- * condition. Heuristic until section E gives wake requests closed reasons. */
-async function checkExactlyOnceIntents(db: Db, since: Date, limit: number): Promise<InvariantViolation[]> {
-  const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
-    runId: agentWakeupRequests.runId, error: agentWakeupRequests.error, reason: agentWakeupRequests.reason })
-    .from(agentWakeupRequests).where(and(inArray(agentWakeupRequests.status, ["skipped", "failed"]),
-      gt(agentWakeupRequests.updatedAt, since))).limit(limit);
-  return rows.filter(row => TEMPORARY_REFUSAL.test(`${row.error ?? ""} ${row.reason ?? ""}`)).map(row => ({
-    rule: "I4_exactly_once_intent", kind: "wake_request", recordId: row.id, companyId: row.companyId,
-    runId: row.runId, issueId: null, reason: "terminal_on_temporary_refusal",
-  }));
+ * condition. Heuristic until section E gives wake requests closed reasons. The
+ * filter runs in SQL and the scan pages by (updated_at, id), so a busy window
+ * is read in full across passes and unrelated failures never hide a match. */
+async function checkExactlyOnceIntents(db: Db, state: OwnershipReportState, now: Date, limit: number): Promise<InvariantViolation[]> {
+  // The cursor keeps PostgreSQL's microsecond text form: a JS Date would round
+  // it down and read the boundary row again.
+  const cursor = state.intentCursor ?? { at: new Date(now.getTime() - INTENT_LOOKBACK_MS).toISOString(),
+    id: "00000000-0000-0000-0000-000000000000" };
+  const violations: InvariantViolation[] = [];
+  let position = cursor;
+  for (let page = 0; page < 10; page++) {
+    const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+      runId: agentWakeupRequests.runId, updatedAt: sql<string>`${agentWakeupRequests.updatedAt}::text` })
+      .from(agentWakeupRequests).where(and(inArray(agentWakeupRequests.status, ["skipped", "failed"]),
+        sql`(${agentWakeupRequests.updatedAt}, ${agentWakeupRequests.id}) > (${position.at}::timestamptz, ${position.id}::uuid)`,
+        sql`(coalesce(${agentWakeupRequests.error}, '') || ' ' || coalesce(${agentWakeupRequests.reason}, '')) ~* ${TEMPORARY_REFUSAL_PATTERN}`))
+      .orderBy(asc(agentWakeupRequests.updatedAt), asc(agentWakeupRequests.id)).limit(limit);
+    for (const row of rows) {
+      violations.push({ rule: "I4_exactly_once_intent", kind: "wake_request", recordId: row.id, companyId: row.companyId,
+        runId: row.runId, issueId: null, reason: "terminal_on_temporary_refusal" });
+    }
+    if (rows.length > 0) position = { at: rows[rows.length - 1]!.updatedAt, id: rows[rows.length - 1]!.id };
+    if (rows.length < limit) break;
+  }
+  state.intentCursor = position;
+  return violations;
 }
 
 /** An agent-assigned in-progress issue with no live run, no pending wake and
- * no open recovery action has no next action (invariant 7). */
-async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise<InvariantViolation[]> {
-  const rows = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId })
+ * no open recovery action has no next action (invariant 7). Issues still in
+ * their grace window return the time they become checkable. */
+async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise<{ violations: InvariantViolation[]; nextDueAt: Date | null }> {
+  const rows = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
+    updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
-      lt(issues.updatedAt, new Date(now.getTime() - NEXT_ACTION_GRACE_MS)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
         or(eq(heartbeatRuns.issueId, issues.id), eq(heartbeatRuns.nativeIssueId, issues.id))))),
@@ -175,9 +212,20 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
       notExists(db.select({ one: sql`1` }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         isNull(issueRecoveryActions.resolvedAt)))),
-    )).limit(limit);
-  return rows.map(row => ({ rule: "I7_visible_next_action", kind: "issue", recordId: row.id, companyId: row.companyId,
-    runId: row.executionRunId, issueId: row.id, reason: row.executionRunId ? "lock_without_live_run" : "no_owner_no_wake" }));
+    )).orderBy(asc(issues.updatedAt)).limit(limit);
+  const cutoff = now.getTime() - NEXT_ACTION_GRACE_MS;
+  const violations: InvariantViolation[] = [];
+  let nextDueAt: Date | null = null;
+  for (const row of rows) {
+    if (row.updatedAt.getTime() < cutoff) {
+      violations.push({ rule: "I7_visible_next_action", kind: "issue", recordId: row.id, companyId: row.companyId,
+        runId: row.executionRunId, issueId: row.id, reason: row.executionRunId ? "lock_without_live_run" : "no_owner_no_wake" });
+    } else {
+      // Rows are ordered by updated_at, so the first one in grace is earliest.
+      nextDueAt ??= new Date(row.updatedAt.getTime() + NEXT_ACTION_GRACE_MS);
+    }
+  }
+  return { violations, nextDueAt };
 }
 
 export async function runOwnershipReconciliationPass(db: Db, options: {
@@ -233,11 +281,15 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     }
   }
 
-  const since = state.lastPassAt ?? new Date(now.getTime() - INTENT_LOOKBACK_MS);
+  let nextDueAt: Date | null = null;
   for (const check of [
     () => checkAdmissionIndependence(db, now, limit),
-    () => checkExactlyOnceIntents(db, since, limit),
-    () => checkVisibleNextAction(db, now, limit),
+    () => checkExactlyOnceIntents(db, state, now, limit),
+    async () => {
+      const result = await checkVisibleNextAction(db, now, limit);
+      nextDueAt = result.nextDueAt;
+      return result.violations;
+    },
   ]) {
     try {
       violations.push(...await check());
@@ -246,8 +298,10 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     }
   }
 
+  // Only a first proof needs a second pass; a record already reported for I2
+  // is not a reason to keep scanning.
+  const awaitingSecondProof = [...goneThisPass].filter(key => !state.goneLastPass.has(key)).length;
   state.goneLastPass = goneThisPass;
-  state.lastPassAt = now;
   const newViolations = violations.filter(violation => !state.reported.has(violationKey(violation)));
   if (options.record !== false) {
     for (const violation of newViolations) {
@@ -266,13 +320,18 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
       state.reported.add(violationKey(violation));
     }
     for (const violation of newViolations) {
-      if (!violation.companyId) state.reported.add(violationKey(violation));
+      if (violation.companyId) continue;
+      // No company to attach an activity row to (for example an unreadable
+      // spool file): the server log is the only record.
+      logger.warn({ rule: violation.rule, kind: violation.kind, recordId: violation.recordId, reason: violation.reason },
+        "ownership invariant violation without a company");
+      state.reported.add(violationKey(violation));
     }
   }
 
   const inProgress = kindReports.reduce((total, report) => total + report.inProgress, 0);
   const report: OwnershipReport = { at: now.toISOString(), inProgress, kinds: kindReports, violations,
-    newViolations, coverageGaps: COVERAGE_GAPS };
+    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt };
   if (newViolations.length > 0 || kindReports.some(kind => kind.error)) {
     logger.info({
       inProgress, violations: violations.length, newViolations: newViolations.length,
