@@ -299,6 +299,10 @@ export function createNestedWorkspaceImportVerifier(input: {
   const stop = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, stop.signal]) : stop.signal;
   const proofs = new Map<string, { etag: string; checked: Promise<boolean> }>();
   let closed = false, current: Promise<ImportedWorkspaceChild[]> | undefined;
+  const objectHead = async (reference: WorkspaceSnapshotRef) => {
+    try { return await input.storage.headObject(reference.companyId, reference.objectKey, { signal }); }
+    catch { signal.throwIfAborted(); return null; }
+  };
   const assertOwner = async () => {
     if (closed) throw new Error("nested_workspace_verifier_closed");
     signal.throwIfAborted();
@@ -310,8 +314,8 @@ export function createNestedWorkspaceImportVerifier(input: {
   const verification: NestedVerification = {
     abort: error => stop.abort(error),
     immutable: async (reference, children, operationId, archivePath, restored) => {
-      const head = await input.storage.headObject(reference.companyId, reference.objectKey, { signal });
-      const etag = head.exists && head.contentLength === reference.byteSize && typeof head.etag === "string"
+      const head = await objectHead(reference);
+      const etag = head?.exists && head.contentLength === reference.byteSize && typeof head.etag === "string"
         && head.etag.replace(/^"|"$/g, "").trim() && !/^W\//i.test(head.etag) ? head.etag : null;
       const key = createHash("sha256").update(JSON.stringify([reference, children, operationId])).digest("hex");
       const previous = proofs.get(key);
@@ -322,8 +326,8 @@ export function createNestedWorkspaceImportVerifier(input: {
         await loadWorkspaceSnapshotArchive({ storage: input.storage, reference, targetPath: archivePath, signal });
         await restoreRemoteWorkspaceArchive({ archivePath, targetDir: restored, expectedManifestDigest: reference.manifestDigest, signal });
         if (!etag) return false;
-        const after = await input.storage.headObject(reference.companyId, reference.objectKey, { signal });
-        return after.exists && after.etag === etag && after.contentLength === reference.byteSize;
+        const after = await objectHead(reference);
+        return after !== null && after.exists && after.etag === etag && after.contentLength === reference.byteSize;
       })();
       const proof = etag ? { etag, checked } : null;
       if (proof) proofs.set(key, proof);

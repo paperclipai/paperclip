@@ -32,6 +32,7 @@ const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c
 describe.skipIf(!support.supported)("bounded nested workspace verification", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>, home: string, storage: StorageService, server: Server;
   let headEtags: Map<string, string | null>;
+  let headFailures: Map<string, () => boolean>;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("nested-verification-"); db = createDb(database.connectionString, { maxConnections: 8 }); }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   beforeEach(async () => {
@@ -41,6 +42,7 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
     vi.stubEnv("AWS_SESSION_TOKEN", "fixture"); vi.stubEnv("AWS_EC2_METADATA_DISABLED", "true");
     storage = createStorageService(createLocalDiskStorageProvider(path.join(home, "objects")));
     headEtags = new Map();
+    headFailures = new Map();
     server = createServer((request, response) => {
       void (async () => {
         if (request.method !== "HEAD") { response.writeHead(405).end(); return; }
@@ -49,6 +51,7 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
         if (!file.startsWith(root + path.sep)) { response.writeHead(400).end(); return; }
         const bytes = await fs.readFile(file).catch(() => null);
         if (!bytes) { response.writeHead(404).end(); return; }
+        if (headFailures.get(key)?.()) { response.writeHead(503).end(); return; }
         const etag = headEtags.has(key) ? headEtags.get(key) : `"${createHash("sha256").update(bytes).digest("hex")}"`;
         response.writeHead(200, { ...(etag == null ? {} : { ETag: etag }), "Content-Length": bytes.length }).end();
       })().catch(() => { response.writeHead(500).end(); });
@@ -149,6 +152,25 @@ describe.skipIf(!support.supported)("bounded nested workspace verification", () 
       return get(...args);
     });
     await expect(parent(f)).resolves.toMatchObject({ applied: true }); expect([...counts.values()]).toEqual([2, 2]);
+  }, 60_000);
+  it.each(["before", "after"] as const)("keeps full verification available when HEAD fails %s the readback", async phase => {
+    const f = await imported(), get = storage.getObject.bind(storage), key = f.snapshots[0].objectKey!; let reads = 0;
+    headFailures.set(key, () => reads === (phase === "before" ? 0 : 1));
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (args[1] === key) reads++;
+      return get(...args);
+    });
+    await expect(parent(f)).resolves.toMatchObject({ applied: true }); expect(reads).toBe(2);
+  }, 60_000);
+  it("preserves caller cancellation during a failed HEAD without starting payload readback", async () => {
+    const f = await imported(), get = storage.getObject.bind(storage), controller = new AbortController(); let reads = 0;
+    for (const key of f.keys) headFailures.set(key, () => { controller.abort(new Error("caller_stopped_during_head")); return true; });
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (f.keys.has(args[1])) reads++;
+      return get(...args);
+    });
+    await expect(parent(f, controller.signal)).rejects.toThrow(); expect(reads).toBe(0);
+    expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.parent.id)))[0].metadata)).toBeNull();
   }, 60_000);
   it.each(["etag", "reference", "ciphertext", "local-source"] as const)("rechecks a changed %s after the parent capture", async change => {
     const f = await imported(), put = storage.putFile.bind(storage), get = storage.getObject.bind(storage), counts = new Map<string, number>();

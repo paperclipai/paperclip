@@ -18,7 +18,8 @@ Only the immutable archive check is reused. The proof key binds the complete
 snapshot reference, operation and child closure. A successful full ciphertext
 hash, GCM authentication, plaintext hash and canonical restore must finish first.
 A matching fresh HEAD must retain its ETag and byte length before that proof can
-be reused. Missing ETags use full readback and restore. A changed identity evicts
+be reused. Missing ETags and non-cancellation HEAD errors use full readback and
+restore. Caller cancellation still stops verification. A changed identity evicts
 the old proof and forces full authenticated verification; it cannot authorize a
 changed payload.
 
