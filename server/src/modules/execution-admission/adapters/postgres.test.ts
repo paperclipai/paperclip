@@ -6,6 +6,7 @@ import {
   executionAdmissionProjectCharges as charges,
   executionAdmissions as admissions,
   heartbeatRuns,
+  issues,
   projectTaskExecutionPolicies as policies,
   projects,
 } from "@paperclipai/db";
@@ -258,6 +259,22 @@ describe.skipIf(!support.supported)("execution admission storage", () => {
     expect(await db.select().from(policies).where(eq(policies.projectId, a))).toEqual([]);
     expect(await db.select({ primaryProjectId: admissions.primaryProjectId }).from(admissions).where(eq(admissions.id, admissionId)))
       .toEqual([{ primaryProjectId: a }]);
+  });
+
+  it.each(["creator", "assignee", "both", "neither"] as const)("clears only deleted agent issue references: %s", async (reference) => {
+    const { companyId, agentId } = await fixture();
+    const [survivor] = await db.insert(agents).values({ companyId, name: "Surviving agent", adapterType: "process" }).returning();
+    const assigneeAgentId = reference === "assignee" || reference === "both" ? agentId : survivor.id;
+    const createdByAgentId = reference === "creator" || reference === "both" ? agentId : survivor.id;
+    const [issue] = await db.insert(issues).values({ companyId, title: "Shared issue", assigneeAgentId, createdByAgentId }).returning();
+
+    await withAccountingTransaction(db, companyId, tx => deleteAgentDependencies(tx, companyId, agentId));
+
+    expect(await db.select({ assigneeAgentId: issues.assigneeAgentId, createdByAgentId: issues.createdByAgentId })
+      .from(issues).where(eq(issues.id, issue.id))).toEqual([{
+      assigneeAgentId: assigneeAgentId === agentId ? null : survivor.id,
+      createdByAgentId: createdByAgentId === agentId ? null : survivor.id,
+    }]);
   });
 
   it("guards agent deletion while unsettled and removes admissions with the company", async () => {
