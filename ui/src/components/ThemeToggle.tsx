@@ -1,8 +1,8 @@
-import { Moon, Sun } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useTheme } from "../context/ThemeContext";
+import { useTheme, type ThemePreference } from "../context/ThemeContext";
 
 type ThemeToggleVariant = "icon" | "menu-action" | "compact-menu-action";
 
@@ -30,15 +30,28 @@ interface ThemeToggleProps {
 const MENU_ACTION_DESCRIPTION = "Toggle the app appearance.";
 
 /**
+ * The state the button moves to next, and how that state is announced. The
+ * label names the destination rather than the current state, which is what the
+ * two-state control did before `system` existed.
+ */
+const TOGGLE_TARGETS: Record<
+  ThemePreference,
+  { preference: ThemePreference; label: string; Icon: typeof Sun }
+> = {
+  light: { preference: "dark", label: "Switch to dark mode", Icon: Moon },
+  dark: { preference: "system", label: "Switch to system theme", Icon: Monitor },
+  system: { preference: "light", label: "Switch to light mode", Icon: Sun },
+};
+
+/**
  * Canonical theme-toggle widget. Both the signed-out `/auth` chrome and
  * the in-app account menu render through this component so the label,
  * icon, and toggle behaviour stay in sync as the theme model evolves.
  */
 export function ThemeToggle({ className, variant = "icon", onAfterToggle }: ThemeToggleProps) {
-  const { theme, toggleTheme } = useTheme();
-  const isDark = theme === "dark";
-  const label = isDark ? "Switch to light mode" : "Switch to dark mode";
-  const Icon = isDark ? Sun : Moon;
+  const { themePreference, toggleTheme } = useTheme();
+  const label = TOGGLE_TARGETS[themePreference].label;
+  const Icon = TOGGLE_TARGETS[themePreference].Icon;
 
   function handleClick() {
     toggleTheme();
