@@ -1702,6 +1702,151 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(successors).toHaveLength(0);
   });
 
+  it("rejects a duplicate max-turn continuation after the issue execution lock is force-released, leaving the live sibling untouched", async () => {
+    // Regression for the coalescing bypass: reusing a sibling requires that
+    // sibling to still OWN the issue execution lock. adminForceRelease() clears
+    // issues.executionRunId without changing the successor's status or the
+    // issue's assignee, so a live max-turn successor is left behind that no
+    // longer holds the lock. A duplicate retry must then be rejected (exactly as
+    // the create path already is at the in-transaction lock check), not handed
+    // that lockless sibling as `scheduled`. Before the fix the bypass saw a live
+    // sibling, skipped the gate and coalesced onto it.
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+    const retryOptions = {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    };
+
+    const first = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+
+    // The successor took the lock; force-release it the way adminForceRelease
+    // does — clear the execution lock columns but leave the live successor and
+    // the issue assignee intact.
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const second = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(second).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_execution_lock_changed",
+    });
+
+    // The live sibling was neither reused nor duplicated: still exactly one
+    // successor, still scheduled_retry.
+    const successors = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.retryOfRunId, runId),
+          eq(
+            heartbeatRuns.scheduledRetryReason,
+            MAX_TURN_CONTINUATION_RETRY_REASON,
+          ),
+        ),
+      );
+    expect(successors).toEqual([
+      { id: first.run.id, status: "scheduled_retry" },
+    ]);
+
+    // Its wakeup was not coalesced onto (coalescedCount would have bumped to 1).
+    const wakeups = await db
+      .select({ coalescedCount: agentWakeupRequests.coalescedCount })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, MAX_TURN_CONTINUATION_WAKE_REASON));
+    expect(wakeups).toEqual([{ coalescedCount: 0 }]);
+
+    // The lock stays released; coalescing did not resurrect it.
+    const lockAfter = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockAfter?.executionRunId).toBeNull();
+  });
+
+  it("rejects a duplicate max-turn continuation when the lock moved to an unrelated run while the live sibling remains", async () => {
+    // Companion to the "unrelated run" rejection above, but with a live sibling
+    // present — the exact state the bypass comment claims is still rejected. The
+    // sibling matches hasCoalescibleRetrySuccessor()'s predicate, yet the lock
+    // belongs to an unrelated run, so the duplicate must stay rejected and must
+    // not coalesce onto the lockless sibling.
+    const { companyId, agentId, issueId, runId, now } =
+      await seedMaxTurnFixture();
+    const retryOptions = {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    };
+
+    const first = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(first.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled") return;
+
+    const unrelatedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId },
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: unrelatedRunId })
+      .where(eq(issues.id, issueId));
+
+    const second = await heartbeat.scheduleBoundedRetry(runId, retryOptions);
+    expect(second).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_execution_lock_changed",
+    });
+
+    // Still exactly one max-turn successor (the original sibling), untouched.
+    const successors = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.retryOfRunId, runId),
+          eq(
+            heartbeatRuns.scheduledRetryReason,
+            MAX_TURN_CONTINUATION_RETRY_REASON,
+          ),
+        ),
+      );
+    expect(successors).toEqual([
+      { id: first.run.id, status: "scheduled_retry" },
+    ]);
+
+    // The lock never moved off the unrelated run.
+    const lockAfter = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockAfter?.executionRunId).toBe(unrelatedRunId);
+  });
+
   it("rejects a non-continuation retry whose lock moved to an unrelated run even when a stale sibling exists", async () => {
     // Pins the coalescing bypass to the dedicated continuation reasons.
     //
