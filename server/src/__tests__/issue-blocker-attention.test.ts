@@ -719,7 +719,39 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("redacts external wait details from blocked inbox payloads and search", async () => {
+  it.each([
+    ["empty owner, LF", "External owner:\nExternal action: Send confirmation"],
+    ["empty owner, CRLF", "External owner:\r\nExternal action: Send confirmation"],
+    ["blank owner, LF", "External owner: \t\nExternal action: Send confirmation"],
+    ["blank owner, CRLF", "External owner: \t\r\nExternal action: Send confirmation"],
+    ["empty action, LF", "External owner: Vendor\nExternal action:\nPublic context stays visible."],
+    ["empty action, CRLF", "External owner: Vendor\r\nExternal action:\r\nPublic context stays visible."],
+    ["blank action, LF", "External owner: Vendor\nExternal action: \t\nPublic context stays visible."],
+    ["blank action, CRLF", "External owner: Vendor\r\nExternal action: \t\r\nPublic context stays visible."],
+  ])("keeps incomplete external waits in blocker attention: %s", async (_name, description) => {
+    const { companyId } = await createCompany("BIE");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "BIE-1",
+      title: "Incomplete external wait",
+      status: "blocked",
+      description,
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const issue = rows.find((row) => row.id === issueId);
+
+    expect(issue?.description).toBe(description);
+    expect(issue?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "blocked_chain_stalled",
+      action: { label: "Inspect blocker chain" },
+      redaction: { externalDetailsRedacted: false, secretFieldsOmitted: true },
+    });
+    await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
+  });
+
+  it.each(["\n", "\r\n"])("redacts external wait details from blocked inbox payloads and search (%j)", async (newline) => {
     const { companyId } = await createCompany("BIX");
     const owner = "Private Vendor Security Team";
     const action = "Send the confidential access token for customer Alpha";
@@ -730,10 +762,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       status: "blocked",
       description: [
         "Public context stays visible.",
-        `external owner: ${owner}`,
-        `external action: ${action}`,
+        ` \tExternal owner\t:\t${owner}  `,
+        `\tEXTERNAL ACTION : ${action}\t`,
         "Continue after the vendor confirms receipt.",
-      ].join("\n"),
+      ].join(newline),
     });
 
     const rows = await svc.list(companyId, { attention: "blocked" });
