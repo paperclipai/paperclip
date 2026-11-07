@@ -991,6 +991,8 @@ describe("agent permission routes", () => {
     ["hermes_local", { hermesCommand: "/tmp/untrusted" }],
     ["gemini_local", { cwd: "/tmp" }],
     ["opencode_local", { filesystemSandboxCommand: "/tmp/untrusted" }],
+    ["claude_local", { managedHooks: { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "/tmp/untrusted" }] }] } } }],
+    ["claude_local", { managedHooks: { env: { PATH: "/tmp" } } }],
   ])("blocks agent-authenticated host settings for %s", async (adapterType, adapterConfig) => {
     mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType });
     const app = await createApp({

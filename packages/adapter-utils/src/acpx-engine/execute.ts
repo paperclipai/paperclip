@@ -1640,6 +1640,67 @@ interface PaperclipClaudeSettingsResult {
   additionalDirectories: string[];
   defaultMode: string;
   overrodeDontAsk: boolean;
+  managedHookEvents: string[];
+  managedHookCount: number;
+  managedEnvKeys: string[];
+}
+
+interface PaperclipClaudeManagedHooks {
+  hooks: Record<string, unknown[]>;
+  env: Record<string, string>;
+}
+
+function isManagedHookCommand(value: unknown): boolean {
+  const entry = parseObject(value);
+  if (typeof entry.type !== "string" || entry.type.trim().length === 0) return false;
+  if (entry.type === "command") return typeof entry.command === "string" && entry.command.trim().length > 0;
+  return true;
+}
+
+function isManagedHookGroup(value: unknown): boolean {
+  const group = parseObject(value);
+  if (group.matcher !== undefined && typeof group.matcher !== "string") return false;
+  if (!Array.isArray(group.hooks) || group.hooks.length === 0) return false;
+  return group.hooks.every((entry) => isManagedHookCommand(entry));
+}
+
+function normalizeManagedHooks(value: unknown): PaperclipClaudeManagedHooks {
+  const source = parseObject(value);
+  const hooks: Record<string, unknown[]> = {};
+  const env: Record<string, string> = {};
+  for (const [event, groups] of Object.entries(parseObject(source.hooks))) {
+    if (!Array.isArray(groups)) continue;
+    const entries = groups.filter((group) => isManagedHookGroup(group)) as Record<string, unknown>[];
+    if (entries.length > 0) hooks[event] = entries;
+  }
+  for (const [key, entry] of Object.entries(parseObject(source.env))) {
+    if (key.trim().length > 0 && typeof entry === "string") env[key] = entry;
+  }
+  return { hooks, env };
+}
+
+interface ManagedHooksManifest {
+  hooks: Record<string, unknown[]>;
+  envKeys: string[];
+}
+
+function managedHooksManifestPath(stateDir: string, cwd: string): string {
+  const workspaceKey = createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 16);
+  return path.join(stateDir, "claude-managed-hooks", `${workspaceKey}.json`);
+}
+
+async function readManagedHooksManifest(filePath: string): Promise<ManagedHooksManifest> {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => null);
+  if (!raw) return { hooks: {}, envKeys: [] };
+  try {
+    const parsed = parseObject(JSON.parse(raw));
+    const envKeys = Array.isArray(parsed.envKeys)
+      ? parsed.envKeys.filter((key): key is string => typeof key === "string")
+      : [];
+    return { hooks: normalizeManagedHooks({ hooks: parsed.hooks }).hooks, envKeys };
+  } catch {
+    return { hooks: {}, envKeys: [] };
+  }
 }
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
@@ -1658,6 +1719,7 @@ async function writePaperclipClaudeSettings(input: {
   stateDir: string;
   agentHome: string;
   companyId: string;
+  managedHooks?: unknown;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1712,18 +1774,80 @@ async function writePaperclipClaudeSettings(input: {
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
   };
+  const managedHooks = normalizeManagedHooks(input.managedHooks);
+  const manifestPath = managedHooksManifestPath(input.stateDir, input.cwd);
+  const previousManaged = await readManagedHooksManifest(manifestPath);
+  const mergedHooks: Record<string, unknown> = { ...parseObject(existing.hooks) };
+  for (const [event, groups] of Object.entries(previousManaged.hooks)) {
+    if (!Array.isArray(mergedHooks[event])) continue;
+    const owned = new Set(groups.map((group) => stableJson(group)));
+    const kept = (mergedHooks[event] as unknown[]).filter((entry) => !owned.has(stableJson(entry)));
+    if (kept.length > 0) mergedHooks[event] = kept;
+    else delete mergedHooks[event];
+  }
+  const mergedEnv: Record<string, unknown> = { ...parseObject(existing.env) };
+  for (const key of previousManaged.envKeys) {
+    if (!(key in managedHooks.env)) delete mergedEnv[key];
+  }
+  const ownedHooks: Record<string, unknown[]> = {};
+  for (const [event, groups] of Object.entries(managedHooks.hooks)) {
+    const current = Array.isArray(mergedHooks[event]) ? [...(mergedHooks[event] as unknown[])] : [];
+    for (const group of groups) {
+      if (current.some((entry) => stableJson(entry) === stableJson(group))) continue;
+      current.push(group);
+      (ownedHooks[event] ??= []).push(group);
+    }
+    if (current.length > 0) mergedHooks[event] = current;
+  }
+  const ownedEnvKeys: string[] = [];
+  for (const [key, value] of Object.entries(managedHooks.env)) {
+    if (mergedEnv[key] === value) {
+      if (previousManaged.envKeys.includes(key)) ownedEnvKeys.push(key);
+      continue;
+    }
+    mergedEnv[key] = value;
+    ownedEnvKeys.push(key);
+  }
+  const managedHookEvents = Object.keys(managedHooks.hooks);
+  const managedHookCount = managedHookEvents.reduce((total, event) => total + managedHooks.hooks[event].length, 0);
+  const managedEnvKeys = Object.keys(managedHooks.env);
+  const previousHookEvents = Object.keys(previousManaged.hooks);
+  const hooksChanged = managedHookEvents.length > 0 || previousHookEvents.length > 0;
+  const envChanged = managedEnvKeys.length > 0 || previousManaged.envKeys.length > 0;
   const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
+  if (hooksChanged) {
+    if (Object.keys(mergedHooks).length > 0) next.hooks = mergedHooks;
+    else delete next.hooks;
+  }
+  if (envChanged) {
+    if (Object.keys(mergedEnv).length > 0) next.env = mergedEnv;
+    else delete next.env;
+  }
   await writeFileAtomically({
     target: filePath,
     contents: `${JSON.stringify(next, null, 2)}\n`,
     mode: 0o600,
   });
+  const ownedEventCount = Object.keys(ownedHooks).length;
+  if (ownedEventCount > 0 || ownedEnvKeys.length > 0) {
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+    await writeFileAtomically({
+      target: manifestPath,
+      contents: `${JSON.stringify({ hooks: ownedHooks, envKeys: ownedEnvKeys }, null, 2)}\n`,
+      mode: 0o600,
+    });
+  } else {
+    await fs.rm(manifestPath, { force: true }).catch(() => undefined);
+  }
   return {
     filePath,
     allow: mergedAllow,
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
     overrodeDontAsk,
+    managedHookEvents: managedHookEvents.sort(),
+    managedHookCount,
+    managedEnvKeys: managedEnvKeys.sort(),
   };
 }
 
@@ -2168,11 +2292,20 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      managedHooks: config.managedHooks,
     });
     skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)${
+        paperclipClaudeSettings.managedHookCount > 0
+          ? `, +${paperclipClaudeSettings.managedHookCount} managed hook(s) on ${paperclipClaudeSettings.managedHookEvents.join("/")}`
+          : ""
+      }${
+        paperclipClaudeSettings.managedEnvKeys.length > 0
+          ? `, +${paperclipClaudeSettings.managedEnvKeys.length} managed env key(s)`
+          : ""
+      }).`,
     );
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
@@ -2286,7 +2419,7 @@ async function buildRuntime(input: {
       : acpxAgent === "gemini" && !executionTargetIsRemote
         ? await fs.realpath(cwd)
         : cwd;
-  // The 17 fields the session fingerprint hashes. Company, agent, and task
+  // The fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
   const fingerprintIdentity: SessionFingerprintIdentity = {
@@ -2313,6 +2446,15 @@ async function buildRuntime(input: {
           allow: paperclipClaudeSettings.allow,
           additionalDirectories: paperclipClaudeSettings.additionalDirectories,
           defaultMode: paperclipClaudeSettings.defaultMode,
+          ...(paperclipClaudeSettings.managedHookCount > 0 || paperclipClaudeSettings.managedEnvKeys.length > 0
+            ? {
+                managedHooksIdentity: {
+                  events: paperclipClaudeSettings.managedHookEvents,
+                  envKeys: paperclipClaudeSettings.managedEnvKeys,
+                  hash: shortHash(config.managedHooks),
+                },
+              }
+            : {}),
         }
       : null,
     // Qualified built-in ACP harnesses reconnect to the supplied MCP servers
