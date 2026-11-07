@@ -20,6 +20,9 @@ import { runNativeActiveStopFlow as runCopilotActiveStopFlow } from "./copilot-a
 import { nativeActiveStopTasks as copilotActiveStopTasks } from "./copilot-active-stop-tasks.js";
 import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runCursorCloudStopFlow } from "./cursor-cloud-stop-flow.js";
+import { CursorCloudOwnedObserver, cursorCloudIdentityProof } from "./cursor-cloud-observer.js";
+import { assertCursorCloudCallbackIngress } from "./cursor-cloud-callback-proxy.js";
 import { runKimiLifecycleFlow } from "./kimi-lifecycle.js";
 import { runPiControlsFlow } from "./pi-controls-flow.js";
 import { runCursorNativeFlow } from "./cursor-native-flow.js";
@@ -61,7 +64,7 @@ import { armResponseTiming } from "./response-timing.js";
 
 import { projectFirstTaskResult, runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
-import { restartChatServer } from "./chat-restart.js";
+import { gotoAfterServerRestart, restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -629,7 +632,7 @@ for (const execution of executions) {
       if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
     };
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle", "public_mcp", "case_handoff"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || execution.task.flow === "cursor_cloud_stop" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -680,6 +683,7 @@ for (const execution of executions) {
     let startupReuse: RunnerE2EResult["startupReuse"];
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
+    let cursorCloudObserver: CursorCloudOwnedObserver | undefined;
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
@@ -779,7 +783,7 @@ for (const execution of executions) {
       });
     };
 
-    const captureFailureApiState = async () => {
+    const captureApiState = async (capturePhase: "failure" | "final" = "failure") => {
       if (!fixtures) return;
       if (execution.task.flow === "followup_stop_resume") {
         const captured = await captureFollowupStopFailureApiState({ api, companyId: fixtures.company.id,
@@ -856,7 +860,7 @@ for (const execution of executions) {
         snapshotsDir,
         "api-state.json",
         {
-          capturePhase: "failure",
+          capturePhase,
           issue: currentIssue,
           runs: detailedRuns,
           comments,
@@ -913,6 +917,7 @@ for (const execution of executions) {
     try {
       trace?.phase("setup");
       await saveTrace();
+      if (execution.profile.provider === "cursor_cloud") await assertCursorCloudCallbackIngress(process.env.PAPERCLIP_PUBLIC_URL!);
       if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
@@ -953,6 +958,10 @@ for (const execution of executions) {
         cleanupDeadlineAt: kimiLifecycleTiming?.cleanupDeadlineAt,
         onCompanyCreated,
       });
+      if (execution.profile.provider === "cursor_cloud") {
+        cursorCloudObserver = new CursorCloudOwnedObserver(api, fixtures.company.id, fixtures.agent.id, credentials.CURSOR_API_KEY!);
+        registerBeforeEnvironmentTeardownAssertion(() => cursorCloudObserver!.cleanup());
+      }
       await finishBudgetedEvalSetup({ executionId: execution.id, environmentId: execution.environment.id, agentId: fixtures.agent.id,
         companyId: fixtures.company.id, deadlineAt: startedAtMs + deadlineMs, api,
         observe: observations => writeSanitizedJson(snapshotsDir, "budgeted-setup.json", { observations }, secrets) });
@@ -1032,6 +1041,7 @@ for (const execution of executions) {
           companyId: fixtures.company.id,
           environmentId: fixtures.environment.id,
           agentId: fixtures.agent.id,
+          ...(execution.suite.id === "cursor-cloud" && fixtures.qualificationBudget ? { qualificationBudget: fixtures.qualificationBudget } : {}),
           ...(fixtures.setupProbe ? { setupProbe: { durationMs: fixtures.setupProbe.durationMs,
             ...(fixtures.setupProbe.defaultRunner ? { defaultRunner: fixtures.setupProbe.defaultRunner } : {}) } } : {}),
           secretIds: Object.fromEntries(
@@ -1191,6 +1201,15 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeProviderLoss.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "cursor_cloud_stop") {
+        const story = await runCursorCloudStopFlow({ page, api, fixtures, execution, nonce, observer: cursorCloudObserver!, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorCloud.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+        await captureApiState("final");
+        await captureScreenshot("final-state", "Final visible task state", "final-state.png");
       } else if (execution.task.flow === "native_active_stop") {
         const story = await (execution.profile.qualificationCandidate === "copilot" ? runCopilotActiveStopFlow : runNativeActiveStopFlow)({
           page, api, fixtures, execution: execution.profile.qualificationCandidate === "copilot" && execution.task.id === "pending-permission-stop" ? { ...execution, task: copilotActiveStopTasks[0]! } : execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1243,7 +1262,7 @@ for (const execution of executions) {
       } else if (execution.task.flow === "continuation") {
         const continuation = await runContinuationFlow({
           page, api, fixtures, execution, nonce, secrets, workspacePath, deadlineAt: startedAtMs + deadlineMs - 60_000,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          restart: () => restartChatServer(page, () => restartIsolatedPaperclipServer({ api, requestId: `continuation-${nonce}`, deadlineAt: startedAtMs + deadlineMs })),
           observe: (currentIssue, currentRuns, checks) => {
             issue = currentIssue; selectedRuns = currentRuns;
             matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `continuation.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -1470,11 +1489,13 @@ for (const execution of executions) {
         await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
         await captureScreenshot("tool-review-pending", "Connection review awaiting a human", "tool-review-pending.png");
         await page.getByRole("button", { name: "Dismiss Approve tool action" }).click();
-        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "restart") {
           await restartIsolatedPaperclipServer({ api, requestId: `tool-review-${nonce}`, deadlineAt });
           await page.reload();
         }
+        // Open the review card on the document that will act on it: an
+        // expanded card does not survive the post-restart reload.
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
         if (execution.task.toolReviewDecision === "always") {
           await page.getByRole("button", { name: "Approval options", exact: true }).click();
           await page.getByRole("menuitem", { name: "Always allow", exact: true }).click();
@@ -1583,20 +1604,16 @@ for (const execution of executions) {
             (key) => Reflect.set(window, key, true),
             documentSentinel,
           );
-          try {
-            await page.goto(
-              `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-              // The replacement Vite server can commit and render a fresh
-              // document while its navigation lifecycle remains unsettled.
-              // The sentinel and explicit assertions below prove the new
-              // document and durable state even when Playwright times out.
-              { waitUntil: "commit" },
-            );
-          } catch (error) {
-            if (!(error instanceof Error) || error.name !== "TimeoutError") {
-              throw error;
-            }
-          }
+          // The replacement Vite server can commit and render a fresh document
+          // while its navigation lifecycle remains unsettled, and the old
+          // document's Vite client can reload and abort this navigation. The
+          // sentinel and explicit assertions below prove the new document and
+          // durable state either way.
+          await gotoAfterServerRestart(
+            page,
+            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+            { deadlineAt },
+          );
           await expect(
             page
               .getByRole("radio", {
@@ -2358,6 +2375,14 @@ for (const execution of executions) {
           await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
         }
       }
+      if (cursorCloudObserver) {
+        const revisedInteraction = record(planLifecycleEvidence?.revisedInteraction);
+        const checks = execution.task.flow === "plan_revision_acceptance"
+          ? await cursorCloudObserver.assertPlanTransitions(selectedRuns.map(run => run.id), typeof revisedInteraction.id === "string" ? revisedInteraction.id : null)
+          : await cursorCloudObserver.assertContinuity(execution.task.expectedRunCount);
+        await writeSanitizedJson(snapshotsDir, "cursor-cloud-provider-continuity.json", { identities: [...cursorCloudObserver.identities.values()].map(cursorCloudIdentityProof), checks }, secrets);
+        matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorCloud.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
+      }
       const registeredArtifacts = await readRegisteredArtifacts(api, issue.id, run.id,
         taskMatchers.filter(matcher => matcher.kind === "artifact_exact").map(matcher => matcher.name));
       if (registeredArtifacts.length > 0) {
@@ -2973,7 +2998,7 @@ for (const execution of executions) {
         failureClassOverride = "permanent_infrastructure";
       }
       try {
-        await captureFailureApiState();
+        await captureApiState();
       } catch (captureError) {
         const failureClass = classifyFailure(captureError);
         if (failureClass === "secret_leak") {

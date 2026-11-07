@@ -83,8 +83,8 @@ describePostgres("bundled image registration in PostgreSQL", () => {
     const [companyA, companyB, unconfigured] = await db.insert(companies).values([
       { name: "Company A", issuePrefix: "CFA" }, { name: "Company B", issuePrefix: "CFB" }, { name: "Unconfigured", issuePrefix: "CFC" },
     ]).returning();
-    await registry.upsertConfig(row.id, companyA!.id, { configJson: { token: "only-A" } });
-    await registry.upsertConfig(row.id, companyB!.id, { configJson: { token: "only-B" } });
+    await registry.upsertConfig(row.id, companyA!.id, { companyId: companyA!.id, configJson: { token: "only-A" } });
+    await registry.upsertConfig(row.id, companyB!.id, { companyId: companyB!.id, configJson: { token: "only-B" } });
     row = (await registry.getById(row.id))!;
     rmSync(old.root, { recursive: true });
     const original = { ...row };

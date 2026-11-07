@@ -2,10 +2,11 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 
 const MAX_SEGMENT_BYTES = 1024 * 1024;
-const MAX_PENDING_BYTES = 8 * MAX_SEGMENT_BYTES;
+const MAX_PENDING_BYTES = MAX_RUN_LOG_RECORD_BYTES;
 const MAX_READ_BYTES = 4 * MAX_SEGMENT_BYTES;
 export interface ObjectRunLogStoreOptions {
   provider: StorageProvider;
@@ -30,8 +31,12 @@ interface WriterState {
   timer?: NodeJS.Timeout;
   flushing?: Promise<void>;
   closed: boolean;
+  admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
+  sourcePrefixVerified: boolean;
+  coverageEligible: boolean;
+  admittedSourceCursor: number;
 }
 
 export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunLogStore {
@@ -80,12 +85,13 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       else activeUploads--;
     };
   }
-  function journal(logRef: string) {
+  function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
     if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(logRef))
       throw new Error("Invalid object log reference");
     return createObjectByteJournal({
       provider: options.provider,
       prefix: `${options.keyPrefix}/segments-v1/${logRef}`,
+      readPriority,
     });
   }
   function schedule(state: WriterState) {
@@ -103,8 +109,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     }
     if (state.flushing) {
       await state.flushing;
-      if (state.pending.length) return flush(state);
-      return;
+      return flush(state);
     }
     if (state.failure) throw state.failure;
     if (!state.pending.length) return;
@@ -127,6 +132,20 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
             state.writer.head.sourceCursor,
           ),
         );
+        if (state.sourcePrefixVerified) {
+          try {
+            state.writer = await state.journal.recordVerifiedSourcePrefix(
+              state.writer, state.writer.head.sourceCursor, state.signal,
+            );
+          } catch (error) {
+            if (!(error instanceof ObjectJournalSourcePrefixProofUnavailableError)) throw error;
+            // The byte/index/head append is already committed. Lose only the
+            // optional provenance optimization; later appends remain deliverable.
+            state.writer = error.writer;
+            state.sourcePrefixVerified = false;
+            state.coverageEligible = false;
+          }
+        }
         for (const item of batch) item.resolve(item.bytes.length);
       } catch (error) {
         state.failure = error;
@@ -150,6 +169,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     const state = writers.get(handle);
     if (!state || state.closed) throw new Error("Object run log writer is closed");
+    const admission = admit(state, handle, event);
+    state.admitting.add(admission);
+    try { return await admission; }
+    finally { state.admitting.delete(admission); }
+  }
+  async function admit(state: WriterState, handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     state.signal?.throwIfAborted();
     if (state.failure) throw state.failure;
     const bytes = Buffer.from(
@@ -169,7 +194,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
         totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
       ) {
-        if (state.closed) throw new Error("Object run log writer is closed");
         if (state.failure) throw state.failure;
         if (!waiting) {
           if (admissions >= 32 || admissionBytes + bytes.length > MAX_PENDING_BYTES)
@@ -193,9 +217,14 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
           capacityWaiters.add(wake);
         });
       }
-      if (state.closed) throw new Error("Object run log writer is closed");
       state.signal?.throwIfAborted();
       if (state.failure) throw state.failure;
+      if (event.preservesSourceCoverage !== true || event.sourceCursor !== undefined &&
+        (!Number.isSafeInteger(event.sourceCursor) || event.sourceCursor <= state.admittedSourceCursor)) {
+        state.sourcePrefixVerified = false;
+        state.coverageEligible = false;
+      }
+      state.admittedSourceCursor = Math.max(state.admittedSourceCursor, event.sourceCursor ?? 0);
       state.pendingBytes += bytes.length;
       totalPendingBytes += bytes.length;
       const finishIdle = beginIdleTrackedWork();
@@ -228,6 +257,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         assertAuthority: () => options.assertWriterAuthority(input),
         signal: input.signal,
       });
+      const sourcePrefixVerified = await store.hasVerifiedSourcePrefix(writer.head, input.signal);
       const handle: RunLogHandle = {
         store: "s3_segments",
         logRef,
@@ -235,6 +265,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         initialBytes: writer.head.end,
         initialSequence: writer.head.sequence,
         initialSourceCursor: writer.head.sourceCursor,
+        initialSourcePrefixVerified: sourcePrefixVerified,
       };
       writers.set(handle, {
         journal: store,
@@ -242,7 +273,11 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         pending: [],
         pendingBytes: 0,
         closed: false,
+        admitting: new Set(),
         signal: input.signal,
+        sourcePrefixVerified,
+        coverageEligible: true,
+        admittedSourceCursor: writer.head.sourceCursor,
       });
       return handle;
     },
@@ -255,12 +290,47 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       if (!state) throw new Error("Object run log writer not found");
       await flush(state);
     },
+    async recordVerifiedSourcePrefix(handle, sourceCursor) {
+      const state = writers.get(handle);
+      if (!state || state.closed) throw new Error("Object run log writer is closed");
+      if (!state.coverageEligible) throw new Error("native_log_source_prefix_changed");
+      await flush(state);
+      if (!state.coverageEligible) throw new Error("native_log_source_prefix_changed");
+      // Serialize metadata publication with byte flushes, including diagnostics
+      // admitted while the one-time source proof is being recorded.
+      state.flushing = (async () => {
+        try {
+          let proofUnavailable = false;
+          try {
+            state.writer = await state.journal.recordVerifiedSourcePrefix(state.writer, sourceCursor, state.signal);
+          } catch (error) {
+            if (!(error instanceof ObjectJournalSourcePrefixProofUnavailableError)) throw error;
+            state.writer = error.writer;
+            proofUnavailable = true;
+          }
+          if (!state.coverageEligible) throw new Error("native_log_source_prefix_changed");
+          state.sourcePrefixVerified = !proofUnavailable;
+          if (proofUnavailable) state.coverageEligible = false;
+          state.admittedSourceCursor = Math.max(state.admittedSourceCursor, sourceCursor);
+          handle.initialSourcePrefixVerified = state.sourcePrefixVerified;
+          handle.initialSourceCursor = sourceCursor;
+          handle.initialBytes = state.writer.head.end;
+          handle.initialSequence = state.writer.head.sequence;
+        } finally {
+          state.flushing = undefined;
+          schedule(state);
+        }
+      })();
+      await state.flushing;
+    },
     async finalize(handle, finalizeOptions) {
       const state = writers.get(handle);
       if (!state) throw new Error("Object run log writer not found");
       state.closed = true;
       capacityChanged();
       try {
+        await flush(state);
+        await Promise.allSettled([...state.admitting]);
         await flush(state);
         state.writer = await state.journal.close(state.writer, state.signal);
         if (finalizeOptions?.computeDigest === false)
@@ -282,8 +352,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       }
     },
     async read(handle, opts = {}) {
-      if (handle.store !== "s3_segments") throw new Error("Invalid object run log backend");
-      const store = journal(handle.logRef),
+      if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
+      const store = journal(handle.logRef, opts.priority ?? "interactive"),
         snapshot = await store.head(opts.signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");
       const offset = Math.max(0, opts.offset ?? 0),

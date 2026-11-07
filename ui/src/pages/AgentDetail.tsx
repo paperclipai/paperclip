@@ -1,8 +1,11 @@
+import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
 import { PrimaryAgentCrownButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
+import { ProviderFailureNotice } from "@/components/ProviderFailureNotice";
+import { readProviderFailure } from "@paperclipai/shared";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
@@ -20,6 +23,8 @@ import {
 import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
 import { heartbeatsApi } from "../api/heartbeats";
+import { runCancellationLabel } from "../lib/run-cancellation-label";
+import { stopFailedNativeRun } from "../lib/native-run-stop";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { activityApi } from "../api/activity";
@@ -132,6 +137,10 @@ import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSet
 import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
 import { AgentAuditTab } from "./AgentAuditTab";
 import { AgentDirectReports } from "./agent-detail/AgentDirectReports";
+import { instructionFileDateLabel } from "./agent-detail/instruction-file-date";
+import { AgentConfigSaveBar } from "./agent-detail/AgentConfigSaveBar";
+import { markdownFileName } from "./agent-detail/markdown-file-name";
+import { AgentReportingManager } from "./agent-detail/AgentReportingManager";
 import { AgentChip, AgentMetricTile, AgentPanel, AgentSectionHeading } from "../components/agent-detail/AgentPanels";
 import { AgentHistoryDialog } from "./agent-detail/AgentHistoryDialog";
 import { countSince, formatWindowCount } from "./agent-detail/overview-counts";
@@ -379,6 +388,8 @@ export function AgentDetail() {
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const [configJustSaved, setConfigJustSaved] = useState(false);
+  const [identitySaveVersion, setIdentitySaveVersion] = useState(0);
+  const onIdentitySaved = useCallback(() => setIdentitySaveVersion(value => value + 1), []);
   const [pendingLeave, setPendingLeave] = useState<HTMLAnchorElement | null>(null);
   const leaveBypassRef = useRef(false);
   const configWasSavingRef = useRef(false);
@@ -873,53 +884,52 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="flex items-center gap-4">
-        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0" style={{ zoom: "var(--agent-detail-portrait-zoom)" }}>
-          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
+      <header className="agent-character-header flex items-center gap-2">
+        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} size={128} className="agent-header-character" trackingScope="page" followCursor />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <InlineEditor
               as="h1"
-              value={agent.name}
-              placeholder="Agent name"
-              className="min-w-0 truncate text-3xl font-semibold leading-9 text-foreground"
-              onSave={(name) => saveHeaderField({ name })}
+              value={agent.title ?? ""}
+              fitContent
+              nullable
+              placeholder={roleLabels[agent.role] ?? agent.role}
+              className="min-w-0 truncate text-2xl font-semibold leading-8 text-foreground"
+              onSave={(title) => saveHeaderField({ title: title || null })}
             />
             <PrimaryAgentCrownButton agent={agent} />
           </div>
-          <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
-            {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-              ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-3.5" alt="" />
-              : null}
-            <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-4 text-muted-foreground">
+          <div className="mt-1 flex min-w-0 items-center gap-2 text-sm leading-5 text-muted-foreground">
+            <Link
+              to={agentDetailHref(canonicalAgentRef, "runtime")}
+              aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
+              className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-4" alt="" />
+                : null}
+              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+            </Link>
+            <span aria-hidden="true">•</span>
             <InlineEditor
-              value={agent.title ?? ""}
-              nullable
-              placeholder={roleLabels[agent.role] ?? agent.role}
-              className="text-xs leading-4 text-muted-foreground"
-              onSave={(title) => saveHeaderField({ title: title || null })}
+              fitContent
+              value={agent.name}
+              placeholder="Agent name"
+              className="min-w-0 truncate text-sm leading-5 text-muted-foreground"
+              onSave={(name) => saveHeaderField({ name })}
             />
-            <span aria-hidden>·</span>
-            <span>
-              Reports to{" "}
-              {reportsToAgent ? (
-                <Link className="text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
-                  {reportsToAgent.name}
-                </Link>
-              ) : (
-                "Board"
-              )}
-            </span>
           </div>
           <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
         </div>
         <AgentActionButtons
           agent={currentAgent}
           companyId={resolvedCompanyId}
-          assignLabel="Assign task"
+          assignLabel="New task"
+          size="default"
+          showAssignIcon={false}
+          showChat
           showStatus={false}
           workActionsInMenu
           menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
@@ -1089,6 +1099,7 @@ export function AgentDetail() {
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
           showSaveNotice={false}
+          onSaved={onIdentitySaved}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
@@ -1197,7 +1208,10 @@ export function AgentDetail() {
         />
       )}
 
-      {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
+      {showConfigActionBar && activeView === "instructions" && <AgentConfigSaveBar key={agent.id} dirty={configDirty} saving={configSaving} savedVersion={identitySaveVersion}
+        onDiscard={() => cancelConfigActionRef.current?.()}
+        onSave={() => { Promise.resolve(saveConfigActionRef.current?.()).catch(() => {}); }} />}
+      {showConfigActionBar && activeView !== "instructions" && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
         <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           {configSaving ? null : configDirty ? (
             <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" />
@@ -1478,26 +1492,17 @@ export function AgentOverview({
           description={budgetPercent === null ? "No monthly budget set" : `of ${formatCents(budget)} this month`}
           to={agentDetailHref(agentRef, "budgets")}
         />
-        <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile">
+        <AgentPanel title="Profile" className="min-h-(--agent-detail-tile-min-h) sm:col-span-2" aria-label="Profile"
+          meta={<span className={creatorFailed ? "text-destructive" : undefined}>
+            {creatorFailed ? "Could not load creator" : creatorLabel ? `Created by ${creatorLabel} · ${formatDate(agent.createdAt)}` : `Created ${formatDate(agent.createdAt)}`}
+          </span>}>
           <div className="flex flex-col pb-3">
-            <div className="flex items-center gap-2 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="text-muted-foreground">{creatorLabel || creatorFailed ? "Created by" : "Created"}</span>
-              {creatorFailed ? (
-                <span className="text-destructive">Could not load creator</span>
-              ) : (
-                <span className="min-w-0 truncate text-foreground">
-                  {creatorLabel ? `${creatorLabel} · ${formatDate(agent.createdAt)}` : formatDate(agent.createdAt)}
-                </span>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
-              <span className="text-muted-foreground">Direct reports</span>
-              {directReports.length === 0 ? (
-                <span className="text-foreground">None</span>
-              ) : (
-                <AgentDirectReports reports={directReports} />
-              )}
-            </div>
+            <AgentReportingManager key={agent.id} agent={agent} />
+            {directReports.length > 0 && <div className="flex flex-col gap-1.5 px-(--agent-detail-module-inset) py-1.5 text-sm">
+              <span className="text-muted-foreground">Direct reports:</span>
+              <AgentDirectReports reports={directReports} />
+            </div>}
+
           </div>
         </AgentPanel>
         <AgentPanel
@@ -1530,7 +1535,7 @@ export function AgentOverview({
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
+          <div className="overflow-hidden rounded-lg border border-border bg-(--agent-detail-tile)">
             <TaskSummaryList issues={assignedIssues.slice(0, 5)} />
           </div>
         )}
@@ -1856,8 +1861,10 @@ export function PromptsTab({
   onCancelActionChange,
   onSavingChange,
   showSaveNotice = true,
+  onSaved,
 }: {
   showSaveNotice?: boolean;
+  onSaved?: () => void;
   agent: Agent;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
@@ -1884,6 +1891,11 @@ export function PromptsTab({
     entryFile: string;
   } | null>(null);
   const [newFilePath, setNewFilePath] = useState("");
+  const [copyVisible, setCopyVisible] = useState(false);
+  const [copyNotice, setCopyNotice] = useState<"copied" | "error" | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+  useEffect(() => { clearTimeout(copyTimer.current); setCopyNotice(null); }, [agent.id, selectedFile]);
   const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
@@ -2071,6 +2083,7 @@ export function PromptsTab({
           path: file.path, size: file.size, language: file.language, markdown: file.markdown,
           isEntryFile: file.isEntryFile, editable: file.editable, deprecated: file.deprecated,
           virtual: file.virtual, binary: file.binary, contentHash: file.contentHash,
+          createdAt: file.createdAt, updatedAt: file.updatedAt,
         }],
       } : previous);
       setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
@@ -2111,6 +2124,7 @@ export function PromptsTab({
       return;
     }
     const availablePaths = bundle.files.map((file) => file.path);
+    if (pendingFiles.includes(selectedFile)) return;
     if (availablePaths.length === 0) {
       if (selectedFile !== bundle.entryFile) setSelectedFile(bundle.entryFile);
       return;
@@ -2207,7 +2221,7 @@ export function PromptsTab({
         bundleDraft.entryFile !== (bundle?.entryFile ?? "AGENTS.md")
       ),
   );
-  const fileDirty = draft !== null && draft !== currentContent;
+  const fileDirty = (draft !== null && draft !== currentContent) || pendingFiles.includes(selectedOrEntryFile);
   const isDirty = bundleDirty || fileDirty || candidateRunId !== null;
   const isSaving = updateBundle.isPending || saveFile.isPending || resolveCandidate.isPending || loadCandidate.isPending || refreshCandidateBase.isPending || deleteFile.isPending || awaitingRefresh;
 
@@ -2245,6 +2259,7 @@ export function PromptsTab({
             clearLegacyPromptTemplate: shouldClearLegacy,
           });
         }
+        onSaved?.();
       };
       void save().catch(() => undefined);
     } : null);
@@ -2258,6 +2273,7 @@ export function PromptsTab({
     fileDirty,
     isDirty,
     onSaveActionChange,
+    onSaved,
     selectedFileDetail?.revision?.id,
     currentEntryFile,
     currentMode,
@@ -2273,6 +2289,8 @@ export function PromptsTab({
       setCandidateRunId(null);
       resolveCandidate.reset();
       setDraft(null);
+      setPendingFiles([]);
+      if (pendingFiles.includes(selectedOrEntryFile)) setSelectedFile(currentEntryFile);
       if (bundle) {
         setBundleDraft({
           mode: persistedMode,
@@ -2281,7 +2299,7 @@ export function PromptsTab({
         });
       }
     } : null);
-  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath, resolveCandidate]);
+  }, [bundle, isDirty, onCancelActionChange, persistedMode, persistedRootPath, resolveCandidate, pendingFiles, selectedOrEntryFile, currentEntryFile, setSelectedFile]);
 
   const handleSeparatorDrag = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
@@ -2349,19 +2367,19 @@ export function PromptsTab({
 
       <div
         ref={containerRef}
-        className="grid min-w-0 gap-3"
+        className="grid min-w-0 agent-instruction-panels"
         style={
           instructionsSideBySide
-            ? { gridTemplateColumns: `${filePanelWidth}px 0.5rem minmax(0, 1fr)` }
+            ? { gridTemplateColumns: `${filePanelWidth}px var(--agent-identity-resizer-width) minmax(0, 1fr)` }
             : undefined
         }
       >
         <div data-agent-tile="" className={cn(
-          "min-w-0 w-full space-y-3 self-start rounded-lg bg-(--agent-detail-tile) px-3 pt-(--agent-detail-module-inset) pb-3",
+          "min-w-0 w-full space-y-3 self-start rounded-lg bg-(--agent-detail-tile) p-(--agent-identity-panel-gap)",
           isMobile && showFilePanel && "block",
           isMobile && !showFilePanel && "hidden",
         )}>
-          <div className="flex items-center justify-between px-2">
+          <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold text-foreground">Files</h4>
             <div className="flex items-center gap-1">
               {!showNewFileInput && (
@@ -2390,11 +2408,15 @@ export function PromptsTab({
           </div>
           {showNewFileInput && (
             <div className="space-y-2">
+              <div className="agent-markdown-name-field flex items-center rounded-md border border-input focus-within:ring-2 focus-within:ring-ring">
               <Input
+                aria-label="New Markdown file name"
+                aria-describedby="markdown-file-name-hint"
+                aria-invalid={Boolean(newFilePath && !markdownFileName(newFilePath))}
                 value={newFilePath}
                 onChange={(event) => setNewFilePath(event.target.value)}
-                placeholder="TOOLS.md"
-                className="font-mono text-sm"
+                placeholder="TOOLS"
+                className="min-w-0 border-0 bg-transparent font-mono text-sm shadow-none focus-visible:ring-0"
                 autoFocus
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
@@ -2403,19 +2425,24 @@ export function PromptsTab({
                   }
                 }}
               />
+              <span className="pr-3 font-mono text-sm text-muted-foreground/50" aria-hidden>.md</span>
+              </div>
+              <p id="markdown-file-name-hint" className="text-xs text-muted-foreground">Use letters, numbers, hyphens or underscores.</p>
               <div className="flex gap-2">
                 <Button
                   type="button"
                   size="sm"
                   variant="default"
                   className="flex-1"
-                  disabled={!newFilePath.trim() || newFilePath.includes("..")}
+                  disabled={!markdownFileName(newFilePath) || visibleFilePaths.includes(markdownFileName(newFilePath) ?? "")}
                   onClick={() => {
-                    const candidate = newFilePath.trim();
-                    if (!candidate || candidate.includes("..")) return;
-                    setPendingFiles((prev) => prev.includes(candidate) ? prev : [...prev, candidate]);
+                    const candidate = markdownFileName(newFilePath);
+                    if (!candidate || visibleFilePaths.includes(candidate)) return;
+                    if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
+                    setPendingFiles([candidate]);
                     setSelectedFile(candidate);
                     setDraft("");
+                    setInstructionMode("edit");
                     setNewFilePath("");
                     setShowNewFileInput(false);
                   }}
@@ -2449,6 +2476,10 @@ export function PromptsTab({
               return next;
             })}
             onSelectFile={(filePath) => {
+              if (filePath === selectedOrEntryFile) return;
+              if (isDirty && !window.confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE)) return;
+              setDraft(null);
+              setPendingFiles([]);
               setSelectedFile(filePath);
               setInstructionMode("raw");
               if (!fileOptions.includes(filePath)) setDraft("");
@@ -2456,7 +2487,8 @@ export function PromptsTab({
             }}
             onToggleCheck={() => {}}
             showCheckboxes={false}
-            wrapLabels
+            wrapLabels={false}
+            fileRowClassName={() => "agent-instruction-file-row font-mono"}
             renderFileExtra={(node) => {
               const file = bundle?.files.find((entry) => entry.path === node.path);
               if (!file) return null;
@@ -2475,8 +2507,8 @@ export function PromptsTab({
                 );
               }
               return (
-                <span className="ml-3 shrink-0 rounded border border-border text-muted-foreground px-1.5 py-0.5 text-(length:--text-nano) uppercase tracking-wide">
-                  {file.isEntryFile ? "entry" : `${file.size}b`}
+                <span className={cn("ml-3 shrink-0 rounded text-muted-foreground px-1.5 py-0.5 font-sans text-(length:--text-nano) uppercase tracking-wide", file.isEntryFile && "bg-(--agent-detail-tile-chip)")}>
+                  {file.isEntryFile ? "ROOT" : `${file.size}b`}
                 </span>
               );
             }}
@@ -2492,7 +2524,7 @@ export function PromptsTab({
         )}
 
         <div data-agent-tile="" className={cn("min-w-0 w-full overflow-hidden rounded-lg bg-(--agent-detail-tile)", isMobile && showFilePanel && "hidden")}>
-          <div className="flex items-center justify-between gap-3 px-(--agent-detail-module-inset) pt-(--agent-detail-module-inset) pb-5">
+          <div className="flex items-center justify-between gap-3 px-(--agent-identity-panel-gap) pt-(--agent-identity-panel-gap) pb-5">
             <div className="flex items-center gap-2 min-w-0">
               {isMobile && (
                 <Button
@@ -2507,19 +2539,23 @@ export function PromptsTab({
               )}
               <div className="flex min-w-0 flex-col gap-1.5">
                 <div className="flex min-w-0 items-center gap-2">
-                  <h4 className="truncate font-mono text-sm font-normal text-foreground">{selectedOrEntryFile}</h4>
+                  <h4 className="agent-identity-preview-title min-w-0 truncate font-mono text-(length:--agent-identity-preview-title-size) text-foreground">{selectedOrEntryFile}</h4>
                   <AgentChip>{currentMode === "external" ? "Managed externally" : "Managed by you"}</AgentChip>
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {selectedFileExists
                     ? selectedFileSummary?.deprecated
                       ? "Deprecated virtual file"
-                      : `${selectedFileDetail?.language ?? "text"} file`
+                      : instructionFileDateLabel(selectedFileDetail ?? selectedFileSummary)
                     : "New file in this bundle"}
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <span role="status" aria-hidden={!copyVisible} className={cn("agent-file-copy-notice flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground", !copyVisible && "opacity-0", copyNotice === "error" && "text-destructive")}>
+                {copyNotice === "copied" && <CheckCircle2 className="size-3.5" aria-hidden />}
+                {copyNotice === "copied" ? "File copied" : copyNotice === "error" ? "Copy failed" : null}
+              </span>
               <Button
                 type="button"
                 variant="ghost"
@@ -2534,15 +2570,17 @@ export function PromptsTab({
                 <Pencil className="size-4" />
               </Button>
               {!fileLoading && (
-                <CopyText
-                  text={displayValue}
-                  ariaLabel="Copy instructions file as markdown"
-                  title="Copy as markdown"
-                  copiedLabel="Copied"
-                  className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
+                <Button type="button" variant="ghost" size="icon-xs" className="size-8"
+                  aria-label="Copy instructions file as markdown" title="Copy as markdown"
+                  onClick={async () => {
+                    clearTimeout(copyTimer.current);
+                    setCopyVisible(true);
+                    try { await copyTextToClipboard(displayValue); setCopyNotice("copied"); }
+                    catch { setCopyNotice("error"); }
+                    copyTimer.current = setTimeout(() => setCopyVisible(false), 5000);
+                  }}>
                   <Copy className="size-4" />
-                </CopyText>
+                </Button>
               )}
               {selectedFileExists && !selectedFileSummary?.deprecated && selectedOrEntryFile !== currentEntryFile && (
                 <Button
@@ -2570,8 +2608,8 @@ export function PromptsTab({
             </div>
           </div>
 
-          <div aria-hidden className="mx-(--agent-detail-module-inset) h-px bg-border" />
-          <div className="space-y-3 px-(--agent-detail-module-inset) pt-4 empty:hidden">
+          <div aria-hidden className="h-px" />
+          <div className="space-y-3 px-(--agent-identity-panel-gap) pt-4 empty:hidden">
           {currentMode === "managed" && preservedCandidates.length > 0 && (
             <div className="space-y-3">
               <p className="text-sm font-medium">Preserved instruction edits</p>
@@ -2630,17 +2668,18 @@ export function PromptsTab({
           />}
           </div>
           {selectedFileDetail?.binary ? (
-            <div className="space-y-3 px-(--agent-detail-module-inset) py-5">
+            <div className="space-y-3 px-(--agent-identity-panel-gap) py-5">
               <p className="text-sm text-muted-foreground">This file is preserved with the agent directory. Download it to view its contents.</p>
               <a className="text-sm text-primary underline" href={agentsApi.downloadInstructionsFile(agent.id, selectedOrEntryFile, companyId)} download>Download {selectedOrEntryFile}</a>
             </div>
           ) : selectedFileExists && fileLoading && !selectedFileDetail ? (
-            <div className="px-(--agent-detail-module-inset) py-5">
+            <div className="px-(--agent-identity-panel-gap) py-5">
               <PromptEditorSkeleton />
             </div>
           ) : instructionMode === "edit" ? (
             <textarea
               aria-label="Instruction file editor"
+              autoFocus
               value={displayValue}
               spellCheck={false}
               onChange={(event) => {
@@ -2648,18 +2687,21 @@ export function PromptsTab({
                 if (draftBaseHashRef.current === undefined) draftBaseHashRef.current = selectedFileDetail?.contentHash ?? null;
                 setDraft(event.target.value);
               }}
-              className="block min-h-(--sz-420px) w-full field-sizing-content resize-none bg-transparent px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap text-foreground outline-none"
+              className="block min-h-(--sz-420px) w-full field-sizing-content resize-none bg-transparent p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap text-foreground outline-none"
               placeholder="File contents"
             />
-          ) : displayValue.trim() ? (
-            <pre
+          ) : (
+            <div role="button" tabIndex={0} aria-label={`Edit ${selectedOrEntryFile} contents`}
+              className="cursor-text outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setInstructionMode("edit")}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setInstructionMode("edit"); } }}>
+            {displayValue.trim() ? <pre
               data-testid="instructions-raw-source"
-              className="block min-h-(--sz-420px) w-full overflow-x-auto px-6 py-5 font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
+              className="block min-h-(--sz-420px) w-full overflow-x-auto p-(--agent-identity-panel-gap) font-mono text-xs leading-5 whitespace-pre-wrap break-words text-muted-foreground"
             >
               {displayValue}
-            </pre>
-          ) : (
-            <p className="min-h-(--sz-420px) px-6 py-5 text-sm text-muted-foreground">This instruction file is empty.</p>
+            </pre> : <p className="min-h-(--sz-420px) p-(--agent-identity-panel-gap) text-sm text-muted-foreground">This instruction file is empty.</p>}
+            </div>
           )}
         </div>
       </div>
@@ -2958,8 +3000,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
   const grokWork = run.driverKind === "grok_bot_mcp";
   const cancelRun = useMutation({
-    mutationFn: () => grokWork ? grokBotApi.stop(run.companyId, run.agentId, run.id) : heartbeatsApi.cancel(run.id),
-    onSuccess: () => {
+    mutationFn: () => {
+      if (grokWork) return grokBotApi.stop(run.companyId, run.agentId, run.id);
+      if (run.status !== "failed") return heartbeatsApi.cancel(run.id);
+      return stopFailedNativeRun(initialRun.id, initialRun.companyId);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
   });
@@ -3123,7 +3170,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 requested={runRequestedProviderTrace(run.contextSnapshot)}
                 showOff
               />
-              {(run.status === "running" || run.status === "queued") && (
+              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.driverKind !== "grok_bot_mcp" && run.execution?.canStop === true)) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3131,7 +3178,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {grokWork ? cancelRun.isPending ? "Stopping Paperclip work…" : "Stop Paperclip work" : cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {runCancellationLabel({ grokWork, isFailed: run.status === "failed", isPending: cancelRun.isPending })}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -3239,6 +3286,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </ol>
               </details>
             )}
+            {cancelRun.error && (
+              <div className="text-xs text-destructive" role="alert">
+                {cancelRun.error instanceof Error ? cancelRun.error.message : "Failed to stop run"}
+              </div>
+            )}
             {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
@@ -3268,7 +3320,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
             )}
             <AgentFileRunNotice resultJson={run.resultJson} />
-            {run.error && (
+            {readProviderFailure(run.resultJson?.providerFailure) ? (
+              <ProviderFailureNotice failure={readProviderFailure(run.resultJson?.providerFailure)!} />
+            ) : run.error && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}

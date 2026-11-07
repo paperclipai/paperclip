@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb } from "@paperclipai/db";
+import { agents, aiProviderDefaults, companies, companyMemberships, connectionGrants, createDb, environments, plugins } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { agentHarnessVerificationService } from "../services/agent-harness-verification.js";
 import * as environmentTests from "../services/agent-environment-test.js";
@@ -124,5 +124,47 @@ describePostgres("saved harness account preflight", () => {
     probe.mockRejectedValueOnce(new Error("Fixture probe failure"));
     await expect(verify()).rejects.toThrow("Fixture probe failure");
     expect(release).toHaveBeenCalledExactlyOnceWith("failed");
+  });
+
+  async function useRunnerTaskEnvironment(runtimeConfig: Record<string, unknown>, homeMode?: string) {
+    const pluginId = randomUUID(), pluginKey = `test.runner-tasks.${pluginId}`;
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/runner-tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Runner tasks", description: "Runner task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] } } as any);
+    const [environment] = await db.insert(environments).values({ name: `Runner tasks ${pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    vi.mocked(environmentTests.agentEnvironmentTestService).mockImplementation((database, manager) => ({
+      ...realEnvironmentTests(database, manager),
+      resolveAdapterTestEnvironmentId: vi.fn().mockResolvedValue(environment.id),
+      assertAdapterTestEnvironmentForCompany: vi.fn().mockResolvedValue(undefined),
+      resolveAdapterTestExecutionContext: allocate,
+      testManagedEnvironment: probe,
+    }));
+    [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", runtimeConfig,
+      adapterConfig: { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.5", ...(homeMode ? { homeMode } : {}) } })
+      .where(eq(agents.id, agent.id)).returning();
+  }
+
+  it("refuses a plugin Runner-task agent without a managed AI connection before allocating a target", async () => {
+    await useRunnerTaskEnvironment({});
+    await expect(verify()).rejects.toMatchObject({ code: "ai_connection_required", message: expect.stringContaining("Choose an AI connection") });
+    expect(allocate).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("refuses a preconfigured Runner home with a saved connection before allocating a target", async () => {
+    await useRunnerTaskEnvironment({ aiConnection: binding }, "preconfigured");
+    await expect(verify()).rejects.toMatchObject({ code: "ai_connection_required", message: expect.stringContaining("isolated Runner home") });
+    expect(allocate).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("verifies a plugin Runner-task agent with a managed AI connection", async () => {
+    await useRunnerTaskEnvironment({ aiConnection: binding });
+    await expect(verify()).resolves.toBe("complete");
+    expect(allocate).toHaveBeenCalledOnce();
+    expect(probe).toHaveBeenCalledOnce();
   });
 });

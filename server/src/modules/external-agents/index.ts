@@ -4,3 +4,7 @@ export { withExternalAdmissionGuard, withExternalExecutionAdmission, assertNoExt
 export { dotRunnerBroker, createDotRunnerMcpTools } from "./dot.js";
 
 export { notifyExternalAgentSettlement, pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "./muse-terminal-settlement.js";
+
+export { idleExternalAgentHistoryChecks } from "./idle-history-proof.js";
+
+export { idleExternalAgentIncomingWorkQuery } from "./idle-incoming-proof.js";

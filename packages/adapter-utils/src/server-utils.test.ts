@@ -50,6 +50,17 @@ it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
   expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toMatchObject(saved);
 });
 
+it("preserves Cursor Cloud settings without injecting Codex permission defaults", () => {
+  const config = { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } } };
+  const saved = normalizePaperclipRunnerAdapterConfig("paperclip_runner", config);
+  expect(saved).toMatchObject({ ...config, lifecycleMode: "per_turn" });
+  expect(saved).not.toHaveProperty("codexPermissionMode");
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", saved)).toEqual(saved);
+  expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { ...config, codexPermissionMode: "never" }))
+    .toHaveProperty("codexPermissionMode", "never");
+});
+
 it.each([undefined, "", "kimi-for-coding"])("keeps Kimi draft model selection explicit: %s", model => {
   const config = { provider: "acpx", acpxAgent: "kimi", ...(model === undefined ? {} : { model }),
     acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };
@@ -3943,6 +3954,22 @@ describe("wake continuation comment ownership", () => {
     expect(prompt).toContain("comment-b");
     expect(prompt).toContain("comment-edited");
     expect(prompt).not.toContain("comment-a at");
+  });
+
+  it("tells a fresh retry attempt where the retained prior workspace and its edits are", () => {
+    const priorWorkspace = { sourceRunId: "run-old", path: "/work/.paperclip/worktrees/PAP-1", branchName: "PAP-1-task",
+      changedFilesKnown: true, changedFileCount: 1, changedFiles: ["NOTES.md"] };
+    const prompt = renderPaperclipWakePrompt({
+      reason: "task_retry",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), priorWorkspace },
+    });
+    expect(prompt).toContain("retained unmodified at priorWorkspace.path");
+    expect(prompt).toContain("/work/.paperclip/worktrees/PAP-1");
+    expect(prompt).toContain("NOTES.md");
   });
 
   it("does not suppress a current comment absent from the rendered resume delta", () => {

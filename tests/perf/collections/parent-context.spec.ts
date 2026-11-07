@@ -8,7 +8,7 @@ test.afterEach(async ({ request }) => {
   companyId = undefined;
 });
 
-test("Mine waits for missing parent metadata without loading parent diagnostics", async ({ page, request }) => {
+test("Mine reveals assembled parent metadata before loading visible diagnostics", async ({ page, request }) => {
   const created = await request.post("/api/companies", { data: { name: "Parent context browser check" } });
   expect(created.ok(), await created.text()).toBeTruthy();
   const company = await created.json() as { id: string; issuePrefix: string };
@@ -30,9 +30,7 @@ test("Mine waits for missing parent metadata without loading parent diagnostics"
   expect(archived.ok(), await archived.text()).toBeTruthy();
 
   const reads: Array<{ projection: string | null; ids: string[] }> = [];
-  const contextRead = (url: URL) => url.pathname === `/api/companies/${company.id}/issues`
-    && url.searchParams.get("view") === "index"
-    && url.searchParams.get("ids")?.split(",").includes(missing.id) === true;
+  const sourceRead = (url: URL) => url.pathname === `/api/companies/${company.id}/inbox/mine`;
   page.on("request", request => {
     const url = new URL(request.url());
     if (url.pathname === `/api/companies/${company.id}/issues` && url.searchParams.has("ids")) {
@@ -47,14 +45,13 @@ test("Mine waits for missing parent metadata without loading parent diagnostics"
     && url.searchParams.get("view") === "rows"
     && url.searchParams.get("ids")?.split(",").includes(second.id) === true;
   await page.route(detailRead, async route => { await detailsHeld; await route.continue(); });
-  await page.route(contextRead, async route => { await held; await route.continue(); });
-  const parentRequest = page.waitForRequest(request => contextRead(new URL(request.url())));
+  await page.route(sourceRead, async route => { await held; await route.continue(); });
+  const sourceRequest = page.waitForRequest(request => sourceRead(new URL(request.url())));
   try {
     await page.goto(`/${company.issuePrefix}/inbox/mine`);
-    await parentRequest;
+    await sourceRequest;
     expect(await page.locator("[data-inbox-item]").count()).toBe(0);
-    expect(reads.some(read => read.projection === "rows")).toBe(false);
-    expect(reads.some(read => read.ids.includes(loaded.id))).toBe(false);
+    expect(reads).toEqual([]);
   } finally { release(); }
 
   const child = page.locator(`[data-inbox-issue-link][href$="/${second.identifier}"]`);
@@ -70,7 +67,7 @@ test("Mine waits for missing parent metadata without loading parent diagnostics"
   await (await detailsResponse).finished();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await expect(page.locator(`[data-inbox-issue-link][href$="/${first.identifier}"]`)).toBeVisible();
-  expect(reads.filter(read => read.ids.includes(missing.id)).every(read => read.projection === "index")).toBe(true);
+  expect(reads.some(read => read.ids.includes(missing.id))).toBe(false);
   expect(await node!.evaluate(element => element.isConnected)).toBe(true);
   const after = await row.boundingBox();
   expect(Math.abs(before!.height - after!.height)).toBeLessThan(1);

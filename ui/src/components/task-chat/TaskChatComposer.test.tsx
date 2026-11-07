@@ -7,13 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildAgentMentionHref,
   buildSkillMentionHref,
+  instanceExperimentalSettingsSchema,
 } from "@paperclipai/shared";
 import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
@@ -24,6 +26,7 @@ import {
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
 import { queryKeys } from "../../lib/queryKeys";
 import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
+import { waitForStoppedRuns } from "../../lib/wait-for-stopped-runs";
 
 // The session lookup never answers on its own; tests set the account directly.
 vi.mock("../../api/auth", async (importOriginal) => {
@@ -1094,17 +1097,107 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined, undefined, expect.any(String));
   });
 
-  it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {
+  it.each(["standard", "ask", "planning"] as const)("submits %s messages on Enter by default", async (workMode) => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode={workMode} />);
+    typeText("hello");
+    expect(sendButton().title).toBe("Send (Enter)");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined, undefined, expect.any(String));
+  });
+
+  it("does not submit on Shift+Enter (newline stays with the editor)", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
     typeText("line one");
-    pressKey("Enter");
     pressKey("Enter", { shiftKey: true });
     await flushAsync();
 
     expect(onAdd).not.toHaveBeenCalled();
     expect(editable().textContent).toBe("line one");
+  });
+
+  it.each([false, true])("uses the experimental shortcut preference for new tasks (legacy=%s)", async (legacy) => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: legacy });
+    const creation = {
+      value: "Create this task", onChange: vi.fn(), onSubmit: vi.fn().mockResolvedValue(undefined),
+      submitLabel: "Create task", onSelectFiles: vi.fn(), runSettings: null, onRunSettingsChange: vi.fn(),
+    };
+    render(<QueryClientProvider client={client}><TaskChatComposer creation={creation} workMode="standard" /></QueryClientProvider>);
+    expect(sendButton().title).toBe(`Create task (${legacy ? "⌘/Ctrl+Enter" : "Enter"})`);
+    pressKey("Enter", { shiftKey: true });
+    expect(creation.onSubmit).not.toHaveBeenCalled();
+    pressKey("Enter");
+    await flushAsync();
+    if (legacy) {
+      expect(creation.onSubmit).not.toHaveBeenCalled();
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+    }
+    expect(creation.onSubmit).toHaveBeenCalledExactlyOnceWith(creation.value, "standard", null);
+  });
+
+  it.each([false, true])("waits for the saved shortcut preference before enabling Enter submission (legacy=%s)", async (legacy) => {
+    let resolveSettings!: (settings: Awaited<ReturnType<typeof instanceSettingsApi.getExperimental>>) => void;
+    const pendingSettings = new Promise<Awaited<ReturnType<typeof instanceSettingsApi.getExperimental>>>((resolve) => {
+      resolveSettings = resolve;
+    });
+    const getSettings = vi.spyOn(instanceSettingsApi, "getExperimental").mockReturnValue(pendingSettings);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    try {
+      render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" /></QueryClientProvider>);
+      typeText("Keep this draft");
+      pressKey("Enter");
+      await flushAsync();
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("Keep this draft");
+
+      await act(async () => {
+        resolveSettings(instanceExperimentalSettingsSchema.parse({ enableLegacyComposerSubmit: legacy }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flushAsync();
+      pressKey("Enter");
+      await flushAsync();
+      if (legacy) {
+        expect(onAdd).not.toHaveBeenCalled();
+        pressKey("Enter", { metaKey: true });
+        await flushAsync();
+      }
+      expect(onAdd).toHaveBeenCalledTimes(1);
+    } finally {
+      getSettings.mockRestore();
+    }
+  });
+
+  it("restores the old shortcut for task replies and updates the preference without remounting", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: true });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" /></QueryClientProvider>);
+    typeText("first message");
+    expect(sendButton().title).toBe("Send (⌘/Ctrl+Enter)");
+    pressKey("Enter");
+    pressKey("Enter", { shiftKey: true });
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    pressKey("Enter", { ctrlKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      client.setQueryData(queryKeys.instance.experimentalSettings, { enableLegacyComposerSubmit: false });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    typeText("second message");
+    expect(sendButton().title).toBe("Send (Enter)");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(2);
   });
 
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
@@ -1313,7 +1406,7 @@ describe("TaskChatComposer", () => {
     expect(openPicker).toHaveBeenCalledOnce();
   });
 
-  it.each(["picker", "drop"])("uploads images from %s into a preview row above the text", async (source) => {
+  it.each(["picker", "drop", "page drop"])("uploads images from %s into a preview row above the text", async (source) => {
     const onAdd = vi.fn();
     const onAttachImage = vi.fn().mockResolvedValue({ contentPath: "/attachments/shot.png" });
     renderComposer({ onAdd, workMode: "standard", onAttachImage });
@@ -1325,8 +1418,8 @@ describe("TaskChatComposer", () => {
       flushSync(() => input.dispatchEvent(new Event("change", { bubbles: true })));
     } else {
       const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
-      flushSync(() => editable().dispatchEvent(event));
+      Object.defineProperty(event, "dataTransfer", { value: { types: ["Files"], files: [file] } });
+      flushSync(() => (source === "page drop" ? document.body : editable()).dispatchEvent(event));
       expect(event.defaultPrevented).toBe(true);
     }
     await flushAsync();
@@ -1615,6 +1708,27 @@ describe("TaskChatComposer", () => {
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     expect(onAdd).toHaveBeenCalledWith(expected.trim(), undefined, undefined, undefined, expect.any(String));
+  });
+
+  it("does not submit an unselected slash menu with Enter", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
+    typeText("/dep");
+    await placeCaretAtEnd();
+    autocompleteOption("/deploy");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(editable().textContent).toBe("/dep");
+
+    pressKey("ArrowDown");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
   it("inserts a /-command from the autocomplete menu", async () => {
@@ -3173,6 +3287,113 @@ describe("TaskChatComposer", () => {
 
 describe("composer Stop", () => {
   function stopButton() { return container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]'); }
+
+  function nativeStopAwaitingContainment(): HeartbeatRun & { runtimeMode: "native" } {
+    const observed: Partial<HeartbeatRun> & { runtimeMode: "native" } = {
+      id: "run", companyId: "company", status: "cancelled", runtimeMode: "native",
+      resultJson: { executionCancellation: { state: "requested" }, nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: "run", companyId: "company",
+        scope: "run", dispatched: true, dispatchState: "acknowledged",
+      } } };
+    return observed as HeartbeatRun & { runtimeMode: "native" };
+  }
+
+  it.each([{ runIds: ["first"] }, { runIds: ["first", "second"] }])("clears a timed-out Stop only after every exact target is confirmed: $runIds", async ({ runIds }) => {
+    vi.useFakeTimers();
+    try {
+      const onStop = vi.fn(() => waitForStoppedRuns(runIds, {
+        getRun: vi.fn(async id => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      }));
+      const onAdd = vi.fn();
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(["unrelated"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      if (runIds.length > 1) {
+        render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set([runIds[0]])} />);
+        await act(async () => {});
+        expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      }
+      render(<TaskChatComposer workMode="standard" onAdd={onAdd} confirmedStoppedRunIds={new Set(runIds)} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(onAdd).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a newer Stop attempt independent of an earlier target's confirmation", async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = (id: string) => () => waitForStoppedRuns([id], {
+        getRun: vi.fn(async () => ({ ...nativeStopAwaitingContainment(), id })), timeoutMs: 1000,
+      });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("first")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={attempt("second")} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["first"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["second"])} />);
+      await act(async () => {});
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retains an ordinary Stop error when unrelated stop proof arrives", async () => {
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={async () => { throw new Error("Stop permission denied"); }} />);
+    flushSync(() => stopButton()!.click()); await flushAsync();
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} confirmedStoppedRunIds={new Set(["run"])} />);
+    await flushAsync();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Stop permission denied");
+  });
+
+  it("finishes one Stop without a stale warning when the server proves containment after native acknowledgement", async () => {
+    const requested = nativeStopAwaitingContainment();
+    let publishContainment!: (value: HeartbeatRun) => void;
+    const getRun = vi.fn(() => new Promise<HeartbeatRun>(resolve => { publishContainment = resolve; }));
+    const onStop = vi.fn(() => waitForStoppedRuns([requested.id], { initialRuns: [requested], getRun }));
+    const onAdd = vi.fn();
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+    flushSync(() => stopButton()!.click());
+    await flushAsync();
+    expect(stopButton()?.getAttribute("aria-label")).toBe("Stopping…");
+    expect(getRun).toHaveBeenCalledExactlyOnceWith(requested.id);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    // The run can already appear Stopped while the independent execution proof
+    // is settling. Removing the action must neither prove Stop nor erase a draft.
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} />);
+    typeText("Keep this note.");
+    await act(async () => publishContainment({ ...requested, resultJson: { ...requested.resultJson,
+      executionCancellation: { state: "acknowledged", proof: "provider_termination_receipt" } } }));
+    await flushAsync();
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(editable().textContent).toBe("Keep this note.");
+  });
+
+  it("does not mistake a native acknowledgement or disappearing Stop action for physical containment", async () => {
+    vi.useFakeTimers();
+    try {
+      const requested = nativeStopAwaitingContainment();
+      const getRun = vi.fn(async () => requested);
+      const onStop = vi.fn(() => waitForStoppedRuns([requested.id], { initialRuns: [requested], getRun, timeoutMs: 1000 }));
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={onStop} />);
+      flushSync(() => stopButton()!.click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("stop was requested");
+    } finally { vi.useRealTimers(); }
+  });
 
   it("switches Stop to Send with text, whitespace back to Stop, without interrupting on keyboard submit", async () => {
     const onStop = vi.fn(async () => {});

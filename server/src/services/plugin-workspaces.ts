@@ -28,6 +28,7 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
+import { workspaceProviderCallFailure, workspaceWorkerRefusal } from "./workspace-provider-failure.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -42,6 +43,8 @@ async function provider(
   workers: WorkspaceWorkers | undefined,
   companyId: string,
   pluginId: string,
+  /** Before a call, a ready provider whose worker is not running is a retryable refusal: no request is sent. */
+  beforeCall = false,
 ) {
   const [plugin] = await db
     .select()
@@ -56,15 +59,17 @@ async function provider(
         eq(pluginCompanySettings.companyId, companyId),
       ),
     );
+  const worker = workers?.getWorker(pluginId);
+  const refusal = beforeCall && workers && plugin?.status === "ready" && settings?.enabled !== false &&
+    isWorkspaceProvider(plugin.manifestJson) ? workspaceWorkerRefusal(pluginId, worker) : null;
+  if (refusal) throw refusal;
   if (
     !workers ||
     !plugin ||
     plugin.status !== "ready" ||
     settings?.enabled === false ||
     !isWorkspaceProvider(plugin.manifestJson) ||
-    !workers
-      .getWorker(pluginId)
-      ?.supportedMethods?.includes("workspaceOperation")
+    !worker?.supportedMethods?.includes("workspaceOperation")
   ) {
     throw conflict("The workspace storage plugin is unavailable");
   }
@@ -97,7 +102,7 @@ export async function callWorkspaceProvider(
   const pluginId = binding?.pluginId ?? input.pluginId;
   if (!pluginId || !workspace.projectId)
     throw conflict("Workspace storage ownership is missing");
-  const selectedProvider = await provider(db, workers, workspace.companyId, pluginId);
+  const selectedProvider = await provider(db, workers, workspace.companyId, pluginId, true);
   if (input.operation.kind === "prepare" && input.operation.fresh && selectedProvider.manifestJson.workspaceProvider?.freshWorkspaceVersion !== 1)
     throw conflict("Fresh workspace preparation is unavailable");
   if (input.operation.kind === "finalize" &&
@@ -147,10 +152,10 @@ export async function callWorkspaceProvider(
       params,
       operation.kind === "finalize" ? 40_000 : 310_000,
     );
-  } catch {
-    throw conflict(
-      "Workspace storage operation is incomplete; retry the same workspace",
-    );
+  } catch (error) {
+    // A worker that never received the call, a lost reply and a provider-reported
+    // failure need different recovery; only a closed provider reason crosses over.
+    throw workspaceProviderCallFailure(error);
   }
   // Recheck enablement and ownership after an external effect, including an ambiguous retry.
   await provider(db, workers, workspace.companyId, pluginId);
@@ -269,12 +274,7 @@ export async function preparePluginWorkspace(
     throw conflict(
       "An existing local workspace cannot change storage providers",
     );
-  const selectedProvider = await provider(
-    db,
-    workers,
-    input.companyId,
-    pluginId,
-  );
+  const selectedProvider = await provider(db, workers, input.companyId, pluginId, true);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
     throw conflict("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", { reason: "fresh_workspace_storage_unsupported" });

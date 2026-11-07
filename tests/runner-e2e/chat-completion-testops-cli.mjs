@@ -7,7 +7,7 @@ import { admitDispatch, hash, reject, validateSelection, evidencePolicy, catalog
 import { testopsClient, bootstrapPilotPlan, completePilotRegistration, validatePilotSelection, launchPilotPlan, verifyPilotUpload } from './chat-completion-testops-api.mjs';
 import { parseOfficialBootstrapContext } from './testops-chat-reporter.mjs';
 import { exportPilotAllure, readPilotExport } from './chat-completion-testops-results.mjs';
-import { prepareCaseBundle, publishCaseBundle, publicationSet } from './chat-catalog-testops-streaming.mjs';
+import { prepareCaseBundle, publishCaseBundle, publicationSet, gatherCaseProjections } from './chat-catalog-testops-streaming.mjs';
 
 const execute = promisify(execFile);
 const fullCatalogFailureCodes = new Set([
@@ -37,7 +37,7 @@ export function executionPartition(selection, context, jobRunId) {
   const size = [matrix, native, external, selection.cases.map(row => row.executionId)]
     .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0);
   if (size > 1_000_000) reject('matrix_size');
-  return { matrix, native, external, parallelism: small ? external.include.length ? '1' : '2' : '8' };
+  return { matrix, native, external, parallelism: small && external.include.length ? '1' : '2' };
 }
 async function readOwned(file, root, limit) {
   const absolute = path.resolve(file), base = await realpath(root);
@@ -94,7 +94,7 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
   let state;
   try {
     if (!['guard', 'bootstrap', 'bootstrap-context', 'selection', 'launch-plan', 'verify-selection', 'upload', 'verify-upload',
-      'prepare-case-upload', 'upload-case', 'verify-stream'].includes(command)) reject('operation');
+      'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command)) reject('operation');
     const context = await actualContext(env, exec);
     if (command === 'guard') {
       await output(env, 'operation', context.operation); await output(env, 'target_sha', context.targetSha);
@@ -106,7 +106,7 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
     }
     if (['bootstrap', 'bootstrap-context'].includes(command) && context.operation !== 'bootstrap'
       || command === 'launch-plan' && context.operation !== 'launch-plan'
-      || ['selection', 'upload', 'verify-upload', 'prepare-case-upload', 'upload-case', 'verify-stream'].includes(command) && context.operation !== 'evaluate') reject('operation');
+      || ['selection', 'upload', 'verify-upload', 'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command) && context.operation !== 'evaluate') reject('operation');
     state = await stateDirectory(env, command === 'bootstrap-context' ? 'bootstrap' : command, command === 'bootstrap-context');
     if (command === 'prepare-case-upload') {
       if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
@@ -114,6 +114,12 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
       const prepared = await prepareCaseBundle(path.resolve(argument), env.ALLURE_RESULTS, context, selected,
         env.CHAT_TESTOPS_EXECUTION_ID, env.EXPECTED_SELECTION_SHA256);
       await writeReceipt(state, 'prepared.json', prepared); return 0;
+    }
+    if (command === 'gather-case-projections') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+      await gatherCaseProjections(env.CHAT_TESTOPS_BUNDLES, path.resolve(argument), context, selected, env.EXPECTED_SELECTION_SHA256);
+      return 0;
     }
     const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
     if (command === 'bootstrap') {

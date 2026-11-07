@@ -183,8 +183,11 @@ scope, not proof that a live journey passed.
 
 The sibling [agent access map](maps/agent-access-map/README.md) records APIs,
 agent entry points and permission boundaries using the same capability IDs.
-Follow [the map contract](maps/README.md): update affected entries when mapped
-behavior or access changes, and run `node scripts/check-maps.mjs` after map edits.
+Follow [the feature-map scope rule](rules/feature-map-scope.mdc): additions require
+substantial new features. Routine fixes, polish, refactors, and test changes do
+not require map updates. Follow [the map contract](maps/README.md) for minimal
+corrections when existing entries become materially inaccurate, and run
+`node scripts/check-maps.mjs` after map edits.
 Its structural checks do not prove live behavior or authorization.
 
 Storybook has a downstream [feature catalog](maps/storybook-map/README.md).
@@ -195,13 +198,34 @@ ignored; never commit aggregate catalogs, refresh review fingerprints, or append
 a shared review journal. Use Git diffs and keep review evidence in the PR or issue.
 Structural checks are not production acceptance.
 
-Default local/agent test path:
+Prepare a new or updated worktree with `node scripts/agent-preflight.mjs` instead of running
+`pnpm install`, the Runner build and `build:rust` by hand. It skips unchanged
+steps and reuses other worktrees' Runner builds, debug binaries and third-party
+crates from a content-keyed cache in `~/.cache/paperclip/agent-build`. Do not
+share `CARGO_TARGET_DIR` between worktrees. See "Agent worktree preflight" in
+`doc/DEVELOPING.md`.
+
+Default local/agent verification path:
 
 ```sh
-pnpm test
+pnpm verify
 ```
 
-This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+This selects affected Vitest files with the same conservative dependency policy
+as CI. It includes committed, staged, unstaged, and untracked changes against the
+merge base with local `origin/master` (or `master`). Use `--base <ref>` for another
+base and `--explain` to inspect the selection. Passing checks with complete input
+graphs can be reused within this worktree. Opaque integration checks run fresh.
+Source, test, fixture, configuration, dependency, environment, and toolchain changes
+invalidate matching results. Failed or interrupted attempts are never passes.
+
+Exit 2 means the change needs broader verification: run focused checks and let
+required CI supply that coverage, or explicitly use `pnpm verify --full` for the
+full local Vitest suite. Do not automatically follow exit 2 with a full local run.
+Use `--no-cache` to request fresh execution without reading or saving passes.
+`pnpm test` and `pnpm test:run` retain their full-suite behavior.
+
+Browser suites stay opt-in:
 
 ```sh
 pnpm test:e2e
@@ -212,13 +236,25 @@ Run the browser suites only when your change touches them or when you are explic
 
 For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
 
-Run this full check before claiming repo work done in a PR-ready hand-off, or when the change scope is broad enough that targeted checks are not sufficient:
+For a PR-ready handoff, run the relevant local checks and require the applicable
+CI typecheck, build, and test checks to pass for the final tested revision. Record
+their scope, revision, environment, and result links. Fresh CI can supply broad
+coverage; do not duplicate a full local run merely to prepare a PR, resume a chat,
+or repeat unchanged passing verification. A selected local pass does not replace
+required CI, release qualification, browser acceptance, or a local/platform-specific
+regression. After edits or a rebase, rerun affected checks and invalidate evidence
+whose inputs or required coverage changed.
+
+Use broad local checks when they resolve an actual remaining gap, such as a local
+platform fault or explicit full-suite qualification:
 
 ```sh
 pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
 
 If anything cannot be run, explicitly report what was not run and why.
 
@@ -259,7 +295,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 A change is done when all are true:
 
 1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
+2. Relevant local verification and required CI typecheck, test, and build checks pass for the final revision, with any acceptance or platform-specific gaps resolved
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)

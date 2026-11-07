@@ -964,10 +964,10 @@ describe("personal Muse control plane",()=>{
     await expect(f.identity.authenticateOAuthAccess(f.tokens!.access_token,oauthOrigin)).rejects.toThrow();
   });
   it("does not clear claimed-worker or unknown-native-effect holds when recording detector removal",async()=>{
-    const activeRun=await active(await oauthFixture(true));
+    const oauth=await oauthFixture(true),activeRun=await active(oauth);
     try {
       expect((await activeRun.broker.act(activeRun.subject,{version:1,command:"accept",assignmentId:activeRun.assignment.id,requestId:randomUUID()})).status).toBe("accepted");
-      const f=await detectorCleanupFixture(activeRun);
+      const f=await detectorCleanupFixture({...oauth,...activeRun});
       await db.update(externalAgentHolds).set({nativeEffectsUnknown:true}).where(eq(externalAgentHolds.assignmentId,activeRun.assignment.id));
       const before=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,activeRun.assignment.id));expect(before).toHaveLength(1);expect(before[0]).toMatchObject({workerUnknown:true,nativeEffectsUnknown:true,releasedAt:null});
       expect((await request(f.app).post(f.path).send(f.input)).status).toBe(200);
@@ -1122,7 +1122,7 @@ describe("personal Muse control plane",()=>{
       expect(logs[0]).toMatchObject({actorType:"user",actorId:operatorId,agentId:f.agent.id,responsibleUserId:operatorId,entityType:"agent",entityId:f.agent.id,details:{bindingId:f.binding.id,generation:1,revision:first.revision,authorizingUserId:f.operatorId,qualificationId,startedAt:first.startedAt,expiresAt:first.expiresAt}});
       expect(events.filter(event=>event.action==="muse.qualification_started")).toHaveLength(1);
       const serialized=JSON.stringify({logs,events});
-      for(const secret of [f.ticket,f.credentials.accessToken,f.credentials.refreshToken,f.credentials.signalToken,f.credentials.cleanupToken,f.credentials.detectorCleanupToken])expect(serialized).not.toContain(secret);
+      for(const secret of [f.ticket,f.credentials.accessToken,f.credentials.refreshToken,f.credentials.cleanupToken,f.credentials.detectorCleanupToken])expect(serialized).not.toContain(secret);
     } finally {unsubscribe();}
   });
   it("retains a mailbox batch until its prior durable cursor is acknowledged",async()=>{
@@ -1587,7 +1587,7 @@ describe("personal Muse control plane",()=>{
       expect(response.status).toBe(200);expect(response.body).toMatchObject({status:"worker_reported",externalStopConfirmed:false,nativeEffectsUnknown:true});
       const [after]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.id,before.id));
       expect(after.workerReportedAt).toBeInstanceOf(Date);expect(after).toMatchObject({workerUnknown:true,nativeEffectsUnknown:true,releasedAt:null});
-      await oauth.oauth.revokeToken(oauth.tokens!.refresh_token,oauth.client.client_id);
+      await oauth.oauth.revokeToken(oauth.tokens!.refresh_token!,oauth.client.client_id);
       expect((await request(transport()).post("/api/muse/v1/cleanup").set("Authorization","Bearer "+oauth.tokens!.access_token).send(report)).status).toBe(401);
       await expect(f.broker.cleanup(f.subject,{command:"worker.quiescent",boundary:before.stopBoundary!,requestId:report.requestId})).rejects.toThrow();
     }finally{await f.detach();}

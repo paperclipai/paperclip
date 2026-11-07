@@ -1,3 +1,4 @@
+import { mcpCompanyDeletion } from "./public-mcp/company-deletion.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
@@ -20,6 +21,7 @@ import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
+import { executionAdmissionCompanyDeletion } from "../modules/execution-admission/company-deletion.js";
 import {
   companies,
   agents,
@@ -74,6 +76,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await mcpCompanyDeletion.deleteCompanyData(tx, id);
         await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);
@@ -117,6 +120,7 @@ export async function deleteCompany(db: Db, id: string) {
         await notifyInstructionCollection(tx, { companyId: id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: id });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: id });
+        await executionAdmissionCompanyDeletion.deleteCompanyData(tx, id);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));

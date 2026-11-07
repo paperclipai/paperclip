@@ -1,5 +1,6 @@
 import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
 import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
+import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -38,12 +39,13 @@ function readString(value: unknown) {
 
 function workspaceSyncFailure(
   code: "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
+  cause?: string,
 ) {
   return {
     status: "failed" as const,
     exitCode: 1,
-    stderr: `${code}\n`,
-    metadata: { workspaceSync: { code } },
+    stderr: cause ? `${code}\n${cause}\n` : `${code}\n`,
+    metadata: { workspaceSync: cause ? { code, cause } : { code } },
   };
 }
 
@@ -190,8 +192,11 @@ export async function attemptNativeWorkspaceFinalization(input: {
             metadata: { remoteWorkspace: saved } };
         } catch (error) {
           await ownership.assertHeld();
+          // The code keeps the retry policy. The redacted remote cause (for
+          // example a full sandbox disk or the failed capture step) is named on
+          // the operation; other error text stays off the record.
           return workspaceSyncFailure(classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
-            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed");
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed", remoteWorkspaceFailureCause(error) ?? undefined);
         }
       }
       if (nativeWorkspaceSync) {
@@ -352,7 +357,8 @@ export async function resumeNativeWorkspaceFinalization(input: Parameters<typeof
   return result.kind === "completed" ? result.operation : null;
 }
 
-export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string, operation: { stderrExcerpt: string | null }) {
+export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string,
+  operation: { stderrExcerpt: string | null; metadata?: Record<string, unknown> | null }) {
   const unrecoverable = operation.stderrExcerpt?.includes("workspace_sync_out_unrecoverable");
   const pluginFailure = operation.stderrExcerpt?.trim();
   const pluginRepair = pluginFailure === "plugin_workspace_branch_mismatch" || pluginFailure === "plugin_workspace_owner_mismatch";
@@ -361,5 +367,6 @@ export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string, 
     error: new Error(pluginRepair ? `native_${pluginFailure}` : unrecoverable
       ? "native_workspace_sync_out_unrecoverable" : "native_workspace_sync_out_failed"),
     projectRunStatus: true, failureScope: "workspace", permanent: unrecoverable,
+    failureCause: readString(record(record(operation.metadata).workspaceSync).cause),
   });
 }

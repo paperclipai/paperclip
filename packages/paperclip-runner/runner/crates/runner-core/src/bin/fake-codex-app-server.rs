@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const TEST_GATE_TIMEOUT: Duration = Duration::from_secs(120);
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FakeState {
@@ -732,6 +734,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let exit_after_tool_call_completion = args
         .iter()
         .any(|value| value == "--exit-after-tool-call-completion");
+    // Keep the turn open after an accepted completion report, so a test can
+    // kill the runner between the durable proposal and the provider terminal.
+    let hold_after_terminal_result = args
+        .iter()
+        .any(|value| value == "--hold-after-terminal-result");
     let emit_tool_call_on_resume = args
         .iter()
         .any(|value| value == "--emit-tool-call-on-resume");
@@ -889,6 +896,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    let mut goal_update_on_next_thread_read: Option<String> = None;
     let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
     let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
     let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
@@ -1109,6 +1117,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "terminal-result:rejected"
                 },
             )?;
+            if success && hold_after_terminal_result {
+                continue;
+            }
             finish_turn(
                 &state_path,
                 &mut state,
@@ -1219,6 +1230,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "initialized" => {}
+            "paperclip/ackTerminal" => {
+                let path = argument(&args, "--cursor-cloud-terminal-file")
+                    .ok_or("terminal fixture missing")?;
+                let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                if message.pointer("/params/turnId") != delivery.get("turnId")
+                    || message.pointer("/params/receiptId") != delivery.get("receiptId")
+                {
+                    return Err("terminal receipt changed".into());
+                }
+                if Path::new(&format!("{path}.hold-ack")).exists() {
+                    send(
+                        json!({"id": id, "error": {"code": -32000, "message": "controlled lost receipt"}}),
+                    )?;
+                } else {
+                    fs::remove_file(path)?;
+                    send(
+                        json!({"id": id, "result": {"acknowledged": true, "turnId": delivery["turnId"], "receiptId": delivery["receiptId"]}}),
+                    )?;
+                }
+            }
+            "paperclip/shutdown" if args.iter().any(|arg| arg == "--cursor-cloud-shutdown") => {
+                let unconfirmed =
+                    argument(&args, "--cursor-cloud-shutdown-control").is_some_and(|path| {
+                        fs::read_to_string(path).is_ok_and(|value| value.trim() == "unconfirmed")
+                    });
+                let params = &message["params"];
+                let has_remote_run = state.next_turn > 0;
+                if !unconfirmed {
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
+                }
+                let mut receipt = json!({
+                    "threadId": params["threadId"], "turnId": params["turnId"],
+                    "remoteStopped": !unconfirmed,
+                    "remoteAgentId": if has_remote_run { json!("cursor-agent-fixture") } else { Value::Null },
+                    "remoteRunId": if has_remote_run { json!("cursor-run-fixture") } else { Value::Null },
+                    "status": if unconfirmed { "RUNNING" } else { "CANCELLED" },
+                });
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if !unconfirmed && Path::new(&path).exists() {
+                        let delivery: Value = serde_json::from_slice(&fs::read(path)?)?;
+                        receipt["remoteRunId"] = delivery["providerRunId"].clone();
+                        receipt["status"] = delivery["status"].clone();
+                        receipt["cursorCloudTerminalDelivery"] = delivery;
+                    }
+                }
+                send(json!({"id":id,"result":receipt}))?;
+            }
+
             "thread/start" => {
                 if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
@@ -1273,6 +1333,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "method": "thread/goal/updated",
                         "params": {"threadId": state.thread_id, "goal": state.goal}
                     }))?;
+                }
+                // Thread usage that predates this run's first turn, as a
+                // shared thread reports after an earlier run's work.
+                if args.iter().any(|arg| arg == "--usage-before-first-turn") {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "tokenUsage": {"total": {"inputTokens": 5, "outputTokens": 1}, "last": {"inputTokens": 5, "outputTokens": 1}}
+                    }}))?;
                 }
             }
             "thread/resume" => {
@@ -1372,6 +1440,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if Path::new(&path).exists() {
+                        let first_read = format!("{path}.first-read");
+                        let finishes_between_reads = args
+                            .iter()
+                            .any(|arg| arg == "--cursor-cloud-finish-between-reads")
+                            && !Path::new(&first_read).exists();
+                        if finishes_between_reads {
+                            fs::write(first_read, b"observed active")?;
+                        } else {
+                            let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                            state.active_turn_id = None;
+                            save_state(&state_path, &state)?;
+                            send(
+                                json!({"id": id, "result": {"thread": {"id": state.thread_id, "turns": []}, "cursorCloudTerminalDelivery": delivery}}),
+                            )?;
+                            continue;
+                        }
+                    }
+                }
                 if descendant_notifications
                     && message.pointer("/params/threadId").and_then(Value::as_str)
                         == Some("descendant-1")
@@ -1387,6 +1475,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && message.pointer("/params/includeTurns") != Some(&json!(false))
                 {
                     return Err("thread/read must not hydrate turns".into());
+                }
+                if let Some(status) = goal_update_on_next_thread_read.take() {
+                    state.goal = Some(json!({"objective":"Final read goal", "status":status}));
+                    save_state(&state_path, &state)?;
+                    log_call(call_log.as_deref(), "late-goal-on-thread-read")?;
+                    send(
+                        json!({"method":"thread/goal/updated", "params":{"threadId":state.thread_id,"goal":state.goal}}),
+                    )?;
                 }
                 let turns = state
                     .active_turn_id
@@ -1409,6 +1505,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }))?,
             "thread/goal/get" => {
                 send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                goal_update_on_next_thread_read = argument(&args, "--goal-on-thread-read-file")
+                    .and_then(|path| fs::read_to_string(path).ok());
                 if args
                     .iter()
                     .any(|value| value == "--idle-protocol-failure-on-goal-probe")
@@ -1513,6 +1611,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }}))?;
                     }
                 }
+            }
+            "thread/compact/start" => {
+                // Codex answers before the compaction turn starts and binds
+                // its identity only through turn/started.
+                send(json!({"id": id, "result": {}}))?;
+                let turn_id = "provider-compact-turn-1";
+                send(json!({"method": "turn/started", "params": {
+                    "threadId": state.thread_id, "turn": {"id": turn_id, "status": "inProgress"}
+                }}))?;
+                let item = json!({"id": "compact-item-1", "type": "contextCompaction"});
+                send(json!({"method": "item/started", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id, "item": item
+                }}))?;
+                send(json!({"method": "thread/compacted", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id
+                }}))?;
+                send(json!({"method": "item/completed", "params": {
+                    "threadId": state.thread_id, "turnId": turn_id, "item": item
+                }}))?;
+                send(json!({"method": "turn/completed", "params": {
+                    "threadId": state.thread_id,
+                    "turn": {"id": turn_id, "status": "completed", "items": []}
+                }}))?;
             }
             "thread/goal/clear" => {
                 state.goal = None;
@@ -1668,6 +1789,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"turn": {"id": provider_turn_id, "status": "inProgress"}}
                 }))?;
+                // A resumed Codex thread can report the cumulative usage of the
+                // turn lost to a restart after it accepts the next turn.
+                if durable_turn_ids
+                    && state.next_turn > 1
+                    && args
+                        .iter()
+                        .any(|value| value == "--stale-usage-after-turn-start")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": format!("provider-turn-{}", state.next_turn - 1),
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
+                // A notification for a turn the runner never owned fails the
+                // accepted turn before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--foreign-usage-before-turn-started")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": "provider-turn-foreign",
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
+                // A loaded host can accept a turn long before it starts it.
+                if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
+                // An accepted turn can be lost before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--exit-before-turn-started")
+                {
+                    return Err("configured exit before turn started".into());
+                }
                 send(json!({
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
@@ -1705,6 +1863,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }}),
                     )?;
                     continue;
+                }
+                if args.iter().any(|value| value == "--quiet-helper-turn") {
+                    send(json!({"method":"item/completed","params":{
+                        "threadId":state.thread_id,"turnId":provider_turn_id,
+                        "item":{"id":"spawn-quiet-helper","type":"collabAgentToolCall",
+                            "tool":"spawnAgent","status":"completed",
+                            "senderThreadId":state.thread_id,"receiverThreadIds":["descendant-0"]}
+                    }}))?;
+                    send(json!({"method":"turn/started","params":{
+                        "threadId":"descendant-0","turnId":"quiet-helper-turn"
+                    }}))?;
                 }
                 if descendant_notifications {
                     // Real Codex announces a child's MCP startup before its
@@ -1896,6 +2065,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
                     send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-final-message") {
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "final", "type": "agentMessage", "text": "Durable Cloud final"}
+                    }}))?;
                 } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
                     if let Some(release_file) = argument(&args, "--held-output-release-file") {
                         let deadline = Instant::now() + Duration::from_secs(60);
@@ -1937,15 +2111,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let turn_id = provider_turn_id.clone();
                             let unsafe_tail =
                                 args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let active_goal = args.iter().any(|arg| arg == "--late-active-goal");
+                            let clear_goal = args.iter().any(|arg| arg == "--late-goal-cleared");
                             let duplicate_burst = args
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
                             thread::spawn(move || {
-                                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                                let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                 while !gate.is_file() && std::time::Instant::now() < deadline {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                                 if gate.is_file() {
+                                    if active_goal || clear_goal {
+                                        let method = if clear_goal {
+                                            "thread/goal/cleared"
+                                        } else {
+                                            "thread/goal/updated"
+                                        };
+                                        let goal = if clear_goal {
+                                            Value::Null
+                                        } else {
+                                            json!({"objective":"Continue work","status":"active"})
+                                        };
+                                        let _ = send(
+                                            json!({"method":method,"params":{"threadId":thread_id,"goal":goal}}),
+                                        );
+                                        let _ = fs::write(gate.with_extension("sent"), "sent");
+                                        return;
+                                    }
                                     if duplicate_burst {
                                         for _ in 0..33 {
                                             let _ = send(
@@ -2020,8 +2213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         thread::spawn(move || {
                             let result = (|| -> io::Result<()> {
                                 if let Some(gate) = gate.as_ref() {
-                                    let deadline =
-                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    let deadline = std::time::Instant::now() + TEST_GATE_TIMEOUT;
                                     while !gate.is_file() {
                                         if std::time::Instant::now() >= deadline {
                                             return Err(io::Error::new(

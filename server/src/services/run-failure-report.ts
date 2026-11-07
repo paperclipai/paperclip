@@ -15,7 +15,9 @@ import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adap
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
-import { NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC } from "./native-runtime/native-provider-failure.js";
+import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connection.js";
+import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
+import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -159,6 +161,31 @@ function isRestrictedWorkspaceSourceBlocker(run: HeartbeatRun, options: RunFailu
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
+/** A plugin Runner-task run without a managed AI connection, refused before dispatch; the task notice names the owner action. */
+function isPluginRunnerAiConnectionRequiredBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === PLUGIN_RUNNER_AI_CONNECTION_REQUIRED &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+function isProjectAccessDenialBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== PROJECT_ACCESS_DENIED ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const denial = asRecord(run.resultJson?.projectAccessDenied);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return typeof denial?.projectId === "string" &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** Only the managed-clone producer can attach this bounded pre-dispatch evidence. */
 function isGitConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const connection = readConnectionFailure(run.resultJson?.connectionFailure);
@@ -238,22 +265,19 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
 }
 
 /**
- * A committed Codex `serverOverloaded` terminal chose the bounded capacity
- * retry, and the same status transaction created that retry run. The retry
- * owns recovery; a later failure reports itself. Held and exhausted capacity
- * failures have no automatic retry and stay reportable. The retry carries the
- * task in its context, so the company/context-issue index bounds the read to
- * that task's runs created since this one.
+ * A Codex `serverOverloaded` terminal chose the bounded capacity retry. Only
+ * that committed status decision creates a successor with this retry reason,
+ * so the successor row is the proof. The run's own `resultJson` is not: the
+ * live heartbeat's failed-status write replaces it with the adapter's copy,
+ * which lacks the finalizer's diagnostic and finalization fields.
+ * The retry owns recovery; a later failure reports itself. Held and exhausted
+ * capacity failures have no automatic retry and stay reportable. The retry
+ * carries the task in its context, so the company/context-issue index bounds
+ * the read to that task's runs created since this one.
  */
 async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
-  const result = asRecord(run.resultJson);
-  const diagnostic = asRecord(result?.nativeProviderFailure);
   if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      run.nativeIssueId == null ||
-      options.phase === "setup" || run.signal != null || result?.finalizationPhase !== "committed" ||
-      result.finalizationReasonCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
-      diagnostic?.provider !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.provider ||
-      diagnostic.category !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.category) return false;
+      run.nativeIssueId == null || options.phase === "setup" || run.signal != null) return false;
   const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId),
     sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),
@@ -321,6 +345,8 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
     isRestrictedWorkspaceSourceBlocker(run, options) ||
+    isPluginRunnerAiConnectionRequiredBlocker(run, options) ||
+    isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
@@ -347,7 +373,7 @@ async function captureTerminalRunFailure(
       errorCode: run.errorCode ?? null,
       diagnostics: collectRunFailureDiagnostics(run, options),
     }, [...new Set([
-      ...collectRunFailureSecretValues(process.env, [], true),
+      ...collectRunFailureSecretValues(process.env),
       ...(options.secretValues ?? []),
     ])].sort((a, b) => b.length - a.length));
     const agent = await db

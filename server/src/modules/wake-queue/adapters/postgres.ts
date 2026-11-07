@@ -14,6 +14,7 @@ import { isCompletedOnboardingHandoffWake } from "../../../services/chat-complet
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import type { Db } from "@paperclipai/db";
@@ -49,6 +50,7 @@ import { withRecoveryContext } from "../../../services/recovery/status-only-cont
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
   queuedCommentIdsFromWakePayload,
+  queuedCommentIdsFromRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds } from "../../run-dispatch/index.js";
@@ -312,14 +314,40 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queryableCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
-      const liveNonSelfCommentIds = queryableCommentIds.filter((commentId) => {
+      const liveAndUnauthored = queryableCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
         return Boolean(row && !row.deletedAt && (!targetsFinishingRunAgent || row.createdByRunId !== finishingRunId));
       });
+      // A succeeded run of the wake's agent that started after the comment's
+      // latest revision consumed it when it received the comment as its own
+      // wake input, or when it was a retry of an interrupted turn whose task
+      // history included the comment (the retry re-reads the whole thread).
+      // Promoting the saved wake again would deliver it twice and can reopen
+      // finished work. Task history alone does not consume a message saved
+      // for its own turn, and a run that was already running never counts:
+      // its context can be refreshed after the fact, and an edit made after
+      // it started is still unread.
+      const delivered = new Set(liveAndUnauthored.length === 0 ? [] : (await tx.select({ id: issueComments.id })
+        .from(issueComments).where(and(
+          eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, liveAndUnauthored),
+          sql`exists (select 1 from ${heartbeatRuns} delivered_run
+            where delivered_run.company_id = ${companyId} and delivered_run.agent_id = ${wakeAgentId}
+              and delivered_run.status = 'succeeded'
+              and (delivered_run.native_issue_id = ${issueId} or delivered_run.context_snapshot->>'issueId' = ${issueId})
+              and delivered_run.started_at > ${issueComments.createdAt}
+              and delivered_run.started_at >= ${issueComments.updatedAt}
+              and (coalesce(delivered_run.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? ${issueComments.id}::text
+                or (delivered_run.retry_of_run_id is not null and jsonb_path_exists(delivered_run.context_snapshot, '$.executionContinuation.messages[*] ? (@.id == $id)',
+                  jsonb_build_object('id', ${issueComments.id}::text))
+                or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
+                  jsonb_build_object('id', ${issueComments.id}::text)))))`,
+        ))).map(row => row.id));
+      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
-      return { liveNonSelfCommentIds, containedSelfAuthoredComment };
+      return { liveNonSelfCommentIds, containedSelfAuthoredComment, deliveredCommentIds: [...delivered] };
     },
 
     async cancelDeferredWake({ companyId, wakeId, agentId, reason, now }) {
@@ -927,6 +955,11 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            // A saved card response (interaction receipt) never absorbs user
+            // input. Skip it so a later message joins the existing message
+            // wake instead of starting another one behind the receipt.
+            sql`${agentWakeupRequests.payload} ->> 'interactionId' is null`,
+            sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> 'interactionId' is null`,
             ...(chatConversationId
               ? [
                   sql`coalesce(${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY}::text ->> ${CHAT_CONVERSATION_ID_KEY}::text, ${chatConversationId}) = ${chatConversationId}`,
@@ -971,7 +1004,32 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
+      const [candidate] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId),
+      )).limit(1);
+      if (!candidate) throw new Error("wake-queue: the coalesce target run was not found for this company");
+      if (candidate.agentId !== input.agentId) return null;
+      const [primary] = candidate.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, candidate.wakeupRequestId), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+      )).for("update").limit(1) : [];
+      const [current] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, candidate.id), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      )).for("update").limit(1);
+      if (!current || current.status !== input.activeExecutionRunStatus || current.wakeupRequestId !== candidate.wakeupRequestId) return null;
+      const commentIds = queuedCommentIdsFromRunContext(input.mergedContextSnapshot);
+      const synchronizeBatch = current.status === "queued" && commentIds.length > 0
+        && primary?.status === "queued" && queuedCommentIdsFromWakePayload(primary.payload).length > 0;
+      if (current.status === "queued" && commentIds.length && current.wakeupRequestId &&
+          (!primary || !["queued", "claimed"].includes(primary.status) || primary.runId !== current.id
+            || (input.durableReceipt && (primary.requestedByActorType !== input.requestedByActorType || primary.requestedByActorId !== input.requestedByActorId))
+            || primary.payload?.issueId !== input.mergedContextSnapshot.issueId)) return null;
       await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.activeExecutionRunId });
+      if (synchronizeBatch && primary) await tx.update(agentWakeupRequests).set({
+        payload: withQueuedCommentIdsInWakePayload(primary.payload, commentIds, { preserveSource: true }), updatedAt: now,
+      }).where(and(eq(agentWakeupRequests.id, primary.id), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
@@ -1163,6 +1221,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             : [];
           if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
+        if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
@@ -1240,8 +1301,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             !interruptedQueue),
         };
         const preDrain = decidePreDrain(preDrainFacts);
+        // A deliberate stop does not promote the stopped agent's queued work.
+        // When a reassignment committed while that stop was still settling, the
+        // new assignee's wake parked behind this run; it is explicit new work
+        // and must run now, or the task is left with no run at all.
+        const handoffAssigneeAgentId = preDrain.kind === "released" &&
+          decidePreDrain({ ...preDrainFacts, executionCancellationAcknowledged: false }).kind === "proceed" &&
+          issueRow?.assigneeAgentId && !issueRow.assigneeUserId && issueRow.assigneeAgentId !== run.agentId
+          ? issueRow.assigneeAgentId : undefined;
 
-        if (preDrain.kind === "released") {
+        if (preDrain.kind === "released" && !handoffAssigneeAgentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1300,7 +1369,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           };
         }
 
-        if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1322,7 +1391,8 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot,
+          recoveryOnly: recoveryOnly && !handoffAssigneeAgentId, ...(handoffAssigneeAgentId ? { handoffAssigneeAgentId } : {}) };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         // Explicit retry admission requires the exact source's task claim.
         // Preserve it only when the existing queue-first recovery policy

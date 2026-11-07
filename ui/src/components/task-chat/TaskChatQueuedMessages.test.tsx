@@ -126,6 +126,27 @@ describe("TaskChatQueuedMessages", () => {
     else expect(props.onInterrupt).toHaveBeenCalledOnce();
   });
 
+  it("shows a declined connection request as readable text, never its raw JSON receipt (BUG-08)", () => {
+    const receipt = JSON.stringify({ interactionId: "slack-1", kind: "connection_intent", status: "rejected",
+      payload: { serviceSlug: "slack", serviceName: "Slack" }, result: { outcome: "declined" } }, null, 2);
+    const entry = { ...queue.entries[0], canEdit: false, canDiscard: false,
+      comment: { ...queue.entries[0].comment, id: "slack-1", body: `Rejected: Connect Slack\n\n${receipt}` },
+      source: { kind: "interaction" as const, interactionId: "slack-1", interactionKind: "connection_intent",
+        summary: "Declined: Slack connection" } };
+    render({ queue: { ...queue, entries: [entry], steeringDisposition: "temporarily_unavailable" } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-slack-1"]')!;
+    const hoverAndLabels = [...row.querySelectorAll("[title], [aria-label]")]
+      .flatMap((element) => [element.getAttribute("title"), element.getAttribute("aria-label")])
+      .filter((text): text is string => Boolean(text));
+    expect(hoverAndLabels.length).toBeGreaterThan(0);
+    for (const text of hoverAndLabels) {
+      expect(text).not.toContain("{");
+      expect(text).not.toContain("interactionId");
+    }
+    expect(row.textContent).toContain("Declined: Slack connection");
+    expect(row.querySelector('[title="Declined: Slack connection"]')).not.toBeNull();
+  });
+
   it("reorders the complete queue and rewrites contiguous positions", () => {
     const next = reorderQueuedMessageEntries(
       queue.entries,
@@ -244,6 +265,36 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-steer-comment-1"]',
       )?.disabled,
     ).toBe(true);
+  });
+
+  it.each(["temporarily_unavailable", "unsupported"] as const)(
+    "offers an explicit interrupt fallback when native steering is %s",
+    async (steeringDisposition) => {
+      const props = render({
+        queue: { ...queue, steeringDisposition },
+        onInterrupt: vi.fn().mockResolvedValue(undefined),
+      });
+      const interrupt = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-queued-interrupt-comment-1"]',
+      );
+      expect(interrupt).not.toBeNull();
+      expect(interrupt!.disabled).toBe(false);
+      expect(interrupt!.textContent).toContain("Interrupt");
+      await act(async () => { interrupt!.click(); });
+      expect(props.onInterrupt).toHaveBeenCalledOnce();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    },
+  );
+
+  it("keeps same-turn steering when the provider is available, even with an interrupt callback", async () => {
+    const props = render({ onInterrupt: vi.fn().mockResolvedValue(undefined) });
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')!.click();
+    });
+    expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
+    expect(props.onInterrupt).not.toHaveBeenCalled();
   });
 
   it("waits for authoritative discard acknowledgement before removing the row", async () => {

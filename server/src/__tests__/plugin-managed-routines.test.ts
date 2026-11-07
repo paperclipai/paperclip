@@ -84,8 +84,11 @@ function manifest(): PaperclipPluginManifestV1 {
       triggers: [{
         kind: "schedule",
         label: "Nightly",
+        enabled: true,
         cronExpression: "0 3 * * *",
         timezone: "UTC",
+        signingMode: null,
+        replayWindowSec: null,
       }],
       issueTemplate: {
         surfaceVisibility: "plugin_operation",

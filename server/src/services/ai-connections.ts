@@ -45,7 +45,6 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
-import { assertAiCredentialCleanupSettled, reconcileRetainedAiCleanup } from "./retained-ai-credential-cleanup.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -175,7 +174,7 @@ export function aiConnectionService(db: Db) {
                   : ("connected" as const),
         },
       ];
-    });
+    }).sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
   }
   async function setDefault(
     companyId: string,
@@ -282,6 +281,10 @@ export function aiConnectionService(db: Db) {
     binding: AiConnectionBinding;
   }) {
     const { companyId, userId, agentId, binding } = input;
+    // The grant-kind checks below cover only these three modes. Callers parse
+    // the binding first, but an unknown mode must never skip those checks.
+    if (binding.mode !== "responsible_user" && binding.mode !== "shared" && binding.mode !== "delegated")
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select a supported AI connection mode");
     if (
       !isAiConnectionCompatible(
         binding,
@@ -987,20 +990,12 @@ export function aiConnectionService(db: Db) {
     return pending.value;
   }
 
-  /** Never hand a consumed token to a new provider while its replacement awaits commit. */
-  async function runtimeCredential(row: Parameters<typeof credential>[0], ownership?: { credentialLockHeld: true }) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
     if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
-    // Retirement callbacks acquire this same mutation lock to persist their
-    // final generation. Join them before taking the lock they need. A caller
-    // already holding it must only check, for both rotated-credential lanes.
-    const scope = { companyId: row.connection.companyId, accountKey: row.grant.id };
-    if (ownership?.credentialLockHeld) assertAiCredentialCleanupSettled(scope);
-    else await reconcileRetainedAiCleanup(scope);
+    if (!(await quotaCredentialRecovery(row.connection.companyId, row.grant.id).read())) return credential(row);
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
-      // An owner can arrive while lock acquisition waits. Never join under it.
-      assertAiCredentialCleanupSettled(scope);
       if (metadata.data.provider === "google") {
         const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
         const pending = await recovery.read();

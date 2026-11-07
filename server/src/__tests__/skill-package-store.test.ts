@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { agents, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots as snapshots,
   skillPackageDeletions, createDb, withDedicatedDbConnection } from "@paperclipai/db";
 import * as dbModule from "@paperclipai/db";
-import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
+import type { CompanySkill, CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
@@ -25,6 +25,11 @@ import { skillFileBytes, skillSnapshotHash } from "../services/skill-snapshot.js
 import { readCustomerSuccessResource } from "../services/customer-success-inspection.js";
 import { repositorySkillProjection } from "../services/skill-repository-package.js";
 import { hasRestorableSnapshot } from "../services/skill-version-cache.js";
+
+function toSkill(row: typeof companySkills.$inferSelect): CompanySkill {
+  return { ...row, sourceType: row.sourceType as CompanySkill["sourceType"], trustLevel: row.trustLevel as CompanySkill["trustLevel"],
+    compatibility: row.compatibility as CompanySkill["compatibility"], fileInventory: row.fileInventory.map(entry => ({ path: String(entry.path), kind: entry.kind as CompanySkill["fileInventory"][number]["kind"] })) };
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("external skill packages", () => {
@@ -67,7 +72,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const recipe = recoverable ? { version: 1 as const, sourceId: randomUUID(), repositoryId: "123", repositoryUrl: "https://github.com/acme/skills",
       commitSha: "a".repeat(40), skillPath: null, manifest: skillPackageManifest(files) } : undefined;
     const id = await store.prepare(companyId, files, false, undefined, recipe);
-    const skills = [];
+    const skills: { skill: CompanySkill; version: typeof companySkillVersions.$inferSelect }[] = [];
     for (const name of ["one", "two"]) {
       const [skill] = await db.insert(companySkills).values({ companyId, key: `company/${companyId}/${name}`, slug: name,
         name, markdown: files.find(file => file.path === `skills/${name}/SKILL.md`)!.content, sourceType: "github",
@@ -76,7 +81,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
         repositorySnapshotId: id, repositorySkillPath: `skills/${name}/SKILL.md`, packageSnapshotId: id, migrationAt: null,
         packageFileMap: [{ path: "SKILL.md", kind: "skill", sourcePath: `skills/${name}/SKILL.md` }] }).returning();
       await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skill!.id));
-      skills.push({ skill: skill!, version: version! });
+      skills.push({ skill: toSkill(skill!), version: version! });
     }
     const service = companySkillService(db);
     const resolve = () => service.listRuntimeSkillEntries(companyId, { onlyKeys: new Set(skills.map(({ skill }) => skill.key)), snapshotLatest: true });
@@ -490,7 +495,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     vi.spyOn(storageModule, "getStorageService").mockReturnValue(storage);
     const [skill] = await db.insert(companySkills).values({ companyId, key: "metadata", slug: "metadata", name: "Metadata", markdown: original[0]!.content }).returning();
     const service = companySkillService(db);
-    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: skill!, skipInventoryRefresh: true, fileInventory: changed });
+    const saved = await service.createVersion(companyId, skill!.id, {}, null, { skill: toSkill(skill!), skipInventoryRefresh: true, fileInventory: changed });
     expect((await service.getVersion(companyId, skill!.id, saved.id))!.fileInventory).toEqual(changed);
     const [legacy] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 2, fileInventory: changed }).returning();
     await skillPackageMaintenance(db, storage).migrateVersions({ id: legacy!.id, apply: true, clearLegacy: true });
@@ -505,14 +510,25 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const upload = { token: randomUUID(), provider: "local_disk" as const, archiveKey: `${companyId}/old/archive`, manifestKey: `${companyId}/old/manifest`, expiresAt: new Date(0).toISOString() };
     const [row] = await db.insert(snapshots).values({ companyId, contentHash: skillSnapshotHash(files), createdAt: new Date(0), upload }).returning();
     const renewed = { ...upload, token: randomUUID(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
-    const racingDb = new Proxy(db, { get(target, key) {
-      if (key !== "delete") return Reflect.get(target, key);
-      return (table: typeof snapshots) => ({ where: (predicate: Parameters<ReturnType<typeof db.delete>["where"]>[0]) => ({ returning: async () => {
-        await db.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
-        return db.delete(table).where(predicate).returning({ id: snapshots.id });
-      } }) });
-    } });
-    expect((await skillPackageMaintenance(racingDb, storage).collectOrphans({ companyId, apply: true })).removed).toBe(0);
+    let unlock!: () => void, locked!: () => void, waiting!: () => void;
+    const release = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const deleting = new Promise<void>(resolve => { waiting = resolve; });
+    const renewal = withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+      await tx.select().from(snapshots).where(eq(snapshots.id, row!.id)).for("update");
+      await tx.update(snapshots).set({ upload: renewed }).where(eq(snapshots.id, row!.id));
+      locked(); await release;
+    }));
+    await acquired;
+    const debug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query) => {
+      if (query.includes('from "company_skill_repository_snapshots"') && query.includes("for update")) waiting();
+    };
+    try {
+      const collection = skillPackageMaintenance(db, storage).collectOrphans({ companyId, apply: true });
+      await deleting; unlock(); await renewal;
+      expect((await collection).removed).toBe(0);
+    } finally { unlock(); db.$client.options.debug = debug; }
     const [saved] = await db.select().from(snapshots).where(eq(snapshots.id, row!.id));
     expect(saved!.upload).toEqual(renewed);
   });
