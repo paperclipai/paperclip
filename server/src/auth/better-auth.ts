@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
+import { genericOAuth } from "better-auth/plugins";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
@@ -238,6 +239,66 @@ export function resolveWorkspaceHandoffIdentity(
   };
 }
 
+/**
+ * Status of the environment-configured generic OIDC provider. Nothing here
+ * names a particular issuer: the provider is whatever the operator points
+ * these three env vars at. Absent env leaves the feature off and today's
+ * email/password behavior unchanged.
+ */
+export type GenericOidcProviderStatus = {
+  providerId: string;
+  displayName: string;
+};
+
+const GENERIC_OIDC_DEFAULT_PROVIDER_ID = "oidc";
+const GENERIC_OIDC_DEFAULT_DISPLAY_NAME = "SSO";
+
+export function resolveGenericOidcProviderStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): GenericOidcProviderStatus | null {
+  const issuer = env.PAPERCLIP_OIDC_ISSUER?.trim();
+  const clientId = env.PAPERCLIP_OIDC_CLIENT_ID?.trim();
+  const clientSecret = env.PAPERCLIP_OIDC_CLIENT_SECRET?.trim();
+  if (!issuer || !clientId || !clientSecret) return null;
+  try {
+    new URL(issuer);
+  } catch {
+    return null;
+  }
+  return {
+    providerId: env.PAPERCLIP_OIDC_PROVIDER_ID?.trim() || GENERIC_OIDC_DEFAULT_PROVIDER_ID,
+    displayName: env.PAPERCLIP_OIDC_PROVIDER_NAME?.trim() || GENERIC_OIDC_DEFAULT_DISPLAY_NAME,
+  };
+}
+
+/**
+ * Better Auth's built-in `generic-oauth` plugin, registered only when the
+ * environment carries a full issuer/client/secret triple. Identity is proven
+ * by the configured issuer's signed `id_token` (`requireIdTokenVerification`),
+ * never by unverified decoding, and an unverified email is refused rather than
+ * silently attached (`requireEmailVerification`): a new account can still be
+ * created, it just never gets a session until its email is verified upstream.
+ */
+export function buildGenericOidcPlugin(env: NodeJS.ProcessEnv = process.env) {
+  const status = resolveGenericOidcProviderStatus(env);
+  if (!status) return null;
+  const issuer = env.PAPERCLIP_OIDC_ISSUER!.trim().replace(/\/+$/, "");
+  return genericOAuth({
+    config: [
+      {
+        providerId: status.providerId,
+        name: status.displayName,
+        clientId: env.PAPERCLIP_OIDC_CLIENT_ID!.trim(),
+        clientSecret: env.PAPERCLIP_OIDC_CLIENT_SECRET!.trim(),
+        discoveryUrl: `${issuer}/.well-known/openid-configuration`,
+        requireIdTokenVerification: true,
+        requireEmailVerification: true,
+        scopes: ["openid", "email", "profile"],
+      },
+    ],
+  });
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
@@ -281,29 +342,32 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+  };
+
+  const plugins = [
     // Registered only for a managed workspace instance: the plugin is what makes
     // `Open workspace` password-independent, and a control-plane instance that
     // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
-      ? {
-          plugins: [
-            workspaceLoginHandoffPlugin({
-              db,
-              // Re-resolved per exchange so a hot restart cannot keep validating
-              // against an origin the control plane has since republished.
-              resolveExpectedIdentity: () =>
-                resolveWorkspaceHandoffIdentity(config) ?? {
-                  key: null,
-                  instanceId: null,
-                  executionWorkspaceId: null,
-                  companyId: null,
-                  origin: null,
-                },
-            }),
-          ],
-        }
-      : {}),
-  };
+    resolveWorkspaceHandoffIdentity(config)
+      ? workspaceLoginHandoffPlugin({
+          db,
+          // Re-resolved per exchange so a hot restart cannot keep validating
+          // against an origin the control plane has since republished.
+          resolveExpectedIdentity: () =>
+            resolveWorkspaceHandoffIdentity(config) ?? {
+              key: null,
+              instanceId: null,
+              executionWorkspaceId: null,
+              companyId: null,
+              origin: null,
+            },
+        })
+      : null,
+    buildGenericOidcPlugin(),
+  ].filter((plugin): plugin is NonNullable<typeof plugin> => plugin !== null);
+  if (plugins.length > 0) {
+    (authConfig as { plugins?: unknown[] }).plugins = plugins;
+  }
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;

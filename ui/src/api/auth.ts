@@ -190,6 +190,12 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  signInSocial: async (input: { provider: string; callbackURL: string }): Promise<{ url: string | null }> => {
+    const payload = await authPost("/sign-in/social", input);
+    const url = payload && typeof payload === "object" ? (payload as { url?: unknown }).url : null;
+    return { url: typeof url === "string" ? url : null };
+  },
+
   getProfile: async (): Promise<CurrentUserProfile> => {
     const res = await fetch("/api/auth/profile", {
       credentials: "include",

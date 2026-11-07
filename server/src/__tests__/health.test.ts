@@ -487,6 +487,64 @@ describe("GET /health", () => {
     expect(res.body.serverInfo).toBeUndefined();
   });
 
+  it("surfaces oidc on the redacted anonymous response in authenticated mode", async () => {
+    const devServerStatus = await import("../dev-server-status.js");
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+        runtimeEnv: {
+          PAPERCLIP_OIDC_ISSUER: "https://issuer.example.com",
+          PAPERCLIP_OIDC_CLIENT_ID: "some-client",
+          PAPERCLIP_OIDC_CLIENT_SECRET: "shh",
+        },
+      }),
+    );
+
+    const res = await request(app).get("/health");
+    expect(res.body.oidc).toEqual({
+      enabled: true,
+      providerId: "oidc",
+      displayName: "SSO",
+    });
+  });
+
+  it("omits oidc from the redacted response when the environment is not configured", async () => {
+    const app = createApp(createHealthyDb(), testServerInfo, undefined, {});
+    const res = await request(app).get("/health");
+    expect(res.body.oidc).toBeUndefined();
+  }, 15_000);
+
+  it("surfaces oidc as enabled on the redacted response once configured by the environment", async () => {
+    const app = createApp(createHealthyDb(), testServerInfo, undefined, {
+      PAPERCLIP_OIDC_ISSUER: "https://issuer.example.com",
+      PAPERCLIP_OIDC_CLIENT_ID: "some-client",
+      PAPERCLIP_OIDC_CLIENT_SECRET: "shh",
+      PAPERCLIP_OIDC_PROVIDER_NAME: "Acme",
+    });
+    const res = await request(app).get("/health");
+    expect(res.body.oidc).toEqual({
+      enabled: true,
+      providerId: "oidc",
+      displayName: "Acme",
+    });
+  }, 15_000);
+
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
