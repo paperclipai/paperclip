@@ -616,6 +616,56 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           }
         : baseSchedule;
 
+    // Mirrors the in-transaction coalescing fast-paths below: does a successor
+    // retry this call would reuse (rather than create a duplicate of) already
+    // exist? Dedicated continuation reasons (max-turn, interaction) key on
+    // reason + attempt + live status + issue; every other reason shares a single
+    // predecessor claim keyed only on `retryOfRunId`. Used to distinguish a
+    // concurrent sibling taking the execution lock from a genuine lock change.
+    const hasCoalescibleRetrySuccessor = async (): Promise<boolean> => {
+      const isDedicatedContinuation =
+        retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+        retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
+      const [sibling] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.retryOfRunId, run.id),
+            ...(isDedicatedContinuation
+              ? [
+                  eq(heartbeatRuns.scheduledRetryReason, retryReason),
+                  eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
+                  inArray(heartbeatRuns.status, [
+                    ...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES,
+                  ]),
+                  issueId
+                    ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
+                    : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                ]
+              : []),
+          ),
+        )
+        .limit(1);
+      if (!sibling) return false;
+      // A live sibling is only a real coalescing target when the issue execution
+      // lock currently belongs to *it*. The preflight gate already reported the
+      // lock is no longer this source run's: if it moved onto our own successor
+      // this is the coalescing false-positive we mean to bypass, but if it was
+      // cleared (e.g. adminForceRelease) or taken by an unrelated run the sibling
+      // no longer owns the lock and the call must stay rejected — otherwise we
+      // would hand back a successor that cannot continue and mask a genuine
+      // ownership handoff. Re-verified authoritatively under the transaction's
+      // issue lock below; this preflight read only avoids entering the tx.
+      if (!issueId) return true;
+      const [lockHolder] = await db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      return lockHolder?.executionRunId === sibling.id;
+    };
+
     const requiresIssueGate =
       interruptedPreparation || retryReason === "interrupted_preparation" ||
       (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
@@ -632,24 +682,53 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         now,
       });
       if (!gate.allowed) {
-        await appendRunEvent(run, {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: gate.reason,
-          payload: {
-            retryReason,
-            scheduledRetryAttempt: nextAttempt,
-            maxAttempts,
-            ...gate.details,
-          },
-        });
-        return {
-          outcome: "not_scheduled" as const,
-          reason: gate.reason,
-          errorCode: gate.errorCode,
-          issueId: gate.issueId,
-        };
+        // A genuinely concurrent duplicate schedule for the same source run may
+        // have already committed its successor and moved the issue execution
+        // lock onto it. The preflight gate reads that moved lock and reports
+        // `issue_execution_lock_changed`, but this is a coalescing situation,
+        // not a real ownership change: the in-transaction fast-path below will
+        // reuse the sibling successor. Let such a call through to coalesce, but
+        // only when a sibling the transaction would actually reuse exists *and*
+        // the issue execution lock currently belongs to that sibling. A lock
+        // that moved to an unrelated run, or that was cleared outright (e.g.
+        // adminForceRelease leaves a live successor behind without its lock), is
+        // not a coalescing target and is still rejected here, so the ownership
+        // guarantee is preserved.
+        //
+        // Restricted to the dedicated continuation reasons this harden targets.
+        // Those are the only reasons whose in-transaction fast-path keys on
+        // reason + attempt + live status + issue (and whose in-tx block also
+        // re-checks the execution lock, backstopping this preflight bypass).
+        // For every other reason the sibling predicate would match on
+        // `retryOfRunId` alone — a long-dead successor would qualify — and no
+        // in-transaction lock recheck covers `native_safe_replacement` reasons
+        // such as `interrupted_preparation`, so bypassing the gate there could
+        // schedule onto a stale run while a foreign lock holder is ignored.
+        const canCoalesceOntoSibling =
+          gate.errorCode === "issue_execution_lock_changed" &&
+          (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
+            retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) &&
+          (await hasCoalescibleRetrySuccessor());
+        if (!canCoalesceOntoSibling) {
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: gate.reason,
+            payload: {
+              retryReason,
+              scheduledRetryAttempt: nextAttempt,
+              maxAttempts,
+              ...gate.details,
+            },
+          });
+          return {
+            outcome: "not_scheduled" as const,
+            reason: gate.reason,
+            errorCode: gate.errorCode,
+            issueId: gate.issueId,
+          };
+        }
       }
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
@@ -902,37 +981,62 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             .then((rows) => rows[0] ?? null);
 
           if (existingContinuation) {
-            if (existingContinuation.wakeupRequestId) {
-              const existingWakeup = await tx
-                .select({ coalescedCount: agentWakeupRequests.coalescedCount })
-                .from(agentWakeupRequests)
-                .where(
-                  eq(
-                    agentWakeupRequests.id,
-                    existingContinuation.wakeupRequestId,
-                  ),
-                )
-                .then((rows) => rows[0] ?? null);
+            // Authoritative lock-ownership recheck under the issue row locked
+            // above: only coalesce onto the sibling when the issue execution
+            // lock still belongs to it. If the lock was cleared (adminForceRelease
+            // and peers) or taken by an unrelated run, the sibling is live but
+            // lockless — reusing it would report `scheduled` for a successor that
+            // cannot continue. Fall through instead to the lock checks below,
+            // which reject with the correct error and create nothing. (No lock
+            // concept exists without an issue, so coalesce unconditionally there.)
+            const siblingOwnsLock = issueId
+              ? await tx
+                  .select({ executionRunId: issues.executionRunId })
+                  .from(issues)
+                  .where(
+                    and(
+                      eq(issues.id, issueId),
+                      eq(issues.companyId, run.companyId),
+                    ),
+                  )
+                  .then(
+                    (rows) =>
+                      rows[0]?.executionRunId === existingContinuation.id,
+                  )
+              : true;
+            if (siblingOwnsLock) {
+              if (existingContinuation.wakeupRequestId) {
+                const existingWakeup = await tx
+                  .select({ coalescedCount: agentWakeupRequests.coalescedCount })
+                  .from(agentWakeupRequests)
+                  .where(
+                    eq(
+                      agentWakeupRequests.id,
+                      existingContinuation.wakeupRequestId,
+                    ),
+                  )
+                  .then((rows) => rows[0] ?? null);
 
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  coalescedCount: (existingWakeup?.coalescedCount ?? 0) + 1,
-                  updatedAt: now,
-                })
-                .where(
-                  eq(
-                    agentWakeupRequests.id,
-                    existingContinuation.wakeupRequestId,
-                  ),
-                );
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    coalescedCount: (existingWakeup?.coalescedCount ?? 0) + 1,
+                    updatedAt: now,
+                  })
+                  .where(
+                    eq(
+                      agentWakeupRequests.id,
+                      existingContinuation.wakeupRequestId,
+                    ),
+                  );
+              }
+
+              return {
+                outcome: "scheduled",
+                run: existingContinuation,
+                reusedExisting: true,
+              };
             }
-
-            return {
-              outcome: "scheduled",
-              run: existingContinuation,
-              reusedExisting: true,
-            };
           }
 
           if (issueId) {
