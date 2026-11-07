@@ -311,7 +311,7 @@ gap.
 
 ### `operator-retry`
 
-The [workspace recovery regression](../../server/src/services/workspace-recovery.test.ts)
+The [workspace recovery regression](../../server/src/services/workspace-recovery-warm-handoff.test.ts)
 uses the real Retry producer and a quiet delivery coordinator. It checks that a
 committed request starts one physical source preservation, duplicate Retry keeps
 the active owner's receipt valid, and startup reconstructs a resolved files-only

@@ -3956,6 +3956,22 @@ describe("wake continuation comment ownership", () => {
     expect(prompt).not.toContain("comment-a at");
   });
 
+  it("tells a fresh retry attempt where the retained prior workspace and its edits are", () => {
+    const priorWorkspace = { sourceRunId: "run-old", path: "/work/.paperclip/worktrees/PAP-1", branchName: "PAP-1-task",
+      changedFilesKnown: true, changedFileCount: 1, changedFiles: ["NOTES.md"] };
+    const prompt = renderPaperclipWakePrompt({
+      reason: "task_retry",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation([]), priorWorkspace },
+    });
+    expect(prompt).toContain("retained unmodified at priorWorkspace.path");
+    expect(prompt).toContain("/work/.paperclip/worktrees/PAP-1");
+    expect(prompt).toContain("NOTES.md");
+  });
+
   it("does not suppress a current comment absent from the rendered resume delta", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

@@ -2,7 +2,9 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
@@ -11,7 +13,6 @@ import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
 import { retryTransientOnly } from "@/lib/query-client";
-import { describeError } from "@/api/errors";
 
 export function ManagedAiConnectionRow({
   connection,
@@ -51,6 +52,9 @@ export function ManagedAiConnectionDetails({
     queryFn: ({ signal }) => toolsApi.listConnectionGrants(connection.id, { signal }),
     retry: retryTransientOnly(1),
   });
+  const runsView = useQueryView(runs);
+  const accountsView = useQueryView(accounts);
+  const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
   const makeDefault = useMutation({
     mutationFn: (id: string) =>
@@ -70,7 +74,7 @@ export function ManagedAiConnectionDetails({
     (a) => a.id === connection.id,
   );
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
-  const loadError = accounts.error ?? grants.error;
+  const loadError = [accountsView, grantsView].find((view) => view.kind === "error")?.error;
   const error = makeDefault.error ?? stop.error;
   const loadFailure = loadError ? (
     <div role="alert" className="space-y-2">
@@ -92,7 +96,7 @@ export function ManagedAiConnectionDetails({
   if (!account || !grant)
     return (
       <p role="status" className="text-sm text-muted-foreground">
-        {accounts.isPending || grants.isPending
+        {accounts.isPending || grants.isPending || accountsView.kind === "reconnecting" || grantsView.kind === "reconnecting"
           ? "Loading AI account…"
           : "This account is not available to you."}
       </p>
@@ -100,7 +104,7 @@ export function ManagedAiConnectionDetails({
   return (
     <div className="space-y-4">
       {loadFailure}
-      {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p>}
       <AiConnectionAccountDetails account={account} grant={grant} />
       {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Provider settings</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">Destination</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">API format</dt><dd>{account.routing.kind === "openrouter" ? "Selected by harness" : account.routing.protocol}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">Models</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || "Enter a model ID on the agent"}</dd></dl></details>}
       <AiConnectionAccountControls
@@ -111,10 +115,14 @@ export function ManagedAiConnectionDetails({
         onRevoke={() => revoke.mutateAsync(grant.id).then(() => undefined)}
         revocationDetails={
           <div className="space-y-2">
-            {runs.error && (
-              <p role="alert">
-                Could not load active runs. Retry before revoking.
-              </p>
+            {runsView.kind === "error" && (
+              <QueryErrorState
+                size="inline"
+                error={runs.error}
+                action="load active runs"
+                onRetry={runsView.retry}
+                retrying={runsView.isFetching}
+              />
             )}
             {runs.data?.map((run) => (
               <div

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
-import { prepareNativeRemoteRunner, createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
+import pino from "pino";
+import { environmentRunnerIngressErrorData, JsonRpcCallError, PluginEnvironmentRunnerIngressError } from "@paperclipai/plugin-sdk";
+import { NativeRunnerIngressAcquisitionError, prepareNativeRemoteRunner, createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
 
 const transport = vi.hoisted(() => ({
   register: vi.fn(),
@@ -38,6 +40,24 @@ beforeEach(() => {
 });
 
 describe("shared Runner execution driver", () => {
+  it.each(["ingress", "preparation", "unknown"])("limits ingress evidence and public error serialization at %s", async phase => {
+    const failure = { phase: "private_preview", httpStatus: 502 } as const;
+    const raw = new JsonRpcCallError({ code: -32000, message: "fixture-private-provider-response",
+      data: phase === "unknown" ? undefined : environmentRunnerIngressErrorData(new PluginEnvironmentRunnerIngressError(failure)) });
+    const acquire = vi.fn(async () => { throw raw; });
+    const driver = createNativeRunnerExecutionDriver({ binding, runnerIngressAuthorized: true,
+      target: { ...sandbox(), getRunnerIngressEndpoint: acquire } as AdapterExecutionTarget,
+      prepareRemote: async () => { if (phase === "preparation") throw raw; },
+    });
+    const error = await driver.controlPlaneRegistration!(authority).catch(error => error);
+    if (phase === "ingress") {
+      expect(error).toBeInstanceOf(NativeRunnerIngressAcquisitionError);
+      expect(error.failure).toEqual(failure);
+      expect(JSON.stringify(pino.stdSerializers.err(error))).not.toContain("fixture-private");
+    } else expect(error).toBe(raw);
+    expect(transport.connect).not.toHaveBeenCalled();
+    expect(transport.register).not.toHaveBeenCalled();
+  });
   it("installs both staged checkpoint writers under the business lease without acquiring endpoints", async () => {
     const prepare = vi.fn();
     const persistence = { db: {} as never, bootId: "boot-c", authorityRunId: "run-c" };

@@ -1,3 +1,5 @@
+import { NativeSessionDiagnostics } from "../native-runtime/native-session-diagnostics.js";
+import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -93,6 +95,63 @@ afterEach(async () => {
 });
 
 describe("heartbeat run output log recovery", () => {
+  it("keeps active diagnostic identity and current-user redaction while idle retention stays content-free", async () => {
+    const row = { ...newRunRow }, store = objectLogFixture(), idle = vi.fn();
+    const owner = { companyId: row.companyId!, runId: row.id!, sessionScope: "synthetic-session" };
+    const events = vi.fn(async () => undefined);
+    const output = createHeartbeatRunOutput(createRunRowDb(row), { run: row as Run, runId: row.id!, issueId: null,
+      runLogStore: store, identityRedactor: createAgentIdentityRedactor("SYNTHETIC_PRIVATE_KEY"), secretKeys: new Set(), appendRunEvent: events,
+      getCurrentUserRedactionOptions: async () => ({ enabled: true, userNames: ["synthetic-user"], homeDirs: ["/home/synthetic-user"] }) });
+    const handlers = await output.begin(row as Run);
+    const channel = new NativeSessionDiagnostics(owner, owner, idle, vi.fn());
+    const lease = channel.activate(owner, handlers.onLog);
+    const text = "diagnostic SYNTHETIC_PRIVATE_KEY /home/synthetic-user/data synthetic-user\n";
+    channel.record(text);
+    lease.retire();
+    const summary = await store.finalize(output.handle!);
+    const before = await store.read(output.handle!, { limitBytes: 65536 });
+    expect(summary.bytes).toBe(Buffer.byteLength(before.content));
+    expect(before.content).toContain("diagnostic");
+    for (const value of ["SYNTHETIC_PRIVATE_KEY", "synthetic-user"]) expect(before.content).not.toContain(value);
+    channel.record(text);
+    expect(idle).toHaveBeenCalledWith(owner, "session_diagnostic");
+    expect(JSON.stringify(idle.mock.calls)).not.toContain("synthetic-user");
+    expect(JSON.stringify(idle.mock.calls)).not.toContain("SYNTHETIC_PRIVATE_KEY");
+    expect((await store.read(output.handle!, { limitBytes: 65536 })).content).toBe(before.content);
+    expect(events).not.toHaveBeenCalled();
+  });
+
+  it.each(["enqueue", "progress", "export"] as const)("still warns for a genuine %s failure", async phase => {
+    const row = { ...newRunRow }, events = vi.fn(async () => undefined);
+    const base = createRunRowDb(row);
+    const db = { ...base,
+      select: () => { throw new Error("synthetic canonical-source read failure"); },
+      update: () => ({ set: (values: Partial<Run>) => ({ where: async () => {
+        if (phase === "progress" && values.lastOutputSeq !== undefined) throw new Error("synthetic progress write failure");
+        Object.assign(row, values);
+      } }) }),
+    } as unknown as Db;
+    const output = createHeartbeatRunOutput(db, { run: row as Run, runId: row.id!, issueId: null,
+      runLogStore: { begin: async () => ({ store: "s3_segments", logRef: "synthetic-company/agent/run" }),
+        append: async () => 10, enqueue: async () => {
+          if (phase === "enqueue") throw new Error("synthetic object admission failure");
+          return { committed: Promise.resolve(10) };
+        }, flush: async () => undefined },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: events, getCurrentUserRedactionOptions: async () => ({ enabled: false }) });
+    const handlers = await output.begin(row as Run);
+    if (phase === "export") await handlers.onPersistedNativeLog!(1, "synthetic canonical source");
+    else {
+      const owner = { companyId: row.companyId!, runId: row.id!, sessionScope: "synthetic-session" };
+      const channel = new NativeSessionDiagnostics(owner, owner, vi.fn(), vi.fn());
+      const lease = channel.activate(owner, handlers.onLog);
+      channel.record("accepted active diagnostic");
+      lease.retire();
+    }
+    await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ id: row.id, companyId: row.companyId }),
+      expect.objectContaining({ level: "warn", payload: { reason: "object_log_persistence_failed" } })));
+  });
+
   it("treats only a run row with no recorded log or output as new", () => {
     expect(isNewRunLog({ logStore: null, logRef: null, logBytes: null, lastOutputSeq: 0 })).toBe(
       true,
