@@ -1125,7 +1125,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   it("a fresh retry creates independent files and Git storage instead of reopening a configured task branch", async () => {
     const { input, source, issue } = await fixture(true);
     const original = await prepareHeartbeatWorkspace(db, input);
+    const sourceRunId = input.run.id;
     await writeFile(join(original.executionWorkspace.cwd, "unpublished.txt"), "keep the old work\n");
+    // The failed source has stopped and released its lease.
+    await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.heartbeatRunId, sourceRunId));
     const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: input.run.companyId,
       agentId: input.agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
     input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: nextRun.id,
@@ -1142,6 +1146,10 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(common.stdout.trim()).toBe(join(replacement.executionWorkspace.cwd, ".git"));
     await expect(access(join(replacement.executionWorkspace.cwd, "unpublished.txt"))).rejects.toThrow();
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(replacement.persistedExecutionWorkspace!.id);
+    // R2: the fresh attempt is told where the retained prior files are.
+    expect(input.task.context.priorWorkspace).toEqual({ sourceRunId,
+      path: original.executionWorkspace.cwd, branchName: original.executionWorkspace.branchName,
+      changedFilesKnown: true, changedFileCount: 1, changedFiles: ["unpublished.txt"] });
   }, 30_000);
 
   it.each(["historical_first", "recovery_first"] as const)(
@@ -1311,6 +1319,57 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       if (scenario === "missing_path") await expect(access(workspace.cwd!)).rejects.toThrow();
     } finally { await heartbeat.drainActiveRunExecutions(); registerServerAdapter(originalAdapter); }
   }, 30_000);
+
+  it("prepares a reused Retry workspace in the task's own git worktree with its uncommitted edits", async () => {
+    const { input, issue } = await fixture(true);
+    const original = await prepareHeartbeatWorkspace(db, input);
+    const workspace = original.persistedExecutionWorkspace!;
+    const sourceRunId = input.run.id;
+    await writeFile(join(original.executionWorkspace.cwd, "NOTES.md"), "pre-fault work\n");
+    const branch = (await execFile("git", ["-C", original.executionWorkspace.cwd, "rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
+    await reuse(input, workspace);
+    input.task.freshWorkspace = { mode: "reuse_issue_workspace", retryIntentId: input.run.id, sourceRunId,
+      workspaceId: workspace.id, cwd: workspace.cwd! };
+    const retried = await prepareHeartbeatWorkspace(db, input);
+    expect(retried.persistedExecutionWorkspace!.id).toBe(workspace.id);
+    expect(retried.executionWorkspace.cwd).toBe(original.executionWorkspace.cwd);
+    expect(retried.executionWorkspace.cwd).not.toContain("isolated-workspace-attempts");
+    expect(await readFile(join(retried.executionWorkspace.cwd, "NOTES.md"), "utf8")).toBe("pre-fault work\n");
+    expect((await execFile("git", ["-C", retried.executionWorkspace.cwd, "rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim()).toBe(branch);
+    expect(input.task.context.priorWorkspace).toBeUndefined();
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workspace.id);
+  }, 30_000);
+
+  it("re-prepares the same fresh attempt after a restart in the directory that run bound (RC-35)", async () => {
+    const { input, issue } = await fixture();
+    input.policy.useIsolatedTaskDirectory = true;
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id,
+      sourceRunId: randomUUID(), retainedSourceIds: [] };
+    const first = await prepareHeartbeatWorkspace(db, input);
+    const workspace = first.persistedExecutionWorkspace!;
+    await writeFile(join(workspace.cwd!, "bootstrap.txt"), "written before the restart\n");
+    // A restart during bootstrap re-prepares the same run. Its persisted native
+    // binding now names the fresh workspace this run already created and bound.
+    input.reuse.requestedShouldReuseExisting = true;
+    input.reuse.existingExecutionWorkspace = workspace;
+    input.reuse.reusableExistingExecutionWorkspace = workspace;
+    input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: workspace.id,
+      issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: workspace.status });
+    const again = await prepareHeartbeatWorkspace(db, input);
+    expect(again.executionWorkspace.cwd).toBe(workspace.cwd);
+    expect(again.persistedExecutionWorkspace!.id).toBe(workspace.id);
+    expect(await readFile(join(again.executionWorkspace.cwd, "bootstrap.txt"), "utf8")).toBe("written before the restart\n");
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workspace.id);
+    // Another run's attempt directory is still not this run's fresh workspace.
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: input.run.companyId, agentId: input.agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+    input.run = other;
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      resultJson: { workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issue.id } },
+    });
+  });
 
   it("reuses a successful fresh task attempt for the next ordinary user turn", async () => {
     const { input, issue } = await fixture();

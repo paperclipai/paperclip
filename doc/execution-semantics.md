@@ -1383,7 +1383,15 @@ A deliberate Retry also binds an already completed file-preservation record to
 that intent. Other recovery holds for the same source run can then use its saved
 snapshot when selecting a fresh workspace. This binding preserves the recovery
 generation, attempt budget, saved files, and stop checks; it does not repeat file
-recovery or replay the failed turn. An accepted Retry that remains deferred shows
+recovery or replay the failed turn. A Retry after exhausted or blocked recovery
+must not lose the agent's work. When the task's own local workspace is still
+bound, owned by the task, held by no other lease or operation, and readable, the
+Retry continues in that workspace with a fresh session and keeps uncommitted
+files and Git history. Otherwise it starts a fresh isolated attempt from
+committed files, retains the previous directory unmodified, and gives the agent
+its path and uncommitted files in the continuation's `priorWorkspace`.
+Re-preparing the same attempt after a restart reuses the directory that attempt
+bound. See [task recovery](task-recovery.md). An accepted Retry that remains deferred shows
 its persisted admission reason through a fixed public message. The task view
 performs bounded follow-up reads after the click so asynchronous admission can
 explain its wait without a page reload or idle polling.
