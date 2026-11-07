@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { activityLog, agentApiKeys, agentCommentary, agents, authUsers, companies, companyMemberships, heartbeatRuns, issues, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agentCommentary, agents, authUsers, companies, companyMemberships, heartbeatRuns, issues, nativeRunResults, principalPermissionGrants } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { submitAgentCommentary } from "../services/agent-commentary.js";
@@ -19,6 +19,7 @@ import { agentCommentaryRoutes } from "../routes/agent-commentary.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentService } from "../services/agents.js";
 import { companyService } from "../services/companies.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS } from "../lib/agent-permissions.js";
 
 describe("internal agent commentary through both transports", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -125,18 +126,36 @@ describe("internal agent commentary through both transports", () => {
     expect(await rows(f)).toHaveLength(0);
   });
 
-  it("tells an agent denied a commentary read where a person can see it, for its own company only", async () => {
+  it("lets an agent read only its own commentary unless granted commentary:view, and names the human page when denied", async () => {
     const f = await legacy();
+    expect((await post(f, { ...input, kind: "complaint" })).status).toBe(201);
+    const [own] = await rows(f);
     const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
-    const read = (companyId: string) => fetch(`${server.apiUrl}/api/companies/${companyId}/agent-commentary`, { headers: { Authorization: `Bearer ${f.token}` } });
-    const own = await read(f.companyId);
-    expect(own.status).toBe(403);
-    const body = await own.json() as { error: string; remediation?: string };
-    expect(body.error).toBe("Board access required");
-    expect(body.remediation).toContain(`/${company!.issuePrefix}/activity/commentary`);
-    const foreign = await read(f.foreignCompanyId);
+    const get = (path: string, companyId = f.companyId) => fetch(`${server.apiUrl}/api/companies/${companyId}/agent-commentary${path}`, { headers: { Authorization: `Bearer ${f.token}` } });
+    const denied = async (response: Response) => {
+      expect(response.status).toBe(403);
+      const body = await response.json() as { error: string; remediation?: string };
+      expect(body.error).toBe("Board access required");
+      expect(body.remediation).toContain(`/${company!.issuePrefix}/activity/commentary`);
+    };
+    // Reading other agents' commentary is never a default agent grant.
+    expect(NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS).not.toContain("commentary:view");
+    // Default: other agents' feedback and the full list are denied; its own is readable.
+    await denied(await get(""));
+    await denied(await get(`?agentId=${randomUUID()}`));
+    await denied(await get(`/${randomUUID()}`));
+    const mine = await get(`?agentId=${f.agentId}`);
+    expect(mine.status).toBe(200);
+    expect(((await mine.json()) as { items: Array<{ id: string }> }).items.map(row => row.id)).toEqual([own!.id]);
+    expect((await get(`/${own!.id}`)).status).toBe(200);
+    // Another company's request fails on company access, with no page path.
+    const foreign = await get("", f.foreignCompanyId);
     expect(foreign.status).toBe(403);
     expect(((await foreign.json()) as { remediation?: string }).remediation).toBeUndefined();
+    // The explicit grant allows reading everyone's commentary.
+    await server.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId, status: "active", membershipRole: "member" }).onConflictDoNothing();
+    await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId, permissionKey: "commentary:view" });
+    expect((await get("")).status).toBe(200);
   });
 
   it.each(["cancelled", "succeeded", "failed"])("rejects submissions and replay after the run is %s", async (status) => {
