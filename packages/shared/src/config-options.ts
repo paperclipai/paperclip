@@ -239,7 +239,7 @@ export const SECRETS_OPTIONS: readonly ConfigOptionDefinition[] = [
     key: "secrets.strictMode",
     type: "boolean",
     default: false,
-    description: "Enforce strict secret resolution (fails if master key is missing)",
+    description: "Require secret references instead of plain values for sensitive environment keys",
   },
   {
     key: "secrets.localEncrypted.keyFilePath",
