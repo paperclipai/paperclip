@@ -7,7 +7,7 @@
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --replay <wave>/<task>
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -15,15 +15,17 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { TaskObserver } from "./observer.js";
-import { StormRun, observedFaultSchedule, planWave, replayWave } from "./scheduler.js";
+import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
+import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -42,8 +44,11 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     // Replay the faults that actually crossed the task, including other tasks' faults.
     const graded = await readFile(path.join(sourceDir, `${command.ref.taskId}.grade.json`), "utf8")
       .then(text => JSON.parse(text) as { record: { createdAt: number | null; faultIds: string[] } }).catch(() => null);
+    // An interrupted or wedged wave has no grade files; its fault log was written after every fault.
+    const logged = await readFile(path.join(sourceDir, TASK_FAULT_LOG), "utf8").then(text => JSON.parse(text) as TaskFaultLog).catch(() => null);
+    const crossed = replayRecordFor(command.ref.taskId, graded?.record ?? null, logged);
     const faults = await readFile(path.join(sourceDir, "faults.json"), "utf8").then(text => JSON.parse(text) as FaultReceipt[]).catch(() => []);
-    const observed = graded ? observedFaultSchedule(graded.record.createdAt, graded.record.faultIds, faults, command.ref.taskId) : [];
+    const observed = crossed ? observedFaultSchedule(crossed.createdAt, crossed.faultIds, faults, command.ref.taskId) : [];
     if (!observed.length) console.warn("Replay: no recorded fault sequence for this task; using its planned fault only.");
     return { plan: replayWave(source, command.ref, Date.now(), command.overrides, observed), keep: command.keep };
   }
@@ -55,13 +60,27 @@ function run(command: string, args: string[], cwd: string, label: string) {
   if (result.status !== 0) throw new Error(`${label} failed (${command} ${args.join(" ")})`);
 }
 
-/** The bundled Daytona plugin is outside the root workspace; prepare it as CI does. */
-function ensureDaytonaPlugin() {
+/**
+ * The bundled Daytona plugin is outside the root workspace; prepare it as CI
+ * does, and rebuild it whenever its sources (or the plugin SDK's) changed since
+ * the last build, so a worktree that moved to a new master tests that master's
+ * plugin rather than an older build.
+ */
+function ensureDaytonaPlugin(timeline: Timeline) {
   const root = path.join(repositoryRoot, "packages/plugins/sandbox-providers/daytona");
-  if (["dist/manifest.js", "dist/worker.js", "node_modules/@daytonaio/sdk"].every(file => existsSync(path.join(root, file)))) return;
+  // Inputs outside the plugin directory: the linked plugin SDK and the tsconfig chain both packages extend.
+  const extraInputs = [
+    ...["src", "package.json", "tsconfig.json"].map(file => path.join(repositoryRoot, "packages/plugins/sdk", file)),
+    ...["tsconfig.json", "tsconfig.base.json"].map(file => path.join(repositoryRoot, file)),
+  ];
+  const state = pluginBuildState(root, extraInputs);
+  timeline.add("daytona_plugin_build_state", { reason: state.reason, inputHash: state.inputHash });
+  if (!state.needsBuild) return;
   run("pnpm", ["install", "--ignore-workspace", "--frozen-lockfile", "--ignore-scripts"], root, "Daytona plugin install");
   run(process.execPath, [path.join(repositoryRoot, "scripts/link-plugin-dev-sdk.mjs")], repositoryRoot, "Plugin SDK link");
   run("pnpm", ["--dir", root, "build"], repositoryRoot, "Daytona plugin build");
+  writeFileSync(path.join(root, PLUGIN_BUILD_STAMP), `${state.inputHash}\n`);
+  timeline.add("daytona_plugin_built", { inputHash: state.inputHash });
 }
 
 /**
@@ -76,7 +95,7 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   const { localContentId } = await assertControllerMatchesImage(artifacts, repositoryRoot);
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
-  ensureDaytonaPlugin();
+  ensureDaytonaPlugin(timeline);
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
@@ -103,11 +122,22 @@ async function main(): Promise<number> {
   const timeline = new Timeline(path.join(waveDir, "timeline.jsonl"));
   const gitSha = git(["rev-parse", "HEAD"]);
   const gitDirty = git(["status", "--porcelain"]).length > 0;
+  // Builds and branch switches must happen before the wave, never during it.
+  const guardedOutputs = guardedRunnerOutputs(repositoryRoot);
+  let startFingerprint: string | null = null;
+  let worktreeChanged = false;
+  const checkWorktree = (at: string) => {
+    if (worktreeChanged || startFingerprint === null || worktreeFingerprint(repositoryRoot, guardedOutputs) === startFingerprint) return;
+    worktreeChanged = true;
+    timeline.add("worktree_changed_mid_wave", { at, gitSha: git(["rev-parse", "HEAD"]) });
+  };
   timeline.add("wave_planned", { waveId: plan.waveId, seed: plan.seed, gitSha, gitDirty, replayOf: plan.replayOf ?? null,
     tasks: plan.tasks.map(task => `${task.taskId}:${task.adapter}/${task.workload}/${task.fault}${task.trigger ? `^${task.trigger}+${task.triggerDelayMs ?? 0}ms` : ""}@${task.fireAfterMs}ms${task.holdMs ? ` hold ${task.holdMs}ms` : ""}`),
     ...(plan.storm ? { storm: { durationMs: plan.storm.durationMs, faults: plan.storm.faults.map(fault => `${fault.kind}+${fault.gapMs}ms${fault.holdMs ? ` hold ${fault.holdMs}ms` : ""}`) } } : {}) });
   preflight(plan);
   const serverEnvironment = plan.options.env === "daytona" ? await prepareDaytona(plan, timeline) : {};
+  // Baseline only after the harness's own build steps (preflight rewrites the runner's dist).
+  startFingerprint = worktreeFingerprint(repositoryRoot, guardedOutputs);
 
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline });
   let sweeper: DaytonaWaveSweeper | null = null;
@@ -116,6 +146,12 @@ async function main(): Promise<number> {
   const onSignal = (signal: NodeJS.Signals) => { if (!interrupted) { interrupted = true; timeline.add("harness_interrupted", { signal }); } };
   process.on("SIGINT", onSignal); process.on("SIGTERM", onSignal);
   const faults: FaultReceipt[] = [];
+  // Written after every fault, so an interrupted or wedged storm can still replay what crossed each task.
+  const taskFaultLog: TaskFaultLog = {};
+  const persistFaultLog = async () => {
+    await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+    await writeFile(path.join(waveDir, TASK_FAULT_LOG), `${JSON.stringify(taskFaultLog, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+  };
   const faultWork: Promise<void>[] = [];
   const lines: LedgerLine[] = [];
   let anyFailure = false;
@@ -171,9 +207,24 @@ async function main(): Promise<number> {
       faultsQueued += 1;
       faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
-        for (const candidate of exposed) { candidate.noteFault(receipt.faultId, receipt.startedAt); candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt); }
+        checkWorktree(receipt.faultId);
+        for (const candidate of exposed) {
+          candidate.noteFault(receipt.faultId, receipt.startedAt);
+          candidate.extendDeadline((receipt.readyAt ?? Date.now()) - receipt.startedAt);
+          taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+        }
+        void persistFaultLog();
       }, (error: Error & { receipt?: FaultReceipt }) => {
-        if (error.receipt) faults.push(error.receipt);
+        if (error.receipt) {
+          // A failed fault still crossed the tasks in flight; replay must fire it too.
+          const receipt = error.receipt;
+          faults.push(receipt);
+          for (const candidate of exposed) {
+            candidate.noteFault(receipt.faultId, receipt.startedAt);
+            taskFaultLog[candidate.plan.taskId] = { createdAt: candidate.record.createdAt, faultIds: [...candidate.record.faultIds] };
+          }
+          void persistFaultLog();
+        }
         faultFailures += 1;
         timeline.add("fault_error", { taskId: requestedBy, error: error.message });
       }));
@@ -203,15 +254,23 @@ async function main(): Promise<number> {
       }));
       for (const observer of active) {
         if (faultsQueued || supervisor.faultInProgress || !supervisor.serverReady) break;
+        // A storm's drain gets no new fault; an unfired trigger is recorded as missed at rest.
+        if (storm && !storm.mayLaunch(Date.now())) break;
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
+        if (storm && !storm.mayLaunch(Date.now())) {
+          observer.markTriggerMissed(due);
+          timeline.add("fault_skipped_storm_ended", { taskId: observer.plan.taskId, fault: due.kind });
+          break;
+        }
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
-        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger);
+        // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
         const due = storm.due(Date.now());
@@ -231,6 +290,8 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    checkWorktree("wave_end");
+    if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");
     // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
     if (storm && !interrupted && storm.exhaustedEarly(Date.now())) {
       timeline.add("storm_pool_exhausted", { faultsFired: storm.state.fired, launched: launched.length });

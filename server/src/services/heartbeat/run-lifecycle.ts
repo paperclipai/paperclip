@@ -589,6 +589,7 @@ export async function persistHeartbeatRunProcessMetadata(
     const run = await tx
       .update(heartbeatRuns)
       .set({
+        legacyProcessSettlement: null,
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
         processStartedAt: Number.isNaN(startedAt.getTime())

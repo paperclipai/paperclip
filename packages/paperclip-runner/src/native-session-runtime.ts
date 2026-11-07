@@ -19,8 +19,14 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  PROVIDER_ATTACH_REFUSED,
+  PROVIDER_SIDE_EFFECT_PENDING,
+  PROVIDER_STATE_INCOMPATIBLE,
+  type HarnessThreadGoal,
+} from "./contracts/harness-driver.js";
+import {
+  NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
@@ -2422,6 +2428,16 @@ export async function executeNativeSession(
             reason: "driver does not support recovery",
           };
     if (!recovery.recovered || !recovery.session) {
+      // A deterministic refusal left the saved state unchanged and repeats on
+      // every retry. A replacement would archive that state and, with a pending
+      // side-effecting call, could repeat or lose the external action. Stop here
+      // for an operator regardless of the checkpoint's replacement policy.
+      if (recovery.failureClass === PROVIDER_SIDE_EFFECT_PENDING) {
+        throw new NativeProviderSideEffectPendingError(recovery.reason ?? "unknown");
+      }
+      if (recovery.failureClass === PROVIDER_ATTACH_REFUSED) {
+        throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+      }
       if (!replacementAllowed) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
@@ -2626,16 +2642,20 @@ export async function executeNativeSession(
       const snapshot = await session.snapshot(signal ? { signal } : undefined);
       signal?.throwIfAborted();
       await persistCheckpoint(snapshot, signal);
+      return snapshot;
     };
     const recoveredSnapshot = await session.snapshot();
     const restartContinuation = () => ({
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
-          "Paperclip restarted and restored this same conversation. The previous turn was interrupted.",
+          "This is a resumed session after a Paperclip control-plane restart. Paperclip restored this same conversation and workspace; the restart interrupted the previous turn.",
           "Continue the current user request from the recorded progress and preserved workspace.",
-          "Reconcile any unfinished tool or command before proceeding: inspect its current state and recorded outcomes.",
-          "Do not repeat completed work or blindly rerun an action whose outcome is unknown. If an external action cannot be reconciled, report the specific blocker.",
+          "Shell commands and background processes started in earlier turns may no longer be running, and their tool sessions may be gone. Do not block only because such a process or its tool session cannot be found or inspected.",
+          "Reconcile any unfinished tool or command before proceeding: check the workspace for the outputs or artifacts it should have produced. If the expected output is present, use it. If the expected output is missing, re-run the command.",
+          "Do not repeat completed work. Before you repeat an action with external effects, such as a push, a message or a deployment, check whether it already took effect. If you cannot determine that, report the specific blocker.",
+          "Finish in this turn. Nothing resumes this conversation after the turn ends, so do not end it to wait for a background command or a notification; wait for or check that work first.",
+          "Then invoke exactly one paperclip_finish or paperclip_block with the accurate disposition.",
         ].join("\n"),
         completion: {
           revision: input.completionContract.contract.revision,
@@ -2645,8 +2665,67 @@ export async function executeNativeSession(
       continuation: true as const,
       requestedCollaborationMode: "executionMode" in input ? input.executionMode : "default" as const,
     });
+    // A restart continuation borrows the driver's one-shot disposition
+    // marker so a crash during it can adopt the accepted turn. A driver that
+    // hands the marker back when the continuation completes without a result
+    // still owes that one disposition request; ask it in this same attempt so
+    // a restart-recovery budget already spent cannot block it.
+    const continuationDispositionTurn = () => {
+      const envelope = buildNativeModelEnvelope(input);
+      envelope.completionContract = structuredClone(input.completionContract.contract);
+      if ("requestedSkills" in envelope) envelope.requestedSkills = [];
+      envelope.task.prompt = [
+        "Paperclip semantic-result recovery after a restart continuation.",
+        "The previous turn ended without paperclip_finish or paperclip_block, so Paperclip cannot settle this task.",
+        "Do not repeat completed work. If a command you started is still running, wait for or check it in this turn; nothing resumes this conversation after the turn ends.",
+        "Then invoke exactly one paperclip_finish or paperclip_block with the accurate current disposition, and stop.",
+      ].join("\n");
+      if ("workspace" in envelope && envelope.workspace && recoveredSnapshot.workingDirectory) {
+        envelope.workspace.cwd = recoveredSnapshot.workingDirectory;
+      }
+      return {
+        message: { role: "user" as const, text: JSON.stringify(envelope) },
+        requestedCollaborationMode: "executionMode" in input ? input.executionMode : "default" as const,
+      };
+    };
     let restartContinuationStarted = false;
+    let borrowedContinuationTurnId: string | null = null;
+    let continuationDispositionRequested = false;
+    // The consumer may already be running when a continuation starts, and the
+    // continuation can complete before its start checkpoint settles. A
+    // terminal waits for this setup so it neither misses the borrowed turn nor
+    // persists its own checkpoint ahead of the continuation's.
+    let continuationSetup: Promise<void> | null = null;
+    const startRestartContinuation = (signal?: AbortSignal) => {
+      restartContinuationStarted = true;
+      continuationSetup = (async () => {
+        // The driver reports the borrowed marker with the accepted turn; a
+        // later snapshot may already show the marker returned.
+        const started = await session.startTurn(restartContinuation());
+        if (started.borrowedDispositionMarker === true) borrowedContinuationTurnId = started.turnId;
+        await checkpoint(signal);
+      })();
+      return continuationSetup;
+    };
+    const requestContinuationDisposition = async (event: PrpEvent, signal: AbortSignal) => {
+      if (continuationDispositionRequested || event.eventType !== "turn.completed") return false;
+      await continuationSetup?.catch(() => undefined);
+      signal.throwIfAborted();
+      if (borrowedContinuationTurnId === null || event.turnId !== borrowedContinuationTurnId) return false;
+      const snapshot = await session.snapshot();
+      signal.throwIfAborted();
+      if (snapshot.semanticResult || snapshot.activeTurnId || snapshot.goal || snapshot.pendingRuntimeRequests?.length ||
+          snapshot.dispositionOnlyRecoveryConsumed !== false ||
+          !snapshot.terminalTurns?.some(terminal => terminal.turnId === borrowedContinuationTurnId)) return false;
+      continuationDispositionRequested = true;
+      await persistCheckpoint(snapshot, signal);
+      signal.throwIfAborted();
+      await session.startTurn(continuationDispositionTurn());
+      await checkpoint(signal);
+      return true;
+    };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
+      if (await requestContinuationDisposition(event, signal)) return true;
       if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
@@ -2663,8 +2742,7 @@ export async function executeNativeSession(
       // history to adopt an accepted continuation if its checkpoint was lost.
       await persistCheckpoint(snapshot, signal);
       signal.throwIfAborted();
-      await session.startTurn(restartContinuation());
-      await checkpoint(signal);
+      await startRestartContinuation(signal);
       return true;
     };
     const recoveredActiveTurnId = recovered
@@ -2895,9 +2973,7 @@ export async function executeNativeSession(
           }
           await checkpoint();
         } else if (shouldStartFreshTurn && recovered && checkpointedInterruption) {
-          restartContinuationStarted = true;
-          await session.startTurn(restartContinuation());
-          await checkpoint();
+          await startRestartContinuation();
         } else if (shouldStartFreshTurn) {
           let modelEnvelope = recovered
             ? buildNativeModelEnvelope(input, { resumedSession: true })

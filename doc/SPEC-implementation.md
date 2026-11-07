@@ -1763,10 +1763,20 @@ publication is fenced separately from settlement. Inputs arriving or committing
 later stay pending; no global sequence watermark consumes them. Limited-budget
 admission refuses relevant unevaluated inputs older than fifteen seconds.
 Unchanged idle decisions do not expire; unknown accounting retains its separate
-conservative admission restriction. Completed runs that await accounting hold
-new work only: they never open a hard-stop incident, pause a scope, or stop
-running work. Only spend at the limit, or unpriced usage under a blocking
-policy, does that. Provider reporting and cancellation delays
+conservative admission restriction. Runs that ended without succeeding and
+await accounting hold new work only: they never open a hard-stop incident, pause
+a scope, or stop running work. Only spend at the limit, or unpriced usage under
+a blocking policy, does that. A succeeded run with only its usage report
+outstanding, whose provider already reported observed usage, does not hold new
+work: its provider work is over, so it is bounded like a running run. A
+succeeded run with no observed cost still holds new work. Its observed cost counts toward spend and reservation
+capacity, and its settled charge can still reach the hard stop. A run that
+failed, was cancelled, timed out or was interrupted still holds new work,
+because its provider may not have stopped. Temporary holds (accounting that awaits
+settlement, recovering runs, budget inputs that await evaluation) gate new work
+only. They never refuse an admitted run's own tool mutations or an owned
+recovery; a hard stop or pause still does, through the normal pause and
+cancellation path. Provider reporting and cancellation delays
 remain additional to evaluation lag. Cancellation delivery is asynchronous and
 scoped; committed per-run Stop survives policy changes and restart until existing
 stop proof succeeds. Budget resume cannot clear a manual hold.
@@ -1953,7 +1963,21 @@ receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
 provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge. Raw provider errors and credentials are excluded from
+run, and the blocking unpriced-usage policy keeps counting that charge unless
+a control-plane restart caused it. A restart-derived receipt (the run replaced
+its receipt source, recovered from a restart, or lost a provider turn on
+restore) never hard-stops or pauses a company under the blocking policy,
+whatever its token count; its activity entry and provenance remain the notice. A lost
+receipt that already carries a provider-reported cost settles at that cost as
+an estimate marked as a lower bound, not as unpriced. A failed native run that
+never started provider work (no usage receipt, no replaced receipt source, and a
+local process that never launched or was verified stopped) settles at once
+with no charge and never holds admission; the empty receipt-source fence map
+that every usage recorder binds is not evidence that provider work began. A native
+turn that the restored Runner reports as lost on restore can never report its
+usage. It does not hold the run's receipt open: the receipt closes when the
+run's other turns do, and its provenance says the observed usage is a lower
+bound. Raw provider errors and credentials are excluded from
 cost details. ACP usage retains the runtime-selected model, including defaults;
 conflicting before/after model IDs do not authorize a single-model estimate.
 Remote OpenCode billing uses only credentials forwarded to the execution target.

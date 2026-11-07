@@ -159,6 +159,8 @@ export function deadRunningRun(sample: TaskSample, readySince: number): { id: st
   if (!sample.reachable || !sample.serverReady || sample.at - readySince <= STALL_LIMIT_MS) return null;
   for (const run of sample.runs ?? []) {
     if (run.status !== "running") continue;
+    // Quiet is not dead while a tool is still in flight or the run's process is verifiably alive.
+    if (run.toolInFlight || run.processAlive) continue;
     const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
     if (sample.at - evidence > STALL_LIMIT_MS) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
   }

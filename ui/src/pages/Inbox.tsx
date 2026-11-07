@@ -407,6 +407,7 @@ export function FailedRunInboxRow({
           approval: t("work:copy.approvalRequired_ef677f"), reconnect: t("work:copy.reconnectAccount_8e44ff"), assign_agent: t("work:copy.assignAnAgent_6aa54d"), choose_model: t("work:copy.chooseASupportedModel_a4f702"),
           resume: t("work:copy.workIsPaused_c01c4c"), budget: t("work:copy.budgetLimitReached_1c8ef7"),
           project_access: t("work:copy.agentNeedsProjectAccess_a05899"),
+          confirm_owner_stop: t("task-components:previousServerStopConfirm"),
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;

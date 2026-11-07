@@ -1,5 +1,11 @@
 /** Completion receipts are retained for idempotency. Fixed aliases only. */
 export const idleMcpHistoryChecks = [
+  { reason: "mcp_file_tickets", query: `SELECT 1 FROM mcp_file_tickets t WHERE t.expires_at > statement_timestamp() OR t.expires_at IS NULL` },
+  { reason: "mcp_authorization_handoffs", query: `SELECT 1 FROM mcp_oauth_requests r WHERE r.resource ~ '/mcp/(paperclip|runner)$'
+    AND r.code_hash IS NOT NULL AND r.consumed_at IS NULL AND (r.expires_at > statement_timestamp() OR r.expires_at IS NULL)
+    UNION ALL SELECT 1 FROM mcp_oauth_device_requests d WHERE d.resource ~ '/mcp/(paperclip|runner)$'
+    AND (d.status NOT IN ('pending','denied','consumed') OR (d.status = 'pending' AND d.grant_id IS NOT NULL))
+    AND (d.expires_at > statement_timestamp() OR d.expires_at IS NULL)` },
   { reason: "mcp_oauth_grants", query: `SELECT 1 FROM mcp_oauth_grants g WHERE
     (g.revoked_at IS NOT NULL AND EXISTS (SELECT 1 FROM companies c WHERE c.id = g.company_id)) IS NOT TRUE` },
   { reason: "mcp_mutation_receipts", query: `SELECT 1 FROM mcp_mutation_receipts m WHERE (

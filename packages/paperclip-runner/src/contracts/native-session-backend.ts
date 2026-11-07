@@ -224,6 +224,12 @@ export interface NativeSession {
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     mode?: "steer" | "follow_up";
@@ -304,6 +310,17 @@ export class NativeProviderStateIncompatibleError extends Error {
   constructor(reason: string) {
     super(`native_session_recovery_failed: ${reason}`);
     this.name = "NativeProviderStateIncompatibleError";
+  }
+}
+
+/** The saved provider session still owns a side-effecting call without a
+ * recorded result. A replacement session could repeat or lose that action, so
+ * the run stops for an operator and the saved state stays intact. */
+export class NativeProviderSideEffectPendingError extends Error {
+  readonly code = "native_provider_side_effect_pending";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderSideEffectPendingError";
   }
 }
 

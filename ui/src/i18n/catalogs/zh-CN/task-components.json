@@ -3482,5 +3482,15 @@
   "routineLoadPeople": "加载人员",
   "routineChangeResponsibility": "更改负责人",
   "routineResponsibilityStale": "此例行任务已更改。请重新加载后再更改负责人。",
-  "routineChangeResponsibleUserLabel": "更改负责人：{{label}}"
+  "routineChangeResponsibleUserLabel": "更改负责人：{{label}}",
+  "previousServerStopRequired": "先前的服务器在保存此任务的文件时停止了，Paperclip 无法验证它是否已停止。智能体的结果已保存。",
+  "previousServerStopCheckingAccess": "正在检查权限…",
+  "previousServerStopOwnerRequired": "公司所有者或管理员可以确认先前的服务器已停止。",
+  "previousServerStopConfirm": "确认先前的服务器已停止",
+  "previousServerStopEvidenceLabel": "你如何确认先前的服务器及其文件复制操作已停止？",
+  "previousServerStopEvidencePlaceholder": "例如：旧服务器进程已退出，且未重新启动。",
+  "previousServerStopCancel": "取消",
+  "previousServerStopConfirming": "正在确认…",
+  "previousServerStopResume": "确认并继续",
+  "previousServerStopRejected": "确认未被接受。请刷新任务后重试。"
 }

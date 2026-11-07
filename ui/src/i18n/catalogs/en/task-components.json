@@ -3482,5 +3482,15 @@
   "routineLoadPeople": "load people",
   "routineChangeResponsibility": "change responsibility",
   "routineResponsibilityStale": "This routine changed. Reload before changing responsibility.",
-  "routineChangeResponsibleUserLabel": "Change responsible user: {{label}}"
+  "routineChangeResponsibleUserLabel": "Change responsible user: {{label}}",
+  "previousServerStopRequired": "The previous server stopped while it was saving this task’s files, and Paperclip can’t verify that it stopped. The agent’s result is saved.",
+  "previousServerStopCheckingAccess": "Checking access…",
+  "previousServerStopOwnerRequired": "A company owner or administrator can confirm that the previous server stopped.",
+  "previousServerStopConfirm": "Confirm the previous server stopped",
+  "previousServerStopEvidenceLabel": "How did you confirm that the previous server and its file copy stopped?",
+  "previousServerStopEvidencePlaceholder": "For example: the old server process exited and was not restarted.",
+  "previousServerStopCancel": "Cancel",
+  "previousServerStopConfirming": "Confirming…",
+  "previousServerStopResume": "Confirm and resume",
+  "previousServerStopRejected": "The confirmation was not accepted. Refresh the task and try again."
 }

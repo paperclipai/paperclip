@@ -59,6 +59,8 @@ type ProjectionState = {
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
   approval: boolean;
+  /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
+  ownerStopRequired?: boolean;
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
 };
@@ -82,6 +84,10 @@ const retryWaitMessages: Record<string, string> = {
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  // Another click cannot release a copyback owner that stopped without reporting.
+  // Retry starts a new recovery generation; the agent does not repeat its work.
+  saved_work_recovery_failed: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work.",
+  workspace_owner_stop_required: "Retry is waiting for a board member to confirm that the previous server stopped copying files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
   // A new click replaces a Retry declined for its requester's access with a
@@ -142,6 +148,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // The previous controller cannot confirm its own stop. Name the one board
+  // action instead of showing the fenced run as working (RC-47).
+  if (input.ownerStopRequired) return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop" };
   // The task's existing dependency UI owns this wait. Keep actual recovery and
   // Retry preparation failures authoritative; this does not change admission.
   if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
@@ -208,7 +217,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"].includes(reason), retryWait: { reason,
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
@@ -380,6 +389,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
+  const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
+    runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+    eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), eq(issueRecoveryActions.ownerType, "board"),
+    inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
+    sql`${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
+    sql`coalesce(${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}', '') <> 'resuming'`,
+  )) : [];
+  const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
@@ -432,6 +451,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
+      ownerStopRequired: ownerStopRequired.has(`${issue.id}:${runMap.get(issue.id)?.id}`),
       admissionWait: admissionWaitMap.get(issue.id),
     });
     result.set(issue.id, presentation);

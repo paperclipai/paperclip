@@ -8,24 +8,39 @@ import { useQueryView } from "./QueryView";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
-import { canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
+import { canBoardConfirmOwnerStop, canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
 import { queryKeys } from "../lib/queryKeys";
 import { classifySendFailure, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
 import { asObject, cn } from "../lib/utils";
 import { createUuid } from "../lib/uuid";
 import { Button } from "./ui/button";
+import { Textarea } from "./ui/textarea";
 
 /** Requests preservation; the existing worker owns stop, copyback and verification. */
 export function WorkspaceExportRecovery({ action, className, issueId, companyId, showStatus = true }: {
   className?: string; action: IssueRecoveryAction | null; issueId?: string; companyId?: string; showStatus?: boolean;
 }) {
   useTranslation("task-components");
+  // A restart killed the copyback owner of retained saved-work recovery. Recovery
+  // and any accepted Retry wait on its receipt; the confirmation is the one action.
+  const retainedOwnerToken = action && issueId && companyId && isRetainedExport(action, issueId, companyId)
+    ? retainedOwnerStopToken(action) : null;
+  if (action && issueId && companyId && retainedOwnerToken) {
+    return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}:${retainedOwnerToken}`}
+      action={action} ownerToken={retainedOwnerToken} issueId={issueId} companyId={companyId} className={className} />;
+  }
   if (action && issueId && companyId && isRetainedExport(action, issueId, companyId)) {
     return <RetainedFilesRecovery key={`${companyId}:${issueId}:${action.id}:${action.evidence.runId}`}
       action={action} issueId={issueId} companyId={companyId} className={className} />;
   }
-  if (!showStatus) return null;
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
+  // The task's interruption names this wait; the confirmation is its one action.
+  if (ownerRecovery && issueId && companyId && isOwnerStopRequired(action, issueId, companyId)) {
+    return <PreviousServerStopConfirmation key={`${action.id}:${String(action.evidence.runId)}`}
+      action={action} ownerToken={asObject(action.evidence.owner).token as string}
+      issueId={issueId} companyId={companyId} className={className} />;
+  }
+  if (!showStatus) return null;
   if (!action || (!ownerRecovery && !isNativeWorkspaceExportRepairCause(action.cause)) || action.ownerType !== "board"
     || !["active", "escalated"].includes(action.status) || typeof action.evidence.runId !== "string") return null;
   const queued = !!action.evidence.workspaceOwnerStop || action.wakePolicy?.kind === "resume_native_run";
@@ -52,6 +67,69 @@ function recoveryFeedback(error: unknown, fallbackKey: string): RecoveryFeedback
 }
 function displayRecoveryFeedback(feedback: RecoveryFeedback): string {
   return "raw" in feedback ? feedback.raw : t(feedback.key, feedback.detail ? { detail: displayRecoveryFeedback(feedback.detail) } : {});
+}
+
+function isOwnerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
+  return action.companyId === companyId && action.sourceIssueId === issueId
+    && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
+    && typeof action.evidence.runId === "string" && typeof asObject(action.evidence.owner).token === "string"
+    && !action.evidence.workspaceOwnerStop && asObject(action.evidence.workspaceOwnerRecovery).state !== "resuming";
+}
+
+/** The exact receipt #19721 records when retained recovery waits on a stopped copyback owner. */
+function retainedOwnerStopToken(action: IssueRecoveryAction): string | null {
+  const hold = asObject(action.evidence.workspaceOwnerRecovery);
+  const token = asObject(hold.owner).token;
+  return hold.state === "operator_required" && !action.evidence.workspaceOwnerStop
+    && typeof action.evidence.runId === "string" && typeof token === "string" && token.length > 0 ? token : null;
+}
+
+/** A previous server that can no longer report cannot confirm its own stop.
+ * The board confirms it once; the saved result then finishes without another agent turn. */
+function PreviousServerStopConfirmation({ action, ownerToken, issueId, companyId, className }: {
+  action: IssueRecoveryAction; ownerToken: string; issueId: string; companyId: string; className?: string;
+}) {
+  useTranslation("task-components");
+  const runId = action.evidence.runId as string;
+  const client = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [evidence, setEvidence] = useState("");
+  const access = useQuery({ queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess() });
+  const accessView = useQueryView(access);
+  const canConfirm = (accessView.kind === "ready" || accessView.kind === "stale") && canBoardConfirmOwnerStop(companyId, access.data);
+  const confirm = useMutation({ retry: false, // query-error-ok: an explicit board confirmation; the error is shown below.
+    mutationFn: () => issuesApi.resumeWorkspaceFinalization(issueId, { actionId: action.id, runId, ownerToken,
+      controllerAndCopybackStopped: true, stopEvidence: evidence.trim() }),
+    onSuccess: () => {
+      setOpen(false);
+      void client.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+      void client.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
+      void client.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
+    } });
+  const ready = evidence.trim().length >= 20;
+  return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="previous-server-stop">
+    <p role="status">{confirm.isSuccess ? t("task-components:restoringSavedWork_d6ea858b")
+      : t("task-components:previousServerStopRequired")}</p>
+    {confirm.isSuccess ? null : !canConfirm
+      ? <p className="text-xs text-muted-foreground">{accessView.kind === "loading" || accessView.kind === "reconnecting"
+        ? t("task-components:previousServerStopCheckingAccess") : t("task-components:previousServerStopOwnerRequired")}</p>
+      : !open ? <Button variant="outline" size="sm" className="self-start" onClick={() => setOpen(true)}>
+        {t("task-components:previousServerStopConfirm")}</Button>
+      : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (ready && !confirm.isPending) confirm.mutate(); }}>
+        <label htmlFor={`previous-server-stop-${action.id}`} className="text-xs text-muted-foreground">
+          {t("task-components:previousServerStopEvidenceLabel")}</label>
+        <Textarea id={`previous-server-stop-${action.id}`} value={evidence} onChange={event => setEvidence(event.target.value)}
+          placeholder={t("task-components:previousServerStopEvidencePlaceholder")} maxLength={12000} rows={3} />
+        <div className="flex items-center justify-between gap-2">
+          <Button type="button" variant="ghost" size="sm" disabled={confirm.isPending} onClick={() => setOpen(false)}>{t("task-components:previousServerStopCancel")}</Button>
+          <Button type="submit" size="sm" disabled={!ready || confirm.isPending}>
+            {confirm.isPending ? t("task-components:previousServerStopConfirming") : t("task-components:previousServerStopResume")}</Button>
+        </div>
+      </form>}
+    {confirm.error ? <p role="alert" className="text-sm text-destructive">
+      {confirm.error instanceof Error ? confirm.error.message : t("task-components:previousServerStopRejected")}</p> : null}
+  </div>;
 }
 
 type RecoveryInput = { actionId: string; runId: string };
