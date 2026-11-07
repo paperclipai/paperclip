@@ -34,16 +34,18 @@ const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
 
 const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminalRunStatuses = ["failed", "cancelled", "timed_out", "succeeded", "interrupted"];
-// Admission can hold the issue lock, so each Git probe has a short deadline.
-const RETAINED_WORKSPACE_GIT_TIMEOUT_MS = 10_000;
-const processStartedAt = new Date(Date.now() - process.uptime() * 1_000);
+const reusableWorkspaceStatuses = ["active", "idle", "in_review"];
+// Admission can hold the issue lock, so all Git probes for one workspace share
+// one short wall-clock budget, including time queued in the scan scheduler.
+const RETAINED_WORKSPACE_GIT_BUDGET_MS = 10_000;
 
-/** True when another run's lease, a failed cleanup or a running operation
- * still holds the workspace. The successor's own claims do not count. A
- * "running" operation of a terminal run that started before this server
- * process is an orphan of a restart: no live process can still perform it. */
+/** Why another writer may still hold the workspace, or null. The successor's
+ * own claims do not count. An operation the stopped source started before it
+ * settled is history: admission proved that source stopped, so a row still
+ * marked running was orphaned by a restart. */
 export async function workspaceHasOtherWriter(db: Db, input: {
   companyId: string; workspaceId: string; successorRunId: string;
+  stoppedSource?: { id: string; finishedAt: Date | null } | null;
 }) {
   const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.executionWorkspaceId, input.workspaceId),
@@ -51,14 +53,13 @@ export async function workspaceHasOtherWriter(db: Db, input: {
     or(isNull(environmentLeases.releasedAt), inArray(environmentLeases.status, ["active", "pending_cleanup"]),
       eq(environmentLeases.cleanupStatus, "failed")),
   )).limit(1);
+  const source = input.stoppedSource?.finishedAt ? input.stoppedSource : null;
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId),
     eq(workspaceOperations.status, "running"),
     or(isNull(workspaceOperations.heartbeatRunId), ne(workspaceOperations.heartbeatRunId, input.successorRunId)),
-    sql`not (${workspaceOperations.startedAt} < ${processStartedAt.toISOString()}::timestamptz and exists (
-      select 1 from ${heartbeatRuns} owner where owner.company_id = ${workspaceOperations.companyId}
-        and owner.id = ${workspaceOperations.heartbeatRunId} and owner.finished_at is not null
-        and owner.status in ('failed', 'cancelled', 'timed_out', 'succeeded', 'interrupted')))`,
+    source ? sql`not (${workspaceOperations.heartbeatRunId} = ${source.id}
+      and ${workspaceOperations.startedAt} <= ${source.finishedAt!.toISOString()}::timestamptz)` : undefined,
   )).limit(1);
   return lease ? "lease_held" as const : operation ? "operation_running" as const : null;
 }
@@ -68,9 +69,10 @@ export async function workspaceHasOtherWriter(db: Db, input: {
 async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSelect, real: string) {
   const marker = await lstat(path.join(real, ".git")).catch(() => null);
   if (!marker && workspace.providerType !== "git_worktree") return true;
+  const signal = AbortSignal.timeout(RETAINED_WORKSPACE_GIT_BUDGET_MS);
   const scan = (args: string[], operation: string) => workspaceGitOperationScheduler.run({
-    workspacePath: real, args, operation, cacheTtlMs: 0, bypassSingleFlight: true,
-    timeoutMs: RETAINED_WORKSPACE_GIT_TIMEOUT_MS, fairnessKeys: [`company:${workspace.companyId}`, `workspace:${workspace.id}`],
+    workspacePath: real, args, operation, cacheTtlMs: 0, bypassSingleFlight: true, signal,
+    timeoutMs: RETAINED_WORKSPACE_GIT_BUDGET_MS, fairnessKeys: [`company:${workspace.companyId}`, `workspace:${workspace.id}`],
   });
   try {
     const root = (await scan(["rev-parse", "--show-toplevel"], "retry.retained_workspace_root")).stdout.trim();
@@ -82,6 +84,22 @@ async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSe
   }
 }
 
+/** Whether a workspace row is the task's own local directory, outside remote
+ * storage authority and not closed. Shared by reuse and the prior-files hint. */
+export function isTaskOwnedLocalWorkspace(workspace: typeof executionWorkspaces.$inferSelect, issueId: string) {
+  return Boolean(workspace.cwd) && workspace.sourceIssueId === issueId && workspace.mode !== "shared_workspace" &&
+    reusableWorkspaceStatuses.includes(workspace.status) && ["local_fs", "git_worktree"].includes(workspace.providerType) &&
+    (workspace.metadata?.remoteWorkspace ?? null) === null;
+}
+
+/** A recovery generation that is scheduled or running may still export or
+ * repair the source tree. A settled projection is only status text. */
+export function recoveryGenerationSettled(evidence: Record<string, unknown> | null, sourceRunId: string) {
+  if (evidence?.systemRecovery === undefined) return true;
+  const recovery = readSystemRecovery(evidence);
+  return Boolean(recovery && recovery.sourceRunId === sourceRunId && ["complete", "exhausted"].includes(recovery.state));
+}
+
 /** R2: a Retry that would otherwise start a fresh attempt keeps the task's own
  * local workspace when that is provably safe, so uncommitted files and Git
  * history stay with the task. Admission has already proven that the source
@@ -89,22 +107,19 @@ async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$inferSe
  * directory the source used, still bound to and owned by this task, with no
  * other lease, running operation, unsettled recovery generation, export
  * obligation or remote owner, and its Git state can still be read. Otherwise
- * the caller keeps the fresh isolated attempt and the directory stays untouched. */
+ * the caller keeps the fresh isolated attempt and the directory stays untouched.
+ * Pass one `gitProbes` map when checking several holds for the same run. */
 export async function retainedIssueWorkspaceForRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; successorRunId: string; cause: string | null;
   source: Pick<typeof heartbeatRuns.$inferSelect, "id" | "resultJson" | "status" | "finishedAt" | "controllerLeaseExpiresAt">;
-  evidence: Record<string, unknown> | null;
+  evidence: Record<string, unknown> | null; gitProbes?: Map<string, Promise<boolean>>;
 }): Promise<{ id: string; cwd: string } | null> {
   const keepFresh = (reason: string) => {
     logger.info({ companyId: input.companyId, issueId: input.issueId, sourceRunId: input.source.id,
       successorRunId: input.successorRunId, reason }, "Retry keeps a fresh attempt; the task workspace is not reusable");
     return null;
   };
-  // A scheduled or running generation may still be exporting these files. A
-  // settled generation's workspaceRecovery projection is only status text.
-  const recovery = readSystemRecovery(input.evidence);
-  if (input.evidence?.systemRecovery !== undefined && (!recovery || recovery.sourceRunId !== input.source.id ||
-      !["complete", "exhausted"].includes(recovery.state))) return keepFresh("recovery_generation_unsettled");
+  if (!recoveryGenerationSettled(input.evidence, input.source.id)) return keepFresh("recovery_generation_unsettled");
   if (!terminalRunStatuses.includes(input.source.status) || !input.source.finishedAt ||
       adapterExecutionControls.has(input.source.id) ||
       (input.source.controllerLeaseExpiresAt && input.source.controllerLeaseExpiresAt > new Date())) return keepFresh("source_not_settled");
@@ -124,18 +139,20 @@ export async function retainedIssueWorkspaceForRetry(db: Db, input: {
   const workspace = bound?.workspace;
   if (!workspace?.cwd || sourceWorkspaceIds.size !== 1 || !sourceWorkspaceIds.has(workspace.id))
     return keepFresh("binding_not_source_workspace");
-  if (workspace.sourceIssueId !== input.issueId || workspace.mode === "shared_workspace" ||
-      !["active", "idle", "in_review"].includes(workspace.status) ||
-      !["local_fs", "git_worktree"].includes(workspace.providerType) ||
-      (workspace.metadata?.remoteWorkspace ?? null) !== null) return keepFresh("workspace_not_task_owned_local");
+  if (!isTaskOwnedLocalWorkspace(workspace, input.issueId)) return keepFresh("workspace_not_task_owned_local");
   const writer = await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: workspace.id,
-    successorRunId: input.successorRunId });
+    successorRunId: input.successorRunId, stoppedSource: input.source });
   if (writer) return keepFresh(writer);
   // The directory must still be the recorded one, not a replacement link.
   const stat = await lstat(workspace.cwd).catch(() => null);
   const real = stat?.isDirectory() && !stat.isSymbolicLink() ? await realpath(workspace.cwd).catch(() => null) : null;
   if (!real) return keepFresh("directory_missing");
-  if (!await readableOwnGitRoot(workspace, real)) return keepFresh("git_unreadable");
+  let probe = input.gitProbes?.get(real);
+  if (!probe) {
+    probe = readableOwnGitRoot(workspace, real);
+    input.gitProbes?.set(real, probe);
+  }
+  if (!await probe) return keepFresh("git_unreadable");
   return { id: workspace.id, cwd: workspace.cwd };
 }
 
@@ -363,9 +380,10 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
         .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, issueId), sql`${issueRecoveryActions.evidence}->>'runId' = ${source.id}`));
       let retained: { id: string; cwd: string } | null = null;
+      const gitProbes = new Map<string, Promise<boolean>>();
       for (const hold of holds.length ? holds : [{ cause: null, evidence: null }]) {
         const checked = await retainedIssueWorkspaceForRetry(db, { companyId: run.companyId, issueId,
-          agentId: run.agentId, successorRunId: run.id, cause: hold.cause, source, evidence: hold.evidence });
+          agentId: run.agentId, successorRunId: run.id, cause: hold.cause, source, evidence: hold.evidence, gitProbes });
         if (!checked || (retained && retained.id !== checked.id)) { retained = null; break; }
         retained = checked;
       }

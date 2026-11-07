@@ -2,10 +2,10 @@ import { execFile as execFileCallback } from "node:child_process";
 import { lstat, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq, inArray, ne } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
-import { workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
+import { isTaskOwnedLocalWorkspace, recoveryGenerationSettled, workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 
@@ -15,48 +15,60 @@ const PRIOR_WORKSPACE_FILE_LIMIT = 50;
 
 /** R2: a fresh attempt starts from committed files, so it must say where the
  * previous attempt's files are. The source directory is retained unmodified.
- * This names only the task's own local directory with no other writer, and
- * reads its Git status through the shared scan scheduler with optional locks
- * disabled, so it cannot change the index of the retained directory. */
+ * This names only a directory that reuse would also trust as a source: the
+ * task's own local workspace, with a settled recovery generation and no other
+ * writer. It reads Git status through the shared scan scheduler with optional
+ * locks disabled, so it cannot change the index of the retained directory. */
 export async function describeRetainedPriorWorkspace(db: Db, input: {
   companyId: string; issueId: string; sourceRunId: string; successorRunId: string; freshCwd: string;
 }): Promise<NonNullable<ExecutionContinuationEnvelope["priorWorkspace"]> | null> {
-  const [prior] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd, branchName: executionWorkspaces.branchName })
+  const [prior] = await db.select({ workspace: executionWorkspaces, source: { id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt } })
     .from(environmentLeases).innerJoin(executionWorkspaces, and(
       eq(executionWorkspaces.companyId, environmentLeases.companyId),
       eq(executionWorkspaces.id, environmentLeases.executionWorkspaceId),
-    )).where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.sourceRunId),
-      eq(environmentLeases.provider, "local"), inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
-      eq(executionWorkspaces.sourceIssueId, input.issueId), ne(executionWorkspaces.mode, "shared_workspace")))
+    )).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, environmentLeases.companyId),
+      eq(heartbeatRuns.id, environmentLeases.heartbeatRunId)))
+    .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.sourceRunId),
+      eq(environmentLeases.provider, "local")))
     .limit(1);
-  if (!prior?.cwd || path.resolve(prior.cwd) === path.resolve(input.freshCwd)) return null;
+  const workspace = prior?.workspace;
+  if (!workspace?.cwd || !isTaskOwnedLocalWorkspace(workspace, input.issueId) ||
+      path.resolve(workspace.cwd) === path.resolve(input.freshCwd)) return null;
+  const holds = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    sql`${issueRecoveryActions.evidence}->>'runId' = ${input.sourceRunId}`));
+  if (holds.some(hold => !recoveryGenerationSettled(hold.evidence, input.sourceRunId))) return null;
   // A tree that another writer may still change is not a recovery source.
-  if (await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: prior.id,
-    successorRunId: input.successorRunId })) return null;
-  const stat = await lstat(prior.cwd).catch(() => null);
+  if (await workspaceHasOtherWriter(db, { companyId: input.companyId, workspaceId: workspace.id,
+    successorRunId: input.successorRunId, stoppedSource: prior.source })) return null;
+  const stat = await lstat(workspace.cwd).catch(() => null);
   if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
-  const priorCwd = prior.cwd;
+  const priorCwd = workspace.cwd;
   const scan = (args: string[], operation: string) => workspaceGitOperationScheduler.run({
     workspacePath: priorCwd, args, operation, cacheTtlMs: 0, bypassSingleFlight: true, timeoutMs: 15_000,
-    maxStdoutBytes: 4 * 1024 * 1024, fairnessKeys: [`company:${input.companyId}`, `workspace:${prior.id}`],
+    maxStdoutBytes: 4 * 1024 * 1024, fairnessKeys: [`company:${input.companyId}`, `workspace:${workspace.id}`],
   }).then(result => result.stdout, () => null);
   const status = await scan(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
     "retry.prior_workspace_status");
   const head = status === null ? null : await scan(["symbolic-ref", "--quiet", "--short", "HEAD"], "retry.prior_workspace_branch");
-  const changed: string[] = [];
-  if (status !== null) {
-    const entries = status.split("\0");
-    for (let index = 0; index < entries.length; index++) {
-      const entry = entries[index]!;
-      if (entry.length < 4) continue;
-      changed.push(entry.slice(3));
-      // A rename or copy is followed by its original path.
-      if (entry[0] === "R" || entry[0] === "C") index++;
-    }
-  }
-  return { sourceRunId: input.sourceRunId, path: priorCwd, branchName: head?.trim() || prior.branchName || null,
+  const changed = status === null ? [] : parsePorcelainZ(status);
+  return { sourceRunId: input.sourceRunId, path: priorCwd, branchName: head?.trim() || workspace.branchName || null,
     changedFilesKnown: status !== null, changedFileCount: changed.length,
     changedFiles: changed.slice(0, PRIOR_WORKSPACE_FILE_LIMIT) };
+}
+
+/** Paths from `git status --porcelain=v1 -z`. A rename or copy in either status
+ * column is followed by a separate entry holding its original path. */
+export function parsePorcelainZ(status: string) {
+  const changed: string[] = [];
+  const entries = status.split("\0");
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    if (entry.length < 4) continue;
+    changed.push(entry.slice(3));
+    if (/[RC]/.test(entry.slice(0, 2))) index++;
+  }
+  return changed;
 }
 
 /** Seed from committed objects, never from a possibly changing old directory.

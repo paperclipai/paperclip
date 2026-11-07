@@ -379,9 +379,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
             const [currentIssue] = await db.select({ workspaceId: issues.executionWorkspaceId }).from(issues)
               .where(and(eq(issues.id, issueRef.id), eq(issues.companyId, agent.companyId)));
             const stored = await executionWorkspacesSvc.getStoredById(agent.companyId, reusableExistingExecutionWorkspace.id);
-            ownFreshAttempt = fresh && Boolean(stored?.cwd) && stored!.cwd === await materializeIsolatedTaskDirectory({
-              companyId: agent.companyId, issueId: issueRef.id, attemptId: run.id,
-            });
+            // A pure path check: the reuse validation below confirms the full
+            // isolated-workspace-attempts/<company>/<issue>/<run> identity.
+            ownFreshAttempt = fresh && Boolean(stored?.cwd) && path.basename(stored!.cwd!) === run.id &&
+              path.basename(path.dirname(stored!.cwd!)) === issueRef.id &&
+              path.basename(path.dirname(path.dirname(path.dirname(stored!.cwd!)))) === "isolated-workspace-attempts";
             if ((fresh && !ownFreshAttempt) || currentIssue?.workspaceId !== reusableExistingExecutionWorkspace.id ||
                 reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
                 reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||

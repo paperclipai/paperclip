@@ -14,7 +14,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
-import { describeRetainedPriorWorkspace } from "./fresh-workspace-seed.js";
+import { describeRetainedPriorWorkspace, parsePorcelainZ } from "./fresh-workspace-seed.js";
 import { recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -149,6 +149,19 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
       expect(await readFreshWorkspaceReadiness(db, { ...successor, id: randomUUID() })).toBeNull();
     }, 30_000);
 
+  it("lists renamed paths from either porcelain status column once", () => {
+    expect(parsePorcelainZ("R  new.md\0old.md\0 R moved.md\0before.md\0?? NOTES.md\0 M README.md\0")).toEqual([
+      "new.md", "moved.md", "NOTES.md", "README.md"]);
+  });
+
+  it("names the retained prior worktree and its uncommitted files for a fresh attempt", async () => {
+    const f = await seed("exhausted_generation");
+    const prior = await describeRetainedPriorWorkspace(db, { companyId: f.companyId, issueId: f.issueId,
+      sourceRunId: f.source.id, successorRunId: randomUUID(), freshCwd: join(root, "fresh") });
+    expect(prior).toEqual({ sourceRunId: f.source.id, path: f.worktree, branchName: f.branchName,
+      changedFilesKnown: true, changedFileCount: 2, changedFiles: expect.arrayContaining(["NOTES.md", "README.md"]) });
+  }, 30_000);
+
   it("ignores a workspace operation orphaned by a restart of the stopped source", async () => {
     const f = await seed("blocked_recovery");
     // The server died during the source's preparation; no process can still run it.
@@ -179,14 +192,13 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
         .where(eq(issueRecoveryActions.id, f.action.id));
       const { readiness, successor } = await retry(f);
       expect(readiness).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.source.id });
-      // The fresh attempt names the retained directory only when no other writer
-      // holds it and it belongs to this task alone.
+      // The fresh attempt names the retained directory only when reuse would also
+      // trust it as a source: task-owned, local, settled and with no other writer.
       const prior = await describeRetainedPriorWorkspace(db, { companyId: f.companyId, issueId: f.issueId,
         sourceRunId: f.source.id, successorRunId: successor.id, freshCwd: join(root, "fresh") });
-      if (["live_lease", "running_operation", "shared_workspace", "missing_directory"].includes(unsafe)) expect(prior).toBeNull();
-      if (unsafe === "export_pending") expect(prior).toEqual({ sourceRunId: f.source.id, path: f.worktree,
-        branchName: f.branchName, changedFilesKnown: true, changedFileCount: 2, changedFiles: expect.arrayContaining(["NOTES.md", "README.md"]) });
-      if (unsafe === "corrupt_git") expect(prior).toMatchObject({ path: f.worktree, changedFilesKnown: false, changedFiles: [] });
+      if (unsafe === "corrupt_git") expect(prior).toEqual({ sourceRunId: f.source.id, path: f.worktree,
+        branchName: f.branchName, changedFilesKnown: false, changedFileCount: 0, changedFiles: [] });
+      else expect(prior).toBeNull();
       const [task] = await db.select().from(issues).where(and(eq(issues.id, f.issueId), eq(issues.companyId, f.companyId)));
       expect(task.executionWorkspaceId).toBe(f.workspace.id);
     }, 30_000);
