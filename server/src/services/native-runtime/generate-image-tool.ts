@@ -72,13 +72,16 @@ export async function requestOpenAiImage(input: GenerateImageInput & { apiKey: s
     body: JSON.stringify({ model: GENERATE_IMAGE_MODEL, prompt: input.prompt, size: input.size, quality: input.quality, n: 1 }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const text = await readBoundedText(response, limits.maxResponseBytes ?? MAX_RESPONSE_BYTES);
+  const text = await readBoundedText(response, limits.maxResponseBytes ?? MAX_RESPONSE_BYTES).catch((error: unknown) => {
+    if (!response.ok) throw new ImageGenerationProviderError(`OpenAI image generation failed: HTTP ${response.status}`, response.status, true);
+    throw error;
+  });
   let body: Record<string, unknown> = {};
   try { body = record(JSON.parse(text)); } catch { /* reported below */ }
   if (!response.ok) {
     // Provider messages are safe to show; they never include the request key.
     const message = typeof record(body.error).message === "string" ? String(record(body.error).message).slice(0, 500) : `HTTP ${response.status}`;
-    throw new ImageGenerationProviderError(`OpenAI image generation failed: ${message}`, response.status);
+    throw new ImageGenerationProviderError(`OpenAI image generation failed: ${message}`, response.status, true);
   }
   const first = record(Array.isArray(body.data) ? body.data[0] : undefined);
   if (typeof first.b64_json !== "string") throw new ImageGenerationProviderError("OpenAI image generation returned no image", 502);
@@ -127,8 +130,13 @@ async function readBoundedText(response: Response, limit: number): Promise<strin
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * `rejected` is true only for an HTTP error response, where OpenAI did not
+ * generate (and does not bill) an image. Any other failure, including a lost
+ * or unreadable success response, may have been billed.
+ */
 export class ImageGenerationProviderError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly rejected = false) { super(message); }
 }
 
 // Immutable, reviewed rate card (USD per 1M tokens, standard processing).
@@ -167,7 +175,7 @@ export function imageChargeCostEvent(input: { agentId: string; issueId: string |
   return {
     agentId: input.agentId, issueId: input.issueId, projectId: typeof input.charge.projectId === "string" ? input.charge.projectId : null,
     heartbeatRunId: input.runId, provider: "openai", biller: "openai", billingType: "metered_api" as const, model: String(input.charge.model),
-    costStatus: "estimated" as const, inputTokens: count(usage.textInputTokens) + count(usage.imageInputTokens), outputTokens: count(usage.outputTokens),
+    costStatus: input.charge.costStatus === "unpriced" ? "unpriced" as const : "estimated" as const, inputTokens: count(usage.textInputTokens) + count(usage.imageInputTokens), outputTokens: count(usage.outputTokens),
     costCents: String(input.charge.costCents), pricingProvenance: input.charge.pricingProvenance as never,
     providerRequestId: typeof input.charge.providerRequestId === "string" ? input.charge.providerRequestId : null,
     occurredAt: chargedAt, idempotencyKey: `image_gen:${input.runId}:${input.key}`,
@@ -196,6 +204,15 @@ export async function settleChargedImageReceiptsInTransaction(tx: Db, run: { id:
     settled.push(event.projectId);
   }
   return settled;
+}
+
+/** A request OpenAI may have billed although no usable response arrived: spend is recorded as unpriced. */
+export function uncertainImageCharge(input: { projectId: string | null; reason: string }) {
+  return {
+    model: GENERATE_IMAGE_MODEL, providerRequestId: null, usage: { textInputTokens: 0, imageInputTokens: 0, outputTokens: 0 },
+    costCents: "0", costStatus: "unpriced", projectId: input.projectId, chargedAt: new Date().toISOString(),
+    pricingProvenance: { source: "unknown" as const, evidence: `Image request outcome unknown: ${input.reason}`.slice(0, 1000) },
+  };
 }
 
 /** Server-chosen, create-only destination in the workspace root. */

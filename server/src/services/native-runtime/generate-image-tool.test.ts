@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { aiConnectionService } from "../ai-connections.js";
@@ -209,6 +209,51 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
     await db.update(costEvents).set({ issueId: null }).where(eq(costEvents.id, costs[0]!.id));
     await expect(accountRunCost(db, f.runId)).resolves.not.toThrow();
     expect(await db.select().from(costEvents).where(and(eq(costEvents.heartbeatRunId, f.runId), eq(costEvents.providerRequestId, "req_unsettled")))).toHaveLength(1);
+  });
+
+  it("records unknown spend when OpenAI's response is lost after the request was sent", async () => {
+    const f = await fixture();
+    const fetchMock = vi.fn(async () => { throw new TypeError("fetch failed: socket hang up"); });
+    vi.stubGlobal("fetch", fetchMock);
+    const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+    const callId = randomUUID();
+    await expect(authority.execute({ tool: "generate_image", callId, arguments: { prompt: "logo" } })).rejects.toThrow("may have been billed");
+    const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId));
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ provider: "openai", model: "gpt-image-2", costStatus: "unpriced" });
+    await expect(authority.execute({ tool: "generate_image", callId, arguments: { prompt: "logo" } })).rejects.toThrow("may have been billed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(1);
+  });
+
+  it("records no spend when OpenAI rejects the request", async () => {
+    const f = await fixture();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { message: "Your request was rejected by the safety system" } }), { status: 400 })));
+    const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+    await expect(authority.execute({ tool: "generate_image", callId: randomUUID(), arguments: { prompt: "logo" } })).rejects.toThrow("safety system");
+    expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(0);
+  });
+
+  it("does not call OpenAI when Stop commits after the first authority check", async () => {
+    const f = await fixture();
+    const fetchMock = stubOpenAiImages();
+    // Stop lands while the handler writes its receipt and audit entry.
+    await db.execute(sql.raw(`create or replace function n12_stop_on_image_start() returns trigger language plpgsql as $$
+      begin
+        if new.action = 'runner.image_generate' and new.details->>'outcome' = 'started' then
+          update agents set status = 'paused' where id = new.actor_id::uuid;
+        end if;
+        return new;
+      end $$;
+      create trigger n12_stop_on_image_start after insert on activity_log for each row execute function n12_stop_on_image_start();`));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, f.binding as never);
+      await expect(authority.execute({ tool: "generate_image", callId: randomUUID(), arguments: { prompt: "logo" } })).rejects.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw("drop trigger if exists n12_stop_on_image_start on activity_log; drop function if exists n12_stop_on_image_start();"));
+    }
   });
 
   it("refuses when the run's AI connection is no longer an active OpenAI API key", async () => {

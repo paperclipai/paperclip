@@ -2,7 +2,7 @@ import { budgetServiceInTransaction } from "../budgets.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
-import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageChargeCostEvent, imageIdentity, priceGeneratedImage, requestOpenAiImage, writeGeneratedImageLocally } from "./generate-image-tool.js";
+import { GENERATE_IMAGE, GENERATE_IMAGE_DEFINITION, GENERATE_IMAGE_MODEL, generateImageSchema, generatedImageDestination, imageChargeCostEvent, imageIdentity, ImageGenerationProviderError, priceGeneratedImage, requestOpenAiImage, uncertainImageCharge, writeGeneratedImageLocally } from "./generate-image-tool.js";
 import { aiConnectionService } from "../ai-connections.js";
 import { createCostEventInTransaction } from "../costs.js";
 import { withOperationAccountingTransaction } from "../accounting-transaction.js";
@@ -1264,11 +1264,32 @@ export class PaperclipRunnerToolAuthority {
       companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, runId: this.binding.runId,
       action: "runner.image_generate", entityType: "issue", entityId: this.binding.issueId, details: { ...details, ...extra, outcome } }); };
     await audit("started");
+    // Stop, reassignment or a budget stop can commit while the writes above
+    // wait. Recheck live authority as the last step before paying.
+    try {
+      await authorize();
+    } catch (error) {
+      await setReceipt({ state: "failed", error: "Image generation was stopped before any request was sent" }).catch(() => undefined);
+      await audit("refused").catch(() => undefined);
+      throw error;
+    }
     let image: Awaited<ReturnType<typeof requestOpenAiImage>>;
     try {
       image = await requestOpenAiImage({ ...input, apiKey });
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "Image generation failed";
+      if (!(error instanceof ImageGenerationProviderError && error.rejected)) {
+        // OpenAI may have generated and billed this image. Record unknown spend
+        // through the same settlement path; run accounting retries it.
+        const charge = uncertainImageCharge({ projectId: current.issue.projectId ?? null, reason: message });
+        await setReceipt({ state: "charged", charge, error: message }).catch(() => undefined);
+        // Settle only after the spend is recorded; otherwise run accounting
+        // still finds the `charged` receipt and records it later.
+        const recorded = await this.#recordImageCharge(key, charge).then(() => true, () => false);
+        if (recorded) await setReceipt({ state: "failed", charge, error: `The image request may have been billed but returned no usable image: ${message}` }).catch(() => undefined);
+        await audit("unconfirmed", { error: message }).catch(() => undefined);
+        throw badRequest(`The image request may have been billed but returned no usable image: ${message}`);
+      }
       await setReceipt({ state: "failed", error: message }).catch(() => undefined);
       await audit("failed", { error: message }).catch(() => undefined);
       throw badRequest(message);
@@ -1324,7 +1345,9 @@ export class PaperclipRunnerToolAuthority {
   async #settleInterruptedImage(key: string, receipt: Record<string, unknown>): Promise<never> {
     const charge = record(receipt.charge);
     await this.#recordImageCharge(key, charge);
-    const message = `An earlier attempt generated the image but did not confirm saving it. Check whether ${String(charge.destination)} exists in the workspace before generating another.`;
+    const message = typeof charge.destination === "string"
+      ? `An earlier attempt generated the image but did not confirm saving it. Check whether ${charge.destination} exists in the workspace before generating another.`
+      : "An earlier image request may have been billed but returned no usable image.";
     await this.db.update(heartbeatRuns).set({
       resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{imageToolReceipts}',
         coalesce(${heartbeatRuns.resultJson} -> 'imageToolReceipts', '{}'::jsonb) || ${JSON.stringify({ [key]: { ...receipt, state: "failed", error: message } })}::jsonb)`,
