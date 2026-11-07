@@ -43,6 +43,7 @@ export {
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
+export { githubPrClosureSweepService, type GitHubPrClosureSweepResult } from "./github-pr-closure-sweep.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
