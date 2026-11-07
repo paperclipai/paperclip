@@ -190,6 +190,9 @@ describe("CloudAccessGate restart recovery", () => {
     flushSync(() => container.querySelector("button")!.click());
     await flushReact();
     expect(container.querySelector("textarea")).toBeNull();
+    client.setQueryData([...queryKeys.access.currentBoardAccess, "user"], { userId: "user", isInstanceAdmin: false, companyIds: ["company"] });
+    await flushReact();
+    expect(container.querySelector("textarea")).toBeNull();
     finishRetry(Response.json({ error: "Unauthorized" }, { status: 401 }));
     await flushReact();
     await flushReact();
