@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -36,13 +36,15 @@ it("keeps thread usage reported before a run's first turn as history, not a bind
     session = await driver.openSession({
       runId: "pre-turn-usage", normalizedSessionId: "session-pre-turn-usage", workingDirectory: workspace,
     });
-    // The runner commits the thread usage before this run starts a turn.
+    // The driver consumes the thread usage while no turn is active, and keeps
+    // it as history: the thread total, with nothing billed to this run.
+    const opened = session;
     await vi.waitFor(async () => {
-      const journal = JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8"));
-      expect(journal.committedEvents.some((event: { eventType: string }) => event.eventType === "usage.reported")).toBe(true);
+      expect(await opened.usage!()).toMatchObject({
+        total: { inputTokens: 5, outputTokens: 1 },
+        runDelta: { inputTokens: 0, outputTokens: 0 },
+      });
     }, { timeout: 15_000, interval: 50 });
-    // Let the driver consume it while no turn is active.
-    await new Promise(resolveWait => setTimeout(resolveWait, 200));
     await session.startTurn({ message: { role: "user", text: "Finish." } });
     const events = await collectUntilTerminal(session.events());
     expect(events.at(-1)?.eventType).toBe("turn.completed");
@@ -53,7 +55,7 @@ it("keeps thread usage reported before a run's first turn as history, not a bind
     // history, so this run is billed only for the difference.
     expect(usage.at(-1)).toMatchObject({ inputTokens: 7, outputTokens: 2 });
   } finally {
-    await session?.close?.().catch(() => undefined);
+    await session?.close({ reason: "test complete" }).catch(() => undefined);
     await bundle.transport.close().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
