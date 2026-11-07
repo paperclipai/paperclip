@@ -11606,7 +11606,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const promotion = await restarted.promoteDueScheduledRetries(
       scheduled.dueAt,
     );
-    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id], degraded: false });
 
     const promoted = await db
       .select({
