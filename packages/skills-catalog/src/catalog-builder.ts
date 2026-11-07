@@ -664,6 +664,9 @@ async function fetchReferencedFileBytes(
   }
 }
 
+const IGNORED_CATALOG_NAMES = new Set(["__pycache__", ".pytest_cache", ".DS_Store"]);
+const IGNORED_CATALOG_SUFFIXES = [".pyc", ".pyo"];
+
 async function collectSkillFiles(
   packageDir: string,
   skillDir: string,
@@ -675,6 +678,10 @@ async function collectSkillFiles(
 
   async function visit(dir: string) {
     for (const entry of await sortedDirEntries(dir)) {
+      // Local bytecode and OS junk can appear between a build and a commit; the
+      // manifest must describe only files that ship with the skill.
+      if (IGNORED_CATALOG_NAMES.has(entry.name)) continue;
+      if (IGNORED_CATALOG_SUFFIXES.some((suffix) => entry.name.endsWith(suffix))) continue;
       const absolutePath = path.join(dir, entry.name);
       const lstat = await fs.lstat(absolutePath);
       let stat = lstat;
