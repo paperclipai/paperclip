@@ -59,7 +59,19 @@ n = 3 per cell. Every interrupted run had a recovery transition and a later prov
 
 ## Restart chaos (R1–R6)
 
-<!-- filled from the chaos waves -->
+Two waves of the restart chaos harness with the same plan, differing only in the forced lifecycle:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --adapters codex,opencode \
+  --concurrency 4 --tasks 8 --faults K1,K2,K6 --seed 4242 --rc06-masked --lifecycle <warm|per_turn>
+```
+
+| Wave | Lifecycle | Tasks | Crossed a fault | R1–R6 + T-oracle | Open signatures |
+|---|---|---|---|---|---|
+| `w-20261107T181913-s4242` | warm | 8 | 7 | 8/8 PASS | none |
+| `w-20261107T183435-s4242` | per_turn | 8 | 8 | 8/8 PASS | none |
+
+Both waves cover Codex and OpenCode in workloads A1, B1 and B5 under K1 (SIGKILL), K2 (SIGTERM) and K6 (crash loop). Warm adds no R1–R6 failure. Revision: master `4d5265fe7e` + #19874 + the reconnect grace (#19879, before its recovery follow-up), with `--lifecycle` added to the harness here. The runner-e2e catalog pins `per_turn`, so the harness forces the lifecycle explicitly; warm is what the new default resolves to for these local agents.
 
 ## Safety model of the warm default
 

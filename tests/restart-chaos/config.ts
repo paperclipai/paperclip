@@ -86,13 +86,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
+      lifecycle: { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes", "lifecycle"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -113,6 +114,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   // K13 restart storm: faults come from the storm clock, and `--tasks` is the
   // pool that keeps `--concurrency` tasks in flight until the storm ends.
   const stormMinutes = values["storm-minutes"] === undefined ? undefined : integer(values["storm-minutes"], "storm-minutes", 60, 1, 240);
+  const lifecycle = values.lifecycle;
+  if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm") throw new Error("--lifecycle must be per_turn or warm");
   const options: WaveOptions = {
     env,
     adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
@@ -127,6 +130,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
+    ...(lifecycle ? { lifecycle } : {}),
   };
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
