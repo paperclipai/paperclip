@@ -252,6 +252,10 @@ import {
   isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
+import {
+  buildExecutionStageWakeContext,
+  reconcileReviewHandoffAfterBlockerClear,
+} from "../services/recovery/review-handoff-retry.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -500,16 +504,6 @@ type ActivityExecutionParticipant = Pick<
   NormalizedExecutionPolicy["stages"][number]["participants"][number],
   "type" | "agentId" | "userId"
 >;
-type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor";
-  stageId: string | null;
-  stageType: ParsedExecutionState["currentStageType"];
-  currentParticipant: ParsedExecutionState["currentParticipant"];
-  returnAssignee: ParsedExecutionState["returnAssignee"];
-  reviewRequest: ParsedExecutionState["reviewRequest"];
-  lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
-  allowedActions: string[];
-};
 type SuccessfulRunHandoffActivityRow = {
   entityId: string;
   action: string;
@@ -2108,23 +2102,6 @@ function isApprovalReviewComment(body: string) {
       normalized,
     )
   );
-}
-
-function buildExecutionStageWakeContext(input: {
-  state: ParsedExecutionState;
-  wakeRole: ExecutionStageWakeContext["wakeRole"];
-  allowedActions: string[];
-}): ExecutionStageWakeContext {
-  return {
-    wakeRole: input.wakeRole,
-    stageId: input.state.currentStageId,
-    stageType: input.state.currentStageType,
-    currentParticipant: input.state.currentParticipant,
-    returnAssignee: input.state.returnAssignee,
-    reviewRequest: input.state.reviewRequest ?? null,
-    lastDecisionOutcome: input.state.lastDecisionOutcome,
-    allowedActions: input.allowedActions,
-  };
 }
 
 function summarizeIssueRelationForActivity(relation: {
@@ -10620,6 +10597,19 @@ export function issueRoutes(
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
+
+      if (result.issue.status === "in_review") {
+        await reconcileReviewHandoffAfterBlockerClear(db, {
+          issueId: result.issue.id,
+          companyId: result.issue.companyId,
+          enqueueWakeup: (agentId, request) => heartbeat.wakeup(agentId, request),
+        }).catch((err) => {
+          logger.warn(
+            { err, issueId: result.issue.id },
+            "failed to reconcile review handoff after recovery action resolution",
+          );
+        });
+      }
 
       await routinesSvc.syncRunStatusForIssue(result.issue.id);
 
