@@ -49,15 +49,17 @@ export async function suspendOwnedProviderForCleanup(ctx: ChatCatalogContext, bi
   const events = await collectRunEvents<{ seq?: number; payload?: { prpEvent?: { runId?: string; normalizedSessionId?: string; sourceKind?: string; sourceInstanceId?: string; eventType?: string; payload?: { processId?: number; processStartedAt?: string | null; providerSessionId?: string; driverSessionId?: string } } } }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
   const sessionReceipts = events.map(row => row.payload?.prpEvent).filter(e => e?.runId === run.id && e.sourceKind === "runner" && e.sourceInstanceId === run.runnerInstanceId && e.normalizedSessionId === run.nativeSessionId
     && ["session.started", "session.resumed"].includes(e.eventType ?? "") && !!(e.payload?.providerSessionId ?? e.payload?.driverSessionId));
-  // The runnerd transport writes the provider into the checkpoint. The direct OpenCode server
-  // backend names its spawned `opencode serve` only in the durable session receipt.
-  const viaProxy = !!checkpoint?.process?.providerPid;
+  // The runnerd transport writes the provider into the checkpoint; other local paths name it only
+  // in the durable session receipt.
   const latest = sessionReceipts.at(-1)?.payload;
-  const pid = viaProxy ? checkpoint!.process!.providerPid : latest?.processId;
-  const started = viaProxy ? checkpoint!.process!.providerProcessStartedAt : latest?.processStartedAt ?? undefined;
+  const pid = checkpoint?.process?.providerPid ?? latest?.processId;
+  const started = checkpoint?.process?.providerPid ? checkpoint.process.providerProcessStartedAt : latest?.processStartedAt ?? undefined;
   if ((kind !== "codex" && kind !== "opencode") || !Number.isSafeInteger(pid) || !pid || !started) throw new Error("Actual public native session lacks a qualified local provider PID/start identity");
-  const executable = kind === "opencode" && viaProxy ? await realpath(process.execPath) : undefined;
-  const proxyScript = kind === "opencode" && viaProxy ? await realpath(fileURLToPath(new URL("../../../packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs", import.meta.url))) : undefined;
+  // OpenCode runs either behind the app-server proxy (`node opencode-app-server-proxy.cjs`) or as
+  // a directly spawned `opencode serve`; qualify whichever the recorded process actually is.
+  const viaProxy = kind === "opencode" && !!(await providerIdentity(pid)).proxyScript;
+  const executable = viaProxy ? await realpath(process.execPath) : undefined;
+  const proxyScript = viaProxy ? await realpath(fileURLToPath(new URL("../../../packages/paperclip-runner/dist/cli/opencode-app-server-proxy.cjs", import.meta.url))) : undefined;
   const digest = executable ? createHash("sha256").update(await readFile(executable)).digest("hex") : undefined;
   const proxyDigest = proxyScript ? createHash("sha256").update(await readFile(proxyScript)).digest("hex") : undefined;
   if (!sessionReceipts.some(e => e?.payload?.processId === pid)) throw new Error("Provider suspension lacks the exact durable native session/PID receipt");
