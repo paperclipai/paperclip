@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -47,6 +47,9 @@ import { buildNativeCompletionContract } from "../native-runtime/completion-cont
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
+import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { heartbeatService } from "../heartbeat.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -1072,6 +1075,49 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
+
+  it("selects the answer retry from the real delivery producer and heartbeat queue", async () => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "idle",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Answer delivery retry",
+      status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board" }).returning();
+    const [questionRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+      issueId: issue.id, nativeIssueId: issue.id, runtimeMode: "native", status: "succeeded", finishedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, source: "chat:telegram" } }).returning();
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create(issue, { kind: "ask_user_questions", sourceRunId: questionRun.id,
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "choice", prompt: "Choose",
+        selectionMode: "single", required: true, options: [{ id: "yes", label: "Yes" }] }] } },
+      { agentId: f.agent.id, runId: questionRun.id });
+    await interactions.answerQuestions(issue, interaction.id, { answers: [{ questionId: "choice", optionIds: ["yes"] }] },
+      { userId: "local-board" });
+    const heartbeat = heartbeatService(db);
+    await questionResponseDeliveryService(db, { heartbeat }).deliver(interaction.id);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id));
+    expect(delivery).toMatchObject({ status: "fallback_queued", deliveryMode: "wake_fallback" });
+    expect(delivery.targetRunId).toBeTruthy();
+    const [admitted] = await db.update(heartbeatRuns).set({ status: "running", executionStage: "preparing", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, delivery.targetRunId!)).returning();
+    f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible.mockImplementation(async run => {
+      await heartbeat.scheduleBoundedRetry(run.id, { now: new Date(), random: () => 0,
+        retryReason: "interaction_continuation_infra_retry", wakeReason: "interaction_continuation_infra_retry", maxAttempts: 2 });
+      return null;
+    });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "not_scheduled",
+      reason: "Wrong retry owner fixture", issueId: issue.id });
+    await f.completion.failRunSetup({ ...f.setup(new ReviewedChatBindingNotReadyError()), run: admitted, runId: admitted.id });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: admitted.id }), expect.anything());
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, admitted.id));
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({ scheduledRetryReason: "interaction_continuation_infra_retry",
+      contextSnapshot: { interactionId: interaction.id, interactionStatus: "answered", mutation: "interaction" } });
+    expect((await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, delivery.id)))[0]).toEqual(delivery);
+  }, 30_000);
 
   const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
     data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });

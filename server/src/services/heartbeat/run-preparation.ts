@@ -1768,7 +1768,10 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    contextSnapshot.mutation = "interaction";
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
