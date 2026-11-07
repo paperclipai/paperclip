@@ -40,6 +40,10 @@ describe("native provider failure observation", () => {
     const result = observed.forTerminal("turn", terminal);
     expect(result).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
     expect(JSON.stringify(result)).not.toContain("private-model");
+    // A closed diagnostic only, and the classified turn is not also reported as unclassified.
+    expect(result?.diagnostic).toEqual(expect.objectContaining({ provider: kind }));
+    expect(JSON.stringify(result?.diagnostic)).not.toContain("not a valid model");
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
     expect(observed.forTerminal("other-turn", terminal)).toBeNull();
     expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
   });
