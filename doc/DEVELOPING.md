@@ -3423,6 +3423,13 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+An explicit Retry can continue a recovered setup failure that began as a
+scheduled retry. Its settlement proof accepts the host-authored promotion event
+only when its deadline, reason and attempt match the run and its saved retry
+context. The exact failure and durable measurement must still follow. Provider
+dispatch evidence, an active controller, unsafe files or changed user authority
+keep the Retry held. This adds no automatic replay or recovery loop.
+
 For remote controller disk-loss work, use the existing control-plane snapshot
 transaction and `native-controller-recovery.ts`; do not add a second snapshot
 writer. The private versioned metadata is limited to 4 KiB. Its importer handles

@@ -342,6 +342,13 @@ execution coordinator opens. Unavailable probes are retried within a shared
 an unreadable identity from a confirmed missing process and contains no command
 output or credentials. Saved-state read failures use `state_read_failed`; malformed
 saved JSON uses `state_invalid`. It does not itself authorize replacement or cleanup.
+For `process_not_running`, the event also records `runnerLifecycle` and
+`runnerSettled` from the exited runner's saved state. `runnerLifecycle` is a known
+runner lifecycle, `other` for an unknown value, or `unavailable` when the state has
+none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
+provider cleanup or warm transition is pending. These fields explain how the runner
+stopped. The event is not recorded when a scheduled retry resumes a runner that
+exited after a settled suspension; see `doc/execution-semantics.md`.
 
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
