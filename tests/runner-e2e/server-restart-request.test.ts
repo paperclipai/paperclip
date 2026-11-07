@@ -62,7 +62,7 @@ it("rejects cache replacement for unselected, local and legacy cells", async () 
 
 it.each([
   { controllerOutage: { signal: "SIGKILL", holdMs: 125_000 }, discardControllerCache: false },
-  { controllerOutage: { signal: "SIGKILL", holdMs: 300_001 }, discardControllerCache: true },
+  { controllerOutage: { signal: "SIGKILL", holdMs: 600_001 }, discardControllerCache: true },
   { controllerOutage: { signal: "SIGKILL", holdMs: 125_000 }, discardControllerCache: true, preserveRunner: {} },
   { controllerOutage: { signal: "SIGKILL", holdMs: 125_000 }, discardControllerCache: true, crashAfterResult: {} },
   { recoveryBinding: {} },

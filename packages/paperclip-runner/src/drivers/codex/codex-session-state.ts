@@ -153,6 +153,14 @@ export class CodexSessionState {
   dispositionOnlyRecoveryAvailable = false;
   dispositionOnlyRecoveryConsumed = false;
   dispositionOnlyRecoveryTurnId: string | null = null;
+  /**
+   * A restart continuation borrows the one-shot disposition marker so a
+   * crash during it can adopt the accepted turn. It is not the disposition
+   * request: if it completes without a result, the allowance is returned.
+   * In memory only; a checkpoint taken during the continuation keeps the
+   * stricter consumed marker.
+   */
+  restartContinuationTurnId: string | null = null;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
   /**

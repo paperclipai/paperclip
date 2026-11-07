@@ -203,8 +203,10 @@ export function sandboxProviderFailureLabel(error: unknown): { label: string; co
   return { label, code, status };
 }
 
+const WORKSPACE_COMMAND_TIMEOUT_MS = 300_000;
+
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
-  args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
+  args: string[], env?: Record<string, string>, timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) {
   const execute = () => target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
   // Copy-back and restore record why the provider refused the command.
@@ -466,7 +468,7 @@ async function captureReadOnlyWorkspaceArchive(input: {
   target: RemoteWorkspaceTarget; remoteCwd: string; operationId: string;
 }) {
   if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("remote_workspace_operation_identity_invalid");
-  const inspect = async (timeoutMs = 300_000) => {
+  const inspect = async (timeoutMs = WORKSPACE_COMMAND_TIMEOUT_MS) => {
     const value = JSON.parse(await command(input.target, "capture", ["-e", readonlyWorkspaceInventoryScript(), input.remoteCwd], undefined, timeoutMs)) as Awaited<ReturnType<typeof readWorkspaceInventory>>;
     if (!/^[a-f0-9]{64}$/.test(value.sha256) || !Number.isSafeInteger(value.byteSize) || value.byteSize < 0
       || !Number.isSafeInteger(value.entries) || value.entries < 0 || !Array.isArray(value.exclude)
@@ -495,11 +497,15 @@ async function captureReadOnlyWorkspaceArchive(input: {
     const same = (observed: typeof before) => observed.sha256 === before.sha256
       && observed.byteSize === before.byteSize && observed.entries === before.entries;
     if (!same(received) || !same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
+    const finalVerificationBudget = remaining();
     stage = "archive";
-    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: verificationSignal });
+    const captureSignal = AbortSignal.timeout(WORKSPACE_COMMAND_TIMEOUT_MS);
+    const receipt = await captureRemoteWorkspaceDirectory({ cwd: copy, archivePath, exclude: before.exclude, signal: captureSignal });
+    captureSignal.throwIfAborted();
     stage = "verify";
-    if (!same(await inspect(remaining()))) throw new Error("remote_workspace_readonly_capture_changed");
-    verificationSignal.throwIfAborted();
+    const finalVerificationSignal = AbortSignal.timeout(finalVerificationBudget);
+    if (!same(await inspect(finalVerificationBudget))) throw new Error("remote_workspace_readonly_capture_changed");
+    finalVerificationSignal.throwIfAborted();
     // Only the sealed portable archive remains a candidate for durable upload.
     await removeTaskDirectoryTree(copy);
     const savedRoot = root;

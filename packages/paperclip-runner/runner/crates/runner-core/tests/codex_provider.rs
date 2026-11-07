@@ -39,6 +39,101 @@ fn lock_receipt_limit_test() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// A process group leader that has already exited, as a provider launch
+/// leaves behind when its runner is killed before admitting it.
+#[cfg(unix)]
+fn exited_provider_process_group() -> u32 {
+    use std::os::unix::process::CommandExt;
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .expect("spawn a provider stand-in");
+    let pid = child.id();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    pid
+}
+
+#[cfg(unix)]
+#[test]
+fn restart_relaunches_a_provider_whose_runner_died_before_admitting_it() {
+    let directory = temporary_directory("orphaned-provider-startup");
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider_config(&directory, &["--hold-turn"])}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Survive a restart during provider relaunch."}),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    // The next runner began restoring the provider, spawned it, and was
+    // killed before admission. The spawned process group has since exited.
+    let state_path = directory.join("codex-provider-state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(state["lifecycle"], "turn_active");
+    let pid = exited_provider_process_group();
+    let generation = state["providerProcessGeneration"].as_u64().unwrap() + 1;
+    state["startupAttempt"] = json!({
+        "schema": "paperclip.provider_startup.v1",
+        "launchId": "afd87635-67c2-4b18-8ce1-9a97da4be2f4",
+        "phase": "spawned",
+        "trigger": "restore",
+        "attemptedProcessGeneration": generation,
+        "origin": null,
+        "command": {"commandId": "command_resume_probe_1", "controllerSeq": 9, "commandType": "runner.drain"},
+        "configurationFingerprint": format!("sha256:{}", "a".repeat(64)),
+        "requestedThreadId": state["threadId"],
+        "authenticatedThreadId": null,
+        "processId": pid,
+        "processGroupId": pid,
+        "failedStage": null,
+        "directChildExitObserved": false,
+        "exitCode": null,
+        "signal": null,
+        "processTreeRetired": false,
+    });
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    let resumes_before = call_count(&directory, "thread/resume");
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    recovered
+        .execute(&command(
+            "command_resume_probe_2",
+            10,
+            "runner.drain",
+            json!({}),
+        ))
+        .expect("an exited, unadmitted provider launch no longer blocks recovery");
+    assert_eq!(call_count(&directory, "thread/resume"), resumes_before + 1);
+    let events = recovered.retained_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "harness.diagnostic"
+            && event.payload["code"] == "provider_startup_retired"
+            && event.payload["startup"]["processId"] == pid));
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(saved["startupAttempt"].is_null());
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn temporary_directory(label: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-runner-codex-{label}-{}-{}",
