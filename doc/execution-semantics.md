@@ -974,6 +974,19 @@ Workspace incoherence feeds into the same non-terminal liveness and stranded ass
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
+Worktree realization, persisted-worktree restoration and Git cleanup for one
+repository run one at a time in each server process. The queue key is the
+canonical repository root. Two task starts therefore cannot write the shared
+`.git/config` at the same time. A fresh worktree is created without implicit
+upstream tracking. Paperclip then sets the upstream of the new branch from the
+remote-tracking base ref inside the same queued operation. If that step fails,
+Paperclip removes the new worktree and the new branch, and it reports the
+original error. If the rollback also fails, the error contains both causes.
+When Paperclip reuses, attaches or restores a task branch that has no upstream
+configuration, it sets the upstream from the remote-tracking base ref. This applies
+only when the base ref is a remote-tracking ref. An existing branch that
+Paperclip did not create stays unowned, so workspace cleanup does not delete it.
+
 Sandbox Git restore uses the host branch and commit captured before staging.
 If that identity is unchanged, a rebased or amended sandbox history with shared
 ancestry replaces the starting tip instead of being merged with it. The ref
