@@ -30,6 +30,7 @@ import {
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
+  type IssueCompletionRequirement,
   type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
@@ -70,6 +71,7 @@ type CreateWorkspaceInput = {
   sharedWorkspaceKey?: string | null;
   metadata?: Record<string, unknown> | null;
   runtimeConfig?: Partial<ProjectWorkspaceRuntimeConfig> | null;
+  defaultCompletionRequirement?: IssueCompletionRequirement | null;
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
@@ -253,6 +255,7 @@ function toWorkspace(
     sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     runtimeConfig: readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null),
+    defaultCompletionRequirement: (row.defaultCompletionRequirement as IssueCompletionRequirement | null) ?? null,
     isPrimary: row.isPrimary,
     runtimeServices,
     createdAt: row.createdAt,
@@ -1193,6 +1196,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             remoteProvider: readNonEmptyString(data.remoteProvider),
             remoteWorkspaceRef,
             sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
+            defaultCompletionRequirement: data.defaultCompletionRequirement ?? null,
             metadata:
               data.runtimeConfig !== undefined
                 ? mergeProjectWorkspaceRuntimeConfig(
@@ -1274,6 +1278,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
+      if (data.defaultCompletionRequirement !== undefined) patch.defaultCompletionRequirement = data.defaultCompletionRequirement;
       if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
         patch.metadata =
           data.runtimeConfig !== undefined

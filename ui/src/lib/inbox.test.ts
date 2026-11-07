@@ -242,6 +242,7 @@ function makeProjectWorkspace(overrides: Partial<ProjectWorkspace> = {}): Projec
     sharedWorkspaceKey: null,
     metadata: null,
     runtimeConfig: null,
+    defaultCompletionRequirement: null,
     isPrimary: true,
     createdAt: new Date("2026-03-11T00:00:00.000Z"),
     updatedAt: new Date("2026-03-11T00:00:00.000Z"),

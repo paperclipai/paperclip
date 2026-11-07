@@ -114,6 +114,7 @@ function projectWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWor
     sharedWorkspaceKey: null,
     metadata: null,
     runtimeConfig: null,
+    defaultCompletionRequirement: null,
     runtimeServices: [],
     isPrimary: true,
     createdAt: now,

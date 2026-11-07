@@ -7,6 +7,7 @@ import type {
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
   IssueCommentPresentationDensity,
+  IssueCompletionRequirement,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -939,6 +940,10 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  /** Completion gate for this task; `workspace_delivery` needs an attestation before `done`. */
+  completionRequirement?: IssueCompletionRequirement | null;
+  /** Increments whenever the requirement changes, so an attestation only satisfies its own declaration. */
+  completionRequirementRevision?: number;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;

@@ -317,4 +317,22 @@ describe("issue workspace command authorization", () => {
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("rejects agent callers that supply a completion requirement at create", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/issues")
+      .send({ title: "Self-certified delivery", completionRequirement: "workspace_delivery" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("cannot set the completion requirement");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
 });
