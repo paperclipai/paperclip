@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -406,7 +407,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore", "restore lock busy"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -511,6 +512,29 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(missing).toMatchObject({ step: "snapshot_download", retryable: false,
         message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_object_missing" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+    }
+    if (mode === "stalled download") {
+      let ready!: () => void;
+      const started = new Promise<void>(resolve => { ready = resolve; });
+      const body = new Readable({ read() {} });
+      const stalledStorage: StorageService = { ...storage, getObject: async () => { ready(); return { stream: body }; } };
+      const realTimeout = globalThis.setTimeout;
+      const deadline = vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, ms, ...args) =>
+        realTimeout(fn, ms === 300_000 ? 25 : ms, ...args));
+      const restoring = prepareRemoteWorkspace({ db, storage: stalledStorage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      try {
+        await started;
+        expect(await restoring).toMatchObject({ step: "snapshot_download", retryable: true,
+          message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_download_stalled" });
+        expect(body.destroyed).toBe(true);
+        expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
+          .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally {
+        body.destroy(new Error("test cleanup")); await restoring;
+        deadline.mockRestore();
+      }
     }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
     expect(restored.remoteRoot).toBe(expectedRemoteRoot);
