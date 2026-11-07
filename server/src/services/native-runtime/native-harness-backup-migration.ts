@@ -9,6 +9,7 @@ import { nativeHarnessBackupOwner, persistNativeHarnessBackup, verifyDurableNati
 import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES, nativeHarnessArchiveSizeLimit } from "./native-harness-backup-archive.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from "./native-harness-backup-source.js";
+import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
   const rows = await db.execute(sql`select 1 from agent_task_sessions s
@@ -181,7 +182,25 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
         scopeDigest: source.scopeDigest, manifestSha256: source.manifestSha256, signal });
       return "current";
     }
-    if (run.status !== "succeeded" || !run.finishedAt) return "source_not_successful";
+    if (run.status !== "succeeded" || !run.finishedAt) {
+      if (!run.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) return "source_not_successful";
+      const providerLeaseId = await verifiedSourceLease(db, source, run, signal);
+      if (!providerLeaseId) return "source_unverified";
+      try {
+        const owner = await settledNativeHarnessBackupOwner(db, { companyId: run.companyId, issueId: run.issueId,
+          runId: source.runId, sessionId: run.sessionId, runnerInstanceId: run.runnerId, scopeDigest: source.scopeDigest,
+          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal });
+        if (!owner) return "source_not_successful";
+        await persistNativeHarnessBackup({ db, storage: input.storage, owner, root: source.root,
+          scopeDigest: source.scopeDigest, signal, maxArchiveBytes: source.archiveLimit });
+        return "published";
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof NativeHarnessBackupSourceError || error instanceof Error && error.message === "native_harness_preservation_source_unsettled"
+          || (error as { code?: string })?.code === "55P03") return "source_changed";
+        throw error;
+      }
+    }
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.issueId, run.issueId),
       eq(nativeRunFinalizations.runId, source.runId)));
