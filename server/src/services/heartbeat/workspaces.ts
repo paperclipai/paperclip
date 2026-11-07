@@ -828,9 +828,8 @@ export function fingerprintFinalizeWorkspaceBranchValidation(input: {
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
-  return fs
-    .lstat(path.resolve(normalized, ".git"))
-    .then((entry) => entry.isDirectory() || entry.isFile())
+  return execFile("git", ["-C", path.resolve(normalized), "rev-parse", "--is-inside-work-tree"])
+    .then((result) => result.stdout.trim() === "true")
     .catch(() => false);
 }
 
@@ -1275,7 +1274,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   ) {
     fail(
       "missing_git_metadata",
-      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
+      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" is not inside a git worktree.`,
     );
   }
 
