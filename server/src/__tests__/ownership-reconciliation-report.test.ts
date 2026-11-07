@@ -164,7 +164,8 @@ describe("report-only ownership reconciliation", () => {
     expect(rules(first, "wake_request")).toEqual(["I4_exactly_once_intent"]);
     expect(first.violations.filter(violation => violation.rule === "I7_visible_next_action")
       .map(violation => violation.recordId)).toEqual([ids.stalledIssue]);
-    expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns"]);
+    expect(Object.keys(first.coverageGaps)).toEqual(["I5_work_based_budgets", "I6_generation_fencing", "I8_fast_turns",
+      "I7_scope", "wake_coverage"]);
 
     expect(first.awaitingSecondProof).toBe(1);
     const second = await runOwnershipReconciliationPass(db, { state });
@@ -232,6 +233,24 @@ describe("report-only ownership reconciliation", () => {
       .where(eq(activityLog.action, OWNERSHIP_INVARIANT_VIOLATION_ACTION))).toEqual([{ entityId: "orphan-1" }]);
   });
 
+  it("counts admission holds only for policies whose scope includes the run", async () => {
+    await seed();
+    await db.update(budgetPolicies).set({ scopeType: "agent", scopeId: randomUUID() });
+    const other = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(other.violations.filter(violation => violation.rule === "I3_admission_independent")).toEqual([]);
+    await db.update(budgetPolicies).set({ scopeId: agentId });
+    const own = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(own.violations.filter(violation => violation.rule === "I3_admission_independent").map(violation => violation.recordId))
+      .toEqual([ids.debtRun]);
+  });
+
+  it("treats a saved monitor deadline as a next action", async () => {
+    await db.insert(issues).values({ companyId, title: "Monitored", status: "in_progress", assigneeAgentId: agentId,
+      updatedAt: minutesAgo(30), monitorNextCheckAt: new Date(Date.now() + 60 * 60_000) });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
+  });
+
   it("returns the end of the next-action grace window for an issue still inside it", async () => {
     const updatedAt = minutesAgo(2);
     await db.insert(issues).values({ companyId, title: "Fresh", status: "in_progress", assigneeAgentId: agentId, updatedAt });
@@ -239,6 +258,56 @@ describe("report-only ownership reconciliation", () => {
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
     expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
   });
+
+  it("retries a violation whose activity row failed to save", async () => {
+    await mkdir(orphanSpool, { recursive: true });
+    const laterCompany = randomUUID();
+    await writeFile(join(orphanSpool, "orphan-2.json"), JSON.stringify({ companyId: laterCompany }));
+    const state = createOwnershipReportState();
+    // The company does not exist yet, so the activity insert fails its foreign key.
+    const first = await runOwnershipReconciliationPass(db, { state });
+    expect(first.retryNeeded).toBe(true);
+    expect(await db.select().from(activityLog)).toEqual([]);
+
+    await db.insert(companies).values({ id: laterCompany, name: "Later", issuePrefix: "LAT" });
+    await rm(orphanSpool, { recursive: true, force: true });
+    const second = await runOwnershipReconciliationPass(db, { state });
+    expect(second.retryNeeded).toBe(false);
+    expect(await db.select({ entityId: activityLog.entityId, companyId: activityLog.companyId }).from(activityLog))
+      .toEqual([{ entityId: "orphan-2", companyId: laterCompany }]);
+  });
+
+  it("rotates through a kind larger than one page", async () => {
+    const leases = [randomUUID(), randomUUID(), randomUUID()].sort();
+    await db.insert(environmentLeases).values(leases.map(id => ({ id, companyId, status: "pending_cleanup" })));
+    const state = createOwnershipReportState();
+    const seen: string[] = [];
+    for (let pass = 0; pass < 3; pass++) {
+      const report = await runOwnershipReconciliationPass(db, { state, record: false, limitPerKind: 2 });
+      seen.push(...report.violations.filter(violation => violation.kind === "environment_pending_cleanup")
+        .map(violation => violation.recordId));
+      if (pass === 0) expect(report.retryNeeded).toBe(true);
+    }
+    expect([...new Set(seen)].sort()).toEqual(leases);
+  });
+
+  it("keeps a wake that lands while dispatch is drained", async () => {
+    let allowed = false;
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
+    const reports: OwnershipReport[] = [];
+    const worker = registerOwnershipReconciliationWork(db, coordinator, () => allowed, { onReport: report => reports.push(report) });
+    try {
+      await worker.ready;
+      expect(reports).toHaveLength(0);
+      // The skipped startup pass is still pending, so a retry stays due.
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      allowed = true;
+      worker.wake();
+      await expect.poll(() => reports.length, { timeout: 60_000, interval: 100 }).toBe(1);
+    } finally {
+      await coordinator.stop();
+    }
+  }, 90_000);
 
   it("goes quiet with nothing in progress and follows up while records change", async () => {
     const errors: unknown[] = [];
@@ -259,7 +328,6 @@ describe("report-only ownership reconciliation", () => {
       expect(coordinator.nextWakeAt()).not.toBeNull();
       expect(errors).toEqual([]);
     } finally {
-      await worker.stop();
       await coordinator.stop();
     }
   }, 90_000);

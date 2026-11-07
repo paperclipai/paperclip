@@ -74,12 +74,19 @@ export type OwnershipReport = {
   awaitingSecondProof: number;
   /** Earliest time a record inside a grace window becomes checkable, if any. */
   nextDueAt: Date | null;
+  /** Work left for a later pass: failed listings or checks, unsaved
+   * violations, and kinds with more pages. The worker keeps a retry due. */
+  retryNeeded: boolean;
 };
 
 const COVERAGE_GAPS: Record<string, string> = {
   I5_work_based_budgets: "Needs the section B outcome records (accepted turn.start) to tell charged from uncharged attempts.",
   I6_generation_fencing: "Runner events carry no generation stamp until section G lands.",
   I8_fast_turns: "Measured per run by the speed-budget check in the run log, not by this pass.",
+  I7_scope: "I7 measures agent-assigned in_progress issues. todo, in_review and blocked issues are not measured yet.",
+  wake_coverage: "Writers of workspace runtime services, remote workspace operations, snapshots, restore points, "
+    + "git cache intents, provider artifacts and harness backups publish no work signal. Those kinds are read at "
+    + "startup and on any other report wake. Phase 2 adds a signal when each kind moves to the shared settle path.",
 };
 
 /** In-memory state kept across passes of one process. */
@@ -90,10 +97,14 @@ export type OwnershipReportState = {
   reported: Set<string>;
   /** Keyset cursor of the wake-request scan of rule I4 (updated_at, id). */
   intentCursor: { at: string; id: string } | null;
+  /** Next page offset per kind, so a kind larger than one page is read in full across passes. */
+  offsets: Map<string, number>;
+  /** Violations whose activity row failed to save; retried on the next pass. */
+  unwritten: Map<string, InvariantViolation>;
 };
 
 export function createOwnershipReportState(): OwnershipReportState {
-  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null };
+  return { goneLastPass: new Set(), reported: new Set(), intentCursor: null, offsets: new Map(), unwritten: new Map() };
 }
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
@@ -142,7 +153,8 @@ async function classify(owner: RecordOwner, runProofs: Map<string, Classificatio
 const violationKey = (violation: InvariantViolation) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
 
 /** Admission still waits on accounting (inventory finding 3). This mirrors
- * the `waitingRunCount` gate of budget-exposure.ts: a terminal run with
+ * the `waitingRunCount` gate of budget-exposure.ts (late-receipt debt is not
+ * counted here): a terminal run with
  * pending accounting holds its company's new work unless it is a succeeded
  * run with observed cost, or a native run whose coordinator is still
  * recovering. Only companies with an active budget policy have the gate, and
@@ -155,8 +167,16 @@ async function checkAdmissionIndependence(db: Db, now: Date, limit: number): Pro
     where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id} and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
       and ${nativeRunFinalizations.resultId} is null
       and (${nativeRunFinalizations.phase} <> 'terminal_failure' or (${closingReceipt}))))`;
+  // A run holds only the policies whose scope and window include it, as in
+  // computeObservedSpends: company, the run's agent, or its ledger project;
+  // a calendar-month policy counts runs finished in the current UTC month.
   const gated = sql`exists (select 1 from ${budgetPolicies} where ${budgetPolicies.companyId} = ${heartbeatRuns.companyId}
-    and ${budgetPolicies.isActive} = true)`;
+    and ${budgetPolicies.isActive} = true
+    and (${budgetPolicies.scopeType} = 'company'
+      or (${budgetPolicies.scopeType} = 'agent' and ${budgetPolicies.scopeId} = ${heartbeatRuns.agentId})
+      or (${budgetPolicies.scopeType} = 'project' and ${usage}->'ledgerScope'->>'projectId' = ${budgetPolicies.scopeId}::text))
+    and (${budgetPolicies.windowKind} <> 'calendar_month_utc'
+      or ${heartbeatRuns.finishedAt} >= (date_trunc('month', ${now.toISOString()}::timestamptz at time zone 'UTC') at time zone 'UTC')))`;
   const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.issueId })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.costAccountingPending, true),
       inArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES),
@@ -202,6 +222,8 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
   const rows = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
+      // A saved monitor deadline is a first-class wait path (SPEC-implementation).
+      or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
         or(eq(heartbeatRuns.issueId, issues.id), eq(heartbeatRuns.nativeIssueId, issues.id))))),
@@ -244,6 +266,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   const kindReports: KindReport[] = [];
   const violations: InvariantViolation[] = [];
   const goneThisPass = new Set<string>();
+  let retryNeeded = false;
 
   for (const kind of kinds) {
     const report: KindReport = { kind: kind.id, obligation: kind.obligation, storage: kind.storage, inProgress: 0,
@@ -252,13 +275,18 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     kindReports.push(report);
     if (!kind.listInProgress) continue;
     let records: InProgressRecord[];
+    const offset = state.offsets.get(kind.id) ?? 0;
     try {
-      const listed = await kind.listInProgress(db, limit);
+      const listed = await kind.listInProgress(db, limit, offset);
       records = listed.records;
       report.truncated = listed.truncated;
+      // Rotate through a large kind; start over after its last page.
+      state.offsets.set(kind.id, listed.truncated ? offset + limit : 0);
+      if (listed.truncated) retryNeeded = true;
       await resolveFenceHolders(db, records);
     } catch (error) {
       report.error = error instanceof Error ? error.message : String(error);
+      retryNeeded = true;
       continue;
     }
     report.inProgress = records.length;
@@ -294,6 +322,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
     try {
       violations.push(...await check());
     } catch (error) {
+      retryNeeded = true;
       logger.warn({ err: error }, "ownership invariant check failed; the report continues");
     }
   }
@@ -302,6 +331,10 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
   // is not a reason to keep scanning.
   const awaitingSecondProof = [...goneThisPass].filter(key => !state.goneLastPass.has(key)).length;
   state.goneLastPass = goneThisPass;
+  // Violations whose activity row failed last time are written again, even
+  // when a cursor-based check (I4) does not read them a second time.
+  const seen = new Set(violations.map(violationKey));
+  for (const [key, violation] of state.unwritten) if (!seen.has(key)) violations.push(violation);
   const newViolations = violations.filter(violation => !state.reported.has(violationKey(violation)));
   if (options.record !== false) {
     for (const violation of newViolations) {
@@ -315,8 +348,11 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
         });
       } catch (error) {
         logger.warn({ err: error, rule: violation.rule, kind: violation.kind }, "failed to record ownership invariant violation");
+        state.unwritten.set(violationKey(violation), violation);
+        retryNeeded = true;
         continue;
       }
+      state.unwritten.delete(violationKey(violation));
       state.reported.add(violationKey(violation));
     }
     for (const violation of newViolations) {
@@ -331,7 +367,7 @@ export async function runOwnershipReconciliationPass(db: Db, options: {
 
   const inProgress = kindReports.reduce((total, report) => total + report.inProgress, 0);
   const report: OwnershipReport = { at: now.toISOString(), inProgress, kinds: kindReports, violations,
-    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt };
+    newViolations, coverageGaps: COVERAGE_GAPS, awaitingSecondProof, nextDueAt, retryNeeded };
   if (newViolations.length > 0 || kindReports.some(kind => kind.error)) {
     logger.info({
       inProgress, violations: violations.length, newViolations: newViolations.length,

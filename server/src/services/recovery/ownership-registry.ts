@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, eq, inArray, isNotNull, isNull, like, notInArray, notLike, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, like, notInArray, notLike, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
   environmentLeases,
@@ -74,7 +74,9 @@ export type OwnableKind = {
   obligation: Obligation;
   storage: "database" | "local_disk";
   /** Null when Phase 1 cannot enumerate the kind; the report names the gap. */
-  listInProgress: ((db: Db, limit: number) => Promise<ListResult>) | null;
+  /** Lists one page in a stable order; the report rotates `offset` across
+   * passes so a large kind is read in full. */
+  listInProgress: ((db: Db, limit: number, offset: number) => Promise<ListResult>) | null;
   /** Report-only in Phase 1. Phase 2 registers a compare-and-swap settle. */
   settle: null;
   /** Plan invariants this kind is checked against (1–8). */
@@ -123,8 +125,8 @@ function nrfKind(id: string, title: string, obligation: Obligation, where: SQL |
   invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
-    listInProgress: async (db, limit) => {
-      const rows = await db.select().from(nativeRunFinalizations).where(where).limit(limit + 1);
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select().from(nativeRunFinalizations).where(where).orderBy(asc(nativeRunFinalizations.runId)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.runId, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
@@ -165,8 +167,8 @@ function runKind(id: string, title: string, obligation: Obligation, where: SQL |
   owner: (row: RunRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
-    listInProgress: async (db, limit) => {
-      const rows = await db.select(runColumns).from(heartbeatRuns).where(where).limit(limit + 1);
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select(runColumns).from(heartbeatRuns).where(where).orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
       const result = page(rows as RunRow[], limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.id, issueId: row.issueId,
@@ -196,11 +198,11 @@ function leaseKind(id: string, title: string, obligation: Obligation, where: SQL
   owner: (row: LeaseRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
         heartbeatRunId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
         metadata: environmentLeases.metadata, updatedAt: environmentLeases.updatedAt })
-        .from(environmentLeases).where(where).limit(limit + 1);
+        .from(environmentLeases).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.heartbeatRunId, issueId: row.issueId,
@@ -230,11 +232,11 @@ function operationKind(id: string, title: string, obligation: Obligation, where:
   owner: (row: OperationRow) => RecordOwner): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: workspaceOperations.id, companyId: workspaceOperations.companyId,
         heartbeatRunId: workspaceOperations.heartbeatRunId, issueId: workspaceOperations.issueId,
         metadata: workspaceOperations.metadata, updatedAt: workspaceOperations.updatedAt })
-        .from(workspaceOperations).where(where).limit(limit + 1);
+        .from(workspaceOperations).where(where).orderBy(asc(workspaceOperations.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.heartbeatRunId, issueId: row.issueId,
@@ -255,11 +257,11 @@ function recoveryActionKind(id: string, title: string, obligation: Obligation, w
   runIdOf: (row: RecoveryActionRow) => string | null = () => null): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId,
         sourceIssueId: issueRecoveryActions.sourceIssueId, ownerType: issueRecoveryActions.ownerType,
         evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
-        .from(issueRecoveryActions).where(and(isNull(issueRecoveryActions.resolvedAt), where)).limit(limit + 1);
+        .from(issueRecoveryActions).where(and(isNull(issueRecoveryActions.resolvedAt), where)).orderBy(asc(issueRecoveryActions.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: runIdOf(row), issueId: row.sourceIssueId,
@@ -293,7 +295,7 @@ async function readSpoolAttribution(file: string): Promise<{ companyId: string |
 function spoolKind(id: string, title: string, obligation: Obligation, directory: () => string): OwnableKind {
   return {
     id, title, obligation, storage: "local_disk", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (_db, limit) => {
+    listInProgress: async (_db, limit, offset) => {
       let names: string[];
       const root = directory();
       try {
@@ -302,7 +304,7 @@ function spoolKind(id: string, title: string, obligation: Obligation, directory:
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return { records: [], truncated: false };
         throw error;
       }
-      const result = page(names, limit);
+      const result = page(names.slice(offset), limit);
       const records: InProgressRecord[] = [];
       for (const name of result.rows) {
         const attribution = await readSpoolAttribution(path.join(root, name));
@@ -343,13 +345,13 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "native_startup_context", title: "Native startup context", obligation: "ownership", storage: "database",
     settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ ...runColumns, leaseOwner: nativeRunFinalizations.leaseOwner,
         leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, generation: nativeRunFinalizations.controllerGeneration })
         .from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
           eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
         .where(and(eq(heartbeatRuns.status, "running"), sql`${heartbeatRuns.runnerProfileJson} ? 'nativeStartupContext'`))
-        .limit(limit + 1);
+        .orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => {
         const context = json(json(row.runnerProfileJson).nativeStartupContext);
@@ -377,8 +379,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "native_harness_backup", title: "Native harness backup publication", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
-      const rows = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.status, "pending")).limit(limit + 1);
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.status, "pending")).orderBy(asc(nativeHarnessBackups.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
@@ -389,10 +391,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "native_provider_artifact_upload", title: "Provider artifact upload", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: nativeProviderArtifacts.id, companyId: nativeProviderArtifacts.companyId,
         updatedAt: nativeProviderArtifacts.updatedAt }).from(nativeProviderArtifacts)
-        .where(inArray(nativeProviderArtifacts.status, ["pending", "retiring"])).limit(limit + 1);
+        .where(inArray(nativeProviderArtifacts.status, ["pending", "retiring"])).orderBy(asc(nativeProviderArtifacts.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: null, issueId: null,
@@ -405,11 +407,11 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "sandbox_creation_intent", title: "Sandbox creation intent", obligation: "ownership", storage: "database",
     settle: null, invariantChecks: [1, 2, 3, 7],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: sandboxCreationOperations.id, companyId: sandboxCreationOperations.companyId,
         runId: sandboxCreationOperations.runId, issueId: sandboxCreationOperations.issueId,
         metadata: sandboxCreationOperations.metadata, updatedAt: sandboxCreationOperations.updatedAt })
-        .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending")).limit(limit + 1);
+        .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending")).orderBy(asc(sandboxCreationOperations.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.issueId,
@@ -467,8 +469,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "execution_workspace_runtime_lease", title: "Execution workspace runtime lease", obligation: "ownership",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
-      const rows = await db.select().from(executionWorkspaceRuntimeLeases).limit(limit + 1);
+    listInProgress: async (db, limit, offset) => {
+      const rows = await db.select().from(executionWorkspaceRuntimeLeases).orderBy(asc(executionWorkspaceRuntimeLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.ownerRunId, issueId: row.ownerIssueId,
@@ -480,11 +482,11 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "workspace_runtime_service", title: "Workspace runtime service (local process)", obligation: "ownership",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: workspaceRuntimeServices.id, companyId: workspaceRuntimeServices.companyId,
         issueId: workspaceRuntimeServices.issueId, updatedAt: workspaceRuntimeServices.updatedAt })
         .from(workspaceRuntimeServices)
-        .where(inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"])).limit(limit + 1);
+        .where(inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"])).orderBy(asc(workspaceRuntimeServices.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       // The PID lives in a local service registry file, not on the row.
       return { truncated: result.truncated, records: result.rows.map(row => ({
@@ -496,10 +498,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
-        .where(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`).limit(limit + 1);
+        .where(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => {
         const writerRunId = str(json(json(row.metadata).remoteWorkspace).writerRunId);
@@ -511,10 +513,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
-        .from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.status, "pending")).limit(limit + 1);
+        .from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.status, "pending")).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.sourceRunId, issueId: null,
@@ -525,11 +527,11 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "git_restore_point", title: "Git restore point", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [1, 2],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceRestorePoints.id, companyId: executionWorkspaceRestorePoints.companyId,
         issueId: executionWorkspaceRestorePoints.sourceIssueId, updatedAt: executionWorkspaceRestorePoints.updatedAt })
         .from(executionWorkspaceRestorePoints)
-        .where(inArray(executionWorkspaceRestorePoints.status, ["pending", "expiring"])).limit(limit + 1);
+        .where(inArray(executionWorkspaceRestorePoints.status, ["pending", "expiring"])).orderBy(asc(executionWorkspaceRestorePoints.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: null, issueId: row.issueId,
@@ -540,12 +542,12 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "git_cache_expiration_intent", title: "Git cache expiration intent", obligation: "workspace_preservation",
     storage: "database", settle: null, invariantChecks: [1],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
         .where(sql`${executionWorkspaces.metadata}->'gitCacheExpiration' is not null
           and coalesce((${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed')::boolean, false) is false`)
-        .limit(limit + 1);
+        .orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: null, issueId: null,
@@ -599,10 +601,10 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "wake_request_claimed", title: "Wake request (claimed)", obligation: "ownership", storage: "database",
     settle: null, invariantChecks: [2, 4],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
         runId: agentWakeupRequests.runId, updatedAt: agentWakeupRequests.updatedAt }).from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.status, "claimed")).limit(limit + 1);
+        .where(eq(agentWakeupRequests.status, "claimed")).orderBy(asc(agentWakeupRequests.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: null,
@@ -625,9 +627,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "issue_execution_lock", title: "Issue execution lock", obligation: "ownership", storage: "database",
     settle: null, invariantChecks: [2, 3, 7],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.executionRunId,
-        updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.executionRunId)).limit(limit + 1);
+        updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.executionRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.id,
@@ -638,9 +640,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   {
     id: "issue_checkout_lock", title: "Issue checkout lock", obligation: "ownership", storage: "database",
     settle: null, invariantChecks: [2, 7],
-    listInProgress: async (db, limit) => {
+    listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: issues.id, companyId: issues.companyId, runId: issues.checkoutRunId,
-        updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.checkoutRunId)).limit(limit + 1);
+        updatedAt: issues.updatedAt }).from(issues).where(isNotNull(issues.checkoutRunId)).orderBy(asc(issues.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.runId, issueId: row.id,
