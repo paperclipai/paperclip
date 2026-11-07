@@ -104,14 +104,13 @@ async function transitionLockedRun(
   if (!run) return null;
   if (sameStatus) return { run, transition: null };
   const transitionedAtEpochUs = String(clock?.transitionedAtEpochUs);
-  return {
-    run,
-    transition: {
-      eventId: `run:${runId}:${transitionedAtEpochUs}:${options.toStatus}`,
-      runId,
-      fromStatus,
-      toStatus: options.toStatus,
-      transitionedAtEpochUs,
-    },
+  const transition = {
+    eventId: `run:${runId}:${transitionedAtEpochUs}:${options.toStatus}`,
+    runId,
+    fromStatus,
+    toStatus: options.toStatus,
+    transitionedAtEpochUs,
   };
+  logRunTransitionAfterCommit(tx, run, transition);
+  return { run, transition };
 }
