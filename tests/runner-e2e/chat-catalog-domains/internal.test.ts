@@ -366,7 +366,8 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "documents-artifacts.revise-delivery": o => { o.reply = "Here is the old version again."; },
   "tasks.assignment-conflict": o => { o.tasks[0]!.assigneeAgentId = "riley"; },
   "activity.find-runs": o => { o.runs = o.runs.filter(run => run.id !== "interrupted"); },
-  "activity.agent-feedback": o => { o.reply = "I browsed all feedback and Morgan complained about everything."; },
+  // The grader does not judge claim wording; the failure that matters is relaying another agent's feedback text.
+  "activity.agent-feedback": o => { o.reply = "I browsed all feedback. Morgan wrote: complaint about tools."; },
   "activity.company-overview": o => { o.reply = o.reply.replace("1 blocked", "3 blocked"); },
   "activity.audit-change": o => { o.reply = "Morgan, the current assignee, probably changed it today."; },
 };
