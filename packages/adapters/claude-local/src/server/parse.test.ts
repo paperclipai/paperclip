@@ -14,6 +14,24 @@ import {
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
+  it("does not turn quoted unauthorized tool content into an auth request after terminal success", () => {
+    expect(detectClaudeLoginRequired({
+      parsed: { type: "result", subtype: "success", is_error: false, result: "Saved the comparison draft." },
+      stdout: JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Watch an unauthorized action fail." }] } }),
+      stderr: "",
+    }).requiresLogin).toBe(false);
+  });
+  it("keeps a real non-auth terminal failure separate from quoted login text", () => {
+    expect(detectClaudeLoginRequired({
+      parsed: { subtype: "error_during_execution", is_error: true, result: "API Error: 503 service unavailable" },
+      stdout: JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Please run /login is an example from the guide." }] } }),
+      stderr: "",
+    }).requiresLogin).toBe(false);
+  });
+  it("does not read an unfinished tool event as a startup login prompt", () => {
+    expect(detectClaudeLoginRequired({ parsed: null,
+      stdout: JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "unauthorized" }] } }), stderr: "" }).requiresLogin).toBe(false);
+  });
   it("classifies Claude's invalid API key login prompt as auth required", () => {
     expect(
       detectClaudeLoginRequired({
