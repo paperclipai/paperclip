@@ -1470,6 +1470,24 @@ recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
 
+`native_remote_recovery_lease_mismatch` carries a closed detail:
+`native_remote_recovery_lease_mismatch: stage=<stage> field=<field>`. The stage
+is `workspace_preparation`, `environment_acquire`, `environment_resume`,
+`workspace_sync` or `runner_verification`. The field names the identity that
+differed, for example `lease_status`, `provider_lease_id`, `remote_cwd` or
+`identity_run_id`. The detail contains no identifiers. Consumers match the code
+exactly or as the `code: ` prefix.
+
+A due remote same-run retry does not reattach when reattachment cannot succeed.
+The server skips reattachment and uses the plain same-run resume when all of
+these are true: the failed attempt recorded `providerEventsExist: false`, the run
+has no provider event, and the original sandbox was not retained. The sandbox
+was not retained when the run's resource disposition is `destroy`, or when every
+remote lease of the run has an exact termination receipt. The server clears the
+recorded remote process identity and records a `remote_runner_unused` lifecycle
+event. A run with a provider event, or a run saved without these fields by an
+older release, keeps the reattachment path and its reconciliation gate.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,

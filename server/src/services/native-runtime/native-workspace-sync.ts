@@ -1,3 +1,4 @@
+import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { hasMigratedLegacyWorkspaceSource } from "../legacy-workspace-recovery-migration.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -915,11 +916,13 @@ export async function prepareNativeWorkspaceSync(input: {
   const target = input.target;
   const providerLeaseId = providerLeaseIdFor({ target, lease: input.lease });
   // Reattachment may never seed a replacement sandbox over a still-live run.
-  if (input.restartRecovery?.kind === "reattach_remote_runner" &&
-      (input.restartRecovery.remote.kind === "plugin_task" || input.restartRecovery.runId !== input.runId ||
-       input.restartRecovery.remote.providerLeaseId !== providerLeaseId ||
-       input.restartRecovery.remote.remoteCwd !== target.remoteCwd)) {
-    throw new Error("native_remote_recovery_lease_mismatch");
+  if (input.restartRecovery?.kind === "reattach_remote_runner") {
+    const { remote, runId } = input.restartRecovery;
+    const mismatch = remote.kind === "plugin_task" ? "plugin_task" as const
+      : runId !== input.runId ? "run_id" as const
+      : remote.providerLeaseId !== providerLeaseId ? "provider_lease_id" as const
+      : remote.remoteCwd !== target.remoteCwd ? "remote_cwd" as const : null;
+    if (mismatch) throw remoteRecoveryLeaseMismatch("workspace_sync", mismatch);
   }
   const run = await measureRunPhase("workspace_sync.run_read", () => input.db
     .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
